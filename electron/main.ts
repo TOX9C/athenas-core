@@ -147,6 +147,9 @@ app.whenReady().then(async () => {
   const { initSwarmCoordinator } = await import('./swarmCoordinator')
   if (mainWindow) initSwarmCoordinator(mainWindow)
 
+  const { initMcpServer } = await import('./mcpServer')
+  if (mainWindow) initMcpServer(mainWindow)
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
