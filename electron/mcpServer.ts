@@ -141,8 +141,22 @@ async function handleToolCall(mainWindow: BrowserWindow, name: string, args: any
       return { content: [{ type: 'text', text: 'Task updated successfully.' }] }
     }
 
-    // Keep the default case
-    return { content: [{ type: 'text', text: 'Not implemented yet' }] }
+    if (name === 'spawn_agents') {
+      const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/zsh')
+      const instruction = args.instruction || 'You are an Athena Swarm Worker. Use the get_next_task MCP tool to pull work and update_task_status to complete it.'
+
+      const proxyPath = require('path').join(__dirname, '../../bin/mcp-proxy.js')
+      const mcpEnv = `export CLAUDE_MCP_SERVERS='{"athena":{"command":"node","args":["${proxyPath}"]}}';`
+      const agentCmd = `${mcpEnv} claude -p "${instruction}"`
+
+      for (let i = 0; i < args.count; i++) {
+        const ptyId = `worker-${Date.now()}-${i}`
+        ptyMgr.spawn(ptyId, args.cwd, shell, agentCmd, mainWindow)
+      }
+      return { content: [{ type: 'text', text: `Spawned ${args.count} workers successfully.` }] }
+    }
+
+    return { isError: true, content: [{ type: 'text', text: 'Unknown tool.' }] }
   } catch (err: any) {
     return { isError: true, content: [{ type: 'text', text: err.message }] }
   }
