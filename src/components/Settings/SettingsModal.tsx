@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { X, Monitor, Bot, Palette, Keyboard, Info, Brain } from 'lucide-react'
+import { X, Monitor, Bot, Palette, Keyboard, Info, Brain, Trash2, Plus } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useAthenaStore } from '../../store/athenaStore'
 import { useNotificationStore } from '../../store/notificationStore'
 import { themes, applyTheme } from '../../themes/themes'
 import type { ThemeName } from '../../types/theme'
+import { nanoid } from 'nanoid'
 
 interface SettingsModalProps {
   onClose: () => void
@@ -46,8 +47,11 @@ const SHORTCUTS = [
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const [tab, setTab] = useState<TabId>('general')
   const { theme, setTheme, fontSize, setFontSize, fontFamily, setFontFamily } = useUIStore()
-  const { model, setModel, bypassMode, setBypassMode, autoLaunch, setAutoLaunch, customCommand, setCustomCommand } = useAthenaStore()
+  const { model, setModel, bypassMode, setBypassMode, autoLaunch, setAutoLaunch, customAgents, addCustomAgent, removeCustomAgent } = useAthenaStore()
   const { muted, setMuted } = useNotificationStore()
+
+  const [newAgentName, setNewAgentName] = useState('')
+  const [newAgentCmd, setNewAgentCmd] = useState('')
 
   const handleThemeChange = (name: ThemeName) => {
     setTheme(name)
@@ -68,11 +72,6 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const handleAutoLaunchChange = (val: boolean) => {
     setAutoLaunch(val)
     window.athena.store.set('athena-autoLaunch', val)
-  }
-
-  const handleCustomCmdChange = (val: string) => {
-    setCustomCommand(val)
-    window.athena.store.set('athena-customCommand', val)
   }
 
   return (
@@ -174,8 +173,46 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             )}
 
             {tab === 'agents' && (
-              <div className="text-xs" style={{ color: 'var(--textMuted)' }}>
-                Agent path overrides coming soon. Ensure agent CLIs are on your PATH.
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-2">
+                  {customAgents.map(ag => (
+                    <div key={ag.id} className="flex items-center justify-between p-2 rounded border" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
+                      <div className="flex flex-col">
+                        <span className="text-sm" style={{ color: 'var(--text)' }}>{ag.name}</span>
+                        <span className="text-xs font-mono" style={{ color: 'var(--textMuted)' }}>{ag.command}</span>
+                      </div>
+                      <button onClick={() => {
+                        removeCustomAgent(ag.id)
+                        window.athena.store.set('athena-customAgents', useAthenaStore.getState().customAgents.filter(a => a.id !== ag.id))
+                      }} className="p-1 hover:text-red-500 transition-colors">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                  {customAgents.length === 0 && (
+                     <div className="text-xs italic" style={{ color: 'var(--textMuted)' }}>No custom agents configured.</div>
+                  )}
+                </div>
+                <div className="flex items-end gap-2 p-3 rounded bg-black/20" style={{ border: '1px solid var(--border)' }}>
+                  <div className="flex-1 flex flex-col gap-1">
+                    <span className="text-xs" style={{ color: 'var(--textMuted)' }}>Agent Name</span>
+                    <input value={newAgentName} onChange={e => setNewAgentName(e.target.value)} placeholder="My Super Agent" className="px-2 py-1 flex-1 rounded text-xs outline-none bg-transparent" style={{ border: '1px solid var(--border)', color: 'var(--text)' }} />
+                  </div>
+                  <div className="flex-1 flex flex-col gap-1">
+                    <span className="text-xs" style={{ color: 'var(--textMuted)' }}>CLI Command</span>
+                    <input value={newAgentCmd} onChange={e => setNewAgentCmd(e.target.value)} placeholder="my-agent-cli --flag" className="px-2 py-1 flex-1 rounded text-xs outline-none bg-transparent" style={{ border: '1px solid var(--border)', color: 'var(--text)' }} />
+                  </div>
+                  <button onClick={() => {
+                    if (!newAgentName || !newAgentCmd) return
+                    const newAgent = { id: nanoid(), name: newAgentName, command: newAgentCmd }
+                    addCustomAgent(newAgent)
+                    window.athena.store.set('athena-customAgents', [...useAthenaStore.getState().customAgents, newAgent])
+                    setNewAgentName('')
+                    setNewAgentCmd('')
+                  }} className="px-3 py-1 flex items-center justify-center rounded text-xs transition-colors h-6" style={{ background: 'var(--accent)', color: '#fff' }}>
+                    <Plus size={14} className="mr-1" /> Add
+                  </button>
+                </div>
               </div>
             )}
 
@@ -192,20 +229,12 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     <option value="codex">Codex</option>
                     <option value="opencode">OpenCode</option>
                     <option value="gemini">Gemini CLI</option>
-                    <option value="custom">Custom</option>
+                    <option disabled>──────────</option>
+                    {customAgents.map(ag => (
+                      <option key={ag.id} value={ag.id}>{ag.name}</option>
+                    ))}
                   </select>
                 </SettingRow>
-                {model === 'custom' && (
-                  <SettingRow label="Custom command">
-                    <input
-                      value={customCommand}
-                      onChange={(e) => handleCustomCmdChange(e.target.value)}
-                      placeholder="my-agent-cli"
-                      className="px-2 py-1 rounded text-xs outline-none w-40"
-                      style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}
-                    />
-                  </SettingRow>
-                )}
                 <SettingRow label="Bypass permissions">
                   <button
                     onClick={() => handleBypassChange(!bypassMode)}
