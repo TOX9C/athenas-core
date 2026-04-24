@@ -68,7 +68,7 @@ export default function App() {
       }
     })
     window.athena.store.get('athena-model').then((saved: any) => {
-      if (saved) useAthenaStore.getState().setModel(saved)
+      if (typeof saved === 'string') useAthenaStore.getState().setModel(saved)
     })
     window.athena.store.get('athena-bypassMode').then((saved: any) => {
       if (typeof saved === 'boolean') useAthenaStore.getState().setBypassMode(saved)
@@ -77,7 +77,7 @@ export default function App() {
       if (typeof saved === 'boolean') useAthenaStore.getState().setAutoLaunch(saved)
     })
     window.athena.store.get('athena-customCommand').then((saved: any) => {
-      if (saved) useAthenaStore.getState().setCustomCommand(saved)
+      if (typeof saved === 'string') useAthenaStore.getState().setCustomCommand(saved)
     })
   }, [])
 
