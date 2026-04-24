@@ -76,8 +76,10 @@ export default function App() {
     window.athena.store.get('athena-autoLaunch').then((saved: any) => {
       if (typeof saved === 'boolean') useAthenaStore.getState().setAutoLaunch(saved)
     })
-    window.athena.store.get('athena-customCommand').then((saved: any) => {
-      if (typeof saved === 'string') useAthenaStore.getState().setCustomCommand(saved)
+    window.athena.store.get('athena-customAgents').then((saved: any) => {
+      if (saved && Array.isArray(saved)) {
+        saved.forEach(agent => useAthenaStore.getState().addCustomAgent(agent));
+      }
     })
   }, [])
 
