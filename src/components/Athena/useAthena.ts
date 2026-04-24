@@ -98,6 +98,16 @@ export function useAthena() {
     [isPtyReady, addMessage]
   )
 
+  // Re-spawn the underlying agent PTY if the user modifies CLI parameters while it's running
+  useEffect(() => {
+    if (isPtyReady && activeSpace) {
+      // The backend ptyManager.ts explicitly kills older sessions sharing the same ID during spawn
+      spawnAthena()
+    }
+    // We intentionally only listen to configuration dependencies
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model, bypassMode, customCommand])
+
   return {
     messages,
     isOpen,
