@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm create *)",
+      "Bash(npm install *)",
+      "Bash(npx electron-vite *)",
+      "Bash(npm run *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(npx electron *)",
+      "Bash(python3 -c \"import distutils\")",
+      "Bash(pip3 install *)",
+      "Bash(git init *)"
+    ]
+  }
+}
