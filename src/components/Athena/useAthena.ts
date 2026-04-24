@@ -8,7 +8,7 @@ const ATHENA_PTY_ID = '__athena__'
 
 export function useAthena() {
   const {
-    messages, isOpen, isPtyReady, model, bypassMode, customCommand,
+    messages, isOpen, isPtyReady, model, bypassMode, customAgents,
     addMessage, setPtyReady, toggleOpen, setOpen,
   } = useAthenaStore()
 
@@ -30,12 +30,13 @@ export function useAthena() {
         return 'opencode'
       case 'gemini':
         return 'gemini'
-      case 'custom':
-        return customCommand || ''
-      default:
+      default: {
+        const custom = customAgents.find(a => a.id === model)
+        if (custom) return custom.command
         return 'claude'
+      }
     }
-  }, [model, bypassMode, customCommand])
+  }, [model, bypassMode, customAgents])
 
   const spawnAthena = useCallback(async () => {
     if (!activeSpace) return
@@ -106,7 +107,7 @@ export function useAthena() {
     }
     // We intentionally only listen to configuration dependencies
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, bypassMode, customCommand])
+  }, [model, bypassMode, customAgents])
 
   return {
     messages,
