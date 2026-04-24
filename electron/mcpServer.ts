@@ -97,5 +97,53 @@ async function handleRequest(socket: net.Socket, mainWindow: BrowserWindow, req:
 
 // Next task will fill handleToolCall
 async function handleToolCall(mainWindow: BrowserWindow, name: string, args: any) {
-  return { content: [{ type: 'text', text: 'Not implemented yet' }] }
+  try {
+    const tasks: any[] = store.get('tasks') as any[] || []
+
+    if (name === 'create_tasks') {
+      const newTasks = args.tasks.map((t: any) => ({
+        id: randomUUID(),
+        spaceId: args.spaceId,
+        title: t.title,
+        description: t.description || '',
+        status: 'todo',
+        order: Date.now(),
+        createdAt: Date.now()
+      }))
+      store.set('tasks', [...tasks, ...newTasks])
+      // Trigger UI sync
+      mainWindow.webContents.send('store:updateTasks')
+      return { content: [{ type: 'text', text: `Created ${newTasks.length} tasks.` }] }
+    }
+
+    if (name === 'get_next_task') {
+      const todoTasks = tasks.filter(t => t.status === 'todo').sort((a, b) => a.order - b.order)
+      if (todoTasks.length === 0) {
+        return { content: [{ type: 'text', text: 'No tasks available.' }] }
+      }
+
+      const task = todoTasks[0]
+      task.status = 'in_progress'
+      store.set('tasks', tasks)
+      mainWindow.webContents.send('store:updateTasks')
+
+      return { content: [{ type: 'text', text: JSON.stringify(task, null, 2) }] }
+    }
+
+    if (name === 'update_task_status') {
+      const task = tasks.find(t => t.id === args.taskId)
+      if (!task) return { isError: true, content: [{ type: 'text', text: 'Task not found' }] }
+
+      task.status = args.status
+      store.set('tasks', tasks)
+      mainWindow.webContents.send('store:updateTasks')
+
+      return { content: [{ type: 'text', text: 'Task updated successfully.' }] }
+    }
+
+    // Keep the default case
+    return { content: [{ type: 'text', text: 'Not implemented yet' }] }
+  } catch (err: any) {
+    return { isError: true, content: [{ type: 'text', text: err.message }] }
+  }
 }
