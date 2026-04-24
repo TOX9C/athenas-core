@@ -7,6 +7,12 @@ export interface AthenaMessage {
   timestamp: number
 }
 
+export interface CustomAgent {
+  id: string;
+  name: string;
+  command: string;
+}
+
 interface AthenaState {
   messages: AthenaMessage[]
   isOpen: boolean
@@ -14,7 +20,7 @@ interface AthenaState {
   model: string
   bypassMode: boolean
   autoLaunch: boolean
-  customCommand: string
+  customAgents: CustomAgent[]
   addMessage: (msg: AthenaMessage) => void
   setOpen: (open: boolean) => void
   toggleOpen: () => void
@@ -22,7 +28,8 @@ interface AthenaState {
   setModel: (model: string) => void
   setBypassMode: (bypass: boolean) => void
   setAutoLaunch: (auto: boolean) => void
-  setCustomCommand: (cmd: string) => void
+  addCustomAgent: (agent: CustomAgent) => void
+  removeCustomAgent: (id: string) => void
   clearMessages: () => void
 }
 
@@ -33,7 +40,7 @@ export const useAthenaStore = create<AthenaState>((set) => ({
   model: 'claude',
   bypassMode: true,
   autoLaunch: true,
-  customCommand: '',
+  customAgents: [],
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
   setOpen: (open) => set({ isOpen: open }),
   toggleOpen: () => set((s) => ({ isOpen: !s.isOpen })),
@@ -41,6 +48,7 @@ export const useAthenaStore = create<AthenaState>((set) => ({
   setModel: (model) => set({ model }),
   setBypassMode: (bypass) => set({ bypassMode: bypass }),
   setAutoLaunch: (auto) => set({ autoLaunch: auto }),
-  setCustomCommand: (cmd) => set({ customCommand: cmd }),
+  addCustomAgent: (agent) => set((s) => ({ customAgents: [...s.customAgents, agent] })),
+  removeCustomAgent: (id) => set((s) => ({ customAgents: s.customAgents.filter(a => a.id !== id) })),
   clearMessages: () => set({ messages: [] }),
 }))
