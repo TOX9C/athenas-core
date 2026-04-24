@@ -2,6 +2,7 @@ import { Zap, Plus, FolderOpen, Bot, ChevronLeft, Layers } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { WorkspaceList } from './WorkspaceList'
+import { FileTree } from './FileTree'
 
 interface SidebarProps {
   onNewSpace: () => void
@@ -10,6 +11,7 @@ interface SidebarProps {
 export function Sidebar({ onNewSpace }: SidebarProps) {
   const { sidebarWidth, toggleSidebar, activeSidebarSection, setSidebarSection } = useUIStore()
   const { spaces, activeSpaceId, setActiveSpace } = useWorkspaceStore()
+  const activeSpace = spaces.find(s => s.id === activeSpaceId)
 
   const getSectionTitle = () => {
     switch (activeSidebarSection) {
@@ -74,8 +76,8 @@ export function Sidebar({ onNewSpace }: SidebarProps) {
           />
         )}
         {activeSidebarSection === 'files' && (
-          <div className="p-4 text-center text-xs" style={{ color: 'var(--textDim)' }}>
-            File explorer coming soon
+          <div className="flex-1 overflow-y-auto">
+            <FileTree dir={activeSpace?.dir} />
           </div>
         )}
         {activeSidebarSection === 'agents' && (
