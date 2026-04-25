@@ -6,6 +6,7 @@ declare global {
         write: (id: string, data: string) => void
         resize: (id: string, cols: number, rows: number) => void
         kill: (id: string) => void
+        getHistory: (id: string) => Promise<string>
         onData: (id: string, cb: (data: string) => void) => () => void
         onExit: (id: string, cb: (code: number) => void) => () => void
       }

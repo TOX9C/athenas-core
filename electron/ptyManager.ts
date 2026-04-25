@@ -3,10 +3,15 @@ import * as pty from 'node-pty'
 import { platform } from 'os'
 
 const sessions = new Map<string, pty.IPty>()
+const history = new Map<string, string>()
 
 function getDefaultShell(): string {
   if (platform() === 'win32') return 'powershell.exe'
   return process.env.SHELL || '/bin/zsh'
+}
+
+export function getHistory(id: string): string {
+  return history.get(id) || ''
 }
 
 export function spawn(
@@ -24,17 +29,23 @@ export function spawn(
   const isWin = platform() === 'win32'
   const shellArgs = isWin ? [] : ['-l']
 
+  const isAthena = id.includes('__athena__')
+  const customEnv = isAthena ? { ...process.env, CI: '1', TERM: 'dumb', FORCE_COLOR: '0', NO_COLOR: '1' } : process.env
+
   const ptyProcess = pty.spawn(shellPath, shellArgs, {
-    name: 'xterm-256color',
+    name: isAthena ? 'dumb' : 'xterm-256color',
     cols: 80,
     rows: 24,
     cwd,
-    env: process.env as Record<string, string>
+    env: customEnv as Record<string, string>
   })
 
   sessions.set(id, ptyProcess)
+  history.set(id, '') // Clear previous history
 
   ptyProcess.onData((data) => {
+    const current = history.get(id) || ''
+    history.set(id, current + data)
     mainWindow.webContents.send(`pty:data:${id}`, data)
   })
 
