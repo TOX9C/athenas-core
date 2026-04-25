@@ -1,10 +1,16 @@
 import * as net from 'net'
 import { BrowserWindow } from 'electron'
 import * as ptyMgr from './ptyManager'
-import Store from 'electron-store'
 import { randomUUID } from 'crypto'
 
-const store = new Store()
+let storeInstance: any = null
+async function getStore() {
+  if (!storeInstance) {
+    const { default: Store } = await import('electron-store')
+    storeInstance = new Store()
+  }
+  return storeInstance
+}
 
 const TOOLS = [
   {
@@ -98,6 +104,7 @@ async function handleRequest(socket: net.Socket, mainWindow: BrowserWindow, req:
 // Next task will fill handleToolCall
 async function handleToolCall(mainWindow: BrowserWindow, name: string, args: any) {
   try {
+    const store = await getStore()
     const tasks: any[] = store.get('tasks') as any[] || []
 
     if (name === 'create_tasks') {
