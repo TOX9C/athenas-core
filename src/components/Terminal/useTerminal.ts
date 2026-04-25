@@ -70,6 +70,10 @@ export function useTerminal({ paneId, cwd, agentCmd }: UseTerminalOptions, conta
     termRef.current = term
     fitAddonRef.current = fitAddon
 
+    window.athena.pty.getHistory(paneId).then((hist) => {
+      if (hist) term.write(hist)
+    })
+
     const unsubData = window.athena.pty.onData(paneId, (data) => {
       term.write(data)
     })

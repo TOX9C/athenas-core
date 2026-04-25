@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('athena', {
       ipcRenderer.send('pty:resize', id, cols, rows),
     kill: (id: string) =>
       ipcRenderer.send('pty:kill', id),
+    getHistory: (id: string) =>
+      ipcRenderer.invoke('pty:getHistory', id),
     onData: (id: string, cb: (data: string) => void) => {
       const handler = (_event: any, data: string) => cb(data)
       ipcRenderer.on(`pty:data:${id}`, handler)
