@@ -84,17 +84,21 @@ export function useTerminal({ paneId, cwd, agentCmd }: UseTerminalOptions, conta
 
     if (!spawnedRef.current) {
       spawnedRef.current = true
-      const shell = '/bin/zsh'
-      window.athena.pty.spawn(paneId, cwd, shell, agentCmd || undefined)
-        .then((res: any) => {
-          if (res && !res.success) {
-            console.error('PTY spawn failed:', res.error)
-            spawnedRef.current = false
-          }
-        })
-        .catch(() => {
-          spawnedRef.current = false
-        })
+      window.athena.pty.hasSession(paneId).then((exists) => {
+        if (!exists) {
+          window.athena.pty.spawn(paneId, cwd, '', agentCmd || undefined)
+            .then((res) => {
+              if (res && !res.success) {
+                spawnedRef.current = false
+              }
+            })
+            .catch(() => {
+              spawnedRef.current = false
+            })
+        }
+      }).catch(() => {
+        spawnedRef.current = false
+      })
     }
 
     const ro = new ResizeObserver(() => {

@@ -10,7 +10,10 @@
       "Bash(npx electron *)",
       "Bash(python3 -c \"import distutils\")",
       "Bash(pip3 install *)",
-      "Bash(git init *)"
+      "Bash(git init *)",
+      "Bash(node *)",
+      "mcp__plugin_claude-mem_mcp-search__smart_search",
+      "mcp__plugin_claude-mem_mcp-search__smart_unfold"
     ]
   }
 }

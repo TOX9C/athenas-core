@@ -2,12 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
 html, body, #root {
   height: 100%;
   width: 100%;
@@ -15,6 +9,16 @@ html, body, #root {
   background: var(--bg);
   color: var(--text);
   font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.monaco-editor,
+.monaco-editor * {
+  box-sizing: content-box !important;
+  line-height: normal !important;
+}
+
+.monaco-editor .overflow-guard {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
 }
 
 ::-webkit-scrollbar {
@@ -33,6 +37,11 @@ html, body, #root {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--textDim);
+}
+
+.monaco-editor ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 
 ::selection {

@@ -6,6 +6,7 @@ export interface PaneConfig {
   id: string
   agentType: AgentType
   customCmd?: string
+  customAgentId?: string
   label?: string
   bypassMode?: boolean
 }

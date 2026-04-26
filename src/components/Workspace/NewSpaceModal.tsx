@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import { X, FolderOpen, ChevronRight, Terminal, Users, Plus, Minus } from 'lucide-react'
 import { nanoid } from 'nanoid'
-import { useWorkspaceStore } from '../../store/workspaceStore'
+import { useWorkspaceStore, gridForPaneCount } from '../../store/workspaceStore'
+import { useAthenaStore } from '../../store/athenaStore'
 import { useUIStore } from '../../store/uiStore'
 import { useSwarmStore } from '../../store/swarmStore'
 import { GridTemplateSelector } from './GridTemplateSelector'
-import { AgentPicker } from './AgentPicker'
 import type { AgentType, GridTemplate, PaneConfig, Space } from '../../types/workspace'
 import type { AgentRole, SwarmState, SwarmAgent } from '../../types/swarm'
-import { getAgentLabel, getAgentCommand } from '../../utils/agentCommands'
+import { getAgentLabel, getAgentCommand, getAgentColor } from '../../utils/agentCommands'
 
 const GRID_CELL_COUNT: Record<GridTemplate, number> = {
   '1x1': 1, '1x2': 2, '2x2': 4, '2x3': 6, '3x3': 9, '3x4': 12, '4x4': 16,
@@ -66,6 +66,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
   const addSpace = useWorkspaceStore((s) => s.addSpace)
   const { setActivePanel } = useUIStore()
   const { setSwarm } = useSwarmStore()
+  const customAgents = useAthenaStore((s) => s.customAgents)
 
   const handleBrowse = async () => {
     const selected = await window.athena.fs.showOpenDialog()
@@ -74,8 +75,6 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
 
   const handleGridSelect = (g: GridTemplate) => {
     setGrid(g)
-    const count = GRID_CELL_COUNT[g]
-    setPaneAgents(Array.from({ length: count }, () => ({ agentType: 'shell' as AgentType })))
   }
 
   const handleModeSelect = (m: Mode) => {
@@ -100,7 +99,35 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
   const coordinatorCount = slots.filter((s) => s.role === 'coordinator').length
   const builderCount = slots.filter((s) => s.role === 'builder').length
 
-  const totalSteps = mode === 'terminal' ? 3 : 2
+  
+  const addPaneAgent = (type: AgentType | string) => {
+    if (paneAgents.length >= 16) return
+    
+    // Check if handling custom store agent
+    const storeAgent = customAgents.find(a => a.id === type);
+    
+    const newAgents = [...paneAgents, storeAgent ? { agentType: 'custom' as AgentType, customCmd: storeAgent.command } : { agentType: type as AgentType }]
+    setPaneAgents(newAgents)
+    setGrid(gridForPaneCount(newAgents.length))
+  }
+
+  const removePaneAgent = (type: AgentType | string) => {
+    const storeAgent = customAgents.find(a => a.id === type);
+    
+    const idx = [...paneAgents].reverse().findIndex(p => 
+      storeAgent 
+        ? (p.agentType === 'custom' && p.customCmd === storeAgent.command) 
+        : p.agentType === type
+    )
+    if (idx === -1) return
+    const realIdx = paneAgents.length - 1 - idx
+    const newAgents = paneAgents.filter((_, i) => i !== realIdx)
+    setPaneAgents(newAgents)
+    setGrid(gridForPaneCount(newAgents.length))
+  }
+
+  const totalSteps = 2
+
 
   const handleLaunchTerminal = () => {
     if (!dir.trim()) return
@@ -286,23 +313,10 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
           {mode === 'terminal' && step === 1 && (
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium" style={{ color: 'var(--textMuted)' }}>Space name</label>
-                <input
-                  autoFocus
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="My Project"
-                  className="px-3 py-2 rounded-lg text-sm outline-none transition-colors"
-                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-                  onFocus={(e) => (e.target.style.borderColor = 'var(--accent)')}
-                  onBlur={(e) => (e.target.style.borderColor = 'var(--border)')}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && canAdvanceStep1) setStep(2) }}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium" style={{ color: 'var(--textMuted)' }}>Working directory</label>
                 <div className="flex gap-2">
                   <input
+                    autoFocus
                     value={dir}
                     onChange={(e) => setDir(e.target.value)}
                     placeholder="/Users/you/projects/my-app"
@@ -326,36 +340,79 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
             </div>
           )}
 
-          {/* Terminal Flow — Step 2: Grid */}
+          {/* Terminal Flow — Step 2: Grid & Agents */}
           {mode === 'terminal' && step === 2 && (
-            <GridTemplateSelector selected={grid} onSelect={handleGridSelect} />
-          )}
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <label className="text-xs font-medium" style={{ color: 'var(--textMuted)' }}>Preset Layout</label>
+                <GridTemplateSelector selected={grid} onSelect={handleGridSelect} />
+              </div>
+              
+              <div className="flex flex-col gap-2 mt-2 border-t pt-4" style={{ borderColor: 'var(--border)' }}>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-medium" style={{ color: 'var(--textMuted)' }}>
+                    Agents ({paneAgents.length}/16)
+                  </label>
+                </div>
 
-          {/* Terminal Flow — Step 3: Agents */}
-          {mode === 'terminal' && step === 3 && (
-            <AgentPicker grid={grid} paneAgents={paneAgents} onChange={setPaneAgents} />
+                {[...AGENT_TYPES, ...customAgents.map(a => a.id as unknown as AgentType)].map((type) => {
+                  const isCustomStoreAgent = customAgents.some(a => a.id === type as string);
+                  const storeAgent = customAgents.find(a => a.id === type as string);
+                  const count = paneAgents.filter((p) => p.agentType === type || (isCustomStoreAgent && p.agentType === 'custom' && p.customCmd === storeAgent?.command)).length;
+                  
+                  const displayLabel = isCustomStoreAgent ? storeAgent?.name : getAgentLabel(type as AgentType);
+                  const displayColor = isCustomStoreAgent ? '#6b7280' : getAgentColor(type as AgentType);
+                  return (
+                    <div
+                      key={type}
+                      className="flex items-center justify-between p-2 rounded-md transition-colors"
+                      style={{ background: count > 0 ? 'var(--bgTertiary)' : 'var(--bg)', border: '1px solid var(--border)' }}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-2 h-2 rounded-full shrink-0" style={{ background: count > 0 ? displayColor : 'var(--textDim)' }} />
+                        <span className="text-[12px] font-medium" style={{ color: count > 0 ? 'var(--text)' : 'var(--textMuted)' }}>
+                          {displayLabel}
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => removePaneAgent(type)}
+                          disabled={count === 0}
+                          className="w-5 h-5 flex items-center justify-center rounded-full hover:bg-white/10 transition-colors disabled:opacity-30"
+                          style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
+                        >
+                          <Minus size={10} style={{ color: 'var(--text)' }} />
+                        </button>
+                        
+                        <span className="text-[11.5px] font-mono text-center w-3" style={{ color: 'var(--text)' }}>
+                          {count}
+                        </span>
+
+                        <button
+                          onClick={() => addPaneAgent(type)}
+                          disabled={paneAgents.length >= 16}
+                          className="w-5 h-5 flex items-center justify-center rounded-full hover:bg-white/10 transition-colors disabled:opacity-30"
+                          style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
+                        >
+                          <Plus size={10} style={{ color: 'var(--text)' }} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
 
           {/* Swarm Flow — Step 1: Name + Dir + Goal */}
           {mode === 'swarm' && step === 1 && (
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium" style={{ color: 'var(--textMuted)' }}>Mission name</label>
-                <input
-                  autoFocus
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Auth Refactor Sprint"
-                  className="px-3 py-2 rounded-lg text-sm outline-none transition-colors"
-                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-                  onFocus={(e) => (e.target.style.borderColor = 'var(--accent)')}
-                  onBlur={(e) => (e.target.style.borderColor = 'var(--border)')}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium" style={{ color: 'var(--textMuted)' }}>Working directory</label>
                 <div className="flex gap-2">
                   <input
+                    autoFocus
                     value={dir}
                     onChange={(e) => setDir(e.target.value)}
                     placeholder="/Users/you/projects/my-app"
@@ -473,11 +530,11 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
                 Back
               </button>
 
-              {mode === 'terminal' && step < 3 && (
+              {mode === 'terminal' && step < 2 && (
                 <button
                   onClick={() => {
                     if (step === 1 && !canAdvanceStep1) return
-                    if (step === 1 && paneAgents.length === 0) handleGridSelect(grid)
+                    // no-op
                     setStep(step + 1)
                   }}
                   disabled={step === 1 && !canAdvanceStep1}
@@ -489,7 +546,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
                 </button>
               )}
 
-              {mode === 'terminal' && step === 3 && (
+              {mode === 'terminal' && step === 2 && (
                 <button
                   onClick={handleLaunchTerminal}
                   className="px-4 py-1.5 rounded-md text-xs font-semibold transition-colors"

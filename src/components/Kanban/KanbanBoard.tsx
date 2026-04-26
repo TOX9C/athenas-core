@@ -96,7 +96,7 @@ export function KanbanBoard() {
 
   if (!activeSpaceId) {
     return (
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex-1 h-full w-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-2" style={{ color: 'var(--textDim)' }}>
           <ClipboardList size={32} style={{ opacity: 0.3 }} />
           <span className="text-xs">Select a workspace to use Kanban</span>
@@ -112,7 +112,7 @@ export function KanbanBoard() {
       onDragEnd={handleDragEnd}
       onDragOver={handleDragOver}
     >
-      <div className="flex-1 flex gap-3 p-3 overflow-x-auto min-h-0">
+      <div className="flex-1 h-full w-full flex gap-3 p-3 overflow-x-auto min-h-0">
         {COLUMNS.map((status) => (
           <KanbanColumn
             key={status}

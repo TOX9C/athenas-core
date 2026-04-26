@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('athena', {
+  orchestrator: {
+    chat: (msg: string) => ipcRenderer.invoke('athena:chat', msg)
+  },
   pty: {
     spawn: (id: string, cwd: string, shell: string, agentCmd?: string) =>
       ipcRenderer.invoke('pty:spawn', id, cwd, shell, agentCmd),
@@ -12,6 +15,18 @@ contextBridge.exposeInMainWorld('athena', {
       ipcRenderer.send('pty:kill', id),
     getHistory: (id: string) =>
       ipcRenderer.invoke('pty:getHistory', id),
+    hasSession: (id: string) =>
+      ipcRenderer.invoke('pty:hasSession', id),
+        onAthenaClosePanes: (cb: (data: any) => void) => {
+      const handler = (_event: any, data: any) => cb(data)
+      ipcRenderer.on(`athena:close-panes`, handler)
+      return () => ipcRenderer.removeListener(`athena:close-panes`, handler)
+    },
+    onAthenaSpawn: (cb: (data: any) => void) => {
+      const handler = (_event: any, data: any) => cb(data)
+      ipcRenderer.on(`athena:agent-spawned`, handler)
+      return () => ipcRenderer.removeListener(`athena:agent-spawned`, handler)
+    },
     onData: (id: string, cb: (data: string) => void) => {
       const handler = (_event: any, data: string) => cb(data)
       ipcRenderer.on(`pty:data:${id}`, handler)
@@ -28,9 +43,13 @@ contextBridge.exposeInMainWorld('athena', {
     readFile: (path: string) => ipcRenderer.invoke('fs:readFile', path),
     writeFile: (path: string, content: string) => ipcRenderer.invoke('fs:writeFile', path, content),
     watchDir: (dir: string, cb: () => void) => {
+      ipcRenderer.send('fs:watchDir', dir)
       const handler = () => cb()
       ipcRenderer.on(`fs:change:${dir}`, handler)
-      return () => ipcRenderer.removeListener(`fs:change:${dir}`, handler)
+      return () => {
+        ipcRenderer.removeListener(`fs:change:${dir}`, handler)
+        ipcRenderer.send('fs:unwatchDir', dir)
+      }
     },
     showOpenDialog: () => ipcRenderer.invoke('fs:showOpenDialog'),
     exists: (path: string) => ipcRenderer.invoke('fs:exists', path)

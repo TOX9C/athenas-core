@@ -28,7 +28,11 @@ const EXTRA_CLEANUP = [
 ]
 
 export function stripAnsi(str: string): string {
-  let clean = str.replace(ANSI_REGEX, '')
+  // Convert Cursor Forward (\x1b[<n>C) to literal spaces to prevent smushing text
+  let clean = str.replace(/\x1b\[(\d*)C/g, (_, n) => ' '.repeat(parseInt(n || '1', 10)))
+  
+  clean = clean.replace(ANSI_REGEX, '')
+  
   for (const [pattern, replacement] of EXTRA_CLEANUP) {
     clean = clean.replace(pattern as RegExp, replacement as string)
   }

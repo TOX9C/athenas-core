@@ -1,27 +1,18 @@
 import { useRef, useEffect, useCallback } from 'react'
-import Editor from '@monaco-editor/react'
+import Editor, { type OnMount } from '@monaco-editor/react'
+import type { editor } from 'monaco-editor'
 import { useEditorStore } from '../../store/editorStore'
 import { useUIStore } from '../../store/uiStore'
 import { EditorTabs } from './EditorTabs'
 import { themes } from '../../themes/themes'
 import { FileText } from 'lucide-react'
 
-function detectLanguage(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() ?? ''
-  const map: Record<string, string> = {
-    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-    json: 'json', md: 'markdown', css: 'css', scss: 'scss', html: 'html',
-    py: 'python', go: 'go', rs: 'rust', rb: 'ruby', sh: 'shell',
-    yml: 'yaml', yaml: 'yaml', toml: 'toml', sql: 'sql', xml: 'xml',
-    svg: 'xml', graphql: 'graphql', dockerfile: 'dockerfile',
-  }
-  return map[ext] ?? 'plaintext'
-}
-
 export function EditorPanel() {
-  const { openFiles, activeFilePath, updateFile, closeFile, setActiveFile } = useEditorStore()
+  const { openFiles, activeFilePath, updateFile, closeFile } = useEditorStore()
   const { fontSize, fontFamily, theme } = useUIStore()
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   const activeFile = openFiles.find((f) => f.path === activeFilePath)
   const themeColors = themes[theme]
@@ -38,12 +29,33 @@ export function EditorPanel() {
           await window.athena.fs.writeFile(activeFilePath, value)
           updateFile(activeFilePath, { isDirty: false })
         } catch {
-          // auto-save failed silently
+          // auto-save failed
         }
       }, 1000)
     },
     [activeFilePath, updateFile]
   )
+
+  const handleMount: OnMount = (editor) => {
+    editorRef.current = editor
+    requestAnimationFrame(() => editor.layout())
+  }
+
+  useEffect(() => {
+    const container = containerRef.current
+    const ed = editorRef.current
+    if (!container || !ed) return
+
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => {
+        if (editorRef.current) {
+          editorRef.current.layout()
+        }
+      })
+    })
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [activeFilePath])
 
   useEffect(() => {
     return () => {
@@ -53,33 +65,38 @@ export function EditorPanel() {
 
   return (
     <div
-      className="flex flex-col h-full border-l"
+      className="flex flex-col h-full border-l overflow-hidden"
       style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}
     >
       <EditorTabs onClose={closeFile} />
 
       {activeFile ? (
-        <div className="flex-1 min-h-0">
+        <div ref={containerRef} className="flex-1 min-h-0 relative overflow-hidden">
           <Editor
             key={activeFile.path}
             language={activeFile.language}
             value={activeFile.content}
             onChange={handleChange}
+            onMount={handleMount}
             theme={isDark ? 'vs-dark' : 'vs'}
+            loading={null}
             options={{
               fontSize,
               fontFamily,
+              readOnly: true,
               minimap: { enabled: false },
               lineNumbers: 'on',
               scrollBeyondLastLine: false,
               wordWrap: 'on',
-              automaticLayout: true,
+              automaticLayout: false,
               padding: { top: 8 },
-              renderLineHighlight: 'gutter',
+              renderLineHighlight: 'none',
               scrollbar: { verticalScrollbarSize: 4, horizontalScrollbarSize: 4 },
               overviewRulerLanes: 0,
               hideCursorInOverviewRuler: true,
               overviewRulerBorder: false,
+              domReadOnly: true,
+              cursorStyle: 'line-thin',
             }}
           />
         </div>
