@@ -50,10 +50,8 @@ interface NewSpaceModalProps {
 export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
   const [mode, setMode] = useState<Mode | null>(null)
   const [step, setStep] = useState(0)
-  const [name, setName] = useState('')
   const [dir, setDir] = useState('')
   const [grid, setGrid] = useState<GridTemplate>('2x2')
-  const [color, setColor] = useState(TAB_COLORS[0])
   const [paneAgents, setPaneAgents] = useState<{ agentType: AgentType; customCmd?: string }[]>([])
 
   // Swarm-specific state
@@ -64,6 +62,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
     { role: 'builder', agentType: 'claude' },
   ])
 
+  const spaces = useWorkspaceStore((s) => s.spaces)
   const addSpace = useWorkspaceStore((s) => s.addSpace)
   const { setActivePanel } = useUIStore()
   const { setSwarm } = useSwarmStore()
@@ -104,7 +103,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
   const totalSteps = mode === 'terminal' ? 3 : 2
 
   const handleLaunchTerminal = () => {
-    if (!name.trim() || !dir.trim()) return
+    if (!dir.trim()) return
 
     const panes: PaneConfig[] = paneAgents.map((pa) => ({
       id: nanoid(),
@@ -114,11 +113,11 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
 
     const space: Space = {
       id: nanoid(),
-      name: name.trim(),
+      name: `Space ${spaces.length + 1}`,
       dir: dir.trim(),
       grid,
       panes,
-      color,
+      color: TAB_COLORS[spaces.length % TAB_COLORS.length],
       createdAt: Date.now(),
       lastOpenedAt: Date.now(),
     }
@@ -128,7 +127,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
   }
 
   const handleLaunchSwarm = async () => {
-    if (!name.trim() || !dir.trim() || !goal.trim()) return
+    if (!dir.trim() || !goal.trim()) return
     if (coordinatorCount !== 1 || builderCount < 1) return
 
     const agents: SwarmAgent[] = slots.map((slot) => ({
@@ -149,11 +148,11 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
 
     const space: Space = {
       id: nanoid(),
-      name: name.trim(),
+      name: `Mission ${spaces.length + 1}`,
       dir: dir.trim(),
       grid: '2x2',
       panes,
-      color,
+      color: TAB_COLORS[spaces.length % TAB_COLORS.length],
       createdAt: Date.now(),
       lastOpenedAt: Date.now(),
     }
@@ -190,7 +189,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
     onClose()
   }
 
-  const canAdvanceStep1 = name.trim() && dir.trim()
+  const canAdvanceStep1 = dir.trim() !== ''
 
   return (
     <div
