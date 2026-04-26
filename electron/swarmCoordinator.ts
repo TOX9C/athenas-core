@@ -1,5 +1,5 @@
-import { BrowserWindow, ipcMain } from 'electron'
-import { readFile, writeFile, mkdir, access } from 'fs/promises'
+import { BrowserWindow, ipcMain, app } from 'electron'
+import { readFile, writeFile, mkdir, access, rename } from 'fs/promises'
 import { join } from 'path'
 import { watch, FSWatcher } from 'fs'
 
@@ -25,7 +25,9 @@ export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
       const adeDir = join(dir, '.ade')
       try { await access(adeDir) } catch { await mkdir(adeDir, { recursive: true }) }
       const statePath = join(adeDir, 'swarm-state.json')
-      await writeFile(statePath, JSON.stringify(state, null, 2), 'utf-8')
+      const tmpPath = statePath + `.tmp.${Date.now()}`
+      await writeFile(tmpPath, JSON.stringify(state, null, 2), 'utf-8')
+      await rename(tmpPath, statePath)
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -38,6 +40,7 @@ export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
       try { await access(mailboxDir) } catch { await mkdir(mailboxDir, { recursive: true }) }
 
       const mailboxPath = join(mailboxDir, `${to}.json`)
+      const tmpPath = mailboxPath + `.tmp.${Date.now()}`
       let messages: any[] = []
       try {
         const content = await readFile(mailboxPath, 'utf-8')
@@ -55,7 +58,8 @@ export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
         read: false,
       })
 
-      await writeFile(mailboxPath, JSON.stringify(messages, null, 2), 'utf-8')
+      await writeFile(tmpPath, JSON.stringify(messages, null, 2), 'utf-8')
+      await rename(tmpPath, mailboxPath)
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -100,11 +104,14 @@ export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
           ) {
             agent.status = 'stalled'
             modified = true
+            app.emit('agent:stalled', { agentId: agent.id })
           }
         }
 
         if (modified) {
-          await writeFile(statePath, JSON.stringify(state, null, 2), 'utf-8')
+          const tmpPath = statePath + `.tmp.${Date.now()}`
+          await writeFile(tmpPath, JSON.stringify(state, null, 2), 'utf-8')
+          await rename(tmpPath, statePath)
         }
 
         mainWindowRef?.webContents.send('swarm:stateChange', state)
