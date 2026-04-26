@@ -41,8 +41,16 @@ export const useUIStore = create<UIState>((set) => ({
   setSidebarWidth: (w) => set({ sidebarWidth: w }),
   setSidebarSection: (s) => set({ activeSidebarSection: s }),
   setActivePanel: (p) => set({ activePanel: p }),
-  toggleBrowser: () => set((s) => ({ browserOpen: !s.browserOpen })),
-  toggleEditor: () => set((s) => ({ editorOpen: !s.editorOpen })),
+  toggleBrowser: () => {
+    import('./panelManager').then(({ togglePanel }) => {
+      togglePanel('browser')
+    })
+  },
+  toggleEditor: () => {
+    import('./panelManager').then(({ togglePanel }) => {
+      togglePanel('editor')
+    })
+  },
   toggleSettings: () => set((s) => ({ settingsOpen: !s.settingsOpen })),
   setTheme: (t) => set({ theme: t }),
   setFontFamily: (f) => set({ fontFamily: f }),

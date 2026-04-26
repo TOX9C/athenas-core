@@ -6,9 +6,10 @@ import { FileTree } from './FileTree'
 
 interface SidebarProps {
   onNewSpace: () => void
+  onFileSelect?: (path: string) => void
 }
 
-export function Sidebar({ onNewSpace }: SidebarProps) {
+export function Sidebar({ onNewSpace, onFileSelect }: SidebarProps) {
   const { sidebarWidth, toggleSidebar, activeSidebarSection, setSidebarSection } = useUIStore()
   const { spaces, activeSpaceId, setActiveSpace } = useWorkspaceStore()
   const activeSpace = spaces.find(s => s.id === activeSpaceId)
@@ -76,8 +77,8 @@ export function Sidebar({ onNewSpace }: SidebarProps) {
           />
         )}
         {activeSidebarSection === 'files' && (
-          <div className="flex-1 overflow-y-auto">
-            <FileTree dir={activeSpace?.dir} />
+          <div className="p-4 text-center text-xs" style={{ color: 'var(--textDim)' }}>
+            File explorer coming soon
           </div>
         )}
         {activeSidebarSection === 'agents' && (

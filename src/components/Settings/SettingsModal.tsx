@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { X, Monitor, Bot, Palette, Keyboard, Info, Brain, Trash2, Plus } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useAthenaStore } from '../../store/athenaStore'
@@ -47,11 +47,34 @@ const SHORTCUTS = [
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const [tab, setTab] = useState<TabId>('general')
   const { theme, setTheme, fontSize, setFontSize, fontFamily, setFontFamily } = useUIStore()
-  const { model, setModel, bypassMode, setBypassMode, autoLaunch, setAutoLaunch, customAgents, addCustomAgent, removeCustomAgent } = useAthenaStore()
+  const { model, setModel, bypassMode, setBypassMode, autoLaunch, setAutoLaunch, customAgents, addCustomAgent, removeCustomAgent, provider, setProvider } = useAthenaStore()
   const { muted, setMuted } = useNotificationStore()
 
   const [newAgentName, setNewAgentName] = useState('')
   const [newAgentCmd, setNewAgentCmd] = useState('')
+  const [apiKey, setApiKey] = useState('')
+
+  useEffect(() => {
+    window.athena.store.get('athena.apiKey').then((val: any) => {
+      setApiKey(val || '')
+    })
+    window.athena.store.get('athena.provider').then((val: any) => {
+      if (val) setProvider(val)
+    })
+    window.athena.store.get('athena-model').then((val: any) => {
+      if (val) setModel(val)
+    })
+  }, [])
+
+  const handleApiKeyChange = (val: string) => {
+    setApiKey(val)
+    window.athena.store.set('athena.apiKey', val)
+  }
+
+  const handleProviderChange = (val: string) => {
+    setProvider(val)
+    window.athena.store.set('athena.provider', val)
+  }
 
   const handleThemeChange = (name: ThemeName) => {
     setTheme(name)
@@ -218,52 +241,36 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
 
             {tab === 'athena' && (
               <div className="flex flex-col gap-5">
-                <SettingRow label="Model">
+                <SettingRow label="Provider">
                   <select
-                    value={model}
-                    onChange={(e) => handleModelChange(e.target.value)}
+                    value={provider}
+                    onChange={(e) => handleProviderChange(e.target.value)}
                     className="px-2 py-1 rounded text-xs outline-none"
                     style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}
                   >
-                    <option value="claude">Claude Code</option>
-                    <option value="codex">Codex</option>
-                    <option value="opencode">OpenCode</option>
-                    <option value="gemini">Gemini CLI</option>
-                    <option disabled>──────────</option>
-                    {customAgents.map(ag => (
-                      <option key={ag.id} value={ag.id}>{ag.name}</option>
-                    ))}
+                    <option value="anthropic">Anthropic</option>
+                    <option value="nvidia_nim">NVIDIA NIM</option>
                   </select>
                 </SettingRow>
-                <SettingRow label="Bypass permissions">
-                  <button
-                    onClick={() => handleBypassChange(!bypassMode)}
-                    className="w-8 h-4 rounded-full transition-colors relative"
-                    style={{ background: bypassMode ? 'var(--accent)' : 'var(--bgTertiary)' }}
-                  >
-                    <div
-                      className="w-3 h-3 rounded-full absolute top-0.5 transition-all"
-                      style={{
-                        background: '#fff',
-                        left: bypassMode ? 16 : 2,
-                      }}
-                    />
-                  </button>
+                <SettingRow label="API Key">
+                  <input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => handleApiKeyChange(e.target.value)}
+                    placeholder={`Enter ${provider === 'anthropic' ? 'Anthropic' : 'NVIDIA NIM'} API Key`}
+                    className="px-2 py-1 rounded w-64 text-xs outline-none bg-transparent"
+                    style={{ border: '1px solid var(--border)', color: 'var(--text)' }}
+                  />
                 </SettingRow>
-                <SettingRow label="Auto-launch on workspace open">
-                  <button
-                    onClick={() => handleAutoLaunchChange(!autoLaunch)}
-                    className="w-8 h-4 rounded-full transition-colors relative"
-                    style={{ background: autoLaunch ? 'var(--accent)' : 'var(--bgTertiary)' }}
-                  >
-                    <div
-                      className="w-3 h-3 rounded-full absolute top-0.5 transition-all"
-                      style={{
-                        background: '#fff',
-                        left: autoLaunch ? 16 : 2,
-                      }}
-                    />
-                  </button>
+                <SettingRow label="Model">
+                  <input
+                    type="text"
+                    value={model}
+                    onChange={(e) => handleModelChange(e.target.value)}
+                    placeholder={provider === 'anthropic' ? 'claude-3-5-sonnet-20241022' : 'minimax/minimax-text-01'}
+                    className="px-2 py-1 rounded w-64 text-xs outline-none bg-transparent"
+                    style={{ border: '1px solid var(--border)', color: 'var(--text)' }}
+                  />
                 </SettingRow>
               </div>
             )}

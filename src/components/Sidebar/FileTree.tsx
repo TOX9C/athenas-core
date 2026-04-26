@@ -9,14 +9,18 @@ export interface FileNode {
   children?: FileNode[]
 }
 
-const FileNodeItem = ({ node, level = 0 }: { node: FileNode; level?: number }) => {
+const FileNodeItem = ({ node, level = 0, onFileSelect }: { node: FileNode; level?: number; onFileSelect?: (path: string) => void }) => {
   const [isOpen, setIsOpen] = useState(false)
 
   const toggleOpen = () => {
-    if (node.isDirectory) setIsOpen(!isOpen)
+    if (node.isDirectory) {
+      setIsOpen(!isOpen)
+    } else if (onFileSelect) {
+      onFileSelect(node.path)
+    }
   }
 
-  const paddingLeft = `${level * 1rem}rem`
+  const paddingLeft = `${level}rem`
 
   return (
     <div>
@@ -44,7 +48,7 @@ const FileNodeItem = ({ node, level = 0 }: { node: FileNode; level?: number }) =
       {isOpen && node.children && (
         <div>
           {node.children.map((child) => (
-            <FileNodeItem key={child.path} node={child} level={level + 1} />
+            <FileNodeItem key={child.path} node={child} level={level + 1} onFileSelect={onFileSelect} />
           ))}
         </div>
       )}
@@ -52,7 +56,7 @@ const FileNodeItem = ({ node, level = 0 }: { node: FileNode; level?: number }) =
   )
 }
 
-export const FileTree = ({ dir }: { dir?: string }) => {
+export const FileTree = ({ dir, onFileSelect }: { dir?: string; onFileSelect?: (path: string) => void }) => {
   const [nodes, setNodes] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -99,9 +103,9 @@ export const FileTree = ({ dir }: { dir?: string }) => {
   }
 
   return (
-    <div className="py-2 overflow-y-auto">
+    <div className="py-2">
       {nodes.map((node) => (
-        <FileNodeItem key={node.path} node={node} />
+        <FileNodeItem key={node.path} node={node} onFileSelect={onFileSelect} />
       ))}
     </div>
   )

@@ -1,4 +1,3 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
 import { X, Circle } from 'lucide-react'
 import { useEditorStore } from '../../store/editorStore'
 

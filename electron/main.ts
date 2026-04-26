@@ -60,8 +60,8 @@ ipcMain.handle('fs:readTree', async (_event, dir: string) => {
   try {
     const { readTree } = await import('./fileSystem')
     return await readTree(dir)
-  } catch (err: any) {
-    return { success: false, error: err.message }
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
   }
 })
 
@@ -69,8 +69,8 @@ ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
   try {
     const { readFileContent } = await import('./fileSystem')
     return await readFileContent(filePath)
-  } catch (err: any) {
-    return { success: false, error: err.message }
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
   }
 })
 
@@ -79,8 +79,8 @@ ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string)
     const { writeFileContent } = await import('./fileSystem')
     await writeFileContent(filePath, content)
     return { success: true }
-  } catch (err: any) {
-    return { success: false, error: err.message }
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
   }
 })
 
@@ -94,15 +94,32 @@ ipcMain.handle('fs:exists', async (_event, filePath: string) => {
   }
 })
 
-// Store IPC (electron-store)
-let storeInstance: any = null
-async function getStore() {
-  if (!storeInstance) {
-    const { default: Store } = await import('electron-store')
-    storeInstance = new Store()
+// File watching IPC
+const activeWatchers = new Map<string, import('fs').FSWatcher>()
+
+ipcMain.on('fs:watchDir', (_event, dir: string) => {
+  if (activeWatchers.has(dir)) return
+  try {
+    const { watch } = require('fs')
+    const watcher = watch(dir, { recursive: true }, () => {
+      mainWindow?.webContents.send(`fs:change:${dir}`)
+    })
+    activeWatchers.set(dir, watcher)
+  } catch {
+    // directory doesn't exist or can't be watched
   }
-  return storeInstance
-}
+})
+
+ipcMain.on('fs:unwatchDir', (_event, dir: string) => {
+  const watcher = activeWatchers.get(dir)
+  if (watcher) {
+    watcher.close()
+    activeWatchers.delete(dir)
+  }
+})
+
+// Store IPC (electron-store)
+import { getStore } from './storeUtil'
 
 ipcMain.handle('store:get', async (_event, key: string) => {
   const store = await getStore()
@@ -114,6 +131,19 @@ ipcMain.handle('store:set', async (_event, key: string, value: any) => {
   store.set(key, value)
 })
 
+// Athena Orchestrator IPC
+import { athenaOrchestrator } from './athenaOrchestrator'
+ipcMain.handle('athena:chat', async (_event, message: string) => {
+  try {
+    return await athenaOrchestrator.sendMessage(message)
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return `Error: ${err.message}`
+    }
+    return 'Error: An unknown error occurred'
+  }
+})
+
 app.whenReady().then(async () => {
   const ptyMgr = await import('./ptyManager')
 
@@ -122,9 +152,20 @@ app.whenReady().then(async () => {
       if (!mainWindow) return { success: false, error: 'No main window' }
       ptyMgr.spawn(id, cwd, shell, agentCmd, mainWindow)
       return { success: true }
-    } catch (err: any) {
-      return { success: false, error: err.message }
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        return { success: false, error: err.message }
+      }
+      return { success: false, error: 'An unknown error occurred' }
     }
+  })
+
+  ipcMain.handle('pty:getHistory', async (_event, id: string) => {
+    return ptyMgr.getHistory(id)
+  })
+
+  ipcMain.handle('pty:hasSession', async (_event, id: string) => {
+    return ptyMgr.hasSession(id)
   })
 
   ipcMain.on('pty:write', (_event, id: string, data: string) => {
@@ -156,6 +197,21 @@ app.whenReady().then(async () => {
     }
   })
 })
+
+let isQuitting = false;
+app.on('before-quit', async (event) => {
+  if (!isQuitting) {
+    event.preventDefault(); // Stop immediate destruction
+    isQuitting = true;
+    try {
+      const ptyMgr = await import('./ptyManager');
+      await ptyMgr.gracefulShutdown();
+    } catch (e) {
+      // Ignore cleanup errors during teardown
+    }
+    app.quit(); // Actually quit after the shutdown sequence completes
+  }
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

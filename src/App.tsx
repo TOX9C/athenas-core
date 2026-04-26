@@ -1,21 +1,19 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Minus, Square, X, Copy, Plus, Settings, Zap, Users, ChevronRight, Layers, FolderOpen, Bot, Brain } from 'lucide-react'
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
+import { ErrorBoundary } from './components/shared/ErrorBoundary'
 import { useUIStore } from './store/uiStore'
 import { useWorkspaceStore } from './store/workspaceStore'
-import { useEditorStore } from './store/editorStore'
 import { useTaskStore } from './store/taskStore'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { WorkspaceTabs } from './components/Workspace/WorkspaceTabs'
 import { TerminalGrid } from './components/Terminal/TerminalGrid'
 import { NewSpaceModal } from './components/Workspace/NewSpaceModal'
 import { SettingsModal } from './components/Settings/SettingsModal'
-import { EditorPanel } from './components/Editor/EditorPanel'
 import { BrowserPanel } from './components/Browser/BrowserPanel'
 import { KanbanBoard } from './components/Kanban/KanbanBoard'
 import { SwarmBoard } from './components/Swarm/SwarmBoard'
 import { SwarmModal } from './components/Swarm/SwarmModal'
-import { QuickOpen } from './components/Editor/QuickOpen'
 import { ToastContainer } from './components/shared/Toast'
 import { AthenaPanel } from './components/Athena/AthenaPanel'
 import { useAthenaStore } from './store/athenaStore'
@@ -28,17 +26,28 @@ export default function App() {
   const [isMaximized, setIsMaximized] = useState(false)
   const [showNewSpace, setShowNewSpace] = useState(false)
   const [showSwarmModal, setShowSwarmModal] = useState(false)
-  const [showQuickOpen, setShowQuickOpen] = useState(false)
+  const [mountedSpaces, setMountedSpaces] = useState<Set<string>>(new Set())
+  const isHydrating = useRef(true)
 
   const {
     sidebarOpen, settingsOpen, toggleSettings, theme,
-    editorOpen, toggleEditor, browserOpen, toggleBrowser,
+    browserOpen, toggleBrowser,
     activePanel, setActivePanel, toggleSidebar,
   } = useUIStore()
 
   const { spaces, activeSpaceId } = useWorkspaceStore()
-  const { openFile } = useEditorStore()
   const activeSpace = spaces.find((s) => s.id === activeSpaceId)
+
+  useEffect(() => {
+    if (activeSpaceId) {
+      setMountedSpaces((prev) => {
+        if (prev.has(activeSpaceId)) return prev
+        const next = new Set(prev)
+        next.add(activeSpaceId)
+        return next
+      })
+    }
+  }, [activeSpaceId])
 
   useEffect(() => {
     window.athena.window.platform().then(setPlatform)
@@ -61,6 +70,7 @@ export default function App() {
         useWorkspaceStore.getState().setSpaces(saved)
         useWorkspaceStore.getState().setActiveSpace(saved[saved.length - 1].id)
       }
+      isHydrating.current = false
     })
     window.athena.store.get('tasks').then((saved: any) => {
       if (saved && Array.isArray(saved)) {
@@ -78,12 +88,42 @@ export default function App() {
     })
     window.athena.store.get('athena-customAgents').then((saved: any) => {
       if (saved && Array.isArray(saved)) {
-        saved.forEach(agent => useAthenaStore.getState().addCustomAgent(agent));
+        useAthenaStore.getState().setCustomAgents(saved);
       }
     })
   }, [])
 
+
   useEffect(() => {
+        const unsubClose = window.athena.pty.onAthenaClosePanes((paneIds: string[]) => {
+      const state = useWorkspaceStore.getState();
+      const activeSpaceId = state.activeSpaceId;
+      if (!activeSpaceId || !Array.isArray(paneIds)) return;
+      
+      // Let's drop them physically from the active space
+      paneIds.forEach(paneId => {
+        state.removePaneFromSpace(activeSpaceId, paneId);
+      });
+    });
+
+    const unsub = window.athena.pty.onAthenaSpawn((data: any) => {
+      const spaceId = useWorkspaceStore.getState().activeSpaceId;
+      if (!spaceId) return;
+      useWorkspaceStore.getState().addPaneToSpace(spaceId, {
+        id: data.id,
+        agentType: data.agentType || 'claude',
+        customCmd: data.agentCmd,
+        label: '' // Ensure no forced hardcoded names!
+      });
+    });
+    return () => {
+      unsub();
+      unsubClose();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isHydrating.current) return
     if (spaces.length > 0) {
       window.athena.store.set('spaces', spaces)
     }
@@ -94,15 +134,14 @@ export default function App() {
       const mod = platform === 'darwin' ? e.metaKey : e.ctrlKey
 
       if (mod && e.key === 't') { e.preventDefault(); setShowNewSpace(true) }
-      if (mod && e.key === ',') { e.preventDefault(); toggleSettings() }
-      if (mod && e.key === '\\') { e.preventDefault(); toggleSidebar() }
-      if (mod && e.key === 'p') { e.preventDefault(); setShowQuickOpen(true) }
-      if (mod && e.key === 'b') { e.preventDefault(); toggleBrowser() }
-      if (mod && e.key === 'e') { e.preventDefault(); toggleEditor() }
+      if (mod && e.key === ',') { e.preventDefault(); useUIStore.getState().toggleSettings() }
+      if (mod && e.key === '\\') { e.preventDefault(); useUIStore.getState().toggleSidebar() }
+      if (mod && e.key === 'b') { e.preventDefault(); useUIStore.getState().toggleBrowser() }
       if (mod && e.key === 'j') { e.preventDefault(); useAthenaStore.getState().toggleOpen() }
       if (mod && e.key === 'k') {
         e.preventDefault()
-        setActivePanel(activePanel === 'kanban' ? 'terminals' : 'kanban')
+        const currentPanel = useUIStore.getState().activePanel
+        useUIStore.getState().setActivePanel(currentPanel === 'kanban' ? 'terminals' : 'kanban')
       }
       if (mod && e.shiftKey && e.key === 'S') {
         e.preventDefault()
@@ -118,35 +157,13 @@ export default function App() {
       if (e.key === 'Escape') {
         setShowNewSpace(false)
         setShowSwarmModal(false)
-        setShowQuickOpen(false)
-        if (settingsOpen) toggleSettings()
+        if (useUIStore.getState().settingsOpen) useUIStore.getState().toggleSettings()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [platform, settingsOpen, toggleSettings, toggleSidebar, toggleBrowser, toggleEditor, activePanel, setActivePanel, spaces])
+  }, [platform, spaces])
 
-  const handleFileSelect = async (path: string) => {
-    try {
-      const content = await window.athena.fs.readFile(path)
-      const ext = path.split('.').pop()?.toLowerCase() ?? ''
-      const langMap: Record<string, string> = {
-        ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-        json: 'json', md: 'markdown', css: 'css', html: 'html', py: 'python',
-        go: 'go', rs: 'rust', yml: 'yaml', yaml: 'yaml', sh: 'shell',
-      }
-      openFile({
-        path,
-        content: typeof content === 'string' ? content : '',
-        language: langMap[ext] ?? 'plaintext',
-        isDirty: false,
-        cursorPosition: { line: 1, column: 1 },
-      })
-      if (!editorOpen) toggleEditor()
-    } catch {
-      // file read failed
-    }
-  }
 
   const isMac = platform === 'darwin'
 
@@ -160,11 +177,24 @@ export default function App() {
         return <SwarmBoard />
       case 'terminals':
       default:
-        return <TerminalGrid space={activeSpace} />
+        return (
+          <div className="flex-1 h-full w-full min-h-0 relative">
+            {spaces.filter((space) => mountedSpaces.has(space.id)).map((space) => (
+              <div
+                key={space.id}
+                className="absolute inset-0"
+                style={{ display: space.id === activeSpaceId ? 'flex' : 'none' }}
+              >
+                <TerminalGrid space={space} />
+              </div>
+            ))}
+          </div>
+        )
     }
   }
 
   return (
+    <ErrorBoundary>
     <div className="h-screen w-screen flex flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
       {/* Titlebar */}
       <div
@@ -263,33 +293,19 @@ export default function App() {
         )}
 
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          {editorOpen || browserOpen ? (
-            <PanelGroup direction="horizontal" className="flex-1">
-              <Panel defaultSize={editorOpen && browserOpen ? 40 : 60} minSize={30}>
-                {renderMainContent()}
-              </Panel>
-              <PanelResizeHandle className="w-[3px] hover:bg-[var(--accent)] transition-colors" style={{ background: 'var(--border)' }} />
-              <Panel defaultSize={editorOpen && browserOpen ? 60 : 40} minSize={25}>
-                {editorOpen && browserOpen ? (
-                  <PanelGroup direction="vertical">
-                    <Panel defaultSize={60} minSize={20}>
-                      <EditorPanel />
-                    </Panel>
-                    <PanelResizeHandle className="h-[3px] hover:bg-[var(--accent)] transition-colors" style={{ background: 'var(--border)' }} />
-                    <Panel defaultSize={40} minSize={20}>
-                      <BrowserPanel />
-                    </Panel>
-                  </PanelGroup>
-                ) : editorOpen ? (
-                  <EditorPanel />
-                ) : (
+          <div className="flex-1 flex min-h-0">
+            <div className="flex-1 min-w-0 min-h-0 flex flex-col" style={{ flexBasis: browserOpen ? '60%' : '100%' }}>
+              {renderMainContent()}
+            </div>
+            {browserOpen && (
+              <>
+                <div className="w-[3px] shrink-0 cursor-col-resize hover:bg-[var(--accent)] transition-colors" style={{ background: 'var(--border)' }} />
+                <div className="min-w-0 min-h-0 flex flex-col overflow-hidden" style={{ flexBasis: '40%' }}>
                   <BrowserPanel />
-                )}
-              </Panel>
-            </PanelGroup>
-          ) : (
-            renderMainContent()
-          )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         <AthenaPanel />
@@ -317,17 +333,17 @@ export default function App() {
       {/* Modals & overlays */}
       {showNewSpace && <NewSpaceModal onClose={() => setShowNewSpace(false)} />}
       {showSwarmModal && <SwarmModal onClose={() => setShowSwarmModal(false)} />}
-      {showQuickOpen && <QuickOpen onClose={() => setShowQuickOpen(false)} />}
       {settingsOpen && <SettingsModal onClose={toggleSettings} />}
       <ToastContainer />
     </div>
+    </ErrorBoundary>
   )
 }
 
 function SidebarRail({ onExpand }: { onExpand: () => void }) {
   const { setSidebarSection } = useUIStore()
 
-  const handleSectionClick = (section: 'spaces' | 'files' | 'agents') => {
+  const handleSectionClick = (section: 'spaces' | 'agents') => {
     setSidebarSection(section)
     onExpand()
   }

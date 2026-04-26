@@ -2,18 +2,21 @@ declare global {
   interface Window {
     athena: {
       pty: {
-        spawn: (id: string, cwd: string, shell: string, agentCmd?: string) => Promise<any>
+        spawn: (id: string, cwd: string, shell: string, agentCmd?: string) => Promise<{ success: boolean; error?: string }>
         write: (id: string, data: string) => void
         resize: (id: string, cols: number, rows: number) => void
         kill: (id: string) => void
         getHistory: (id: string) => Promise<string>
+        hasSession: (id: string) => Promise<boolean>
+        onAthenaClosePanes: (cb: (data: string[]) => void) => () => void
+        onAthenaSpawn: (cb: (data: { id: string; agentType: string; agentCmd?: string }) => void) => () => void
         onData: (id: string, cb: (data: string) => void) => () => void
         onExit: (id: string, cb: (code: number) => void) => () => void
       }
       fs: {
-        readTree: (dir: string) => Promise<any>
+        readTree: (dir: string) => Promise<FileTreeNode | { success: false; error: string }>
         readFile: (path: string) => Promise<string>
-        writeFile: (path: string, content: string) => Promise<any>
+        writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }>
         watchDir: (dir: string, cb: () => void) => () => void
         showOpenDialog: () => Promise<string | null>
         exists: (path: string) => Promise<boolean>
@@ -29,15 +32,18 @@ declare global {
         onUrlChange: (cb: (url: string) => void) => () => void
       }
       swarm: {
-        readState: (dir: string) => Promise<any>
-        writeState: (dir: string, state: any) => Promise<void>
+        readState: (dir: string) => Promise<SwarmState | null>
+        writeState: (dir: string, state: SwarmState) => Promise<void>
         sendMessage: (dir: string, from: string, to: string, msg: string) => Promise<void>
-        readMailbox: (dir: string, agentId: string) => Promise<any[]>
-        watchState: (dir: string, cb: (state: any) => void) => () => void
+        readMailbox: (dir: string, agentId: string) => Promise<SwarmMessage[]>
+        watchState: (dir: string, cb: (state: SwarmState) => void) => () => void
       }
       store: {
-        get: (key: string) => Promise<any>
-        set: (key: string, value: any) => Promise<void>
+        get: (key: string) => Promise<unknown>
+        set: (key: string, value: unknown) => Promise<void>
+      }
+      orchestrator: {
+        chat: (msg: string, activeSpaceId?: string) => Promise<string>
       }
       window: {
         minimize: () => void
@@ -47,6 +53,34 @@ declare global {
         platform: () => Promise<string>
       }
     }
+  }
+
+  interface FileTreeNode {
+    name: string
+    path: string
+    isDir: boolean
+    children?: FileTreeNode[]
+  }
+
+  interface SwarmState {
+    agents: SwarmAgent[]
+    [key: string]: unknown
+  }
+
+  interface SwarmAgent {
+    id: string
+    status: string
+    lastActionAt?: number
+    [key: string]: unknown
+  }
+
+  interface SwarmMessage {
+    id: string
+    from: string
+    to: string
+    content: string
+    timestamp: number
+    read: boolean
   }
 }
 
