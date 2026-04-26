@@ -52,7 +52,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
   const [step, setStep] = useState(0)
   const [dir, setDir] = useState('')
   const [grid, setGrid] = useState<GridTemplate>('2x2')
-  const [paneAgents, setPaneAgents] = useState<{ agentType: AgentType; customCmd?: string }[]>([])
+  const [paneAgents, setPaneAgents] = useState<{ agentType: AgentType; customCmd?: string; customAgentId?: string }[]>([])
 
   // Swarm-specific state
   const [goal, setGoal] = useState('')
@@ -106,7 +106,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
     // Check if handling custom store agent
     const storeAgent = customAgents.find(a => a.id === type);
     
-    const newAgents = [...paneAgents, storeAgent ? { agentType: 'custom' as AgentType, customCmd: storeAgent.command } : { agentType: type as AgentType }]
+    const newAgents = [...paneAgents, storeAgent ? { agentType: 'custom' as AgentType, customCmd: storeAgent.command, customAgentId: storeAgent.id } : { agentType: type as AgentType }]
     setPaneAgents(newAgents)
     setGrid(gridForPaneCount(newAgents.length))
   }
@@ -116,7 +116,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
     
     const idx = [...paneAgents].reverse().findIndex(p => 
       storeAgent 
-        ? (p.agentType === 'custom' && p.customCmd === storeAgent.command) 
+        ? (p.agentType === 'custom' && p.customAgentId === storeAgent.id) 
         : p.agentType === type
     )
     if (idx === -1) return
@@ -136,6 +136,7 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
       id: nanoid(),
       agentType: pa.agentType,
       customCmd: pa.customCmd,
+      customAgentId: pa.customAgentId,
     }))
 
     const space: Space = {
@@ -358,7 +359,10 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
                 {[...AGENT_TYPES, ...customAgents.map(a => a.id as unknown as AgentType)].map((type) => {
                   const isCustomStoreAgent = customAgents.some(a => a.id === type as string);
                   const storeAgent = customAgents.find(a => a.id === type as string);
-                  const count = paneAgents.filter((p) => p.agentType === type || (isCustomStoreAgent && p.agentType === 'custom' && p.customCmd === storeAgent?.command)).length;
+                  const count = paneAgents.filter((p) => 
+                    p.agentType === type || 
+                    (isCustomStoreAgent && p.agentType === 'custom' && p.customAgentId === storeAgent?.id)
+                  ).length;
                   
                   const displayLabel = isCustomStoreAgent ? storeAgent?.name : getAgentLabel(type as AgentType);
                   const displayColor = isCustomStoreAgent ? '#6b7280' : getAgentColor(type as AgentType);
