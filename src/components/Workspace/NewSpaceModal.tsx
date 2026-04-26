@@ -323,23 +323,6 @@ export function NewSpaceModal({ onClose }: NewSpaceModalProps) {
                   </button>
                 </div>
               </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium" style={{ color: 'var(--textMuted)' }}>Tab color</label>
-                <div className="flex gap-2">
-                  {TAB_COLORS.map((c) => (
-                    <button
-                      key={c}
-                      onClick={() => setColor(c)}
-                      className="w-6 h-6 rounded-full transition-transform"
-                      style={{
-                        background: c,
-                        transform: color === c ? 'scale(1.2)' : 'scale(1)',
-                        boxShadow: color === c ? `0 0 0 2px var(--bg), 0 0 0 3px ${c}` : 'none',
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
             </div>
           )}
 
