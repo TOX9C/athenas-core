@@ -1,9 +1,10 @@
-import type { BrowserWindow } from 'electron'
+import { BrowserWindow, app } from 'electron'
 import * as pty from 'node-pty'
 import { platform } from 'os'
 
 const sessions = new Map<string, pty.IPty>()
 const history = new Map<string, string>()
+const MAX_HISTORY_BYTES = 100_000
 
 function getDefaultShell(): string {
   if (platform() === 'win32') return 'powershell.exe'
@@ -12,6 +13,10 @@ function getDefaultShell(): string {
 
 export function getHistory(id: string): string {
   return history.get(id) || ''
+}
+
+export function hasSession(id: string): boolean {
+  return sessions.has(id)
 }
 
 export function spawn(
@@ -45,13 +50,16 @@ export function spawn(
 
   ptyProcess.onData((data) => {
     const current = history.get(id) || ''
-    history.set(id, current + data)
+    const updated = current + data
+    history.set(id, updated.length > MAX_HISTORY_BYTES ? updated.slice(-MAX_HISTORY_BYTES) : updated)
     mainWindow.webContents.send(`pty:data:${id}`, data)
   })
 
   ptyProcess.onExit(({ exitCode }) => {
     sessions.delete(id)
+    history.delete(id)
     mainWindow.webContents.send(`pty:exit:${id}`, exitCode)
+    app.emit('agent:exited', { id, exitCode })
   })
 
   if (agentCmd) {
@@ -81,4 +89,20 @@ export function kill(id: string): void {
     session.kill()
     sessions.delete(id)
   }
+}
+
+export async function gracefulShutdown(): Promise<void> {
+  if (sessions.size === 0) return;
+  for (const session of sessions.values()) {
+    try {
+      session.write('\x03'); // Send Ctrl+C to interrupt any running tasks first
+      setTimeout(() => {
+        try {
+          session.write('/exit\r');
+        } catch { } // ignore
+      }, 50);
+    } catch { } // ignore dead sessions
+  }
+  // Allow minimum buffer time for processes to detect and save to disk
+  await new Promise(resolve => setTimeout(resolve, 800));
 }
