@@ -1,7 +1,26 @@
 import * as net from 'net'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, app } from 'electron'
 import * as ptyMgr from './ptyManager'
 import { randomUUID } from 'crypto'
+
+const SESSION_TOKEN = randomUUID()
+
+const activeClients = new Set<net.Socket>()
+
+export function broadcastNotification(method: string, params: any) {
+  const payload = JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n'
+  for (const client of activeClients) {
+    if (!client.destroyed) {
+      client.write(payload)
+    } else {
+      activeClients.delete(client)
+    }
+  }
+}
+
+export function getMcpToken(): string {
+  return SESSION_TOKEN
+}
 
 let storeInstance: any = null
 async function getStore() {
@@ -66,6 +85,8 @@ const TOOLS = [
 
 export function initMcpServer(mainWindow: BrowserWindow): void {
   const server = net.createServer((socket) => {
+    socket.on('close', () => activeClients.delete(socket))
+    socket.on('error', () => activeClients.delete(socket))
     let buffer = ''
     socket.on('data', async (chunk) => {
       buffer += chunk.toString()
@@ -85,13 +106,33 @@ export function initMcpServer(mainWindow: BrowserWindow): void {
   })
 
   server.listen(4545, '127.0.0.1')
+
+  app.on('agent:stalled', ({ agentId }) => {
+    broadcastNotification('notifications/message/level', {
+      level: 'warning',
+      message: `Agent ${agentId} has stalled (waiting for input).`
+    })
+  })
+
+  app.on('agent:exited', ({ id, exitCode }) => {
+    broadcastNotification('notifications/message/level', {
+      level: 'info',
+      message: `Agent ${id} exited with code ${exitCode}.`
+    })
+  })
 }
 
 async function handleRequest(socket: net.Socket, mainWindow: BrowserWindow, req: any) {
   const send = (res: any) => socket.write(JSON.stringify(res) + '\n')
 
   if (req.method === 'initialize') {
+    if (req.params?.token !== SESSION_TOKEN) {
+      send({ jsonrpc: '2.0', id: req.id, error: { code: -32600, message: 'Invalid or missing auth token' } })
+      socket.end()
+      return
+    }
     send({ jsonrpc: '2.0', id: req.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'athena-orchestrator', version: '1.0.0' } } })
+    activeClients.add(socket)
   } else if (req.method === 'notifications/initialized') {
     // no-op
   } else if (req.method === 'tools/list') {
@@ -153,7 +194,8 @@ async function handleToolCall(mainWindow: BrowserWindow, name: string, args: any
       const instruction = args.instruction || 'You are an Athena Swarm Worker. Use the get_next_task MCP tool to pull work and update_task_status to complete it.'
 
       const proxyPath = require('path').join(__dirname, '../../bin/mcp-proxy.js')
-      const mcpEnv = `export CLAUDE_MCP_SERVERS='{"athena":{"command":"node","args":["${proxyPath}"]}}';`
+      const mcpConfig = JSON.stringify({ athena: { command: 'node', args: [proxyPath], env: { ATHENA_MCP_TOKEN: SESSION_TOKEN } } })
+      const mcpEnv = `export CLAUDE_MCP_SERVERS='${mcpConfig.replace(/'/g, "'\\''")}';`
       const agentCmd = `${mcpEnv} claude -p "${instruction}"`
 
       for (let i = 0; i < args.count; i++) {
