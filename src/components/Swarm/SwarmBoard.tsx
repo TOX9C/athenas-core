@@ -37,12 +37,14 @@ export function SwarmBoard() {
         <div className="flex items-center gap-2">
           <Users size={14} style={{ color: 'var(--accent)' }} />
           <span className="text-xs font-semibold" style={{ color: 'var(--text)' }}>
-            Swarm: {activeSwarm.goal.slice(0, 50)}{activeSwarm.goal.length > 50 ? '...' : ''}
+            Swarm: {activeSwarm.goal.slice(0, 50)}
+            {activeSwarm.goal.length > 50 ? '...' : ''}
           </span>
           <span
             className="px-1.5 py-0.5 rounded-full text-[9px] font-medium uppercase"
             style={{
-              background: activeSwarm.status === 'active' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+              background:
+                activeSwarm.status === 'active' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
               color: activeSwarm.status === 'active' ? 'var(--success)' : 'var(--error)',
             }}
           >
@@ -81,7 +83,10 @@ export function SwarmBoard() {
                 onNudge={
                   agent.status === 'stalled'
                     ? () => {
-                        window.athena.pty.write(agent.paneId, '\nPlease continue working on your assigned task.\n')
+                        window.athena.pty.write(
+                          agent.paneId,
+                          '\nPlease continue working on your assigned task.\n',
+                        )
                       }
                     : undefined
                 }

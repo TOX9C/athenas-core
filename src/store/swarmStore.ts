@@ -12,8 +12,6 @@ export const useSwarmStore = create<SwarmStoreState>((set) => ({
   setSwarm: (s) => set({ activeSwarm: s }),
   updateSwarm: (updates) =>
     set((state) => ({
-      activeSwarm: state.activeSwarm
-        ? { ...state.activeSwarm, ...updates }
-        : null,
+      activeSwarm: state.activeSwarm ? { ...state.activeSwarm, ...updates } : null,
     })),
 }))

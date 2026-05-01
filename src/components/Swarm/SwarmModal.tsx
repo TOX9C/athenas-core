@@ -8,10 +8,10 @@ import { useWorkspaceStore } from '../../store/workspaceStore'
 import { getAgentLabel, getAgentColor, getAgentCommand } from '../../utils/agentCommands'
 
 const ROLE_OPTIONS: { role: AgentRole; label: string; color: string }[] = [
-  { role: 'coordinator', label: 'Coordinator', color: '#6366f1' },
+  { role: 'coordinator', label: 'Coordinator', color: '#0ea5e9' },
   { role: 'builder', label: 'Builder', color: '#22c55e' },
   { role: 'scout', label: 'Scout', color: '#f59e0b' },
-  { role: 'reviewer', label: 'Reviewer', color: '#a855f7' },
+  { role: 'reviewer', label: 'Reviewer', color: '#06b6d4' },
 ]
 
 const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'opencode', 'gemini', 'shell']
@@ -114,7 +114,9 @@ export function SwarmModal({ onClose }: SwarmModalProps) {
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
     >
       <div
         className="rounded-xl shadow-2xl flex flex-col overflow-hidden"
@@ -125,10 +127,15 @@ export function SwarmModal({ onClose }: SwarmModalProps) {
           border: '1px solid var(--border)',
         }}
       >
-        <div className="flex items-center justify-between px-5 py-3.5 border-b" style={{ borderColor: 'var(--border)' }}>
+        <div
+          className="flex items-center justify-between px-5 py-3.5 border-b"
+          style={{ borderColor: 'var(--border)' }}
+        >
           <div className="flex items-center gap-2">
             <Users size={16} style={{ color: 'var(--accent)' }} />
-            <h2 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Launch Swarm</h2>
+            <h2 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+              Launch Swarm
+            </h2>
           </div>
           <button onClick={onClose} className="p-1 rounded hover:bg-white/10 transition-colors">
             <X size={16} style={{ color: 'var(--textMuted)' }} />
@@ -137,7 +144,9 @@ export function SwarmModal({ onClose }: SwarmModalProps) {
 
         <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium" style={{ color: 'var(--textMuted)' }}>Goal</label>
+            <label className="text-xs font-medium" style={{ color: 'var(--textMuted)' }}>
+              Goal
+            </label>
             <textarea
               autoFocus
               value={goal}
@@ -145,7 +154,11 @@ export function SwarmModal({ onClose }: SwarmModalProps) {
               placeholder="Describe what the swarm should accomplish..."
               rows={3}
               className="px-3 py-2 rounded-lg text-sm outline-none resize-none"
-              style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+              style={{
+                background: 'var(--bg)',
+                border: '1px solid var(--border)',
+                color: 'var(--text)',
+              }}
             />
           </div>
 
@@ -178,20 +191,32 @@ export function SwarmModal({ onClose }: SwarmModalProps) {
                   value={slot.role}
                   onChange={(e) => updateSlot(idx, { role: e.target.value as AgentRole })}
                   className="px-1.5 py-0.5 rounded text-[11px] outline-none"
-                  style={{ background: 'var(--bgTertiary)', color: 'var(--text)', border: '1px solid var(--border)' }}
+                  style={{
+                    background: 'var(--bgTertiary)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border)',
+                  }}
                 >
                   {ROLE_OPTIONS.map((r) => (
-                    <option key={r.role} value={r.role}>{r.label}</option>
+                    <option key={r.role} value={r.role}>
+                      {r.label}
+                    </option>
                   ))}
                 </select>
                 <select
                   value={slot.agentType}
                   onChange={(e) => updateSlot(idx, { agentType: e.target.value as AgentType })}
                   className="px-1.5 py-0.5 rounded text-[11px] outline-none"
-                  style={{ background: 'var(--bgTertiary)', color: 'var(--text)', border: '1px solid var(--border)' }}
+                  style={{
+                    background: 'var(--bgTertiary)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border)',
+                  }}
                 >
                   {AGENT_TYPES.map((t) => (
-                    <option key={t} value={t}>{getAgentLabel(t)}</option>
+                    <option key={t} value={t}>
+                      {getAgentLabel(t)}
+                    </option>
                   ))}
                 </select>
                 <div className="flex-1" />
@@ -218,7 +243,10 @@ export function SwarmModal({ onClose }: SwarmModalProps) {
           </div>
         </div>
 
-        <div className="flex items-center justify-end px-5 py-3 border-t gap-2" style={{ borderColor: 'var(--border)' }}>
+        <div
+          className="flex items-center justify-end px-5 py-3 border-t gap-2"
+          style={{ borderColor: 'var(--border)' }}
+        >
           <button
             onClick={onClose}
             className="px-3 py-1.5 rounded-md text-xs font-medium"

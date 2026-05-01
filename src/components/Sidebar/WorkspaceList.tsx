@@ -38,10 +38,7 @@ export function WorkspaceList({ spaces, activeSpaceId, onSelect }: WorkspaceList
             if (space.id !== activeSpaceId) e.currentTarget.style.background = 'transparent'
           }}
         >
-          <div
-            className="w-2 h-2 rounded-full shrink-0"
-            style={{ background: space.color }}
-          />
+          <div className="w-2 h-2 rounded-full shrink-0" style={{ background: space.color }} />
           <FolderOpen size={13} style={{ color: 'var(--textDim)' }} className="shrink-0" />
           <span className="text-xs truncate flex-1" style={{ color: 'var(--text)' }}>
             {space.name}

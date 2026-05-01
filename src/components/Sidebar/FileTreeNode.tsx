@@ -41,14 +41,16 @@ export function FileTreeNode({ node, depth, onFileSelect }: FileTreeNodeProps) {
           {node.name}
         </span>
       </button>
-      {node.isDirectory && expanded && node.children?.map((child) => (
-        <FileTreeNode
-          key={child.path}
-          node={child}
-          depth={depth + 1}
-          onFileSelect={onFileSelect}
-        />
-      ))}
+      {node.isDirectory &&
+        expanded &&
+        node.children?.map((child) => (
+          <FileTreeNode
+            key={child.path}
+            node={child}
+            depth={depth + 1}
+            onFileSelect={onFileSelect}
+          />
+        ))}
     </div>
   )
 }

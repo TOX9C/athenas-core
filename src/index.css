@@ -2,13 +2,19 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
   width: 100%;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family:
+    'Instrument Sans',
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
 }
 
 .monaco-editor,
@@ -49,7 +55,9 @@ html, body, #root {
   color: var(--bg);
 }
 
-input, textarea, select {
+input,
+textarea,
+select {
   font-family: inherit;
 }
 
@@ -67,4 +75,338 @@ button {
 
 .no-drag {
   -webkit-app-region: no-drag;
+}
+
+@keyframes athena-thinking-icon-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.18);
+    opacity: 0.8;
+  }
+}
+
+@keyframes athena-thinking-ring-expand {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+@keyframes athena-thinking-glow-pulse {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes athena-thinking-bar-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+@keyframes athena-thinking-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes athena-thinking-text-shimmer {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+.athena-thinking-indicator {
+  animation: athena-thinking-slide-in 0.25s ease-out;
+  position: relative;
+  overflow: hidden;
+  padding: 14px 12px;
+  margin: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.athena-thinking-glow {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at 20% 50%,
+    color-mix(in srgb, var(--accent) 8%, transparent),
+    transparent 70%
+  );
+  animation: athena-thinking-glow-pulse 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.athena-thinking-icon-wrap {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.athena-thinking-icon-wrap > svg {
+  position: relative;
+  z-index: 1;
+  color: var(--accent);
+  animation: athena-thinking-icon-pulse 1.6s ease-in-out infinite;
+}
+
+.athena-thinking-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  animation: athena-thinking-ring-expand 1.6s ease-out infinite;
+  pointer-events: none;
+}
+
+.athena-thinking-text {
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accentHover, var(--accent)) 40%,
+    var(--accent) 80%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: athena-thinking-text-shimmer 3s linear infinite;
+}
+
+.athena-thinking-dots {
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.athena-thinking-pulse-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  overflow: hidden;
+  border-radius: 0;
+}
+
+.athena-thinking-pulse-bar-inner {
+  width: 30%;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: athena-thinking-bar-sweep 1.4s ease-in-out infinite;
+  opacity: 0.6;
+  transition: background 0.4s ease;
+}
+
+.athena-thinking-indicator .athena-thinking-icon-wrap .athena-thinking-ring {
+  transition: border-color 0.4s ease;
+}
+
+.athena-thinking-indicator.tool-active .athena-thinking-glow {
+  background: radial-gradient(
+    ellipse at 20% 50%,
+    color-mix(in srgb, var(--warning) 8%, transparent),
+    transparent 70%
+  );
+}
+
+.athena-thinking-indicator.tool-active {
+  background: color-mix(in srgb, var(--warning) 5%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+
+@keyframes palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-in {
+  animation: palette-in 0.15s ease-out;
+}
+
+.command-palette-backdrop {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.command-palette-container {
+  animation: palette-in 0.15s ease-out;
+  width: 580px;
+  max-height: 440px;
+  background: var(--bgSecondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow:
+    0 25px 60px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.command-palette-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.command-palette-input {
+  flex: 1;
+  background: transparent;
+  font-size: 13px;
+  outline: none;
+  color: var(--text);
+  font-family: 'Instrument Sans', sans-serif;
+}
+
+.command-palette-input::placeholder {
+  color: var(--textDim);
+}
+
+.command-palette-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.command-palette-count {
+  font-size: 10px;
+  color: var(--textDim);
+  background: var(--bgTertiary);
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.command-palette-kbd-sm {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bgTertiary);
+  color: var(--textDim);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  line-height: 1.4;
+}
+
+.command-palette-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.command-palette-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 0;
+  gap: 6px;
+  color: var(--textDim);
+}
+
+.command-palette-group {
+  margin-bottom: 2px;
+}
+
+.command-palette-group-label {
+  padding: 8px 16px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--textDim);
+}
+
+.command-palette-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  text-align: left;
+  transition: background 0.1s ease;
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+  color: inherit;
+}
+
+.command-palette-item-icon {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.command-palette-item-label {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.command-palette-item-kbd {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  color: var(--textDim);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  line-height: 1.4;
+}
+
+.command-palette-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--textDim);
 }

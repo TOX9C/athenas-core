@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Bell, Check, Trash2 } from 'lucide-react'
-import { useNotificationStore } from '../../store/notificationStore'
+import { useNotificationStore, isEnhanced } from '../../store/notificationStore'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { getAgentColor } from '../../utils/agentCommands'
 
@@ -30,9 +30,10 @@ export function NotificationBell() {
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  const handleClick = (n: typeof notifications[0]) => {
+  const handleClick = (n: (typeof notifications)[0]) => {
     markRead(n.id)
-    setActiveSpace(n.spaceId)
+    const spaceId = 'spaceId' in n ? n.spaceId : undefined
+    if (spaceId) setActiveSpace(spaceId)
     setOpen(false)
   }
 
@@ -103,19 +104,29 @@ export function NotificationBell() {
                   onClick={() => handleClick(n)}
                   className="w-full flex items-start gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.03]"
                   style={{
-                    background: n.read ? 'transparent' : 'rgba(99, 102, 241, 0.04)',
+                    background: n.read ? 'transparent' : 'rgba(14, 165, 233, 0.06)',
                     borderBottom: '1px solid var(--border)',
                   }}
                 >
                   <div
                     className="w-2 h-2 rounded-full shrink-0 mt-1"
-                    style={{ background: getAgentColor(n.agentType) }}
+                    style={{
+                      background: getAgentColor(
+                        isEnhanced(n) ? (n.agentType ?? 'custom') : n.agentType,
+                      ),
+                    }}
                   />
                   <div className="flex-1 min-w-0">
-                    <span className="text-[11px] font-medium block truncate" style={{ color: 'var(--text)' }}>
-                      {n.paneName}
+                    <span
+                      className="text-[11px] font-medium block truncate"
+                      style={{ color: 'var(--text)' }}
+                    >
+                      {isEnhanced(n) ? n.title : n.paneName}
                     </span>
-                    <span className="text-[10px] block truncate" style={{ color: 'var(--textDim)' }}>
+                    <span
+                      className="text-[10px] block truncate"
+                      style={{ color: 'var(--textDim)' }}
+                    >
                       {n.message}
                     </span>
                   </div>

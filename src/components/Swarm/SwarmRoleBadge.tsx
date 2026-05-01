@@ -1,10 +1,10 @@
 import type { AgentRole } from '../../types/swarm'
 
 const ROLE_COLORS: Record<AgentRole, string> = {
-  coordinator: '#6366f1',
+  coordinator: '#0ea5e9',
   builder: '#22c55e',
   scout: '#f59e0b',
-  reviewer: '#a855f7',
+  reviewer: '#06b6d4',
 }
 
 const ROLE_LABELS: Record<AgentRole, string> = {

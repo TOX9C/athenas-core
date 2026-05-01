@@ -12,5 +12,5 @@
     "declaration": true,
     "composite": true
   },
-  "include": ["electron"]
+  "include": ["electron", "src/types", "plugins/shared"]
 }

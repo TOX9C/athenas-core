@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 const net = require('net');
 
-const client = net.createConnection({ port: 4545 }, () => {
+const port = parseInt(process.env.ATHENA_MCP_PORT || '4545', 10);
+const host = process.env.ATHENA_MCP_HOST || '127.0.0.1';
+
+const client = net.createConnection({ port, host }, () => {
   process.stdin.pipe(client);
   client.pipe(process.stdout);
 });

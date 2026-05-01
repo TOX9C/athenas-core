@@ -54,8 +54,15 @@ export function QuickOpen({ onClose }: QuickOpenProps) {
         const content = await window.athena.fs.readFile(path)
         const lang = path.split('.').pop() ?? 'plaintext'
         const langMap: Record<string, string> = {
-          ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-          json: 'json', md: 'markdown', css: 'css', html: 'html', py: 'python',
+          ts: 'typescript',
+          tsx: 'typescript',
+          js: 'javascript',
+          jsx: 'javascript',
+          json: 'json',
+          md: 'markdown',
+          css: 'css',
+          html: 'html',
+          py: 'python',
         }
         openFile({
           path,
@@ -69,7 +76,7 @@ export function QuickOpen({ onClose }: QuickOpenProps) {
         // file read failed
       }
     },
-    [openFile, onClose]
+    [openFile, onClose],
   )
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -92,7 +99,9 @@ export function QuickOpen({ onClose }: QuickOpenProps) {
     <div
       className="fixed inset-0 z-50 flex justify-center pt-[15vh]"
       style={{ background: 'rgba(0,0,0,0.4)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
     >
       <div
         className="rounded-xl shadow-2xl overflow-hidden flex flex-col"
@@ -103,7 +112,10 @@ export function QuickOpen({ onClose }: QuickOpenProps) {
           border: '1px solid var(--border)',
         }}
       >
-        <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: 'var(--border)' }}>
+        <div
+          className="flex items-center gap-2 px-3 py-2 border-b"
+          style={{ borderColor: 'var(--border)' }}
+        >
           <Search size={14} style={{ color: 'var(--textDim)' }} />
           <input
             ref={inputRef}

@@ -38,9 +38,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       return {
         spaces: filtered,
         activeSpaceId:
-          s.activeSpaceId === id
-            ? filtered[filtered.length - 1]?.id ?? null
-            : s.activeSpaceId,
+          s.activeSpaceId === id ? (filtered[filtered.length - 1]?.id ?? null) : s.activeSpaceId,
       }
     }),
   updateSpace: (id, updates) =>
@@ -50,26 +48,26 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   addPaneToSpace: (spaceId, pane) =>
     set((s) => ({
       spaces: s.spaces.map((sp) => {
-        if (sp.id !== spaceId) return sp;
-        const newPanes = [...sp.panes, pane];
+        if (sp.id !== spaceId) return sp
+        const newPanes = [...sp.panes, pane]
         return {
           ...sp,
           panes: newPanes,
-          grid: gridForPaneCount(newPanes.length)
-        };
-      })
+          grid: gridForPaneCount(newPanes.length),
+        }
+      }),
     })),
   removePaneFromSpace: (spaceId, paneId) =>
     set((s) => ({
       spaces: s.spaces.map((sp) => {
-        if (sp.id !== spaceId) return sp;
-        const newPanes = sp.panes.filter((p) => p.id !== paneId);
+        if (sp.id !== spaceId) return sp
+        const newPanes = sp.panes.filter((p) => p.id !== paneId)
         return {
           ...sp,
           panes: newPanes,
-          grid: gridForPaneCount(newPanes.length)
-        };
-      })
+          grid: gridForPaneCount(newPanes.length),
+        }
+      }),
     })),
   setSpaces: (spaces) => set({ spaces }),
 }))

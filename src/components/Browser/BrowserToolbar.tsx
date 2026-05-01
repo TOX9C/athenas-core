@@ -49,7 +49,10 @@ export function BrowserToolbar({
       </button>
 
       <form onSubmit={handleSubmit} className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
+        <div
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md"
+          style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
+        >
           <Globe size={12} style={{ color: 'var(--textDim)', flexShrink: 0 }} />
           <input
             ref={inputRef}

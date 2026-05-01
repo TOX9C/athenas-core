@@ -9,7 +9,15 @@ export interface FileNode {
   children?: FileNode[]
 }
 
-const FileNodeItem = ({ node, level = 0, onFileSelect }: { node: FileNode; level?: number; onFileSelect?: (path: string) => void }) => {
+const FileNodeItem = ({
+  node,
+  level = 0,
+  onFileSelect,
+}: {
+  node: FileNode
+  level?: number
+  onFileSelect?: (path: string) => void
+}) => {
   const [isOpen, setIsOpen] = useState(false)
 
   const toggleOpen = () => {
@@ -31,13 +39,21 @@ const FileNodeItem = ({ node, level = 0, onFileSelect }: { node: FileNode; level
       >
         <div className="mr-1.5 flex-shrink-0 w-4 h-4 flex items-center justify-center">
           {node.isDirectory ? (
-            isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+            isOpen ? (
+              <ChevronDown size={14} />
+            ) : (
+              <ChevronRight size={14} />
+            )
           ) : null}
         </div>
 
         <div className="mr-2 text-neutral-400">
           {node.isDirectory ? (
-            isOpen ? <FolderOpen size={14} /> : <Folder size={14} />
+            isOpen ? (
+              <FolderOpen size={14} />
+            ) : (
+              <Folder size={14} />
+            )
           ) : (
             <File size={14} />
           )}
@@ -48,7 +64,12 @@ const FileNodeItem = ({ node, level = 0, onFileSelect }: { node: FileNode; level
       {isOpen && node.children && (
         <div>
           {node.children.map((child) => (
-            <FileNodeItem key={child.path} node={child} level={level + 1} onFileSelect={onFileSelect} />
+            <FileNodeItem
+              key={child.path}
+              node={child}
+              level={level + 1}
+              onFileSelect={onFileSelect}
+            />
           ))}
         </div>
       )}
@@ -56,7 +77,13 @@ const FileNodeItem = ({ node, level = 0, onFileSelect }: { node: FileNode; level
   )
 }
 
-export const FileTree = ({ dir, onFileSelect }: { dir?: string; onFileSelect?: (path: string) => void }) => {
+export const FileTree = ({
+  dir,
+  onFileSelect,
+}: {
+  dir?: string
+  onFileSelect?: (path: string) => void
+}) => {
   const [nodes, setNodes] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)

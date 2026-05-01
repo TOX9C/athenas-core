@@ -59,7 +59,10 @@ export function KanbanColumn({
         transition: 'background 150ms',
       }}
     >
-      <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: 'var(--border)' }}>
+      <div
+        className="flex items-center justify-between px-3 py-2 border-b"
+        style={{ borderColor: 'var(--border)' }}
+      >
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[status] }} />
           <span className="text-[11px] font-semibold" style={{ color: 'var(--text)' }}>
@@ -96,16 +99,24 @@ export function KanbanColumn({
         </SortableContext>
 
         {adding && (
-          <div className="p-2 rounded-md" style={{ background: 'var(--bgSecondary)', border: '1px solid var(--border)' }}>
+          <div
+            className="p-2 rounded-md"
+            style={{ background: 'var(--bgSecondary)', border: '1px solid var(--border)' }}
+          >
             <input
               autoFocus
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleAdd()
-                if (e.key === 'Escape') { setAdding(false); setNewTitle('') }
+                if (e.key === 'Escape') {
+                  setAdding(false)
+                  setNewTitle('')
+                }
               }}
-              onBlur={() => { if (!newTitle.trim()) setAdding(false) }}
+              onBlur={() => {
+                if (!newTitle.trim()) setAdding(false)
+              }}
               placeholder="Task title..."
               className="w-full bg-transparent text-xs outline-none"
               style={{ color: 'var(--text)' }}

@@ -31,7 +31,10 @@ export function AgentCard({ agent, onNudge }: AgentCardProps) {
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
-          <div className="w-2 h-2 rounded-full" style={{ background: getAgentColor(agent.agentType) }} />
+          <div
+            className="w-2 h-2 rounded-full"
+            style={{ background: getAgentColor(agent.agentType) }}
+          />
           <span className="text-[11px] font-medium" style={{ color: 'var(--text)' }}>
             {getAgentLabel(agent.agentType)}
           </span>

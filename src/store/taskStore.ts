@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import type { KanbanTask, KanbanStatus } from '../types/task'
 
+const MAX_TASKS = 200
+
 interface TaskState {
   tasks: KanbanTask[]
   addTask: (task: KanbanTask) => void
@@ -17,7 +19,7 @@ function persistTasks(tasks: KanbanTask[]) {
 export const useTaskStore = create<TaskState>((set, get) => ({
   tasks: [],
   addTask: (task) => {
-    set((s) => ({ tasks: [...s.tasks, task] }))
+    set((s) => ({ tasks: [...s.tasks, task].slice(-MAX_TASKS) }))
     persistTasks(get().tasks)
   },
   removeTask: (id) => {
@@ -36,5 +38,5 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }))
     persistTasks(get().tasks)
   },
-  setTasks: (tasks) => set({ tasks }),
+  setTasks: (tasks) => set({ tasks: tasks.slice(-MAX_TASKS) }),
 }))

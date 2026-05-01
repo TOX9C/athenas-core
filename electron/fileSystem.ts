@@ -57,3 +57,14 @@ export async function writeFileContent(path: string, content: string): Promise<v
     throw new Error(`Failed to write file: ${err.message}`)
   }
 }
+
+export async function getDirectories(dirPath: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true })
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+  } catch (err: unknown) {
+    throw new Error(
+      `Failed to read directories: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
