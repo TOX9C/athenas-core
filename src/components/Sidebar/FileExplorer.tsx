@@ -41,7 +41,10 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-1.5 border-b" style={{ borderColor: 'var(--border)' }}>
+      <div
+        className="flex items-center justify-between px-3 py-1.5 border-b"
+        style={{ borderColor: 'var(--border)' }}
+      >
         <div className="flex items-center gap-1.5">
           <FolderOpen size={12} style={{ color: 'var(--textDim)' }} />
           <span className="text-[11px] font-medium" style={{ color: 'var(--textMuted)' }}>
@@ -53,7 +56,11 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
           className="p-0.5 rounded hover:bg-white/10 transition-colors"
           disabled={loading}
         >
-          <RefreshCw size={11} style={{ color: 'var(--textDim)' }} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw
+            size={11}
+            style={{ color: 'var(--textDim)' }}
+            className={loading ? 'animate-spin' : ''}
+          />
         </button>
       </div>
       <div className="flex-1 overflow-y-auto py-1">

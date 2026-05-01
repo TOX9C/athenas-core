@@ -21,18 +21,18 @@ const ANSI_REGEX = new RegExp(ANSI_PATTERN, 'g')
 
 // Clean up common terminal output artifacts after ANSI removal
 const EXTRA_CLEANUP = [
-  [/\r\n/g, '\n'],        // normalize line endings
-  [/\r/g, ''],            // strip lone CR
-  [/\x08+/g, ''],         // strip leftover backspaces
-  [/\n{3,}/g, '\n\n'],    // collapse excessive blank lines
+  [/\r\n/g, '\n'], // normalize line endings
+  [/\r/g, ''], // strip lone CR
+  [/\x08+/g, ''], // strip leftover backspaces
+  [/\n{3,}/g, '\n\n'], // collapse excessive blank lines
 ]
 
 export function stripAnsi(str: string): string {
   // Convert Cursor Forward (\x1b[<n>C) to literal spaces to prevent smushing text
   let clean = str.replace(/\x1b\[(\d*)C/g, (_, n) => ' '.repeat(parseInt(n || '1', 10)))
-  
+
   clean = clean.replace(ANSI_REGEX, '')
-  
+
   for (const [pattern, replacement] of EXTRA_CLEANUP) {
     clean = clean.replace(pattern as RegExp, replacement as string)
   }

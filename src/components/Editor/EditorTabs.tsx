@@ -29,7 +29,12 @@ export function EditorTabs({ onClose }: EditorTabsProps) {
             }}
           >
             {file.isDirty && (
-              <Circle size={6} fill="var(--warning)" style={{ color: 'var(--warning)' }} className="shrink-0" />
+              <Circle
+                size={6}
+                fill="var(--warning)"
+                style={{ color: 'var(--warning)' }}
+                className="shrink-0"
+              />
             )}
             <span
               className="text-[11px] truncate max-w-[120px]"
@@ -38,7 +43,10 @@ export function EditorTabs({ onClose }: EditorTabsProps) {
               {filename}
             </span>
             <button
-              onClick={(e) => { e.stopPropagation(); onClose(file.path) }}
+              onClick={(e) => {
+                e.stopPropagation()
+                onClose(file.path)
+              }}
               className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-white/10 transition-all shrink-0"
             >
               <X size={10} style={{ color: 'var(--textDim)' }} />

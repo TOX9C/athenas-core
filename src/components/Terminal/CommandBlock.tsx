@@ -8,6 +8,7 @@ interface CommandBlockProps {
   exitCode: number | null
   startedAt: number
   finishedAt: number | null
+  duration: number | null
   collapsed: boolean
   onToggle: () => void
   onRerun?: () => void
@@ -24,7 +25,10 @@ function formatRelativeTime(ts: number): string {
 
 function formatDuration(start: number, end: number | null): string {
   if (!end) return 'running...'
-  const ms = end - start
+  return formatDurationFromMs(end - start)
+}
+
+function formatDurationFromMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
   return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`
@@ -36,6 +40,7 @@ export function CommandBlock({
   exitCode,
   startedAt,
   finishedAt,
+  duration,
   collapsed,
   onToggle,
   onRerun,
@@ -68,7 +73,10 @@ export function CommandBlock({
           <ChevronDown size={12} style={{ color: 'var(--textDim)', flexShrink: 0 }} />
         )}
 
-        <span className="font-mono text-[12px] font-medium flex-1 truncate" style={{ color: 'var(--text)' }}>
+        <span
+          className="font-mono text-[12px] font-medium flex-1 truncate"
+          style={{ color: 'var(--text)' }}
+        >
           {command}
         </span>
 
@@ -86,8 +94,7 @@ export function CommandBlock({
             className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-medium"
             style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)' }}
           >
-            <Check size={9} />
-            0
+            <Check size={9} />0
           </span>
         ) : (
           <span
@@ -100,7 +107,9 @@ export function CommandBlock({
         )}
 
         <span className="text-[10px] shrink-0" style={{ color: 'var(--textDim)' }}>
-          {formatDuration(startedAt, finishedAt)}
+          {duration != null
+            ? formatDurationFromMs(duration)
+            : formatDuration(startedAt, finishedAt)}
         </span>
 
         {/* Action buttons on hover */}
@@ -129,32 +138,30 @@ export function CommandBlock({
       </button>
 
       {/* Body */}
-      {collapsed ? (
-        previewLine && (
-          <div className="px-2.5 pb-1.5">
-            <span
-              className="font-mono text-[11px] truncate block"
-              style={{ color: 'var(--textDim)' }}
+      {collapsed
+        ? previewLine && (
+            <div className="px-2.5 pb-1.5">
+              <span
+                className="font-mono text-[11px] truncate block"
+                style={{ color: 'var(--textDim)' }}
+              >
+                {previewLine.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').slice(0, 80)}
+              </span>
+            </div>
+          )
+        : output && (
+            <div
+              className="px-2.5 pb-2 max-h-[300px] overflow-y-auto"
+              style={{ borderTop: '1px solid var(--border)' }}
             >
-              {previewLine.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').slice(0, 80)}
-            </span>
-          </div>
-        )
-      ) : (
-        output && (
-          <div
-            className="px-2.5 pb-2 max-h-[300px] overflow-y-auto"
-            style={{ borderTop: '1px solid var(--border)' }}
-          >
-            <pre
-              className="font-mono text-[11px] leading-[1.5] whitespace-pre-wrap break-all pt-1.5"
-              style={{ color: 'var(--textMuted)' }}
-            >
-              {output}
-            </pre>
-          </div>
-        )
-      )}
+              <pre
+                className="font-mono text-[11px] leading-[1.5] whitespace-pre-wrap break-all pt-1.5"
+                style={{ color: 'var(--textMuted)' }}
+              >
+                {output}
+              </pre>
+            </div>
+          )}
     </div>
   )
 }

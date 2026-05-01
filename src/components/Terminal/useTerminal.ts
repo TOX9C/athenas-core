@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { useUIStore } from '../../store/uiStore'
+import { useTerminalStore } from '../../store/terminalStore'
 import { themes } from '../../themes/themes'
 
 interface UseTerminalOptions {
@@ -12,13 +13,17 @@ interface UseTerminalOptions {
   agentCmd?: string
 }
 
-export function useTerminal({ paneId, cwd, agentCmd }: UseTerminalOptions, containerRef: React.RefObject<HTMLDivElement | null>) {
+export function useTerminal(
+  { paneId, cwd, agentCmd }: UseTerminalOptions,
+  containerRef: React.RefObject<HTMLDivElement | null>,
+) {
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const spawnedRef = useRef(false)
   const theme = useUIStore((s) => s.theme)
   const fontSize = useUIStore((s) => s.fontSize)
   const fontFamily = useUIStore((s) => s.fontFamily)
+  const handleShellEvent = useTerminalStore((s) => s.handleShellIntegrationEvent)
 
   const fit = useCallback(() => {
     if (fitAddonRef.current && termRef.current) {
@@ -78,43 +83,97 @@ export function useTerminal({ paneId, cwd, agentCmd }: UseTerminalOptions, conta
       term.write(data)
     })
 
+    const unsubShell = window.athena.pty.onShellIntegration(paneId, (event) => {
+      handleShellEvent(event)
+    })
+
+    const unsubCwd = window.athena.pty.onCwdChanged((data) => {
+      if (data.paneId === paneId) {
+        handleShellEvent({
+          type: 'cwd',
+          paneId: data.paneId,
+          cwd: data.cwd,
+          timestamp: data.timestamp,
+        })
+      }
+    })
+
+    const unsubCmdStart = window.athena.pty.onCommandStarted((data) => {
+      if (data.paneId === paneId) {
+        handleShellEvent({
+          type: 'commandStart',
+          paneId: data.paneId,
+          command: data.command,
+          cwd: data.cwd,
+          timestamp: data.timestamp,
+        })
+      }
+    })
+
+    const unsubCmdExit = window.athena.pty.onCommandExited((data) => {
+      if (data.paneId === paneId) {
+        handleShellEvent({
+          type: 'commandFinished',
+          paneId: data.paneId,
+          command: data.command,
+          exitCode: data.exitCode,
+          cwd: data.cwd,
+          duration: data.duration,
+          timestamp: data.timestamp,
+        })
+      }
+    })
+
     term.onData((data) => {
       window.athena.pty.write(paneId, data)
     })
 
     if (!spawnedRef.current) {
       spawnedRef.current = true
-      window.athena.pty.hasSession(paneId).then((exists) => {
-        if (!exists) {
-          window.athena.pty.spawn(paneId, cwd, '', agentCmd || undefined)
-            .then((res) => {
-              if (res && !res.success) {
+      window.athena.pty
+        .hasSession(paneId)
+        .then((exists) => {
+          if (!exists) {
+            window.athena.pty
+              .spawn(paneId, cwd, '', agentCmd || undefined)
+              .then((res) => {
+                if (res && !res.success) {
+                  spawnedRef.current = false
+                }
+              })
+              .catch(() => {
                 spawnedRef.current = false
-              }
-            })
-            .catch(() => {
-              spawnedRef.current = false
-            })
-        }
-      }).catch(() => {
-        spawnedRef.current = false
-      })
+              })
+          }
+        })
+        .catch(() => {
+          spawnedRef.current = false
+        })
     }
 
+    let timeout: ReturnType<typeof setTimeout> | null = null
     const ro = new ResizeObserver(() => {
-      requestAnimationFrame(() => fit())
+      if (timeout) clearTimeout(timeout)
+      timeout = setTimeout(() => {
+        fit()
+      }, 50)
     })
     ro.observe(containerRef.current)
 
     return () => {
       ro.disconnect()
+      if (timeout) clearTimeout(timeout)
       unsubData()
+      unsubShell()
+      unsubCwd()
+      unsubCmdStart()
+      unsubCmdExit()
       term.dispose()
       termRef.current = null
       fitAddonRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paneId, cwd, agentCmd, containerRef, fit])
+  }, [paneId, cwd, agentCmd, containerRef, fit, handleShellEvent])
 
   // Update theme and font without recreating the terminal
   useEffect(() => {

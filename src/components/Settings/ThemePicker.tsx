@@ -24,7 +24,9 @@ export function ThemePicker() {
           }}
         >
           <div className="w-full h-6 rounded" style={{ background: t.colors.bgSecondary }} />
-          <span className="text-[9px]" style={{ color: t.colors.text }}>{t.label}</span>
+          <span className="text-[9px]" style={{ color: t.colors.text }}>
+            {t.label}
+          </span>
         </button>
       ))}
     </div>

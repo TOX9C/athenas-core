@@ -1,5 +1,13 @@
 import { useCallback } from 'react'
-import { DndContext, DragEndEvent, DragOverEvent, closestCorners, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
+import {
+  DndContext,
+  DragEndEvent,
+  DragOverEvent,
+  closestCorners,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
 import { nanoid } from 'nanoid'
 import { useTaskStore } from '../../store/taskStore'
 import { useWorkspaceStore } from '../../store/workspaceStore'
@@ -17,9 +25,7 @@ export function KanbanBoard() {
 
   const spaceTasks = tasks.filter((t) => t.spaceId === activeSpaceId)
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
-  )
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
   const handleAddTask = useCallback(
     (title: string) => {
@@ -34,7 +40,7 @@ export function KanbanBoard() {
       }
       addTask(task)
     },
-    [activeSpaceId, spaceTasks, addTask]
+    [activeSpaceId, spaceTasks, addTask],
   )
 
   const handleRunTask = useCallback(
@@ -45,13 +51,11 @@ export function KanbanBoard() {
         : activeSpace.panes[0]
       if (!targetPane) return
 
-      const prompt = task.description
-        ? `${task.title}\n\n${task.description}\n`
-        : `${task.title}\n`
+      const prompt = task.description ? `${task.title}\n\n${task.description}\n` : `${task.title}\n`
       window.athena.pty.write(targetPane.id, prompt)
       moveTask(task.id, 'in_progress')
     },
-    [activeSpace, moveTask]
+    [activeSpace, moveTask],
   )
 
   const handleDragEnd = useCallback(
@@ -71,7 +75,7 @@ export function KanbanBoard() {
         }
       }
     },
-    [moveTask, spaceTasks]
+    [moveTask, spaceTasks],
   )
 
   const handleDragOver = useCallback(
@@ -91,7 +95,7 @@ export function KanbanBoard() {
         }
       }
     },
-    [moveTask, spaceTasks]
+    [moveTask, spaceTasks],
   )
 
   if (!activeSpaceId) {
@@ -117,9 +121,7 @@ export function KanbanBoard() {
           <KanbanColumn
             key={status}
             status={status}
-            tasks={spaceTasks
-              .filter((t) => t.status === status)
-              .sort((a, b) => a.order - b.order)}
+            tasks={spaceTasks.filter((t) => t.status === status).sort((a, b) => a.order - b.order)}
             onAddTask={handleAddTask}
             onUpdateTask={updateTask}
             onDeleteTask={removeTask}

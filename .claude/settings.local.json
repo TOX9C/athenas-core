@@ -13,7 +13,11 @@
       "Bash(git init *)",
       "Bash(node *)",
       "mcp__plugin_claude-mem_mcp-search__smart_search",
-      "mcp__plugin_claude-mem_mcp-search__smart_unfold"
+      "mcp__plugin_claude-mem_mcp-search__smart_unfold",
+      "Bash(python3 *)",
+      "Bash(grep -rn \"--bg:\" /Users/apollo/Documents/athenas-core/src/App.tsx /Users/apollo/Documents/athenas-core/src/ --include=\"*.tsx\" --include=\"*.ts\")",
+      "WebFetch(domain:docs.nvidia.com)",
+      "WebSearch"
     ]
   }
 }

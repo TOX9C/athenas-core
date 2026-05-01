@@ -25,10 +25,7 @@ export function WorkspaceTabs({ onNewTab }: WorkspaceTabsProps) {
             if (space.id !== activeSpaceId) e.currentTarget.style.background = 'transparent'
           }}
         >
-          <div
-            className="w-1.5 h-1.5 rounded-full shrink-0"
-            style={{ background: space.color }}
-          />
+          <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: space.color }} />
           <span
             className="text-[11px] truncate"
             style={{ color: space.id === activeSpaceId ? 'var(--text)' : 'var(--textMuted)' }}

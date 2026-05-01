@@ -29,15 +29,13 @@ export const useEditorStore = create<EditorState>((set) => ({
         openFiles: filtered,
         activeFilePath:
           s.activeFilePath === path
-            ? filtered[filtered.length - 1]?.path ?? null
+            ? (filtered[filtered.length - 1]?.path ?? null)
             : s.activeFilePath,
       }
     }),
   setActiveFile: (path) => set({ activeFilePath: path }),
   updateFile: (path, updates) =>
     set((s) => ({
-      openFiles: s.openFiles.map((f) =>
-        f.path === path ? { ...f, ...updates } : f
-      ),
+      openFiles: s.openFiles.map((f) => (f.path === path ? { ...f, ...updates } : f)),
     })),
 }))

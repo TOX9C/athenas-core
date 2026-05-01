@@ -11,7 +11,10 @@ export function BrowserPanel() {
   useEffect(() => {
     const unsubUrl = window.athena.browser.onUrlChange(setUrl)
     const unsubTitle = window.athena.browser.onTitleChange(setTitle)
-    return () => { unsubUrl(); unsubTitle() }
+    return () => {
+      unsubUrl()
+      unsubTitle()
+    }
   }, [])
 
   useEffect(() => {

@@ -33,12 +33,12 @@ export function EditorPanel() {
         }
       }, 1000)
     },
-    [activeFilePath, updateFile]
+    [activeFilePath, updateFile],
   )
 
   const handleMount: OnMount = (editor) => {
     editorRef.current = editor
-    requestAnimationFrame(() => editor.layout())
+    editor.layout()
   }
 
   useEffect(() => {
@@ -46,15 +46,20 @@ export function EditorPanel() {
     const ed = editorRef.current
     if (!container || !ed) return
 
+    let timeout: ReturnType<typeof setTimeout>
     const ro = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
+      clearTimeout(timeout)
+      timeout = setTimeout(() => {
         if (editorRef.current) {
           editorRef.current.layout()
         }
-      })
+      }, 50)
     })
     ro.observe(container)
-    return () => ro.disconnect()
+    return () => {
+      clearTimeout(timeout)
+      ro.disconnect()
+    }
   }, [activeFilePath])
 
   useEffect(() => {

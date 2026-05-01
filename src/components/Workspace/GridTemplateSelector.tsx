@@ -55,7 +55,7 @@ export function GridTemplateSelector({ selected, onSelect }: GridTemplateSelecto
                       fill={selected === template ? 'rgba(255,255,255,0.3)' : 'var(--bgTertiary)'}
                     />
                   )
-                })
+                }),
               )}
             </svg>
             <div className="flex flex-col items-center">
@@ -67,7 +67,9 @@ export function GridTemplateSelector({ selected, onSelect }: GridTemplateSelecto
               </span>
               <span
                 className="text-[10px]"
-                style={{ color: selected === template ? 'rgba(255,255,255,0.7)' : 'var(--textDim)' }}
+                style={{
+                  color: selected === template ? 'rgba(255,255,255,0.7)' : 'var(--textDim)',
+                }}
               >
                 {template}
               </span>

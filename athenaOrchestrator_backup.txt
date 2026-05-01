@@ -1,0 +1,177 @@
+     1	import Anthropic from '@anthropic-ai/sdk'
+     2	import OpenAI from 'openai'
+     3	import { getStore } from './storeUtil'
+     4	import {
+     5	  ORCHESTRATOR_TOOLS,
+     6	  toOpenAITools,
+     7	  executeToolCall,
+     8	  type ToolInput
+     9	} from './toolExecutor'
+    10	
+    11	function buildSystemPrompt(spaces: any[], tasks: any[], customAgents: any[], activePanes: any[]): string {
+    12	  return `You are the Athena Orchestrator, an AI assistant built into an Electron IDE. Your primary job is to manage, delegate, and launch background agents. You can also chat and answer questions normally.
+    13	
+    14	CRITICAL: If the user asks to launch an agent or terminal WITHOUT giving a task, you MUST execute the tool with an EMPTY task_prompt. Do NOT complain or ask for a prompt.
+    15	
+    16	Project Context:
+    17	- Active Workspaces: ${JSON.stringify(spaces.map((s: any) => ({ name: s.name, dir: s.dir })))}
+    18	- Current Project Tasks/Todos: ${JSON.stringify(tasks)}
+    19	- Custom Agents Available: ${JSON.stringify(customAgents)}
+    20	- Currently Running Terminals/Panes: ${JSON.stringify(activePanes)}
+    21	
+    22	INSTRUCTIONS:
+    23	- You have context to the current files (via workspaces), tasks, and custom agents. Use this knowledge to help the user.
+    24	- If the user explicitly asks to launch a basic agent, use 'launch_claude_cli'. Omit the task_prompt completely if they just want an empty terminal.
+    25	- If the user asks to launch a CUSTOM agent, use 'launch_custom_agent' and provide the command text associated with the custom agent from the context list.
+    26	- If the user asks you to interact with or run a command inside ALREADY OPEN "free shell terminals" or existing panes, use 'run_command_in_terminals' and pass the array of terminal IDs and the command.
+    27	
+    28	When you successfully use a tool, briefly confirm it (e.g., 'Done, launched 1 agent').`
+    29	}
+    30	
+    31	export class AthenaOrchestrator {
+    32	  private anthropic?: Anthropic
+    33	  private openai?: OpenAI
+    34	  private messages: Anthropic.MessageParam[] = []
+    35	  private openaiMessages: OpenAI.ChatCompletionMessageParam[] = []
+    36	
+    37	  async sendMessage(userText: string): Promise<string> {
+    38	    const store = await getStore()
+    39	    const provider = (store.get('athena.provider') || 'anthropic') as string
+    40	    const apiKey = store.get('athena.apiKey') as string | undefined
+    41	    const model = (store.get('athena-model') || (provider === 'nvidia_nim' ? 'minimaxai/minimax-text-01' : 'claude-sonnet-4-20250514')) as string
+    42	
+    43	    if (!apiKey) {
+    44	      return 'Error: API Key is required. Please set it in Settings.'
+    45	    }
+    46	
+    47	    const customAgents = (store.get('athena-customAgents') || []) as any[]
+    48	    const spaces = (store.get('spaces') || []) as any[]
+    49	    const tasks = (store.get('tasks') || []) as any[]
+    50	
+    51	    const activePanes = spaces.flatMap((s: any) =>
+    52	      s.panes?.map((p: any) => ({
+    53	        id: p.id,
+    54	        spaceId: s.id,
+    55	        spaceName: s.name,
+    56	        type: p.agentType,
+    57	        isShell: p.agentType === 'shell'
+    58	      })) || []
+    59	    )
+    60	
+    61	    const systemPrompt = buildSystemPrompt(spaces, tasks, customAgents, activePanes)
+    62	
+    63	    if (provider === 'nvidia_nim' || provider === 'openai' || provider === 'lmstudio') {
+    64	      return this.sendOpenAI(apiKey, model, systemPrompt, userText, provider === 'nvidia_nim' ? 'https://integrate.api.nvidia.com/v1' : undefined)
+    65	    }
+    66	    return this.sendAnthropic(apiKey, model, systemPrompt, userText)
+    67	  }
+    68	
+    69	  private async sendOpenAI(apiKey: string, model: string, systemPrompt: string, userText: string, baseURL?: string): Promise<string> {
+    70	    if (!this.openai) {
+    71	      this.openai = new OpenAI({ apiKey, baseURL })
+    72	    }
+    73	
+    74	    if (this.openaiMessages.length === 0 || this.openaiMessages[0].role !== 'system') {
+    75	      this.openaiMessages = [{ role: 'system', content: systemPrompt }, ...this.openaiMessages]
+    76	    } else {
+    77	      (this.openaiMessages[0] as OpenAI.ChatCompletionSystemMessageParam).content = systemPrompt
+    78	    }
+    79	
+    80	    this.openaiMessages.push({ role: 'user', content: userText })
+    81	
+    82	    try {
+    83	      while (true) {
+    84	        const response = await this.openai.chat.completions.create({
+    85	          model,
+    86	          max_tokens: 4096,
+    87	          messages: this.openaiMessages,
+    88	          tools: toOpenAITools()
+    89	        })
+    90	
+    91	        const choice = response.choices[0]
+    92	        if (!choice.message) return ''
+    93	
+    94	        this.openaiMessages.push(choice.message)
+    95	
+    96	        if (!choice.message.tool_calls || choice.message.tool_calls.length === 0) {
+    97	          return (choice.message.content || '').trim()
+    98	        }
+    99	
+   100	        const toolCalls = choice.message.tool_calls
+   101	        const toolMessages = await Promise.all(
+   102	          toolCalls.map(async (toolCall) => {
+   103	            const args: ToolInput = JSON.parse(toolCall.function.arguments)
+   104	            const result = executeToolCall(toolCall.function.name, args)
+   105	            return {
+   106	              role: 'tool' as const,
+   107	              tool_call_id: toolCall.id,
+   108	              content: result.text
+   109	            }
+   110	          })
+   111	        )
+   112	
+   113	        this.openaiMessages.push(...toolMessages)
+   114	      }
+   115	    } catch (error: unknown) {
+   116	      this.openaiMessages.pop()
+   117	      const msg = error instanceof Error ? error.message : String(error)
+   118	      return `Error calling provider: ${msg}`
+   119	    }
+   120	  }
+   121	
+   122	  private async sendAnthropic(apiKey: string, model: string, systemPrompt: string, userText: string): Promise<string> {
+   123	    if (!this.anthropic) {
+   124	      this.anthropic = new Anthropic({ apiKey })
+   125	    }
+   126	
+   127	    this.messages.push({ role: 'user', content: userText })
+   128	
+   129	    try {
+   130	      while (true) {
+   131	        const response = await this.anthropic.messages.create({
+   132	          model,
+   133	          max_tokens: 4096,
+   134	          system: systemPrompt,
+   135	          messages: this.messages,
+   136	          tools: ORCHESTRATOR_TOOLS as any
+   137	        })
+   138	
+   139	        this.messages.push({ role: 'assistant', content: response.content })
+   140	
+   141	        const toolUseBlocks = response.content.filter((block): block is Anthropic.ToolUseBlock => block.type === 'tool_use')
+   142	
+   143	        if (toolUseBlocks.length === 0) {
+   144	          let responseText = ''
+   145	          for (const block of response.content) {
+   146	            if (block.type === 'text') {
+   147	              responseText += block.text
+   148	            }
+   149	          }
+   150	          return responseText.trim()
+   151	        }
+   152	
+   153	        const toolResultContents = await Promise.all(
+   154	          toolUseBlocks.map(async (block) => {
+   155	            const result = executeToolCall(block.name, block.input as ToolInput)
+   156	            return {
+   157	              type: 'tool_result' as const,
+   158	              tool_use_id: block.id,
+   159	              content: result.text
+   160	            }
+   161	          })
+   162	        )
+   163	
+   164	        this.messages.push({
+   165	          role: 'user',
+   166	          content: toolResultContents
+   167	        })
+   168	      }
+   169	    } catch (error: unknown) {
+   170	      this.messages.pop()
+   171	      const msg = error instanceof Error ? error.message : String(error)
+   172	      return `Error calling Anthropic: ${msg}`
+   173	    }
+   174	  }
+   175	}
+   176	
+   177	export const athenaOrchestrator = new AthenaOrchestrator()

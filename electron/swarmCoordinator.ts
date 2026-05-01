@@ -5,7 +5,7 @@ import { watch, FSWatcher } from 'fs'
 
 let mainWindowRef: BrowserWindow | null = null
 let stateWatcher: FSWatcher | null = null
-let pollInterval: ReturnType<typeof setInterval> | null = null
+let pollInterval: ReturnType<typeof setTimeout> | null = null
 
 export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
   mainWindowRef = mainWindow
@@ -23,7 +23,11 @@ export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
   ipcMain.handle('swarm:writeState', async (_event, dir: string, state: any) => {
     try {
       const adeDir = join(dir, '.ade')
-      try { await access(adeDir) } catch { await mkdir(adeDir, { recursive: true }) }
+      try {
+        await access(adeDir)
+      } catch {
+        await mkdir(adeDir, { recursive: true })
+      }
       const statePath = join(adeDir, 'swarm-state.json')
       const tmpPath = statePath + `.tmp.${Date.now()}`
       await writeFile(tmpPath, JSON.stringify(state, null, 2), 'utf-8')
@@ -34,37 +38,44 @@ export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
     }
   })
 
-  ipcMain.handle('swarm:sendMessage', async (_event, dir: string, from: string, to: string, msg: string) => {
-    try {
-      const mailboxDir = join(dir, '.ade', 'mailbox')
-      try { await access(mailboxDir) } catch { await mkdir(mailboxDir, { recursive: true }) }
-
-      const mailboxPath = join(mailboxDir, `${to}.json`)
-      const tmpPath = mailboxPath + `.tmp.${Date.now()}`
-      let messages: any[] = []
+  ipcMain.handle(
+    'swarm:sendMessage',
+    async (_event, dir: string, from: string, to: string, msg: string) => {
       try {
-        const content = await readFile(mailboxPath, 'utf-8')
-        messages = JSON.parse(content)
-      } catch {
-        // file doesn't exist yet
+        const mailboxDir = join(dir, '.ade', 'mailbox')
+        try {
+          await access(mailboxDir)
+        } catch {
+          await mkdir(mailboxDir, { recursive: true })
+        }
+
+        const mailboxPath = join(mailboxDir, `${to}.json`)
+        const tmpPath = mailboxPath + `.tmp.${Date.now()}`
+        let messages: any[] = []
+        try {
+          const content = await readFile(mailboxPath, 'utf-8')
+          messages = JSON.parse(content)
+        } catch {
+          // file doesn't exist yet
+        }
+
+        messages.push({
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          from,
+          to,
+          content: msg,
+          timestamp: Date.now(),
+          read: false,
+        })
+
+        await writeFile(tmpPath, JSON.stringify(messages, null, 2), 'utf-8')
+        await rename(tmpPath, mailboxPath)
+        return { success: true }
+      } catch (err: any) {
+        return { success: false, error: err.message }
       }
-
-      messages.push({
-        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        from,
-        to,
-        content: msg,
-        timestamp: Date.now(),
-        read: false,
-      })
-
-      await writeFile(tmpPath, JSON.stringify(messages, null, 2), 'utf-8')
-      await rename(tmpPath, mailboxPath)
-      return { success: true }
-    } catch (err: any) {
-      return { success: false, error: err.message }
-    }
-  })
+    },
+  )
 
   ipcMain.handle('swarm:readMailbox', async (_event, dir: string, agentId: string) => {
     try {
@@ -82,13 +93,13 @@ export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
       stateWatcher = null
     }
     if (pollInterval) {
-      clearInterval(pollInterval)
+      clearTimeout(pollInterval)
       pollInterval = null
     }
 
     const statePath = join(dir, '.ade', 'swarm-state.json')
 
-    pollInterval = setInterval(async () => {
+    async function tick() {
       try {
         const content = await readFile(statePath, 'utf-8')
         const state = JSON.parse(content)
@@ -117,8 +128,11 @@ export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
         mainWindowRef?.webContents.send('swarm:stateChange', state)
       } catch {
         // state file doesn't exist or is invalid
+      } finally {
+        pollInterval = setTimeout(tick, 5000)
       }
-    }, 5000)
+    }
+    pollInterval = setTimeout(tick, 5000)
   })
 
   ipcMain.on('swarm:stopWatch', () => {
@@ -127,7 +141,7 @@ export function initSwarmCoordinator(mainWindow: BrowserWindow): void {
       stateWatcher = null
     }
     if (pollInterval) {
-      clearInterval(pollInterval)
+      clearTimeout(pollInterval)
       pollInterval = null
     }
   })

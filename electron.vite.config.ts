@@ -8,35 +8,35 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'electron/main.ts')
-        }
-      }
-    }
+          index: resolve(__dirname, 'electron/main.ts'),
+        },
+      },
+    },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'electron/preload.ts')
-        }
-      }
-    }
+          index: resolve(__dirname, 'electron/preload.ts'),
+        },
+      },
+    },
   },
   renderer: {
     root: '.',
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'index.html')
-        }
-      }
+          index: resolve(__dirname, 'index.html'),
+        },
+      },
     },
     plugins: [react()],
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src')
-      }
-    }
-  }
+        '@': resolve(__dirname, 'src'),
+      },
+    },
+  },
 })
