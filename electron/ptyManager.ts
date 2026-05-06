@@ -24,6 +24,7 @@ const sessionShells = new Map<string, string>()
 const commandTrackers = new Map<string, CommandTracker>()
 const oscParsers = new Map<string, Osc633Parser>()
 const MAX_HISTORY_BYTES = 100_000
+const readySessions = new Set<string>()
 
 let outputCaptureHooks: {
   onSpawn: (paneId: string, agentType: string) => void
@@ -72,6 +73,10 @@ export function getHistory(id: string): string {
 
 export function hasSession(id: string): boolean {
   return sessions.has(id)
+}
+
+export function isReady(id: string): boolean {
+  return readySessions.has(id)
 }
 
 function emitShellEvent(mainWindow: BrowserWindow, event: ShellIntegrationEvent): void {
@@ -208,6 +213,7 @@ export function spawn(
 
     if (lastLine) {
       if (READY_PATTERNS.some((re) => re.test(lastLine))) {
+        readySessions.add(id)
         if (!mainWindow.isDestroyed()) {
           mainWindow.webContents.send(`pty:ready:${id}`)
         }
@@ -227,6 +233,7 @@ export function spawn(
     sessionShells.delete(id)
     commandTrackers.delete(id)
     oscParsers.delete(id)
+    readySessions.delete(id)
     if (outputCaptureHooks) {
       outputCaptureHooks.onExit(id)
     }
@@ -270,6 +277,10 @@ export function write(id: string, data: string): void {
 }
 
 export function resize(id: string, cols: number, rows: number): void {
+  require('fs').appendFileSync(
+    require('path').join(require('os').tmpdir(), 'athena-resize.log'),
+    `\nResize ${id} to ${cols}x${rows}`,
+  )
   try {
     sessions.get(id)?.resize(cols, rows)
   } catch {
@@ -289,6 +300,7 @@ export function kill(id: string): void {
     sessionShells.delete(id)
     commandTrackers.delete(id)
     oscParsers.delete(id)
+    readySessions.delete(id)
   }
 }
 

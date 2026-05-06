@@ -20,6 +20,8 @@ export function useTerminal(
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const spawnedRef = useRef(false)
+  const lastSizeRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 })
+  const webglAddonRef = useRef<WebglAddon | null>(null)
   const theme = useUIStore((s) => s.theme)
   const fontSize = useUIStore((s) => s.fontSize)
   const fontFamily = useUIStore((s) => s.fontFamily)
@@ -27,6 +29,9 @@ export function useTerminal(
 
   const fit = useCallback(() => {
     if (fitAddonRef.current && termRef.current) {
+      // Xterm.js hack: check if the DOM is actually attached before trying to fit
+      // to avoid Uncaught TypeError on 'dimensions'
+      if (!termRef.current.element || !termRef.current.element.parentElement) return
       try {
         fitAddonRef.current.fit()
         const { cols, rows } = termRef.current
@@ -62,13 +67,27 @@ export function useTerminal(
 
     term.open(containerRef.current)
 
-    try {
-      const webglAddon = new WebglAddon()
-      webglAddon.onContextLoss(() => webglAddon.dispose())
-      term.loadAddon(webglAddon)
-    } catch {
-      // WebGL not available, fall back to canvas
+    function tryLoadWebgl(t: Terminal): void {
+      try {
+        const addon = new WebglAddon()
+        addon.onContextLoss(() => {
+          addon.dispose()
+          webglAddonRef.current = null
+          // Attempt recovery after a short delay
+          setTimeout(() => {
+            if (termRef.current) {
+              tryLoadWebgl(termRef.current)
+            }
+          }, 1000)
+        })
+        t.loadAddon(addon)
+        webglAddonRef.current = addon
+      } catch {
+        // WebGL not available or all contexts exhausted; xterm falls back to canvas renderer
+        webglAddonRef.current = null
+      }
     }
+    tryLoadWebgl(term)
 
     fitAddon.fit()
 
@@ -152,22 +171,38 @@ export function useTerminal(
     }
 
     let timeout: ReturnType<typeof setTimeout> | null = null
-    const ro = new ResizeObserver(() => {
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      const { width, height } = entry.contentRect
+      const prev = lastSizeRef.current
+      // Use < 1 on both independently so that if *either* is large it triggers,
+      // but if *both* are < 1 difference, it doesn't.
+      if (Math.abs(width - prev.w) < 1 && Math.abs(height - prev.h) < 1) return
+      console.log(
+        `[ResizeObserver] Resizing pane ${paneId} from ${prev.w}x${prev.h} to ${width}x${height}`,
+      )
+      lastSizeRef.current = { w: width, h: height }
       if (timeout) clearTimeout(timeout)
       timeout = setTimeout(() => {
         fit()
-      }, 50)
+      }, 150)
     })
     ro.observe(containerRef.current)
 
     return () => {
       ro.disconnect()
       if (timeout) clearTimeout(timeout)
+      lastSizeRef.current = { w: 0, h: 0 }
       unsubData()
       unsubShell()
       unsubCwd()
       unsubCmdStart()
       unsubCmdExit()
+      if (webglAddonRef.current) {
+        webglAddonRef.current.dispose()
+        webglAddonRef.current = null
+      }
       term.dispose()
       termRef.current = null
       fitAddonRef.current = null
