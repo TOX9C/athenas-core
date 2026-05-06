@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('athena', {
     kill: (id: string) => ipcRenderer.send('pty:kill', id),
     getHistory: (id: string) => ipcRenderer.invoke('pty:getHistory', id),
     hasSession: (id: string) => ipcRenderer.invoke('pty:hasSession', id),
+    isReady: (id: string) => ipcRenderer.invoke('pty:isReady', id),
     getCwd: (id: string) => ipcRenderer.invoke('pty:getCwd', id),
     ackClosePanes: (data: any) => ipcRenderer.send('athena:close-panes:ack', data),
     ackAgentSpawned: (id: string, data: any) =>
