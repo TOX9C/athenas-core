@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "crates/athena-app",
+    "crates/athena-core",
+    "crates/athena-terminal",
+    "crates/athena-agents",
+    "crates/athena-mcp"
+]
+resolver = "2"

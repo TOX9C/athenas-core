@@ -412,6 +412,10 @@ app.whenReady().then(async () => {
     return ptyMgr.hasSession(id)
   })
 
+  ipcMain.handle('pty:isReady', async (_event, id: string) => {
+    return ptyMgr.isReady(id)
+  })
+
   ipcMain.handle('pty:getCwd', async (_event, id: string) => {
     return ptyMgr.getCwd(id)
   })
