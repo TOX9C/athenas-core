@@ -24,10 +24,10 @@ export function WorkspaceList({ spaces, activeSpaceId, onSelect }: WorkspaceList
   return (
     <div className="flex flex-col gap-0.5 px-1">
       {spaces.map((space) => (
-        <button
+        <div
           key={space.id}
           onClick={() => onSelect(space.id)}
-          className="group flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors w-full"
+          className="group flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors w-full cursor-pointer"
           style={{
             background: space.id === activeSpaceId ? 'var(--bgTertiary)' : 'transparent',
           }}
@@ -55,7 +55,7 @@ export function WorkspaceList({ spaces, activeSpaceId, onSelect }: WorkspaceList
           >
             <Trash2 size={11} style={{ color: 'var(--error)' }} />
           </button>
-        </button>
+        </div>
       ))}
     </div>
   )

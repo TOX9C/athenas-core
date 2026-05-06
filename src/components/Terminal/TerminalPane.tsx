@@ -137,6 +137,11 @@ export function TerminalPane({ pane, cwd }: TerminalPaneProps) {
       setIsReady(true)
     })
 
+    // Query cached ready state for sessions that were already at a prompt
+    window.athena.pty.isReady(pane.id).then((ready: boolean) => {
+      if (ready) setIsReady(true)
+    })
+
     return () => {
       unsubExit()
       unsubReady()
