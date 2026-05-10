@@ -1,9 +1,16 @@
 [workspace]
+resolver = "2"
 members = [
     "crates/athena-app",
     "crates/athena-core",
-    "crates/athena-terminal",
-    "crates/athena-agents",
-    "crates/athena-mcp"
+    "crates/athena-terminal"
 ]
-resolver = "2"
+
+[workspace.dependencies]
+gpui = "0.2.2"
+portable-pty = "0.8.1"
+alacritty_terminal = "0.21.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
