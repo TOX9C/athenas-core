@@ -1,1 +1,1 @@
-pub fn init_terminal() {}
+pub mod pty;
