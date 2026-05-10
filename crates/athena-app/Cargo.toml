@@ -1,7 +1,10 @@
 [package]
 name = "athena-app"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
-gpui = "0.2.2"
+gpui.workspace = true
+athena-core = { path = "../athena-core" }
+athena-terminal = { path = "../athena-terminal" }
+anyhow.workspace = true
