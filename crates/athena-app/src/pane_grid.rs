@@ -1,4 +1,5 @@
 use gpui::*;
+use crate::terminal_pane::TerminalPaneView;
 
 pub enum Split {
     Horizontal(Box<Split>, Box<Split>),
@@ -8,6 +9,18 @@ pub enum Split {
 
 pub struct PaneGridView {
     pub root_split: Option<Split>,
+    pub terminal: Entity<TerminalPaneView>,
+}
+
+impl PaneGridView {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            root_split: None,
+            terminal: cx.new(|_| TerminalPaneView {
+                title: "Terminal 1".into(),
+            }),
+        }
+    }
 }
 
 impl Render for PaneGridView {
@@ -15,10 +28,7 @@ impl Render for PaneGridView {
         div()
             .flex()
             .size_full()
-            .child(match &self.root_split {
-                Some(_) => "Terminal Panes Available",
-                None => "No Active Terminals",
-            })
+            .child(self.terminal.clone())
     }
 }
 
