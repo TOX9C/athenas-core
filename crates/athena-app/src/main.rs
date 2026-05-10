@@ -1,17 +1,23 @@
+#![recursion_limit = "256"]
 use gpui::*;
 use gpui_platform::application;
 
 mod sidebar;
 use sidebar::SidebarView;
 
+mod pane_grid;
+use pane_grid::{PaneGridView, Split};
+
 struct AthenaWorkspace {
     sidebar: Entity<SidebarView>,
+    pane_grid: Entity<PaneGridView>,
 }
 
 impl AthenaWorkspace {
     pub fn build(cx: &mut Context<Self>) -> Self {
         AthenaWorkspace {
             sidebar: cx.new(|_cx| SidebarView),
+            pane_grid: cx.new(|_cx| PaneGridView { root_split: None }),
         }
     }
 }
@@ -25,7 +31,7 @@ impl Render for AthenaWorkspace {
             .child(self.sidebar.clone())
             .child(
                 div().flex_1().bg(rgb(0x222222))
-                    .p_4().child("Pane Grid Container (Terminal)")
+                    .p_4().child(self.pane_grid.clone())
             )
     }
 }
