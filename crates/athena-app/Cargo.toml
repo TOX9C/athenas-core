@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 gpui.workspace = true
+gpui_platform.workspace = true
 athena-core = { path = "../athena-core" }
 athena-terminal = { path = "../athena-terminal" }
 anyhow.workspace = true
