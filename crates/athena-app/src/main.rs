@@ -1,10 +1,11 @@
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 use gpui::*;
 use gpui_platform::application;
 
 mod sidebar;
 use sidebar::SidebarView;
 
+mod terminal_pane;
 mod pane_grid;
 use pane_grid::{PaneGridView, Split};
 
@@ -17,7 +18,7 @@ impl AthenaWorkspace {
     pub fn build(cx: &mut Context<Self>) -> Self {
         AthenaWorkspace {
             sidebar: cx.new(|_cx| SidebarView),
-            pane_grid: cx.new(|_cx| PaneGridView { root_split: None }),
+            pane_grid: cx.new(|cx| PaneGridView::new(cx)),
         }
     }
 }
