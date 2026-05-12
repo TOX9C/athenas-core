@@ -1,13 +1,12 @@
 [package]
-name = "athena-terminal"
+name = "athena-fs"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.43", features = ["full"] }
+tokio = { version = "1.43", features = ["full", "fs"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
-# rxrust = "1.0.0-rc.5" -- commented out until needed
 
 [dev-dependencies]
 tokio-test = "0.4"

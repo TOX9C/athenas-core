@@ -1,1 +1,1 @@
-pub mod pty;
+pub fn init() {}
