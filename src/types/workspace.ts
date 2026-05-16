@@ -9,6 +9,10 @@ export interface PaneConfig {
   customAgentId?: string
   label?: string
   bypassMode?: boolean
+  /** Name of the project/workspace associated with this pane */
+  projectName?: string
+  /** Name of the model currently used by this pane's agent */
+  modelName?: string
 }
 
 export interface Space {

@@ -1,0 +1,123 @@
+/* Agent Panel Grid Layout & Theme Support */
+
+:root {
+  --panel-bg: var(--bg);
+  --titlebar-bg: var(--bgSecondary);
+  --color-accent: var(--accent);
+  --text-muted: var(--textMuted);
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  padding: 1rem;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Individual Panel */
+.agent-panel {
+  display: flex;
+  flex-direction: column;
+  border: none;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--panel-bg);
+  transition: box-shadow 0.2s ease;
+}
+
+.agent-panel--selected {
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+/* Title Bar */
+.agent-panel-titlebar {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  background: var(--titlebar-bg);
+  cursor: default;
+  transition: background 0.15s ease;
+}
+
+.agent-panel-titlebar:hover {
+  background: color-mix(in srgb, var(--titlebar-bg) 90%, var(--color-accent) 10%);
+}
+
+.agent-panel-titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.agent-panel-titlebar-left .agent-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-panel-titlebar-left .project-name {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-panel-titlebar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-panel-titlebar-right button {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.agent-panel-titlebar-right button:hover {
+  color: var(--color-accent);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.agent-panel-titlebar-right button.agent-panel-close-btn:hover {
+  color: #e74c3c;
+  background: rgba(231, 76, 60, 0.1);
+}
+
+/* Terminal Area */
+.agent-panel-terminal {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Status Bar */
+.agent-panel-statusbar {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--panel-bg);
+  border-top: 1px solid var(--border-color);
+}

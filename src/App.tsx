@@ -23,6 +23,9 @@ import { useTaskStore } from './store/taskStore'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { WorkspaceTabs } from './components/Workspace/WorkspaceTabs'
 import { TerminalGrid } from './components/Terminal/TerminalGrid'
+import AgentGrid from './renderer/components/AgentGrid/AgentGrid'
+import TerminalStub from './renderer/components/AgentPanel/TerminalStub'
+import { getAgentCommand } from './utils/agentCommands'
 import { NewSpaceModal } from './components/Workspace/NewSpaceModal'
 import { SettingsModal } from './components/Settings/SettingsModal'
 import { BrowserPanel } from './components/Browser/BrowserPanel'
@@ -278,6 +281,47 @@ export default function App() {
       case 'swarm':
         return <SwarmBoard />
       case 'terminals':
+        return (
+          <div className="flex-1 h-full w-full min-h-0 relative">
+            {spaces
+              .filter((space) => mountedSpaces.has(space.id) && space.id === activeSpaceId)
+              .map((space) => (
+                <div key={space.id} className="absolute inset-0 flex">
+                  <TerminalGrid space={space} />
+                </div>
+              ))}
+          </div>
+        )
+      case 'panels':
+        return (
+          <div className="flex-1 h-full w-full min-h-0 relative">
+            {spaces
+              .filter((space) => mountedSpaces.has(space.id) && space.id === activeSpaceId)
+              .map((space) => (
+                <div key={space.id} className="absolute inset-0 flex">
+                  <AgentGrid
+                    panes={space.panes}
+                    cwd={space.dir}
+                    onSelectPane={(paneId) => console.log('Selected pane:', paneId)}
+                    onFullscreenPane={(paneId) => console.log('Fullscreen pane:', paneId)}
+                    onSplitPane={(paneId) => console.log('Split pane:', paneId)}
+                    onMinimizePane={(paneId) => console.log('Minimize pane:', paneId)}
+                    onClosePane={(paneId) => console.log('Close pane:', paneId)}
+                  >
+                    {(pane) => (
+                      <TerminalStub
+                        paneId={pane.id}
+                        cwd={space.dir}
+                        agentCmd={getAgentCommand(pane.agentType, pane.customCmd, {
+                          bypass: pane.bypassMode ?? pane.agentType === 'claude',
+                        })}
+                      />
+                    )}
+                  </AgentGrid>
+                </div>
+              ))}
+          </div>
+        )
       default:
         return (
           <div className="flex-1 h-full w-full min-h-0 relative">
@@ -326,7 +370,7 @@ export default function App() {
             {/* Panel switcher */}
             {activeSpace && (
               <div className="flex items-center gap-0.5 mr-1">
-                {(['terminals', 'kanban', 'swarm'] as const).map((p) => (
+                {(['terminals', 'panels', 'kanban', 'swarm'] as const).map((p) => (
                   <button
                     key={p}
                     onClick={() => setActivePanel(p)}

@@ -18,7 +18,7 @@ interface UIState {
   toggleSidebar: () => void
   setSidebarWidth: (w: number) => void
   setSidebarSection: (s: SidebarSection) => void
-  setActivePanel: (p: 'terminals' | 'swarm' | 'kanban') => void
+  setActivePanel: (p: 'terminals' | 'swarm' | 'kanban' | 'panels') => void
   toggleBrowser: () => void
   toggleEditor: () => void
   toggleSettings: () => void
