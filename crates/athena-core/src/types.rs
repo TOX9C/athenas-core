@@ -1,20 +1,27 @@
 use serde::{Deserialize, Serialize};
 
 /// Represents an image attachment with base64 data and media type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ImageData {
     pub base64: String,
     pub media_type: String, // e.g. "image/jpeg", "image/png", "image/gif", "image/webp"
 }
 
-/// Supported LLM providers.
+/// Supported LLM providers for the Athena orchestrator.
+///
+/// Each provider has different API endpoints and message formats.
+/// The orchestrator handles these differences internally.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LLMProvider {
+    /// Anthropic Claude via the Messages API.
     Anthropic,
+    /// OpenAI via the Chat Completions API. Also compatible with any OpenAI-compatible endpoint.
     OpenAI,
+    /// NVIDIA NIM hosted models via the integrate.api.nvidia.com endpoint.
     #[serde(rename = "nvidia_nim")]
     NvidiaNim,
+    /// LM Studio local server. Requires a running LM Studio instance.
     Lmstudio,
 }
 
@@ -29,76 +36,102 @@ impl std::fmt::Display for LLMProvider {
     }
 }
 
-/// A single entry in the session history.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single entry in the session history, representing one turn in a conversation.
+///
+/// Used to restore conversation context when switching between sessions
+/// or when the app restarts.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SessionHistoryEntry {
-    pub role: String, // "user" or "assistant"
+    /// The role of the message sender: `"user"` or `"assistant"`.
+    pub role: String,
+    /// The text content of the message.
     pub content: String,
+    /// Optional image attachments included with the message.
     pub images: Option<Vec<ImageData>>,
 }
 
-/// Options for performing a code search.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Options for performing a code search via ripgrep.
+///
+/// Used by both the `search_code` and `search_files` functions,
+/// as well as the MCP `code_search` and `search_files` tools.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SearchOptions {
+    /// The regex pattern to search for.
     pub pattern: String,
+    /// The directory to search within.
     pub path: String,
+    /// Optional glob pattern to filter files (e.g., `*.rs`).
     pub glob: Option<String>,
+    /// Whether to perform case-sensitive matching.
     pub case_sensitive: bool,
+    /// Maximum number of results to return. `None` means no limit.
     pub max_results: Option<usize>,
+    /// Number of context lines to include before and after each match.
     pub context_lines: Option<usize>,
 }
 
-impl Default for SearchOptions {
-    fn default() -> Self {
-        Self {
-            pattern: String::new(),
-            path: String::new(),
-            glob: None,
-            case_sensitive: false,
-            max_results: None,
-            context_lines: None,
-        }
-    }
-}
-
 /// A single match found during a code search.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Contains the matched line plus optional context lines before and after.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SearchMatch {
+    /// Path to the file containing the match, relative to the search root.
     pub file_path: String,
+    /// 1-based line number of the match.
     pub line_number: u32,
+    /// 1-based column where the match starts.
     pub column: u32,
+    /// The full text of the matched line.
     pub line_text: String,
+    /// The specific text that matched the pattern.
     pub match_text: String,
+    /// Lines before the match, if `context_lines` was specified.
     pub context_before: Vec<String>,
+    /// Lines after the match, if `context_lines` was specified.
     pub context_after: Vec<String>,
 }
 
 /// Aggregated result of a search operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Contains all matches plus summary statistics.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
+    /// Individual match entries.
     pub matches: Vec<SearchMatch>,
+    /// Whether results were truncated due to `max_results`.
     pub truncated: bool,
+    /// Summary statistics about the search.
     pub stats: SearchStats,
 }
 
 /// Statistics about a search result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SearchStats {
+    /// Number of unique files that contained matches.
     pub files_matched: usize,
+    /// Total number of individual matches found.
     pub total_matches: usize,
 }
 
-/// Error type for the orchestrator.
+/// Error type for the Athena orchestrator.
+///
+/// Returned by `send_message`, `send_anthropic`, and `send_openai`
+/// when an LLM API request fails.
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
+    /// The underlying HTTP request to the LLM API failed.
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
+    /// No API key was configured for the selected provider.
     #[error("API key is required. Please set it in Settings.")]
     MissingApiKey,
+    /// Image attachments were requested but the provider (LM Studio) does not support them.
     #[error("Image attachments are not supported by LM Studio")]
     LmStudioVisionNotSupported,
+    /// JSON serialization or deserialization failed.
     #[error("JSON serialization failed: {0}")]
     SerializationError(#[from] serde_json::Error),
+    /// A generic error with a human-readable message.
     #[error("{0}")]
     Generic(String),
 }

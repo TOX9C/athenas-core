@@ -1,6 +1,5 @@
-use serde::{Serialize};
-use std::fs;
-use std::io::Write;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -13,10 +12,11 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("Items not found")]
     NotFound(String),
+    #[error("{0}")]
+    Generic(String),
 }
 
 /// Simple key-value JSON store backed by a file in the user's data directory.
-
 /// Enforces immutability of data by returning new values rather than mutating in place.
 /// Thread-safe via `Mutex` on the data map.
 pub struct KeyValueStore {
@@ -28,19 +28,31 @@ impl KeyValueStore {
     /// Create or load a store at `~/.config/athena-core`.
     /// (Use full app path derived from `dirs::data_dir()` in production.)
     pub fn new() -> Result<Self, StoreError> {
-        Self::with_name("store")
+        Self::with_name_sync("store")
     }
 
-    /// Create or load a store file with the given name under the app's data directory.
-    pub fn with_name(name: &str) -> Result<Self, StoreError> {
+    /// Empty fallback constructor — creates an in-memory store with no persistence.
+    /// Used when the real data directory is inaccessible at startup.
+    pub fn new_empty() -> Self {
+        let data_dir = std::env::temp_dir().join("athena-core-fallback");
+        let _ = std::fs::create_dir_all(&data_dir);
+        let path = data_dir.join("store.json");
+        Self {
+            path,
+            data: Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Synchronous version for initialization (blocking is acceptable at startup).
+    pub fn with_name_sync(name: &str) -> Result<Self, StoreError> {
         let data_dir = dirs::data_dir()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
             .join("athena-core");
-        fs::create_dir_all(&data_dir)?;
+        std::fs::create_dir_all(&data_dir)?;
         let path = data_dir.join(format!("{name}.json"));
         let data: std::collections::HashMap<String, serde_json::Value> = if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            serde_json::from_str(&content).unwrap_or_default()
+            let content = std::fs::read_to_string(&path)?;
+            serde_json::from_str(&content)?
         } else {
             std::collections::HashMap::new()
         };
@@ -50,50 +62,109 @@ impl KeyValueStore {
         })
     }
 
-    /// Retrieve the value for a key returning a new object, or `None` if absent.
-    pub fn get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        let map = self.data.lock().unwrap();
-        map.get(key).and_then(|v| serde_json::from_value(v.clone()).ok())
+    /// Async version for runtime creation/loading.
+    pub async fn with_name(name: &str) -> Result<Self, StoreError> {
+        let data_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join("athena-core");
+        let data_dir_clone = data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&data_dir_clone)
+        })
+        .await
+        .map_err(|e| StoreError::Generic(e.to_string()))??;
+        let path = data_dir.join(format!("{name}.json"));
+        let data: std::collections::HashMap<String, serde_json::Value> = if path.exists() {
+            let path_clone = path.clone();
+            let content = tokio::task::spawn_blocking(move || {
+                std::fs::read_to_string(&path_clone)
+            })
+            .await
+            .map_err(|e| StoreError::Generic(e.to_string()))??;
+            serde_json::from_str(&content)?
+        } else {
+            std::collections::HashMap::new()
+        };
+        Ok(Self {
+            path,
+            data: Mutex::new(data),
+        })
     }
 
-    /// Set the value for a key and persist to disk.  The value must be serializable.
-    pub fn set<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
+    /// Retrieve the value for a key, returning a new object, or `None` if absent.
+    /// Returns `Err` if deserialization fails for a present key.
+    pub fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, StoreError> {
+        let map = self
+            .data
+            .lock()
+            .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+        match map.get(key) {
+            None => Ok(None),
+            Some(v) => Ok(Some(serde_json::from_value(v.clone()).map_err(|e| {
+                StoreError::Generic(format!("deserialization failed: {}", e))
+            })?)),
+        }
+    }
+
+    /// Set the value for a key and persist to disk. The value must be serializable.
+    pub async fn set<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
         {
-            let mut map = self.data.lock().unwrap();
+            let mut map = self
+                .data
+                .lock()
+                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
             map.insert(key.to_string(), json_value);
         }
-        self.persist()
+        self.persist().await
     }
 
     /// Delete a key and persist.
-    pub fn delete(&self, key: &str) -> Result<(), StoreError> {
+    pub async fn delete(&self, key: &str) -> Result<(), StoreError> {
         {
-            let mut map = self.data.lock().unwrap();
+            let mut map = self
+                .data
+                .lock()
+                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
             map.remove(key);
         }
-        self.persist()
+        self.persist().await
     }
 
     /// Check if a key exists.
     pub fn has(&self, key: &str) -> bool {
-        let map = self.data.lock().unwrap();
-        map.contains_key(key)
+        self.data
+            .lock()
+            .map_err(|e| {
+                eprintln!("lock poisoned in has(): {}", e);
+                e
+            })
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(key)
     }
 
-    fn persist(&self) -> Result<(), StoreError> {
-        let map = self.data.lock().unwrap();
-        let json = serde_json::to_string_pretty(&*map)?;
-        let mut file = fs::File::create(&self.path)?;
-        file.write_all(json.as_bytes())?;
+    async fn persist(&self) -> Result<(), StoreError> {
+        let json = {
+            let map = self
+                .data
+                .lock()
+                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+            serde_json::to_string_pretty(&*map)?
+        };
+        let path_clone = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut file = std::fs::File::create(&path_clone)?;
+            std::io::Write::write_all(&mut file, json.as_bytes())?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .map_err(|e| StoreError::Generic(e.to_string()))??;
         Ok(())
     }
 }
 
 impl Default for KeyValueStore {
     fn default() -> Self {
-        Self::new().expect("failed to initialize key-value store")
+        Self::with_name_sync("store").unwrap_or_else(|_| Self::new_empty())
     }
 }
-
-use serde::de::DeserializeOwned;
