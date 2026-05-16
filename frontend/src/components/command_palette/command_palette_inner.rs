@@ -1,0 +1,347 @@
+use crate::stores::command::{use_command_store, Command, CommandCategory};
+use dioxus::prelude::*;
+
+/// Format a shortcut string with Unicode symbols.
+fn format_shortcut(shortcut: &str) -> String {
+    shortcut
+        .replace("Mod", "\u{2318}")
+        .replace("Cmd", "\u{2318}")
+        .replace("Ctrl", "\u{2303}")
+        .replace("Shift", "\u{21e7}")
+        .replace("Alt", "\u{2325}")
+        .replace("Enter", "\u{23ce}")
+        .replace("Escape", "\u{238b}")
+        .replace("Backspace", "\u{232b}")
+        .replace("Tab", "\u{21e5}")
+}
+
+/// A display group for the palette.
+#[derive(Clone)]
+struct DisplayGroup {
+    label: String,
+    commands: Vec<Command>,
+}
+
+/// Filter and group commands from the store for display.
+fn filter_and_group(commands: &[Command], recent_ids: &[String], query: &str) -> Vec<DisplayGroup> {
+    let available: Vec<&Command> = commands.iter().filter(|c| c.when_key.is_none()).collect();
+
+    if query.trim().is_empty() {
+        // Show recent first, then by category.
+        let recent: Vec<Command> = recent_ids
+            .iter()
+            .filter_map(|rid| available.iter().find(|c| c.id == *rid))
+            .map(|c| (*c).clone())
+            .collect();
+
+        let recent_set: std::collections::HashSet<&str> =
+            recent_ids.iter().map(|s| s.as_str()).collect();
+        let non_recent: Vec<&Command> = available
+            .iter()
+            .filter(|c| !recent_set.contains(c.id.as_str()))
+            .copied()
+            .collect();
+
+        let mut groups = Vec::new();
+        if !recent.is_empty() {
+            groups.push(DisplayGroup {
+                label: "Recent".to_string(),
+                commands: recent,
+            });
+        }
+
+        let cat_order: &[CommandCategory] = &[
+            CommandCategory::Workspace,
+            CommandCategory::Panel,
+            CommandCategory::Athena,
+            CommandCategory::Terminal,
+            CommandCategory::File,
+            CommandCategory::Navigation,
+            CommandCategory::Settings,
+        ];
+        let cat_label = |cat: &CommandCategory| -> &str {
+            match cat {
+                CommandCategory::Workspace => "Workspace",
+                CommandCategory::Panel => "Panels",
+                CommandCategory::Athena => "Athena",
+                CommandCategory::Terminal => "Terminal",
+                CommandCategory::File => "File",
+                CommandCategory::Navigation => "Navigation",
+                CommandCategory::Settings => "Settings",
+            }
+        };
+
+        for cat in cat_order {
+            let cmds: Vec<Command> = non_recent
+                .iter()
+                .filter(|c| c.category == *cat)
+                .map(|c| (*c).clone())
+                .collect();
+            if !cmds.is_empty() {
+                groups.push(DisplayGroup {
+                    label: cat_label(cat).to_string(),
+                    commands: cmds,
+                });
+            }
+        }
+
+        return groups;
+    }
+
+    // Fuzzy prefix matching.
+    let lower = query.to_lowercase();
+    let terms: Vec<&str> = lower.split_whitespace().collect();
+
+    let mut scored: Vec<(i32, Command)> = Vec::new();
+
+    for cmd in &available {
+        let label_lower = cmd.label.to_lowercase();
+        let desc_lower = cmd.description.as_deref().unwrap_or("").to_lowercase();
+        let kw_string = cmd.keywords.join(" ").to_lowercase();
+        let mut score: i32 = 0;
+
+        if label_lower.starts_with(&lower) {
+            score = 10;
+        } else if label_lower.contains(&lower) {
+            score = 7;
+        }
+
+        if score == 0 && terms.len() > 1 {
+            let all_match = terms.iter().all(|t| {
+                label_lower.contains(t) || desc_lower.contains(t) || kw_string.contains(t)
+            });
+            if all_match {
+                score = 5;
+            }
+        }
+
+        if score == 0 {
+            let mut qi = 0;
+            for ch in label_lower.chars() {
+                if qi < lower.len() && ch == lower.chars().nth(qi).unwrap() {
+                    qi += 1;
+                }
+            }
+            if qi == lower.len() {
+                score = 3;
+            }
+        }
+
+        if score == 0 && (desc_lower.contains(&lower) || kw_string.contains(&lower)) {
+            score = 2;
+        }
+
+        let recent_boost: i32 = if recent_ids.iter().any(|r| r == &cmd.id) {
+            1
+        } else {
+            0
+        };
+
+        if score + recent_boost > 0 {
+            scored.push((score + recent_boost, (*cmd).clone()));
+        }
+    }
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
+
+    let results: Vec<Command> = scored.into_iter().map(|(_, c)| c).collect();
+
+    if results.is_empty() {
+        Vec::new()
+    } else {
+        vec![DisplayGroup {
+            label: "Results".to_string(),
+            commands: results,
+        }]
+    }
+}
+
+#[component]
+pub fn CommandPalette() -> Element {
+    let mut command_state = use_command_store();
+    let mut selected_idx = use_signal(|| 0usize);
+
+    if !command_state.read().is_open {
+        return rsx! {};
+    }
+
+    let query = command_state.read().query.clone();
+    let commands = command_state.read().commands.clone();
+    let recent_ids = command_state.read().recent_ids.clone();
+    let groups = filter_and_group(&commands, &recent_ids, &query);
+    let flat_count: usize = groups.iter().map(|g| g.commands.len()).sum();
+    let total_commands = commands.len();
+
+    let empty_msg = if query.trim().is_empty() {
+        format!("{} commands available", total_commands)
+    } else {
+        "No matching commands".to_string()
+    };
+
+    rsx! {
+        div {
+            style: "position: fixed; inset: 0; z-index: 60; display: flex; justify-content: center; padding-top: 12vh;",
+
+            // Backdrop
+            div {
+                style: "position: absolute; inset: 0; background: rgba(0,0,0,0.4);",
+                onclick: move |_| command_state.write().close(),
+            }
+
+            // Palette container
+            div {
+                style: "position: relative; z-index: 1; width: 520px; max-height: 400px; display: flex; flex-direction: column; border-radius: 12px; box-shadow: 0 25px 50px rgba(0,0,0,0.4); overflow: hidden; background: var(--bgSecondary); border: 1px solid var(--border);",
+
+                // Search input
+                div {
+                    style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border);",
+
+                    span {
+                        style: "font-size: 10px; font-weight: 700; color: var(--textDim); flex-shrink: 0; letter-spacing: 0.5px;",
+                        "FIND"
+                    }
+
+                    input {
+                        style: "flex: 1; background: transparent; border: none; outline: none; font-size: 13px; color: var(--text);",
+                        value: "{query}",
+                        oninput: move |e| {
+                            command_state.write().set_query(e.value());
+                            selected_idx.set(0);
+                        },
+                        onkeydown: move |e: KeyboardEvent| {
+                            let key = e.key();
+                            match key {
+                                Key::ArrowDown => {
+                                    selected_idx.set((selected_idx() + 1).min(flat_count.saturating_sub(1)));
+                                }
+                                Key::ArrowUp => {
+                                    selected_idx.set(selected_idx().saturating_sub(1));
+                                }
+                                Key::Enter => {
+                                    // Execute command at selected_idx
+                                    command_state.write().close();
+                                }
+                                Key::Escape => {
+                                    command_state.write().close();
+                                }
+                                _ => {}
+                            }
+                        },
+                        placeholder: "Type a command...",
+                        spellcheck: false,
+                        autocomplete: "off",
+                    }
+
+                    div {
+                        style: "display: flex; align-items: center; gap: 4px;",
+
+                        if !query.trim().is_empty() && flat_count > 0 {
+                            span {
+                                style: "font-size: 10px; padding: 1px 6px; border-radius: 3px; background: var(--bgTertiary); color: var(--textDim);",
+                                "{flat_count}"
+                            }
+                        }
+
+                        kbd {
+                            style: "font-size: 9px; padding: 1px 4px; border-radius: 3px; background: var(--bgTertiary); color: var(--textDim);",
+                            "esc"
+                        }
+                    }
+                }
+
+                // Command list
+                div {
+                    style: "flex: 1; overflow-y: auto;",
+
+                    if flat_count == 0 {
+                        div {
+                            style: "display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px; color: var(--textDim);",
+                            span { style: "font-size: 20px; opacity: 0.3;", "#" }
+                            span {
+                                style: "font-size: 12px;",
+                                "{empty_msg}"
+                            }
+                        }
+                    } else {
+                        {
+                            let groups_clone = groups.clone();
+                            let mut running_idx = 0usize;
+                            let mut items = Vec::new();
+                            for group in groups_clone {
+                                let group_label = group.label.clone();
+                                items.push(rsx! {
+                                    div {
+                                        key: "group-{group_label}",
+                                        style: "padding: 2px 8px; font-size: 9px; font-weight: 600; color: var(--textDim); text-transform: uppercase;",
+                                        "{group_label}"
+                                    }
+                                });
+                                for cmd in group.commands.iter() {
+                                    let idx = running_idx;
+                                    running_idx += 1;
+                                    let is_selected = idx == selected_idx();
+                                    let display_icon = "\u{203a}".to_string();
+                                    let shortcut_str = cmd.shortcut.as_ref().map(|s| format_shortcut(s));
+                                    let cmd_bg = if is_selected { "var(--bgTertiary)" } else { "transparent" };
+                                    let kbd_bg = if is_selected { "var(--bgSecondary)" } else { "var(--bgTertiary)" };
+                                    let cmd_id = cmd.id.clone();
+                                    let cmd_label = cmd.label.clone();
+                                    items.push(rsx! {
+                                        button {
+                                            key: "{cmd_id}",
+                                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; width: 100%; text-align: left; border: none; background: {cmd_bg}; cursor: pointer; font-size: 12px; color: var(--text);",
+                                            onmouseenter: move |_| selected_idx.set(idx),
+
+                                            span {
+                                                style: "font-size: 14px; color: var(--textDim); width: 16px; text-align: center;",
+                                                "{display_icon}"
+                                            }
+
+                                            span {
+                                                style: "flex: 1; font-size: 12px;",
+                                                "{cmd_label}"
+                                            }
+
+                                            if let Some(ref sc) = shortcut_str {
+                                                kbd {
+                                                    style: "font-size: 10px; padding: 1px 6px; border-radius: 3px; background: {kbd_bg}; color: var(--textDim);",
+                                                    "{sc}"
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            rsx! { {items.into_iter()} }
+                        }
+                    }
+                }
+
+                // Footer
+                div {
+                    style: "display: flex; align-items: center; gap: 12px; padding: 6px 12px; border-top: 1px solid var(--border); font-size: 10px; color: var(--textDim);",
+
+                    span {
+                        kbd { style: "font-size: 9px; padding: 1px 3px; border-radius: 2px; background: var(--bgTertiary);", "\u{2191}\u{2193}" }
+                        " navigate"
+                    }
+
+                    span {
+                        kbd { style: "font-size: 9px; padding: 1px 3px; border-radius: 2px; background: var(--bgTertiary);", "\u{21b5}" }
+                        " execute"
+                    }
+
+                    span {
+                        kbd { style: "font-size: 9px; padding: 1px 3px; border-radius: 2px; background: var(--bgTertiary);", "esc" }
+                        " close"
+                    }
+
+                    span {
+                        style: "margin-left: auto; opacity: 0.5;",
+                        "{total_commands} commands"
+                    }
+                }
+            }
+        }
+    }
+}

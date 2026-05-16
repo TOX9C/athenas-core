@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-host-update-status"
+description = "Enables the plugin_host_update_status command without any pre-configured scope."
+commands.allow = ["plugin_host_update_status"]
+
+[[permission]]
+identifier = "deny-plugin-host-update-status"
+description = "Denies the plugin_host_update_status command without any pre-configured scope."
+commands.deny = ["plugin_host_update_status"]

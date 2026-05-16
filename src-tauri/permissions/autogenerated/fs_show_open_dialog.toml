@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fs-show-open-dialog"
+description = "Enables the fs_show_open_dialog command without any pre-configured scope."
+commands.allow = ["fs_show_open_dialog"]
+
+[[permission]]
+identifier = "deny-fs-show-open-dialog"
+description = "Denies the fs_show_open_dialog command without any pre-configured scope."
+commands.deny = ["fs_show_open_dialog"]

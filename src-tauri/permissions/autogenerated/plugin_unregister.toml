@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-unregister"
+description = "Enables the plugin_unregister command without any pre-configured scope."
+commands.allow = ["plugin_unregister"]
+
+[[permission]]
+identifier = "deny-plugin-unregister"
+description = "Denies the plugin_unregister command without any pre-configured scope."
+commands.deny = ["plugin_unregister"]

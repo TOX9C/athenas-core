@@ -1,0 +1,13 @@
+[application]
+name = "athena-frontend"
+out_dir = "dist"
+public_dir = "public"
+
+[web.app]
+title = "Athena's Core"
+
+[web.watcher]
+watch_path = ["src"]
+
+[build]
+target = "web"

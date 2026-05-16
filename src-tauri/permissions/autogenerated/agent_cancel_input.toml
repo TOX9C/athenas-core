@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-cancel-input"
+description = "Enables the agent_cancel_input command without any pre-configured scope."
+commands.allow = ["agent_cancel_input"]
+
+[[permission]]
+identifier = "deny-agent-cancel-input"
+description = "Denies the agent_cancel_input command without any pre-configured scope."
+commands.deny = ["agent_cancel_input"]

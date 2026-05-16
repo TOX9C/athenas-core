@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plan-update-step"
+description = "Enables the plan_update_step command without any pre-configured scope."
+commands.allow = ["plan_update_step"]
+
+[[permission]]
+identifier = "deny-plan-update-step"
+description = "Denies the plan_update_step command without any pre-configured scope."
+commands.deny = ["plan_update_step"]

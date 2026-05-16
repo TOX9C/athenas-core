@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fs-search-files"
+description = "Enables the fs_search_files command without any pre-configured scope."
+commands.allow = ["fs_search_files"]
+
+[[permission]]
+identifier = "deny-fs-search-files"
+description = "Denies the fs_search_files command without any pre-configured scope."
+commands.deny = ["fs_search_files"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-respond-input"
+description = "Enables the agent_respond_input command without any pre-configured scope."
+commands.allow = ["agent_respond_input"]
+
+[[permission]]
+identifier = "deny-agent-respond-input"
+description = "Denies the agent_respond_input command without any pre-configured scope."
+commands.deny = ["agent_respond_input"]

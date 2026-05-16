@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-comms-sessions"
+description = "Enables the agent_comms_sessions command without any pre-configured scope."
+commands.allow = ["agent_comms_sessions"]
+
+[[permission]]
+identifier = "deny-agent-comms-sessions"
+description = "Denies the agent_comms_sessions command without any pre-configured scope."
+commands.deny = ["agent_comms_sessions"]

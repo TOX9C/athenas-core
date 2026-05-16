@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-output-buffer-list"
+description = "Enables the output_buffer_list command without any pre-configured scope."
+commands.allow = ["output_buffer_list"]
+
+[[permission]]
+identifier = "deny-output-buffer-list"
+description = "Denies the output_buffer_list command without any pre-configured scope."
+commands.deny = ["output_buffer_list"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-swarm-read-mailbox"
+description = "Enables the swarm_read_mailbox command without any pre-configured scope."
+commands.allow = ["swarm_read_mailbox"]
+
+[[permission]]
+identifier = "deny-swarm-read-mailbox"
+description = "Denies the swarm_read_mailbox command without any pre-configured scope."
+commands.deny = ["swarm_read_mailbox"]

@@ -1,0 +1,118 @@
+/* Athena's Core — Default theme (Athena) + base styles */
+
+:root {
+--bg: #0b0e13;
+--bgSecondary: #141820;
+--bgTertiary: #1e232e;
+--bgHover: #1c2128;
+--border: #2a303e;
+--borderActive: rgba(255, 255, 255, 0.12);
+--text: #e0e4ee;
+--textMuted: #8890a4;
+--textDim: #525a6e;
+--accent: #38bdf8;
+--accentHover: #7dd3fc;
+--accentSubtle: rgba(56, 189, 248, 0.1);
+--success: #22c55e;
+--error: #ef4444;
+--warning: #f59e0b;
+--green: #98c379;
+--blue: #61afef;
+--orange: #e5c07b;
+--red: #e06c75;
+--purple: #c678dd;
+--cyan: #56b6c2;
+--shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+--shadowLg: 0 8px 24px rgba(0, 0, 0, 0.4);
+--terminalBg: #0b0e13;
+--terminalFg: #e0e4ee;
+--terminalCursor: #38bdf8;
+--terminalSelection: rgba(56, 189, 248, 0.3);
+--fontFamily: "JetBrains Mono", monospace;
+--fontSize: 14px;
+}
+
+html, body, #main {
+height: 100%;
+width: 100%;
+margin: 0;
+padding: 0;
+overflow: hidden;
+background: var(--bg);
+color: var(--text);
+font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+body, .terminal-pane, .editor-panel, .code-content, .terminal-container {
+font-family: var(--fontFamily);
+font-size: var(--fontSize);
+}
+
+::-webkit-scrollbar {
+width: 4px;
+height: 4px;
+}
+
+::-webkit-scrollbar-track {
+background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+background: var(--bgTertiary);
+border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+background: var(--textDim);
+}
+
+::selection {
+background: var(--accent);
+color: var(--bg);
+}
+
+input, textarea, select {
+font-family: inherit;
+}
+
+button {
+cursor: pointer;
+border: none;
+background: none;
+font-family: inherit;
+color: inherit;
+}
+
+/* Syntax highlighting tokens */
+.token-keyword { color: var(--purple); }
+.token-string { color: var(--green); }
+.token-comment { color: var(--textDim); font-style: italic; }
+.token-number { color: var(--orange); }
+.token-type { color: var(--orange); }
+.token-function { color: var(--blue); }
+.token-operator { color: var(--cyan); }
+.token-lifetime { color: var(--cyan); }
+
+/* Code line styling */
+.code-line {
+  display: block;
+  padding: 0 8px;
+  white-space: pre;
+  font-family: var(--fontFamily);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.code-line:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.line-number {
+  display: inline-block;
+  width: 3em;
+  text-align: right;
+  padding-right: 1em;
+  color: var(--textDim);
+  user-select: none;
+  opacity: 0.5;
+}

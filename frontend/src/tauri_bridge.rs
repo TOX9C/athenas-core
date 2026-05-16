@@ -1,0 +1,732 @@
+use wasm_bindgen::prelude::*;
+
+/// Result type for Tauri command invocations.
+pub type TauriResult<T> = Result<T, JsValue>;
+
+/// Invoke a Tauri command.
+/// Maps to `window.__TAURI__.core.invoke(command, args)` in the browser context.
+pub async fn invoke<T>(command: &str, args: &str) -> TauriResult<T>
+where
+    T: JsValueCast,
+{
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("No window"))?;
+    let tauri = js_sys::Reflect::get(&window, &JsValue::from_str("__TAURI__"))
+        .map_err(|e| JsValue::from(format!("Reflect get error: {:?}", e)))?;
+    let tauri_obj = tauri
+        .dyn_into::<js_sys::Object>()
+        .map_err(|e| JsValue::from(format!("__TAURI__ not an object: {:?}", e)))?;
+    let core = js_sys::Reflect::get(&tauri_obj, &JsValue::from_str("core"))
+        .map_err(|e| JsValue::from(format!("Reflect core error: {:?}", e)))?;
+    let core_obj = core
+        .dyn_into::<js_sys::Object>()
+        .map_err(|e| JsValue::from(format!("__TAURI__.core not available: {:?}", e)))?;
+    let invoke_fn = js_sys::Reflect::get(&core_obj, &JsValue::from_str("invoke"))
+        .map_err(|e| JsValue::from(format!("Reflect invoke error: {:?}", e)))?;
+    let invoke_fn = invoke_fn
+        .dyn_into::<js_sys::Function>()
+        .map_err(|e| JsValue::from(format!("__TAURI__.core.invoke not found: {:?}", e)))?;
+
+    let args_value: JsValue = serde_json::from_str(args)
+        .map(|v: serde_json::Value| {
+            js_sys::JSON::parse(&v.to_string()).unwrap_or(JsValue::UNDEFINED)
+        })
+        .unwrap_or(JsValue::UNDEFINED);
+
+    let promise = invoke_fn
+        .call2(&tauri_obj, &JsValue::from_str(command), &args_value)
+        .map_err(|e| JsValue::from(format!("Invoke error: {:?}", e)))?;
+
+    let result = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
+        .await
+        .map_err(|e| JsValue::from(format!("Promise error: {:?}", e)))?;
+
+    T::from_js_value(result)
+}
+
+/// Trait to cast JsValue to a typed result.
+pub trait JsValueCast: Sized {
+    fn from_js_value(value: JsValue) -> TauriResult<Self>;
+    fn to_js_value(&self) -> JsValue;
+}
+
+impl JsValueCast for String {
+    fn from_js_value(value: JsValue) -> TauriResult<Self> {
+        value
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("Not a string"))
+    }
+    fn to_js_value(&self) -> JsValue {
+        JsValue::from_str(self)
+    }
+}
+
+impl JsValueCast for JsValue {
+    fn from_js_value(value: JsValue) -> TauriResult<Self> {
+        Ok(value)
+    }
+    fn to_js_value(&self) -> JsValue {
+        self.clone()
+    }
+}
+
+impl JsValueCast for bool {
+    fn from_js_value(value: JsValue) -> TauriResult<Self> {
+        Ok(value.as_bool().unwrap_or(false))
+    }
+    fn to_js_value(&self) -> JsValue {
+        JsValue::from_bool(*self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Typed Tauri command wrappers
+// ---------------------------------------------------------------------------
+
+/// Window operations
+pub async fn window_minimize() -> TauriResult<JsValue> {
+    invoke("window_minimize", "{}").await
+}
+
+pub async fn window_maximize() -> TauriResult<JsValue> {
+    invoke("window_maximize", "{}").await
+}
+
+pub async fn window_close() -> TauriResult<JsValue> {
+    invoke("window_close", "{}").await
+}
+
+pub async fn window_is_maximized() -> TauriResult<bool> {
+    invoke("window_is_maximized", "{}").await
+}
+
+/// File system operations
+pub async fn fs_read_file(path: &str) -> TauriResult<String> {
+    invoke(
+        "fs_read_file",
+        &serde_json::json!({ "path": path }).to_string(),
+    )
+    .await
+}
+
+pub async fn fs_list_dir(path: &str) -> TauriResult<String> {
+    invoke(
+        "fs_list_dir",
+        &serde_json::json!({ "path": path }).to_string(),
+    )
+    .await
+}
+
+pub async fn fs_write_file(path: &str, content: &str) -> TauriResult<String> {
+    invoke(
+        "fs_write_file",
+        &serde_json::json!({ "path": path, "content": content }).to_string(),
+    )
+    .await
+}
+
+/// Open a native file/folder dialog via custom Tauri command.
+/// Returns the selected path on single selection, empty string on cancel.
+pub async fn fs_show_open_dialog(
+    title: Option<&str>,
+    directory: bool,
+    multiple: bool,
+) -> TauriResult<String> {
+    let mut args = serde_json::json!({
+        "multiple": multiple,
+        "directory": directory,
+    });
+    if let Some(t) = title {
+        args["title"] = serde_json::Value::String(t.to_string());
+    }
+
+    invoke("fs_show_open_dialog", &args.to_string()).await
+}
+
+/// Open a native image file dialog via custom Tauri command.
+pub async fn fs_show_image_dialog() -> TauriResult<String> {
+    invoke("fs_show_image_dialog", "{}").await
+}
+
+/// Store operations
+pub async fn store_get(key: &str) -> TauriResult<String> {
+    invoke("store_get", &serde_json::json!({ "key": key }).to_string()).await
+}
+
+pub async fn store_set(key: &str, value: &str) -> TauriResult<String> {
+    invoke(
+        "store_set",
+        &serde_json::json!({ "key": key, "value": value }).to_string(),
+    )
+    .await
+}
+
+/// Session operations
+pub async fn session_create(title: Option<&str>) -> TauriResult<String> {
+    invoke(
+        "session_create",
+        &serde_json::json!({ "title": title }).to_string(),
+    )
+    .await
+}
+
+pub async fn session_list() -> TauriResult<String> {
+    invoke("session_list", "{}").await
+}
+
+pub async fn session_delete(id: &str) -> TauriResult<String> {
+    invoke(
+        "session_delete",
+        &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await
+}
+
+/// PTY operations
+pub async fn pty_spawn(id: &str, cwd: &str, shell: &str) -> TauriResult<String> {
+    invoke(
+        "pty_spawn",
+        &serde_json::json!({ "id": id, "cwd": cwd, "shell": shell }).to_string(),
+    )
+    .await
+}
+
+pub async fn pty_write(id: &str, data: &str) -> TauriResult<String> {
+    invoke(
+        "pty_write",
+        &serde_json::json!({ "id": id, "data": data }).to_string(),
+    )
+    .await
+}
+
+pub async fn pty_kill(id: &str) -> TauriResult<String> {
+    invoke("pty_kill", &serde_json::json!({ "id": id }).to_string()).await
+}
+
+pub async fn pty_resize(id: &str, cols: u16, rows: u16) -> TauriResult<String> {
+    invoke(
+        "pty_resize",
+        &serde_json::json!({ "id": id, "cols": cols, "rows": rows }).to_string(),
+    )
+    .await
+}
+
+/// Get the default shell path for the current platform.
+pub async fn pty_default_shell() -> TauriResult<String> {
+    invoke("pty_default_shell", "{}").await
+}
+
+/// Output buffer operations
+pub async fn output_buffer_append(
+    pane_id: &str,
+    data: &str,
+    agent_type: Option<&str>,
+) -> TauriResult<JsValue> {
+    invoke(
+        "output_buffer_append",
+        &serde_json::json!({ "paneId": pane_id, "data": data, "agentType": agent_type })
+            .to_string(),
+    )
+    .await
+}
+
+pub async fn output_buffer_get(
+    pane_id: &str,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> TauriResult<String> {
+    invoke(
+        "output_buffer_get",
+        &serde_json::json!({ "paneId": pane_id, "limit": limit, "offset": offset }).to_string(),
+    )
+    .await
+}
+
+pub async fn output_buffer_list() -> TauriResult<String> {
+    invoke("output_buffer_list", "{}").await
+}
+
+pub async fn output_buffer_clear(pane_id: &str) -> TauriResult<String> {
+    invoke(
+        "output_buffer_clear",
+        &serde_json::json!({ "paneId": pane_id }).to_string(),
+    )
+    .await
+}
+
+/// Notification operations
+pub async fn notification_push(
+    title: &str,
+    message: &str,
+    level: Option<&str>,
+) -> TauriResult<String> {
+    invoke(
+        "notification_push",
+        &serde_json::json!({ "title": title, "message": message, "level": level }).to_string(),
+    )
+    .await
+}
+
+pub async fn notification_history(limit: Option<usize>) -> TauriResult<String> {
+    invoke(
+        "notification_history",
+        &serde_json::json!({ "limit": limit }).to_string(),
+    )
+    .await
+}
+
+pub async fn notification_count() -> TauriResult<String> {
+    invoke("notification_count", "{}").await
+}
+
+/// Plan operations
+pub async fn plan_create(goal: &str, reasoning: &str, steps: &str) -> TauriResult<String> {
+    invoke(
+        "plan_create",
+        &serde_json::json!({ "goal": goal, "reasoning": reasoning, "steps": steps }).to_string(),
+    )
+    .await
+}
+
+pub async fn plan_get() -> TauriResult<String> {
+    invoke("plan_get", "{}").await
+}
+
+pub async fn plan_update_step(
+    step_id: &str,
+    status: &str,
+    pane_id: Option<&str>,
+) -> TauriResult<String> {
+    invoke(
+        "plan_update_step",
+        &serde_json::json!({ "stepId": step_id, "status": status, "paneId": pane_id }).to_string(),
+    )
+    .await
+}
+
+/// Agent comms operations
+pub async fn agent_comms_token() -> TauriResult<String> {
+    invoke("agent_comms_token", "{}").await
+}
+
+pub async fn agent_comms_sessions() -> TauriResult<String> {
+    invoke("agent_comms_sessions", "{}").await
+}
+
+pub async fn agent_comms_send(agent_id: &str, method: &str, params: &str) -> TauriResult<String> {
+    invoke(
+        "agent_comms_send",
+        &serde_json::json!({ "agentId": agent_id, "method": method, "params": params }).to_string(),
+    )
+    .await
+}
+
+/// Search operation
+pub async fn search_code(pattern: &str, path: &str) -> TauriResult<String> {
+    invoke(
+        "search_code",
+        &serde_json::json!({ "pattern": pattern, "path": path }).to_string(),
+    )
+    .await
+}
+
+/// MCP server operations
+pub async fn mcp_init(port: u16) -> TauriResult<String> {
+    invoke("mcp_init", &serde_json::json!({ "port": port }).to_string()).await
+}
+
+pub async fn mcp_shutdown() -> TauriResult<String> {
+    invoke("mcp_shutdown", "{}").await
+}
+
+pub async fn mcp_handle_request(request: &str) -> TauriResult<String> {
+    invoke(
+        "mcp_handle_request",
+        &serde_json::json!({ "request": request }).to_string(),
+    )
+    .await
+}
+
+pub async fn mcp_broadcast(method: &str, params: &str) -> TauriResult<String> {
+    invoke(
+        "mcp_broadcast",
+        &serde_json::json!({ "method": method, "params": params }).to_string(),
+    )
+    .await
+}
+
+pub async fn mcp_tools() -> TauriResult<String> {
+    invoke("mcp_tools", "{}").await
+}
+
+/// Swarm operations
+pub async fn swarm_read_state(dir: &str) -> TauriResult<String> {
+    invoke(
+        "swarm_read_state",
+        &serde_json::json!({ "dir": dir }).to_string(),
+    )
+    .await
+}
+
+pub async fn swarm_send_message(
+    dir: &str,
+    from: &str,
+    to: &str,
+    content: &str,
+) -> TauriResult<String> {
+    invoke(
+        "swarm_send_message",
+        &serde_json::json!({ "dir": dir, "from": from, "to": to, "content": content }).to_string(),
+    )
+    .await
+}
+
+pub async fn swarm_read_mailbox(dir: &str, agent_id: &str) -> TauriResult<String> {
+    invoke(
+        "swarm_read_mailbox",
+        &serde_json::json!({ "dir": dir, "agentId": agent_id }).to_string(),
+    )
+    .await
+}
+
+/// Shell integration operations
+pub async fn shell_integration_parse(data: &str) -> TauriResult<String> {
+    invoke(
+        "shell_integration_parse",
+        &serde_json::json!({ "data": data }).to_string(),
+    )
+    .await
+}
+
+pub async fn shell_integration_script(shell: &str) -> TauriResult<String> {
+    invoke(
+        "shell_integration_script",
+        &serde_json::json!({ "shell": shell }).to_string(),
+    )
+    .await
+}
+
+pub async fn shell_integration_compatible(shell: &str) -> TauriResult<String> {
+    invoke(
+        "shell_integration_compatible",
+        &serde_json::json!({ "shell": shell }).to_string(),
+    )
+    .await
+}
+
+pub async fn shell_integration_strip(data: &str) -> TauriResult<String> {
+    invoke(
+        "shell_integration_strip",
+        &serde_json::json!({ "data": data }).to_string(),
+    )
+    .await
+}
+
+/// Tool executor operations
+pub async fn tool_execute(tool_name: &str, arguments: &str) -> TauriResult<String> {
+    invoke(
+        "tool_execute",
+        &serde_json::json!({ "toolName": tool_name, "arguments": arguments }).to_string(),
+    )
+    .await
+}
+
+pub async fn tool_list() -> TauriResult<String> {
+    invoke("tool_list", "{}").await
+}
+
+pub async fn tool_openai_schema() -> TauriResult<String> {
+    invoke("tool_openai_schema", "{}").await
+}
+
+// ---------------------------------------------------------------------------
+// Athena chat (orchestrator) operations
+// ---------------------------------------------------------------------------
+
+/// Send a chat message to the orchestrator and return the assistant's reply.
+pub async fn athena_chat(message: &str) -> TauriResult<String> {
+    invoke(
+        "athena_chat",
+        &serde_json::json!({ "message": message }).to_string(),
+    )
+    .await
+}
+
+/// Send a chat message within a specific session.
+pub async fn athena_chat_with_session(message: &str, session_id: &str) -> TauriResult<String> {
+    invoke(
+        "athena_chat_with_session",
+        &serde_json::json!({ "message": message, "sessionId": session_id }).to_string(),
+    )
+    .await
+}
+
+/// Send a chat message with image attachments.
+pub async fn athena_chat_with_images(message: &str, images: &str) -> TauriResult<String> {
+    invoke(
+        "athena_chat_with_images",
+        &serde_json::json!({ "message": message, "images": images }).to_string(),
+    )
+    .await
+}
+
+/// Clear the orchestrator's conversation context.
+pub async fn athena_clear_context() -> TauriResult<JsValue> {
+    invoke("athena_clear_context", "{}").await
+}
+
+/// Set session history context on the orchestrator.
+pub async fn athena_set_session_context(history: &str) -> TauriResult<JsValue> {
+    invoke(
+        "athena_set_session_context",
+        &serde_json::json!({ "history": history }).to_string(),
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Browser operations
+// ---------------------------------------------------------------------------
+
+/// Open/show a browser panel.
+pub async fn browser_show(id: &str, url: &str) -> TauriResult<JsValue> {
+    invoke(
+        "browser_show",
+        &serde_json::json!({ "id": id, "url": url }).to_string(),
+    )
+    .await
+}
+
+/// Hide/close a browser panel.
+pub async fn browser_hide(id: &str) -> TauriResult<JsValue> {
+    invoke("browser_hide", &serde_json::json!({ "id": id }).to_string()).await
+}
+
+/// Navigate a browser panel to a new URL.
+pub async fn browser_navigate(id: &str, url: &str) -> TauriResult<JsValue> {
+    invoke(
+        "browser_navigate",
+        &serde_json::json!({ "id": id, "url": url }).to_string(),
+    )
+    .await
+}
+
+/// Navigate a browser panel back in history.
+pub async fn browser_back(id: &str) -> TauriResult<String> {
+    invoke("browser_back", &serde_json::json!({ "id": id }).to_string()).await
+}
+
+/// Navigate a browser panel forward in history.
+pub async fn browser_forward(id: &str) -> TauriResult<String> {
+    invoke(
+        "browser_forward",
+        &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await
+}
+
+/// Reload a browser panel.
+pub async fn browser_reload(id: &str) -> TauriResult<JsValue> {
+    invoke(
+        "browser_reload",
+        &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Plugin operations
+// ---------------------------------------------------------------------------
+
+/// List all registered plugins.
+pub async fn plugin_list() -> TauriResult<String> {
+    invoke("plugin_list", "{}").await
+}
+
+/// Get a specific plugin's info.
+pub async fn plugin_get(plugin_id: &str) -> TauriResult<String> {
+    invoke(
+        "plugin_get",
+        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+    )
+    .await
+}
+
+/// Register a new plugin.
+pub async fn plugin_register(plugin_id: &str, name: &str, version: &str) -> TauriResult<String> {
+    invoke(
+        "plugin_register",
+        &serde_json::json!({ "pluginId": plugin_id, "name": name, "version": version }).to_string(),
+    )
+    .await
+}
+
+/// Unregister a plugin.
+pub async fn plugin_unregister(plugin_id: &str) -> TauriResult<JsValue> {
+    invoke(
+        "plugin_unregister",
+        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+    )
+    .await
+}
+
+/// Enable a plugin.
+pub async fn plugin_enable(plugin_id: &str) -> TauriResult<JsValue> {
+    invoke(
+        "plugin_enable",
+        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+    )
+    .await
+}
+
+/// Disable a plugin.
+pub async fn plugin_disable(plugin_id: &str) -> TauriResult<JsValue> {
+    invoke(
+        "plugin_disable",
+        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+    )
+    .await
+}
+
+/// Get a plugin's configuration.
+pub async fn plugin_get_config(plugin_id: &str) -> TauriResult<String> {
+    invoke(
+        "plugin_get_config",
+        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+    )
+    .await
+}
+
+/// Set a plugin's configuration.
+pub async fn plugin_set_config(plugin_id: &str, config: &str) -> TauriResult<JsValue> {
+    invoke(
+        "plugin_set_config",
+        &serde_json::json!({ "pluginId": plugin_id, "config": config }).to_string(),
+    )
+    .await
+}
+
+/// Set a plugin's error state.
+pub async fn plugin_set_error(plugin_id: &str, error: &str) -> TauriResult<JsValue> {
+    invoke(
+        "plugin_set_error",
+        &serde_json::json!({ "pluginId": plugin_id, "error": error }).to_string(),
+    )
+    .await
+}
+
+/// List all plugin host sessions.
+pub async fn plugin_host_list_sessions() -> TauriResult<String> {
+    invoke("plugin_host_list_sessions", "{}").await
+}
+
+/// Get a specific plugin host session.
+pub async fn plugin_host_get_session(session_id: &str) -> TauriResult<String> {
+    invoke(
+        "plugin_host_get_session",
+        &serde_json::json!({ "sessionId": session_id }).to_string(),
+    )
+    .await
+}
+
+/// Emit a plugin host event.
+pub async fn plugin_host_emit_event(event_type: &str, data: &str) -> TauriResult<JsValue> {
+    invoke(
+        "plugin_host_emit_event",
+        &serde_json::json!({ "eventType": event_type, "data": data }).to_string(),
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Event listener infrastructure
+// ---------------------------------------------------------------------------
+
+/// Error type for Tauri bridge operations that can fail outside the
+/// Tauri context (e.g. running in a plain browser without the __TAURI__
+/// global).
+#[derive(Debug, Clone)]
+pub struct TauriBridgeError {
+    pub message: String,
+}
+
+impl std::fmt::Display for TauriBridgeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TauriBridgeError: {}", self.message)
+    }
+}
+
+impl std::error::Error for TauriBridgeError {}
+
+/// Listen for Tauri push events from the backend.
+/// The callback receives the event payload as a String.
+/// The listener closure is intentionally leaked (lives for app lifetime).
+/// Returns `Err(TauriBridgeError)` when called outside a Tauri context
+/// instead of panicking.
+pub fn listen(event: &str, callback: impl FnMut(String) + 'static) -> Result<(), TauriBridgeError> {
+    let window = web_sys::window().ok_or_else(|| TauriBridgeError {
+        message: format!("listen({}): no window object", event),
+    })?;
+
+    let tauri = js_sys::Reflect::get(&window, &JsValue::from_str("__TAURI__")).map_err(|_| {
+        TauriBridgeError {
+            message: format!("listen({}): __TAURI__ not available", event),
+        }
+    })?;
+    if tauri.is_undefined() || tauri.is_null() {
+        return Err(TauriBridgeError {
+            message: format!("listen({}): __TAURI__ is null/undefined", event),
+        });
+    }
+
+    let event_mod = js_sys::Reflect::get(&tauri, &JsValue::from_str("event")).map_err(|_| {
+        TauriBridgeError {
+            message: format!("listen({}): __TAURI__.event not available", event),
+        }
+    })?;
+    if event_mod.is_undefined() || event_mod.is_null() {
+        return Err(TauriBridgeError {
+            message: format!("listen({}): __TAURI__.event is null/undefined", event),
+        });
+    }
+
+    let listen_fn_val =
+        js_sys::Reflect::get(&event_mod, &JsValue::from_str("listen")).map_err(|_| {
+            TauriBridgeError {
+                message: format!("listen({}): __TAURI__.event.listen not found", event),
+            }
+        })?;
+    if listen_fn_val.is_undefined() {
+        return Err(TauriBridgeError {
+            message: format!("listen({}): __TAURI__.event.listen is undefined", event),
+        });
+    }
+    let listen_fn = listen_fn_val
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| TauriBridgeError {
+            message: format!("listen({}): listen is not a function", event),
+        })?;
+
+    let mut callback = callback;
+    let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event_obj: JsValue| {
+        if let Ok(obj) = event_obj.dyn_into::<js_sys::Object>() {
+            let payload = js_sys::Reflect::get(&obj, &JsValue::from_str("payload"))
+                .unwrap_or(JsValue::UNDEFINED);
+            let payload_str = if payload.is_string() {
+                payload.as_string().unwrap_or_default()
+            } else {
+                js_sys::JSON::stringify(&payload)
+                    .map(|s| s.as_string().unwrap_or_default())
+                    .unwrap_or_default()
+            };
+            callback(payload_str);
+        }
+    }) as Box<dyn FnMut(JsValue)>);
+
+    listen_fn
+        .call2(&event_mod, &JsValue::from_str(event), closure.as_ref())
+        .map_err(|e| TauriBridgeError {
+            message: format!("listen({}): failed to register listener: {:?}", event, e),
+        })?;
+    closure.forget();
+    Ok(())
+}

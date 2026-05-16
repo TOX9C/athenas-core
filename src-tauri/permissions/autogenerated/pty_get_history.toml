@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pty-get-history"
+description = "Enables the pty_get_history command without any pre-configured scope."
+commands.allow = ["pty_get_history"]
+
+[[permission]]
+identifier = "deny-pty-get-history"
+description = "Denies the pty_get_history command without any pre-configured scope."
+commands.deny = ["pty_get_history"]

@@ -1,0 +1,70 @@
+use dioxus::prelude::*;
+
+/// A single output line from an agent.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OutputLine {
+    pub pane_id: String,
+    pub line_num: usize,
+    pub text: String,
+    pub timestamp: i64,
+    pub is_stderr: bool,
+}
+
+/// Format a unix-ms timestamp as HH:MM:SS.
+fn format_time(ts: i64) -> String {
+    // Simple formatting — in WASM we avoid chrono timezone features
+    let secs = (ts / 1000) % 86400;
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+/// Heuristic: text containing error/warn/fail/exception keywords is stderr-like.
+fn is_stderr_like(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("error")
+        || lower.contains("warn")
+        || lower.contains("fail")
+        || lower.contains("exception")
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct AgentOutputLineProps {
+    pub line: OutputLine,
+    #[props(default = false)]
+    pub show_line_numbers: bool,
+}
+
+#[component]
+pub fn AgentOutputLine(props: AgentOutputLineProps) -> Element {
+    let is_err = props.line.is_stderr || is_stderr_like(&props.line.text);
+    let color = if is_err {
+        "var(--error)"
+    } else {
+        "var(--textMuted)"
+    };
+
+    rsx! {
+        div {
+            style: "display: flex; align-items: flex-start; gap: 8px; padding: 0 8px; font-family: monospace; font-size: 11px; line-height: 1.6; color: {color};",
+
+            if props.show_line_numbers {
+                span {
+                    style: "flex-shrink: 0; text-align: right; width: 36px; color: var(--textDim); opacity: 0.5; user-select: none;",
+                    "{props.line.line_num}"
+                }
+            }
+
+            span {
+                style: "flex-shrink: 0; user-select: none; color: var(--textDim); opacity: 0.4;",
+                "{format_time(props.line.timestamp)}"
+            }
+
+            span {
+                style: "flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all;",
+                "{props.line.text}"
+            }
+        }
+    }
+}
