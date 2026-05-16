@@ -1,0 +1,13 @@
+[package]
+name = "athena-fs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+
+[dependencies]
+dirs = "6"
+log = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

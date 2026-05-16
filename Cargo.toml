@@ -1,17 +1,28 @@
 [workspace]
-resolver = "2"
 members = [
-    "crates/athena-app",
-    "crates/athena-core",
-    "crates/athena-terminal"
+  "src-tauri", # Tauri backend
+  "frontend", # Dioxus frontend
+  "crates/athena-core",
+  "crates/athena-terminal",
+  "crates/athena-fs",
+  "crates/athena-store",
+  "crates/athena-browser",
+  "crates/athena-plugins",
 ]
+resolver = "2"
+
+[workspace.package]
+rust-version = "1.82"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed" }
-portable-pty = "0.8.1"
-alacritty_terminal = "0.21.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["full"] }
-anyhow = "1.0"
+thiserror = "1.0"
+uuid = { version = "1.15", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+path-clean = "1.0"
+
+[profile.release]
+opt-level = "z"
+strip = true

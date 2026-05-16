@@ -1,0 +1,33 @@
+[package]
+name = "athenas-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+
+[dependencies]
+tauri = { version = "2.0", features = ["devtools"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-log = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1.43", features = ["full"] }
+log = { workspace = true }
+base64 = "0.22"
+path-clean = "1.0"
+uuid = { workspace = true }
+keyring = "3"
+env_logger = "0.11"
+athena-core = { path = "../crates/athena-core" }
+athena-terminal = { path = "../crates/athena-terminal" }
+athena-fs = { path = "../crates/athena-fs" }
+athena-store = { path = "../crates/athena-store" }
+athena-browser = { path = "../crates/athena-browser" }
+athena-plugins = { path = "../crates/athena-plugins" }
+
+[target.'cfg(debug_assertions)'.dependencies]
+tauri-plugin-webdriver-automation = "0.1.3"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
