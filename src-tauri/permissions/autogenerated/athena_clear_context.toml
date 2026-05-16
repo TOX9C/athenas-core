@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-athena-clear-context"
+description = "Enables the athena_clear_context command without any pre-configured scope."
+commands.allow = ["athena_clear_context"]
+
+[[permission]]
+identifier = "deny-athena-clear-context"
+description = "Denies the athena_clear_context command without any pre-configured scope."
+commands.deny = ["athena_clear_context"]

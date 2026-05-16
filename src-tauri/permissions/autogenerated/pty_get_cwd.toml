@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pty-get-cwd"
+description = "Enables the pty_get_cwd command without any pre-configured scope."
+commands.allow = ["pty_get_cwd"]
+
+[[permission]]
+identifier = "deny-pty-get-cwd"
+description = "Denies the pty_get_cwd command without any pre-configured scope."
+commands.deny = ["pty_get_cwd"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notification-history"
+description = "Enables the notification_history command without any pre-configured scope."
+commands.allow = ["notification_history"]
+
+[[permission]]
+identifier = "deny-notification-history"
+description = "Denies the notification_history command without any pre-configured scope."
+commands.deny = ["notification_history"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-comms-token"
+description = "Enables the agent_comms_token command without any pre-configured scope."
+commands.allow = ["agent_comms_token"]
+
+[[permission]]
+identifier = "deny-agent-comms-token"
+description = "Denies the agent_comms_token command without any pre-configured scope."
+commands.deny = ["agent_comms_token"]

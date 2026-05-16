@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-window-platform"
+description = "Enables the window_platform command without any pre-configured scope."
+commands.allow = ["window_platform"]
+
+[[permission]]
+identifier = "deny-window-platform"
+description = "Denies the window_platform command without any pre-configured scope."
+commands.deny = ["window_platform"]

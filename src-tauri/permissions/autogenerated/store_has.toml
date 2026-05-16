@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-store-has"
+description = "Enables the store_has command without any pre-configured scope."
+commands.allow = ["store_has"]
+
+[[permission]]
+identifier = "deny-store-has"
+description = "Denies the store_has command without any pre-configured scope."
+commands.deny = ["store_has"]

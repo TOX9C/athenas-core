@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mcp-broadcast"
+description = "Enables the mcp_broadcast command without any pre-configured scope."
+commands.allow = ["mcp_broadcast"]
+
+[[permission]]
+identifier = "deny-mcp-broadcast"
+description = "Denies the mcp_broadcast command without any pre-configured scope."
+commands.deny = ["mcp_broadcast"]

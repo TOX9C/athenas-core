@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mcp-shutdown"
+description = "Enables the mcp_shutdown command without any pre-configured scope."
+commands.allow = ["mcp_shutdown"]
+
+[[permission]]
+identifier = "deny-mcp-shutdown"
+description = "Denies the mcp_shutdown command without any pre-configured scope."
+commands.deny = ["mcp_shutdown"]
