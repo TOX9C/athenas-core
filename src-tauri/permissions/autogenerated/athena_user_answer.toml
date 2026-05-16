@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-athena-user-answer"
+description = "Enables the athena_user_answer command without any pre-configured scope."
+commands.allow = ["athena_user_answer"]
+
+[[permission]]
+identifier = "deny-athena-user-answer"
+description = "Denies the athena_user_answer command without any pre-configured scope."
+commands.deny = ["athena_user_answer"]

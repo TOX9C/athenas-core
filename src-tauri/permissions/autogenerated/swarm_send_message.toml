@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-swarm-send-message"
+description = "Enables the swarm_send_message command without any pre-configured scope."
+commands.allow = ["swarm_send_message"]
+
+[[permission]]
+identifier = "deny-swarm-send-message"
+description = "Denies the swarm_send_message command without any pre-configured scope."
+commands.deny = ["swarm_send_message"]

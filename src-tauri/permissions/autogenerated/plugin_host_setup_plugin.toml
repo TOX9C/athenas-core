@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-host-setup-plugin"
+description = "Enables the plugin_host_setup_plugin command without any pre-configured scope."
+commands.allow = ["plugin_host_setup_plugin"]
+
+[[permission]]
+identifier = "deny-plugin-host-setup-plugin"
+description = "Denies the plugin_host_setup_plugin command without any pre-configured scope."
+commands.deny = ["plugin_host_setup_plugin"]

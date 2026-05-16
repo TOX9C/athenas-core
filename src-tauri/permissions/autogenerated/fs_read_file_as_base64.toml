@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fs-read-file-as-base64"
+description = "Enables the fs_read_file_as_base64 command without any pre-configured scope."
+commands.allow = ["fs_read_file_as_base64"]
+
+[[permission]]
+identifier = "deny-fs-read-file-as-base64"
+description = "Denies the fs_read_file_as_base64 command without any pre-configured scope."
+commands.deny = ["fs_read_file_as_base64"]

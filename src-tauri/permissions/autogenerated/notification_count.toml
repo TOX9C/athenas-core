@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notification-count"
+description = "Enables the notification_count command without any pre-configured scope."
+commands.allow = ["notification_count"]
+
+[[permission]]
+identifier = "deny-notification-count"
+description = "Denies the notification_count command without any pre-configured scope."
+commands.deny = ["notification_count"]

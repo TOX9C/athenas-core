@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-athena-chat-with-images"
+description = "Enables the athena_chat_with_images command without any pre-configured scope."
+commands.allow = ["athena_chat_with_images"]
+
+[[permission]]
+identifier = "deny-athena-chat-with-images"
+description = "Denies the athena_chat_with_images command without any pre-configured scope."
+commands.deny = ["athena_chat_with_images"]

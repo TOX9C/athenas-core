@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-shell-integration-compatible"
+description = "Enables the shell_integration_compatible command without any pre-configured scope."
+commands.allow = ["shell_integration_compatible"]
+
+[[permission]]
+identifier = "deny-shell-integration-compatible"
+description = "Denies the shell_integration_compatible command without any pre-configured scope."
+commands.deny = ["shell_integration_compatible"]

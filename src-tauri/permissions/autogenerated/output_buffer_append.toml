@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-output-buffer-append"
+description = "Enables the output_buffer_append command without any pre-configured scope."
+commands.allow = ["output_buffer_append"]
+
+[[permission]]
+identifier = "deny-output-buffer-append"
+description = "Denies the output_buffer_append command without any pre-configured scope."
+commands.deny = ["output_buffer_append"]

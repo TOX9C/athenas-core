@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-athena-chat-with-session"
+description = "Enables the athena_chat_with_session command without any pre-configured scope."
+commands.allow = ["athena_chat_with_session"]
+
+[[permission]]
+identifier = "deny-athena-chat-with-session"
+description = "Denies the athena_chat_with_session command without any pre-configured scope."
+commands.deny = ["athena_chat_with_session"]

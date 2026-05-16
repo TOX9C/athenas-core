@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pty-default-shell"
+description = "Enables the pty_default_shell command without any pre-configured scope."
+commands.allow = ["pty_default_shell"]
+
+[[permission]]
+identifier = "deny-pty-default-shell"
+description = "Denies the pty_default_shell command without any pre-configured scope."
+commands.deny = ["pty_default_shell"]

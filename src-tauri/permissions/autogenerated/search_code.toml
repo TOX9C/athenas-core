@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-search-code"
+description = "Enables the search_code command without any pre-configured scope."
+commands.allow = ["search_code"]
+
+[[permission]]
+identifier = "deny-search-code"
+description = "Denies the search_code command without any pre-configured scope."
+commands.deny = ["search_code"]

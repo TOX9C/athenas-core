@@ -1,0 +1,66 @@
+/* Athena's Core — Default theme (Athena) + base styles */
+
+:root {
+--bg: #0b0e13;
+--bgSecondary: #141820;
+--bgTertiary: #1e232e;
+--border: #2a303e;
+--text: #e0e4ee;
+--textMuted: #8890a4;
+--textDim: #525a6e;
+--accent: #38bdf8;
+--accentHover: #7dd3fc;
+--success: #22c55e;
+--error: #ef4444;
+--warning: #f59e0b;
+--terminalBg: #0b0e13;
+--terminalFg: #e0e4ee;
+--terminalCursor: #38bdf8;
+--terminalSelection: rgba(56, 189, 248, 0.3);
+}
+
+html, body, #main {
+height: 100%;
+width: 100%;
+margin: 0;
+padding: 0;
+overflow: hidden;
+background: var(--bg);
+color: var(--text);
+font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+::-webkit-scrollbar {
+width: 4px;
+height: 4px;
+}
+
+::-webkit-scrollbar-track {
+background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+background: var(--bgTertiary);
+border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+background: var(--textDim);
+}
+
+::selection {
+background: var(--accent);
+color: var(--bg);
+}
+
+input, textarea, select {
+font-family: inherit;
+}
+
+button {
+cursor: pointer;
+border: none;
+background: none;
+font-family: inherit;
+color: inherit;
+}
