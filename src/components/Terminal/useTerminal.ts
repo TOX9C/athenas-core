@@ -231,5 +231,26 @@ export function useTerminal(
     fit()
   }, [theme, fontSize, fontFamily, fit])
 
+  // Listen for theme-change custom events from the document to sync
+  // the xterm background with CSS variable overrides dynamically.
+  useEffect(() => {
+    const handleThemeChange = (event: Event) => {
+      const customEvent = event as CustomEvent<{ background?: string }>
+      const newBg =
+        customEvent.detail?.background ??
+        getComputedStyle(document.documentElement).getPropertyValue('--panel-bg').trim()
+
+      if (newBg && termRef.current) {
+        termRef.current.options.theme = {
+          ...termRef.current.options.theme,
+          background: newBg,
+        }
+      }
+    }
+
+    document.addEventListener('theme-change', handleThemeChange)
+    return () => document.removeEventListener('theme-change', handleThemeChange)
+  }, [])
+
   return { terminal: termRef, fit }
 }
