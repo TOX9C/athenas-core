@@ -2,12 +2,16 @@
 name = "athena-store"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.82"
 
 [dependencies]
-tokio = { version = "1.43", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
 dirs = "6.0"
-thiserror = "1.0"
-uuid = { version = "1.15", features = ["v4", "serde"] }
+thiserror = { workspace = true }
+uuid = { workspace = true }
 base64 = "0.22"
+tokio = { version = "1.43", features = ["full"] }
+
+[dev-dependencies]
+tempfile = "3"

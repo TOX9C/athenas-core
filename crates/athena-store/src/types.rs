@@ -72,6 +72,8 @@ pub struct ImageAttachment {
 }
 
 /// Lightweight summary of a session for listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionListItem {
     pub id: String,
     pub title: String,

@@ -2,14 +2,18 @@ use crate::types::*;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::process::Command;
 
 /// Locate the ripgrep binary, falling back to common system paths.
-fn find_rg_binary() -> Result<PathBuf, SearchError> {
+pub(crate) async fn find_rg_binary() -> Result<PathBuf, SearchError> {
     let candidates = if cfg!(windows) {
         vec!["rg.exe"]
     } else {
-        vec!["rg", "/usr/local/bin/rg", "/opt/homebrew/bin/rg", "/usr/bin/rg"]
+        vec![
+            "rg",
+            "/usr/local/bin/rg",
+            "/opt/homebrew/bin/rg",
+            "/usr/bin/rg",
+        ]
     };
 
     for candidate in &candidates {
@@ -21,9 +25,9 @@ fn find_rg_binary() -> Result<PathBuf, SearchError> {
 
     // Try to find via `which` as last resort
     let which_result = if cfg!(windows) {
-        Command::new("cmd").args(["/c", "where", "rg"]).output()
+        tokio::process::Command::new("cmd").args(["/c", "where", "rg"]).output().await
     } else {
-        Command::new("sh").args(["-c", "which rg"]).output()
+        tokio::process::Command::new("which").arg("rg").output().await
     };
 
     if let Ok(output) = which_result {
@@ -41,7 +45,9 @@ fn find_rg_binary() -> Result<PathBuf, SearchError> {
 /// Errors that can occur during search operations.
 #[derive(Debug, thiserror::Error)]
 pub enum SearchError {
-    #[error("ripgrep binary not found. Install it via your package manager (e.g. brew install ripgrep)")]
+    #[error(
+        "ripgrep binary not found. Install it via your package manager (e.g. brew install ripgrep)"
+    )]
     RgNotFound,
     #[error("Failed to spawn ripgrep: {0}")]
     SpawnError(#[from] std::io::Error),
@@ -55,8 +61,8 @@ pub enum SearchError {
 ///
 /// Spawns the `rg` binary with JSON output mode, parses the results,
 /// and returns a structured `SearchResult`.
-pub fn search_code(options: &SearchOptions) -> Result<SearchResult, SearchError> {
-    let rg_bin = find_rg_binary()?;
+pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, SearchError> {
+    let rg_bin = find_rg_binary().await?;
 
     let mut args: Vec<String> = vec![
         "--json".into(),
@@ -93,10 +99,11 @@ pub fn search_code(options: &SearchOptions) -> Result<SearchResult, SearchError>
     args.push(options.pattern.clone());
     args.push(options.path.clone());
 
-    let output = Command::new(&rg_bin)
+    let output = tokio::process::Command::new(&rg_bin)
         .args(&args)
         .env("LC_ALL", "en_US.UTF-8")
-        .output()?;
+        .output()
+        .await?;
 
     let status = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -132,7 +139,10 @@ pub fn search_code(options: &SearchOptions) -> Result<SearchResult, SearchError>
         match data_type {
             "context" => {
                 let data = &parsed["data"];
-                let file_path = data["path"]["text"].as_str().unwrap_or_default().to_string();
+                let file_path = data["path"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
                 let line_num = data["line_number"].as_u64().unwrap_or(0) as u32;
                 let text = match data["lines"]["text"].as_str() {
                     Some(t) => t.trim_end().to_string(),
@@ -142,11 +152,12 @@ pub fn search_code(options: &SearchOptions) -> Result<SearchResult, SearchError>
             }
             "match" => {
                 let data = &parsed["data"];
-                let file_path = data["path"]["text"].as_str().unwrap_or_default().to_string();
+                let file_path = data["path"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
                 let line_num = data["line_number"].as_u64().unwrap_or(0) as u32;
-                let col = data["submatches"][0]["start"]
-                    .as_u64()
-                    .unwrap_or(1) as u32;
+                let col = data["submatches"][0]["start"].as_u64().unwrap_or(1) as u32;
                 let line_text = match data["lines"]["text"].as_str() {
                     Some(t) => t.trim_end().to_string(),
                     None => continue,
@@ -219,13 +230,13 @@ pub fn search_code(options: &SearchOptions) -> Result<SearchResult, SearchError>
 }
 
 /// List files matching a pattern in a directory.
-pub fn search_files(
+pub async fn search_files(
     directory: &str,
     pattern: &str,
     glob: Option<&str>,
     max_results: Option<usize>,
 ) -> Result<Vec<String>, SearchError> {
-    let rg_bin = find_rg_binary()?;
+    let rg_bin = find_rg_binary().await?;
 
     let mut args: Vec<String> = vec!["--files".into(), "--color=never".into()];
 
@@ -241,10 +252,11 @@ pub fn search_files(
 
     args.push(directory.to_string());
 
-    let output = Command::new(&rg_bin)
+    let output = tokio::process::Command::new(&rg_bin)
         .args(&args)
         .env("LC_ALL", "en_US.UTF-8")
-        .output()?;
+        .output()
+        .await?;
 
     let status = output.status.code().unwrap_or(-1);
     let stderr = String::from_utf8_lossy(&output.stderr);

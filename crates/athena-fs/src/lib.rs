@@ -1,68 +1,146 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Represents a node in the file tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileNode {
     pub name: String,
     pub path: String,
     pub is_directory: bool,
     pub children: Option<Vec<FileNode>>,
+    /// `true` when children are omitted because the depth limit was reached.
+    pub truncated: bool,
 }
 
-const SKIP_DIRS: &[&str] = &["node_modules", ".git", ".next", "dist", "build", ".ade", ".DS_Store"];
+const SKIP_ENTRIES: &[&str] = &[
+    "node_modules",
+    ".git",
+    ".next",
+    "dist",
+    "build",
+    ".ade",
+    ".DS_Store",
+];
 const MAX_DEPTH: usize = 6;
 
 /// Errors that can occur during file system operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum FsError {
     #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(String),
+    #[error("path traversal denied: {0}")]
+    PathTraversal(String),
+}
+
+impl From<std::io::Error> for FsError {
+    fn from(e: std::io::Error) -> Self {
+        FsError::Io(e.to_string())
+    }
+}
+
+/// Ensures `path` resolves inside the user's home directory.
+///
+/// Canonicalises both the target path and the home directory, then checks
+/// that the canonical path starts with the canonical home. Returns the
+/// canonical `PathBuf` on success or `FsError::PathTraversal` otherwise.
+fn ensure_within_home(path: &Path) -> Result<PathBuf, FsError> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| FsError::PathTraversal("cannot determine home directory".to_string()))?;
+    let home = home.canonicalize()?;
+
+    // If the path itself exists, canonicalize it directly.
+    // Otherwise, canonicalize the parent and verify it is within home.
+    let canonical =
+        if path.exists() {
+            path.canonicalize()?
+        } else {
+            let parent = path
+                .parent()
+                .ok_or_else(|| FsError::PathTraversal(format!("path {:?} has no parent", path)))?;
+            let canonical_parent = parent.canonicalize()?;
+            canonical_parent.join(path.file_name().ok_or_else(|| {
+                FsError::PathTraversal(format!("path {:?} has no file name", path))
+            })?)
+        };
+
+    if !canonical.starts_with(&home) {
+        return Err(FsError::PathTraversal(format!(
+            "path {:?} is outside home directory",
+            path
+        )));
+    }
+    Ok(canonical)
 }
 
 /// Recursively reads the directory tree starting at `dir`.
 ///
 /// - `depth` controls recursion; the default is 0 and the maximum is [`MAX_DEPTH`].
-/// - Entries in `SKIP_DIRS` and any dotfiles are ignored.
+/// - Entries in `SKIP_ENTRIES` and any dotfiles are ignored.
+/// - Symlinks are skipped to avoid cycles.
 /// - Results are sorted: directories first, then files, each sub-sorted by name.
 pub fn read_tree(dir: &Path, depth: usize) -> Result<Vec<FileNode>, FsError> {
+    let _canonical = ensure_within_home(dir)?;
+
     if depth >= MAX_DEPTH {
         return Ok(Vec::new());
     }
 
     let mut entries = fs::read_dir(dir)?
         .filter_map(|entry| {
-            let entry = entry.ok()?;
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    log::warn!("skipping directory entry: {}", e);
+                    return None;
+                }
+            };
+
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 
-            if name_str.starts_with('.') || SKIP_DIRS.contains(&name_str.as_ref()) {
+            if name_str.starts_with('.') || SKIP_ENTRIES.contains(&name_str.as_ref()) {
                 return None;
             }
 
-            let metadata = entry.metadata().ok()?;
-            Some((name_str.into_owned(), entry.path(), metadata.is_dir()))
+            let file_type = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(e) => {
+                    log::warn!("skipping entry, cannot get file type: {}", e);
+                    return None;
+                }
+            };
+
+            if file_type.is_symlink() {
+                return None; // skip symlinks to avoid cycles
+            }
+
+            let is_dir = file_type.is_dir();
+
+            Some((name_str.into_owned(), entry.path(), is_dir))
         })
         .collect::<Vec<_>>();
 
     // Sort directories before files, then by name
-    entries.sort_by(|a, b| {
-        match (a.2, b.2) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.0.cmp(&b.0),
-        }
+    entries.sort_by(|a, b| match (a.2, b.2) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.0.cmp(&b.0),
     });
 
     let mut nodes = Vec::with_capacity(entries.len());
     for (name, path, is_directory) in entries {
         if is_directory {
-            let children = read_tree(&path, depth + 1)?;
+            let (children, truncated) = if depth + 1 >= MAX_DEPTH {
+                (Vec::new(), true)
+            } else {
+                (read_tree(&path, depth + 1)?, false)
+            };
             nodes.push(FileNode {
                 name,
                 path: path_to_string(&path),
                 is_directory: true,
                 children: Some(children),
+                truncated,
             });
         } else {
             nodes.push(FileNode {
@@ -70,6 +148,7 @@ pub fn read_tree(dir: &Path, depth: usize) -> Result<Vec<FileNode>, FsError> {
                 path: path_to_string(&path),
                 is_directory: false,
                 children: None,
+                truncated: false,
             });
         }
     }
@@ -79,25 +158,31 @@ pub fn read_tree(dir: &Path, depth: usize) -> Result<Vec<FileNode>, FsError> {
 
 /// Reads the full text content of a file.
 pub fn read_file_content(path: &Path) -> Result<String, FsError> {
+    let _canonical = ensure_within_home(path)?;
     fs::read_to_string(path).map_err(FsError::from)
 }
 
-/// Writes `content` to a file, overwriting if it already exists.
+/// Writes `content` to a file atomically by writing to a temp file then renaming.
 pub fn write_file_content(path: &Path, content: &str) -> Result<(), FsError> {
-    fs::write(path, content).map_err(FsError::from)
+    let _canonical = ensure_within_home(path)?;
+    let temp_path = path.with_extension("athena_tmp");
+    fs::write(&temp_path, content)?;
+    fs::rename(&temp_path, path)?;
+    Ok(())
 }
 
 /// Returns the names of all immediate sub-directories inside `dir`.
 pub fn get_directories(dir: &Path) -> Result<Vec<String>, FsError> {
+    let _canonical = ensure_within_home(dir)?;
+
     let mut dirs = Vec::new();
 
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            if let Some(name) = entry.file_name().to_str() {
-                dirs.push(name.to_string());
-            }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            dirs.push(name);
         }
     }
 
@@ -113,34 +198,43 @@ fn path_to_string(path: &Path) -> String {
 mod tests {
     use super::*;
 
+    /// Returns a temp directory inside the user's home so that
+    /// `ensure_within_home` does not reject it.
+    fn home_temp(sub: &str) -> PathBuf {
+        let home = dirs::home_dir().expect("home directory must be available for tests");
+        let dir = home.join(".athena_test_tmp").join(sub);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn test_read_file_content() {
-        let temp_dir = std::env::temp_dir();
+        let temp_dir = home_temp("read_file");
         let test_file = temp_dir.join("athena_fs_test_read.txt");
         fs::write(&test_file, "hello world").unwrap();
 
         let content = read_file_content(&test_file).unwrap();
         assert_eq!(content, "hello world");
 
-        fs::remove_file(&test_file).unwrap();
+        fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_write_file_content() {
-        let temp_dir = std::env::temp_dir();
+        let temp_dir = home_temp("write_file");
         let test_file = temp_dir.join("athena_fs_test_write.txt");
 
         write_file_content(&test_file, "test content").unwrap();
         let content = fs::read_to_string(&test_file).unwrap();
         assert_eq!(content, "test content");
 
-        fs::remove_file(&test_file).unwrap();
+        fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_get_directories() {
-        let temp_dir = std::env::temp_dir().join("athena_fs_test_dirs");
-        fs::create_dir_all(&temp_dir).unwrap();
+        let temp_dir = home_temp("get_dirs");
         fs::create_dir_all(temp_dir.join("dir_a")).unwrap();
         fs::create_dir_all(temp_dir.join("dir_b")).unwrap();
         fs::write(temp_dir.join("file.txt"), "x").unwrap();
@@ -154,9 +248,8 @@ mod tests {
     }
 
     #[test]
-    fn test_read_tree_skips_dotfiles_and_skip_dirs() {
-        let temp_dir = std::env::temp_dir().join("athena_fs_test_tree");
-        fs::create_dir_all(&temp_dir).unwrap();
+    fn test_read_tree_skips_dotfiles_and_skip_entries() {
+        let temp_dir = home_temp("tree_skip");
         fs::create_dir_all(temp_dir.join(".hidden")).unwrap();
         fs::create_dir_all(temp_dir.join("node_modules")).unwrap();
         fs::write(temp_dir.join("visible.txt"), "x").unwrap();
@@ -174,8 +267,7 @@ mod tests {
 
     #[test]
     fn test_read_tree_sorts_directories_first() {
-        let temp_dir = std::env::temp_dir().join("athena_fs_test_sort");
-        fs::create_dir_all(&temp_dir).unwrap();
+        let temp_dir = home_temp("tree_sort");
         fs::create_dir_all(temp_dir.join("zzz_dir")).unwrap();
         fs::write(temp_dir.join("aaa_file.txt"), "x").unwrap();
 
@@ -191,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_read_tree_respects_max_depth() {
-        let temp_dir = std::env::temp_dir().join("athena_fs_test_depth");
+        let temp_dir = home_temp("tree_depth");
         let deep = temp_dir
             .join("a")
             .join("b")

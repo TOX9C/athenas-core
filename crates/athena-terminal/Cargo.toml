@@ -2,13 +2,12 @@
 name = "athena-terminal"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.82"
 
 [dependencies]
-tokio = { version = "1.43", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-thiserror = "1.0"
+thiserror = { workspace = true }
 portable-pty = "0.9"
-regex-lite = "0.1"
+log = { workspace = true }
 
 [dev-dependencies]
-tokio-test = "0.4"
+tempfile = "3"

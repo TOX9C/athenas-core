@@ -1,8 +1,7 @@
 use crate::types::{ChatSession, ImageRef, SessionListItem, SessionMessage};
 use base64::Engine as _;
-use std::fs;
-use std::path::PathBuf;
 use serde_json;
+use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -27,14 +26,56 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
-    /// Create the directories if they don't exist and return the store.
-    pub fn new() -> Result<Self, SessionStoreError> {
-        let base = dirs::data_dir().unwrap_or_else(|| std::env::current_dir().unwrap_or_default()).join("athena-core");
+    /// Empty fallback constructor — creates a store pointing at a temp directory.
+    /// Used when the real data directory is inaccessible at startup.
+    pub fn new_empty() -> Self {
+        let base = std::env::temp_dir().join("athena-core-fallback");
         let sessions_dir = base.join("athena-sessions");
         let images_dir = base.join("athena-images");
-        fs::create_dir_all(&sessions_dir)?;
-        fs::create_dir_all(&images_dir)?;
-        Ok(SessionStore { sessions_dir, images_dir })
+        let _ = std::fs::create_dir_all(&sessions_dir);
+        let _ = std::fs::create_dir_all(&images_dir);
+        SessionStore {
+            sessions_dir,
+            images_dir,
+        }
+    }
+
+    /// Create the directories if they don't exist and return the store.
+    /// Synchronous version for initialization (blocking is acceptable at startup).
+    pub fn new_sync() -> Result<Self, SessionStoreError> {
+        let base = dirs::data_dir()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join("athena-core");
+        let sessions_dir = base.join("athena-sessions");
+        let images_dir = base.join("athena-images");
+        std::fs::create_dir_all(&sessions_dir)?;
+        std::fs::create_dir_all(&images_dir)?;
+        Ok(SessionStore {
+            sessions_dir,
+            images_dir,
+        })
+    }
+
+    /// Async version for runtime creation.
+    pub async fn new() -> Result<Self, SessionStoreError> {
+        let base = dirs::data_dir()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join("athena-core");
+        let sessions_dir = base.join("athena-sessions");
+        let images_dir = base.join("athena-images");
+        let sessions_dir_clone = sessions_dir.clone();
+        let images_dir_clone = images_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&sessions_dir_clone)?;
+            std::fs::create_dir_all(&images_dir_clone)?;
+            Ok::<_, SessionStoreError>(())
+        })
+        .await
+        .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+        Ok(SessionStore {
+            sessions_dir,
+            images_dir,
+        })
     }
 
     fn session_path(&self, id: &str) -> PathBuf {
@@ -46,36 +87,59 @@ impl SessionStore {
     }
 
     /// Save an image (base64 string) to disk and return its reference.
-    pub fn save_image(&self, base64_str: &str, media_type: &str, name: Option<String>) -> Result<ImageRef, SessionStoreError> {
+    pub async fn save_image(
+        &self,
+        base64_str: &str,
+        media_type: &str,
+        name: Option<String>,
+    ) -> Result<ImageRef, SessionStoreError> {
         let image_id = Uuid::new_v4().to_string();
         let buffer = base64::engine::general_purpose::STANDARD
             .decode(base64_str)
             .map_err(|e| SessionStoreError::InvalidData(e.to_string()))?;
-        fs::write(self.image_path(&image_id), buffer)?;
-        Ok(ImageRef { image_id, media_type: media_type.to_string(), name })
+        let path = self.image_path(&image_id);
+        let path_clone = path.clone();
+        tokio::task::spawn_blocking(move || {
+            std::fs::write(&path_clone, buffer)
+        })
+        .await
+        .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+        Ok(ImageRef {
+            image_id,
+            media_type: media_type.to_string(),
+            name,
+        })
     }
 
     /// Load an image from disk and return its base64 encoding.
-    pub fn load_image(&self, image_id: &str) -> Result<Option<String>, SessionStoreError> {
+    pub async fn load_image(&self, image_id: &str) -> Result<Option<String>, SessionStoreError> {
         let path = self.image_path(image_id);
         if !path.exists() {
             return Ok(None);
         }
-        let buffer = fs::read(path)?;
-        Ok(Some(base64::engine::general_purpose::STANDARD.encode(&buffer)))
+        let path_clone = path.clone();
+        let buffer = tokio::task::spawn_blocking(move || std::fs::read(&path_clone))
+            .await
+            .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+        Ok(Some(
+            base64::engine::general_purpose::STANDARD.encode(&buffer),
+        ))
     }
 
-    /// Delete an image file from disk.  Swallows errors.
-    pub fn delete_image(&self, image_id: &str) -> Result<(), SessionStoreError> {
+    /// Delete an image file from disk. Swallows errors.
+    pub async fn delete_image(&self, image_id: &str) -> Result<(), SessionStoreError> {
         let path = self.image_path(image_id);
         if path.exists() {
-            fs::remove_file(path)?;
+            let path_clone = path.clone();
+            tokio::task::spawn_blocking(move || std::fs::remove_file(&path_clone))
+                .await
+                .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
         }
         Ok(())
     }
 
     /// Create a new session with the given title.
-    pub fn create_session(&self, title: Option<&str>) -> Result<ChatSession, SessionStoreError> {
+    pub async fn create_session(&self, title: Option<&str>) -> Result<ChatSession, SessionStoreError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -88,19 +152,25 @@ impl SessionStore {
             messages: Vec::new(),
         };
         let json = serde_json::to_string_pretty(&session)?;
-        fs::write(self.session_path(&session.id), json)?;
+        let path = self.session_path(&session.id);
+        let path_clone = path.clone();
+        tokio::task::spawn_blocking(move || std::fs::write(&path_clone, json))
+            .await
+            .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
         Ok(session)
     }
 
     /// Retrieve a session by its ID.
-    pub fn get_session(&self, id: &str) -> Result<Option<ChatSession>, SessionStoreError> {
+    pub async fn get_session(&self, id: &str) -> Result<Option<ChatSession>, SessionStoreError> {
         let path = self.session_path(id);
         if !path.exists() {
             return Ok(None);
         }
-        let data = fs::read_to_string(&path)?;
-        let session: ChatSession = serde_json::from_str(&data)
-            .map_err(|e| SessionStoreError::Json(e))?;
+        let path_clone = path.clone();
+        let data = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path_clone))
+            .await
+            .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+        let session: ChatSession = serde_json::from_str(&data).map_err(SessionStoreError::Json)?;
         if session.id.is_empty() || session.title.is_empty() {
             return Ok(None);
         }
@@ -108,8 +178,16 @@ impl SessionStore {
     }
 
     /// Update a session's title and/or messages list.
-    pub fn update_session(&self, id: &str, title: Option<&str>, messages: Option<Vec<SessionMessage>>) -> Result<Option<ChatSession>, SessionStoreError> {
-        let mut session = self.get_session(id)?.ok_or(SessionStoreError::NotFound(id.to_string()))?;
+    pub async fn update_session(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        messages: Option<Vec<SessionMessage>>,
+    ) -> Result<Option<ChatSession>, SessionStoreError> {
+        let mut session = self
+            .get_session(id)
+            .await?
+            .ok_or(SessionStoreError::NotFound(id.to_string()))?;
         if let Some(t) = title {
             session.title = t.to_string();
         }
@@ -121,23 +199,37 @@ impl SessionStore {
             .unwrap_or_default()
             .as_millis() as u64;
         let json = serde_json::to_string_pretty(&session)?;
-        fs::write(self.session_path(id), json)?;
+        let path = self.session_path(id);
+        let path_clone = path.clone();
+        tokio::task::spawn_blocking(move || std::fs::write(&path_clone, json))
+            .await
+            .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
         Ok(Some(session))
     }
 
     /// Delete a session and its associated images.
-    pub fn delete_session(&self, id: &str) -> Result<bool, SessionStoreError> {
-        if let Some(session) = self.get_session(id)? {
+    pub async fn delete_session(&self, id: &str) -> Result<bool, SessionStoreError> {
+        if let Some(session) = self.get_session(id).await? {
             // Collect all image refs from messages
-            let all_refs: Vec<&str> = session.messages.iter()
-                .flat_map(|m| m.image_refs.as_ref().map(|refs| refs.iter().map(|r| r.image_id.as_str()))
-                    .into_iter().flatten()
-                )
+            let all_refs: Vec<&str> = session
+                .messages
+                .iter()
+                .flat_map(|m| {
+                    m.image_refs
+                        .as_ref()
+                        .map(|refs| refs.iter().map(|r| r.image_id.as_str()))
+                        .into_iter()
+                        .flatten()
+                })
                 .collect();
             for image_id in all_refs {
-                let _ = self.delete_image(image_id);
+                let _ = self.delete_image(image_id).await;
             }
-            fs::remove_file(self.session_path(id))?;
+            let path = self.session_path(id);
+            let path_clone = path.clone();
+            tokio::task::spawn_blocking(move || std::fs::remove_file(&path_clone))
+                .await
+                .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
             Ok(true)
         } else {
             Ok(false)
@@ -145,19 +237,38 @@ impl SessionStore {
     }
 
     /// List all sessions with summary information.
-    pub fn list_sessions(&self) -> Result<Vec<SessionListItem>, SessionStoreError> {
+    pub async fn list_sessions(&self) -> Result<Vec<SessionListItem>, SessionStoreError> {
+        let entries = tokio::task::spawn_blocking({
+            let sessions_dir = self.sessions_dir.clone();
+            move || -> Result<Vec<_>, SessionStoreError> {
+                Ok(std::fs::read_dir(&sessions_dir)?.collect::<Vec<_>>())
+            }
+        })
+        .await
+        .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+
         let mut sessions = Vec::new();
-        for entry in std::fs::read_dir(&self.sessions_dir)? {
-            let entry = entry?;
+        for entry_result in entries {
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             let path = entry.path();
             if let Some(ext) = path.extension() {
-                if ext != "json" { continue; }
+                if ext != "json" {
+                    continue;
+                }
             } else {
                 continue;
             }
-            let data = match std::fs::read_to_string(&path) {
-                Ok(d) => d,
-                Err(_) => continue,
+            let path_clone = path.clone();
+            let data = match tokio::task::spawn_blocking(move || {
+                std::fs::read_to_string(&path_clone)
+            })
+            .await
+            {
+                Ok(Ok(d)) => d,
+                _ => continue,
             };
             let session: ChatSession = match serde_json::from_str(&data) {
                 Ok(s) => s,
@@ -170,26 +281,44 @@ impl SessionStore {
                 created_at: session.created_at,
                 updated_at: session.updated_at,
                 message_count: session.messages.len(),
-                last_message_preview: last_msg.map(|m| {
-                    let content = &m.content;
-                    if content.len() > 100 { &content[..100] } else { content }.to_string()
-                }).unwrap_or_default(),
+                last_message_preview: last_msg
+                    .map(|m| m.content.chars().take(100).collect())
+                    .unwrap_or_default(),
             });
         }
         // Sort by updated_at descending
-        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(sessions)
     }
 
     /// Clean up image files not referenced by any session message.
-    pub fn cleanup_orphaned_images(&self) -> Result<usize, SessionStoreError> {
-        let mut used_image_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for entry in std::fs::read_dir(&self.sessions_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            let data = match std::fs::read_to_string(&path) {
-                Ok(d) => d,
+    pub async fn cleanup_orphaned_images(&self) -> Result<usize, SessionStoreError> {
+        let mut used_image_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        let session_entries = tokio::task::spawn_blocking({
+            let sessions_dir = self.sessions_dir.clone();
+            move || -> Result<Vec<_>, SessionStoreError> {
+                Ok(std::fs::read_dir(&sessions_dir)?.collect::<Vec<_>>())
+            }
+        })
+        .await
+        .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+
+        for entry_result in session_entries {
+            let entry = match entry_result {
+                Ok(e) => e,
                 Err(_) => continue,
+            };
+            let path = entry.path();
+            let path_clone = path.clone();
+            let data = match tokio::task::spawn_blocking(move || {
+                std::fs::read_to_string(&path_clone)
+            })
+            .await
+            {
+                Ok(Ok(d)) => d,
+                _ => continue,
             };
             let session: ChatSession = match serde_json::from_str(&data) {
                 Ok(s) => s,
@@ -205,15 +334,29 @@ impl SessionStore {
         }
 
         let mut removed = 0;
-        for entry in std::fs::read_dir(&self.images_dir)? {
-            let entry = entry?;
+        let image_entries = tokio::task::spawn_blocking({
+            let images_dir = self.images_dir.clone();
+            move || -> Result<Vec<_>, SessionStoreError> {
+                Ok(std::fs::read_dir(&images_dir)?.collect::<Vec<_>>())
+            }
+        })
+        .await
+        .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+
+        for entry_result in image_entries {
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             let path = entry.path();
             if let Some(name) = path.file_stem() {
                 let image_id = name.to_string_lossy().to_string();
                 if !used_image_ids.contains(&image_id) {
-                    if let Err(_) = std::fs::remove_file(&path) {
-                        // skip errors
-                    } else {
+                    let path_clone = path.clone();
+                    if tokio::task::spawn_blocking(move || std::fs::remove_file(&path_clone))
+                        .await
+                        .is_ok()
+                    {
                         removed += 1;
                     }
                 }

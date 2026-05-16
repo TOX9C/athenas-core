@@ -7,6 +7,7 @@ node_modules/
 out/
 dist/
 build/
+target/
 
 # Environment
 .env
@@ -30,3 +31,6 @@ Thumbs.db
 patch*.js
 test-*.js
 update_*.py
+
+# E2E test screenshots
+e2e-tests/test/screenshots/

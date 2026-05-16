@@ -2,10 +2,12 @@
 name = "athena-plugins"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.82"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-thiserror = "1.0"
-
-[dev-dependencies]
-tokio-test = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true, features = ["rng"] }
+chrono = { workspace = true }
+log = { workspace = true }
