@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-swarm-read-state"
+description = "Enables the swarm_read_state command without any pre-configured scope."
+commands.allow = ["swarm_read_state"]
+
+[[permission]]
+identifier = "deny-swarm-read-state"
+description = "Denies the swarm_read_state command without any pre-configured scope."
+commands.deny = ["swarm_read_state"]

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Athena's Core</title>
+<link rel="stylesheet" href="./styles.css" />
+<style>
+#wasm-loading {
+  position: fixed; inset: 0; display: flex; align-items: center;
+  justify-content: center; background: var(--bg, #0b0e13);
+  color: var(--textDim, #525a6e); font-family: inherit;
+  flex-direction: column; gap: 12px; z-index: 9999;
+  transition: opacity 0.3s; pointer-events: none;
+}
+#wasm-loading.loading { pointer-events: none; }
+#wasm-loading.done { opacity: 0; pointer-events: none; }
+.spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border, #2a303e);
+  border-top-color: var(--accent, #38bdf8); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#console-log {
+  position: fixed; bottom: 0; left: 0; right: 0; max-height: 250px;
+  overflow-y: auto; background: rgba(0,0,0,0.95); color: #ccc;
+  font-family: 'SF Mono', 'Menlo', monospace; font-size: 11px;
+  padding: 8px; z-index: 99999; display: none; pointer-events: none;
+  border-top: 2px solid #ef4444;
+}
+#console-log .error { color: #ef4444; }
+#console-log .warn { color: #f59e0b; }
+#console-log .info { color: #38bdf8; }
+#console-log .success { color: #22c55e; }
+</style>
+<script>
+// Console capture — forward all console output to visible DOM element
+(function() {
+  var logEl = null;
+  function getLogEl() {
+    if (!logEl) logEl = document.getElementById('console-log');
+    return logEl;
+  }
+  function appendLine(cls, args) {
+    var el = getLogEl();
+    if (!el) return;
+    var line = document.createElement('div');
+    line.className = cls;
+    try {
+      line.textContent = Array.prototype.slice.call(args).map(function(a) {
+        if (a === null) return 'null';
+        if (a === undefined) return 'undefined';
+        if (typeof a === 'object') { try { return JSON.stringify(a).substring(0, 500); } catch(e) { return String(a); } }
+        return String(a);
+      }).join(' ');
+    } catch(e) { line.textContent = 'log-capture-error'; }
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
+  var _log = console.log;
+  var _error = console.error;
+  var _warn = console.warn;
+  var _info = console.info;
+  console.log = function() { appendLine('', arguments); _log.apply(console, arguments); };
+  console.error = function() { appendLine('error', arguments); _error.apply(console, arguments); };
+  console.warn = function() { appendLine('warn', arguments); _warn.apply(console, arguments); };
+  console.info = function() { appendLine('info', arguments); _info.apply(console, arguments); };
+
+  // Immediate test
+  console.info('[BOOT] Console capture initialized');
+})();
+
+// WASM loading fix for Tauri's custom protocol
+(function() {
+  var _fetch = window.fetch;
+  window.fetch = function(input, init) {
+    var url = typeof input === 'string' ? input :
+      input instanceof URL ? input.href :
+      input instanceof Request ? input.url : '';
+    if (url && url.endsWith('.wasm')) {
+      console.info('[WASM] Intercepting fetch for:', url);
+      return new Promise(function(resolve, reject) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        xhr.responseType = 'arraybuffer';
+        xhr.onload = function() {
+          var size = xhr.response ? xhr.response.byteLength : 0;
+          console.info('[WASM] XHR loaded, status:', xhr.status, 'size:', size);
+          if (xhr.status === 200 || xhr.status === 0) {
+            resolve(new Response(xhr.response, {
+              status: 200,
+              headers: { 'Content-Type': 'application/wasm' }
+            }));
+          } else {
+            console.error('[WASM] XHR failed with status:', xhr.status);
+            reject(new Error('XHR failed: ' + xhr.status));
+          }
+        };
+        xhr.onerror = function() {
+          console.error('[WASM] XHR network error for', url);
+          reject(new Error('XHR network error for ' + url));
+        };
+        xhr.ontimeout = function() {
+          console.error('[WASM] XHR timeout for', url);
+          reject(new Error('XHR timeout for ' + url));
+        };
+        xhr.send();
+      });
+    }
+    return _fetch.apply(this, arguments);
+  };
+  console.info('[BOOT] Fetch interceptor installed');
+})();
+
+// Error reporting with full detail
+window.addEventListener('error', function(e) {
+  console.error('[PAGE ERROR]', e.message, 'at', e.filename + ':' + e.lineno + ':' + e.colno);
+  if (e.error) console.error('[PAGE ERROR] Stack:', e.error.stack);
+  var el = document.getElementById('wasm-loading-error');
+  if (el) el.textContent = 'Error: ' + e.message;
+});
+window.addEventListener('unhandledrejection', function(e) {
+  var reason = e.reason;
+  console.error('[UNHANDLED REJECTION]', reason && reason.message || reason);
+  if (reason && reason.stack) console.error('[UNHANDLED REJECTION] Stack:', reason.stack);
+  var el = document.getElementById('wasm-loading-error');
+  if (el) el.textContent = 'Promise error: ' + (reason && reason.message || String(reason));
+});
+
+// Dismiss loading overlay once Dioxus mounts
+function dismissOverlay() {
+  var loader = document.getElementById('wasm-loading');
+  if (loader) {
+    loader.classList.remove('loading');
+    loader.classList.add('done');
+  }
+  console.info('[MOUNT] Overlay dismissed');
+}
+var _checkCount = 0;
+var _checkInterval = setInterval(function() {
+  _checkCount++;
+  var main = document.getElementById('main');
+  if (!main) { if (_checkCount % 5 === 0) console.warn('[MOUNT] #main not found yet'); return; }
+  if (main.querySelector('[data-dioxus-id]')) {
+    console.info('[MOUNT] Dioxus data-dioxus-id attribute detected!');
+    dismissOverlay();
+    clearInterval(_checkInterval);
+    return;
+  }
+  var childCount = main.children.length;
+  for (var i = 0; i < childCount; i++) {
+    var child = main.children[i];
+    if (child.id !== 'wasm-loading' && child.id !== 'console-log') {
+      console.info('[MOUNT] Non-loader child detected:', child.tagName, child.id || '(no id)');
+      dismissOverlay();
+      clearInterval(_checkInterval);
+      return;
+    }
+  }
+  if (_checkCount % 10 === 0) {
+    console.info('[MOUNT] Check #' + _checkCount + ': still waiting, children:', childCount);
+  }
+  if (_checkCount > 150) {
+    clearInterval(_checkInterval);
+    console.error('[MOUNT] TIMEOUT after 30s - WASM did not initialize');
+    var errEl = document.getElementById('wasm-loading-error');
+    if (errEl && !errEl.textContent) {
+      errEl.textContent = 'WASM did not initialize within 30s. Check console below.';
+    }
+    dismissOverlay();
+  }
+}, 200);
+
+// Log the environment info
+console.info('[BOOT] Page loaded, base URL:', document.baseURI);
+console.info('[BOOT] Location:', window.location.href);
+console.info('[BOOT] Protocol:', window.location.protocol);
+
+// Monitor script loading
+var _origCreate = document.createElement.bind(document);
+document.createElement = function(tag) {
+  var el = _origCreate(tag);
+  if (tag.toLowerCase() === 'script') {
+    console.info('[LOADER] Script element created');
+  }
+  return el;
+};
+</script>
+<link rel="preload" as="script" href="__FRONTEND_ENTRY__" crossorigin></head>
+<body>
+<div id="main">
+  <div id="wasm-loading" class="loading">
+    <div class="spinner"></div>
+    <div style="font-size: 13px;">Loading Athena's Core...</div>
+    <div id="wasm-loading-error" style="font-size: 11px; color: #ef4444; max-width: 400px; text-align: center;"></div>
+  </div>
+</div>
+<div id="console-log"></div>
+<script type="module" async src="__FRONTEND_ENTRY__"></script>
+</body>
+</html>

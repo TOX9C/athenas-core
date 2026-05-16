@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-athena-set-session-context"
+description = "Enables the athena_set_session_context command without any pre-configured scope."
+commands.allow = ["athena_set_session_context"]
+
+[[permission]]
+identifier = "deny-athena-set-session-context"
+description = "Denies the athena_set_session_context command without any pre-configured scope."
+commands.deny = ["athena_set_session_context"]
