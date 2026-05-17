@@ -9,20 +9,24 @@ dist/
 build/
 target/
 
-# Environment
+# Environment & secrets
 .env
 .env.local
 .env.*.local
+*.secret
+credentials.json
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
+.desktop.ini
 
 # Scratch / dev artifacts
 *.patch
@@ -31,6 +35,39 @@ Thumbs.db
 patch*.js
 test-*.js
 update_*.py
+fix.py
+fix.sh
+test_*.rs
+graphify-out/
 
-# E2E test screenshots
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Frontend build artifacts
+frontend/dist/
+frontend/target/
+
+# E2E test artifacts
 e2e-tests/test/screenshots/
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# Backup / legacy directories
+backup_*/
+dist-electron/
+
+# Rust compile artifacts (redundant with target/ but explicit)
+*.rlib
+*.d
+*.rmeta
+*.dylib
+*.so
+
+# Log files
+*.log
+logs/
+
+# Coverage
+coverage/
