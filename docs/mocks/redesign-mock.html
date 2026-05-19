@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Athena's Core — Redesign Mockup</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Geist:wght@400;500;600;700&display=swap');
+
+  :root {
+    --bg: #070810;
+    --bg2: #0c0e16;
+    --bg3: #131620;
+    --bg-hover: #161a26;
+    --border: #1e2232;
+    --border-active: #2e3450;
+    --text: #b8bdd0;
+    --text-muted: #586074;
+    --text-dim: #2e3446;
+    --accent: #38bdf8;
+    --accent-dim: rgba(56,189,248,0.08);
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --error: #ef4444;
+    --font-ui: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'Geist Mono', 'JetBrains Mono', monospace;
+    --radius: 3px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #030408;
+    color: var(--text);
+    font-family: var(--font-ui);
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── MOCKUP SWITCHER ── */
+  .mock-header {
+    height: 42px;
+    background: #050608;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .mock-header .label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .mock-header .tab {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    background: transparent;
+  }
+  .mock-header .tab:hover { color: var(--text); background: var(--bg-hover); }
+  .mock-header .tab.active {
+    color: var(--accent);
+    background: var(--accent-dim);
+    border-color: rgba(56,189,248,0.2);
+  }
+  .mock-header .spacer { flex: 1; }
+  .mock-header .hint {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+  }
+
+  /* ── APP SHELL ── */
+  .app-shell {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  /* ── TITLEBAR ── */
+  .titlebar {
+    height: 38px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    flex-shrink: 0;
+  }
+  .traffic-lights {
+    width: 72px;
+    display: flex;
+    gap: 8px;
+    padding-left: 4px;
+    flex-shrink: 0;
+  }
+  .traffic-light {
+    width: 12px; height: 12px; border-radius: 50%;
+  }
+  .tl-close { background: #ff5f57; }
+  .tl-min { background: #febc2e; }
+  .tl-max { background: #28c840; }
+
+  .workspace-tabs {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    overflow: hidden;
+  }
+  .ws-tab {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: var(--radius);
+    color: var(--text-muted);
+    background: transparent;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  .ws-tab.active {
+    color: var(--text);
+    background: var(--bg3);
+  }
+  .ws-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  }
+  .ws-tab-add {
+    width: 20px; height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .ws-tab-add:hover { color: var(--text-muted); background: var(--bg3); }
+
+  /* ── CURRENT (BEFORE) TITLEBAR BUTTONS ── */
+  .titlebar-buttons-before {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    flex-shrink: 0;
+  }
+  .tb-btn-before {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    padding: 3px 7px;
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .tb-btn-before:hover { color: var(--text-muted); background: var(--bg3); }
+  .tb-btn-before.active { color: var(--accent); background: var(--accent-dim); }
+  .tb-sep {
+    width: 1px; height: 14px; background: var(--border); margin: 0 4px;
+  }
+
+  /* ── REDESIGNED (AFTER) TITLEBAR BUTTONS ── */
+  .titlebar-buttons-after {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  .tb-btn-after {
+    width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .tb-btn-after:hover { color: var(--text); background: var(--bg3); }
+  .tb-btn-after.active { color: var(--accent); background: var(--accent-dim); }
+  .tb-btn-after svg { width: 15px; height: 15px; }
+  .tb-btn-after .badge {
+    position: absolute; top: 2px; right: 2px;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--error);
+    border: 1.5px solid var(--bg2);
+  }
+
+  /* ── PANEL SWITCHER ── */
+  .panel-switcher {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    margin-right: 4px;
+    padding-right: 4px;
+    border-right: 1px solid var(--border);
+  }
+  .panel-sw-btn {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    padding: 3px 8px;
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .panel-sw-btn:hover { color: var(--text-muted); background: var(--bg3); }
+  .panel-sw-btn.active { color: var(--accent); background: var(--accent-dim); }
+
+  /* ── REDESIGNED PANEL SWITCHER ── */
+  .panel-switcher-after {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    margin-right: 6px;
+    padding-right: 6px;
+    border-right: 1px solid var(--border);
+  }
+  .panel-sw-after {
+    width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .panel-sw-after:hover { color: var(--text-muted); background: var(--bg3); }
+  .panel-sw-after.active { color: var(--accent); background: var(--accent-dim); }
+  .panel-sw-after svg { width: 14px; height: 14px; }
+
+  /* ── MAIN CONTENT ── */
+  .main-row {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+  }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    width: 220px;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  .sidebar-header {
+    height: 32px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+  }
+  .sidebar-header-icon {
+    width: 14px; height: 14px; color: var(--text-muted);
+  }
+  .sidebar-header-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .sidebar-header-label-before {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-left: 2px;
+  }
+  .sidebar-spacer { flex: 1; }
+  .sidebar-collapse-btn {
+    width: 20px; height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); cursor: pointer; border-radius: var(--radius);
+  }
+  .sidebar-collapse-btn:hover { color: var(--text-muted); background: var(--bg3); }
+  .sidebar-collapse-btn svg { width: 12px; height: 12px; }
+
+  .sidebar-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    padding: 4px 12px;
+    gap: 8px;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .sidebar-item:hover { background: var(--bg-hover); }
+  .sidebar-item.active { background: var(--bg3); }
+  .sidebar-item .dot {
+    width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
+  }
+  .sidebar-item .name {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sidebar-item .meta {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+  }
+
+  /* ── SIDEBAR SECTION TABS (BEFORE) ── */
+  .sidebar-tabs-before {
+    height: 28px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .st-btn-before {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    height: 100%;
+    cursor: pointer;
+    transition: all 0.15s;
+    border-right: 1px solid var(--border);
+  }
+  .st-btn-before:last-child { border-right: none; }
+  .st-btn-before:hover { color: var(--text-muted); background: var(--bg3); }
+  .st-btn-before.active { color: var(--accent); background: var(--accent-dim); }
+
+  /* ── SIDEBAR SECTION TABS (AFTER) ── */
+  .sidebar-tabs-after {
+    height: 32px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .st-btn-after {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+    border-right: 1px solid var(--border);
+  }
+  .st-btn-after:last-child { border-right: none; }
+  .st-btn-after:hover { color: var(--text-muted); background: var(--bg3); }
+  .st-btn-after.active { color: var(--accent); background: var(--accent-dim); }
+  .st-btn-after svg { width: 15px; height: 15px; }
+
+  /* ── RAIL (COLLAPSED SIDEBAR) ── */
+  .rail-before {
+    width: 28px;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 8px;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .rail-btn-before {
+    width: 22px; height: 22px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .rail-btn-before:hover { color: var(--text-muted); background: var(--bg3); }
+  .rail-btn-before.active { color: var(--accent); background: var(--accent-dim); }
+
+  .rail-after {
+    width: 40px;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 10px;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  .rail-btn-after {
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .rail-btn-after:hover { color: var(--text-muted); background: var(--bg3); }
+  .rail-btn-after.active { color: var(--accent); background: var(--accent-dim); }
+  .rail-btn-after svg { width: 16px; height: 16px; }
+  .rail-sep {
+    width: 18px; height: 1px; background: var(--border); margin: 4px 0;
+  }
+
+  /* ── CENTER CONTENT ── */
+  .center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .center-header {
+    height: 28px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 8px;
+  }
+  .center-tab {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 4px 0;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-bottom: 1.5px solid transparent;
+    margin-bottom: -1px;
+  }
+  .center-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .center-body {
+    flex: 1;
+    background: var(--bg);
+    padding: 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    position: relative;
+    overflow: hidden;
+  }
+  .term-line {
+    line-height: 1.5;
+    white-space: pre;
+  }
+  .term-prompt { color: var(--accent); }
+  .term-cmd { color: var(--text); }
+  .term-output { color: var(--text-muted); }
+  .cursor {
+    display: inline-block;
+    width: 7px; height: 14px;
+    background: var(--accent);
+    animation: blink 1s step-end infinite;
+    vertical-align: text-bottom;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ── RIGHT SIDEBAR ── */
+  .right-sidebar {
+    width: 320px;
+    background: var(--bg2);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  .right-tabs {
+    height: 32px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 4px;
+    gap: 0;
+  }
+  .right-tab-before {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-bottom: 1.5px solid transparent;
+    margin-bottom: -1px;
+  }
+  .right-tab-before.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  .right-tab-after {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 10px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-bottom: 1.5px solid transparent;
+    margin-bottom: -1px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.04em;
+  }
+  .right-tab-after svg { width: 12px; height: 12px; }
+  .right-tab-after.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  .right-body {
+    flex: 1;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+  }
+  .chat-msg {
+    margin-bottom: 10px;
+  }
+  .chat-role {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+  .chat-role.user { color: var(--accent); }
+  .chat-role.assistant { color: var(--success); }
+  .chat-text {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
+  .chat-input {
+    margin-top: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text);
+    background: var(--bg3);
+    resize: none;
+    outline: none;
+    min-height: 60px;
+  }
+  .chat-input:focus { border-color: var(--accent); }
+
+  /* ── STATUS BAR ── */
+  .statusbar {
+    height: 22px;
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .sb-item {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .sb-item svg { width: 10px; height: 10px; }
+  .sb-spacer { flex: 1; }
+
+  /* ── HIDE/SHOW SECTIONS ── */
+  .before-only, .after-only { display: none; }
+  body.show-before .before-only { display: flex; }
+  body.show-before .before-only.block { display: block; }
+  body.show-before .after-only { display: none !important; }
+  body.show-after .after-only { display: flex; }
+  body.show-after .after-only.block { display: block; }
+  body.show-after .before-only { display: none !important; }
+  body.show-split .before-only { display: flex; }
+  body.show-split .before-only.block { display: block; }
+  body.show-split .after-only { display: flex; }
+  body.show-split .after-only.block { display: block; }
+
+  /* ── DIFF HIGHLIGHTS ── */
+  body.show-split .after-only { outline: 1px solid rgba(56,189,248,0.25); outline-offset: -1px; }
+  body.show-split .before-only { outline: 1px solid rgba(239,68,68,0.25); outline-offset: -1px; }
+
+  /* ── KANBAN PREVIEW ── */
+  .kanban-row { display: flex; gap: 12px; height: 100%; padding: 12px; }
+  .kanban-col {
+    flex: 1; background: var(--bg2); border-radius: 4px;
+    display: flex; flex-direction: column; border: 1px solid var(--border);
+  }
+  .kanban-col-header {
+    padding: 8px 12px; font-family: var(--font-mono); font-size: 9px;
+    font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-muted); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .kanban-count {
+    font-size: 8px; background: var(--bg3); padding: 1px 5px;
+    border-radius: 2px; color: var(--text-dim);
+  }
+  .kanban-cards { flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .kanban-card {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; font-family: var(--font-mono); font-size: 10px; color: var(--text);
+  }
+  .kanban-card-meta {
+    font-size: 8px; color: var(--text-dim); margin-top: 4px;
+    display: flex; gap: 6px; align-items: center;
+  }
+
+  /* ── ICON ANNOTATIONS ── */
+  .annotation {
+    position: absolute;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    color: var(--accent);
+    background: rgba(56,189,248,0.1);
+    padding: 2px 5px;
+    border-radius: 2px;
+    border: 1px solid rgba(56,189,248,0.2);
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 100;
+  }
+</style>
+</head>
+<body class="show-after">
+
+<!-- ── MOCKUP HEADER ── -->
+<div class="mock-header">
+  <span class="label">View:</span>
+  <button class="tab" onclick="setView('show-before')">Before</button>
+  <button class="tab active" onclick="setView('show-after')">After</button>
+  <button class="tab" onclick="setView('show-split')">Split Diff</button>
+  <span class="spacer"></span>
+  <span class="hint">ATHENA'S CORE REDESIGN MOCKUP</span>
+</div>
+
+<!-- ── APP SHELL ── -->
+<div class="app-shell">
+
+  <!-- ═══ TITLEBAR ═══ -->
+  <div class="titlebar">
+    <div class="traffic-lights">
+      <div class="traffic-light tl-close"></div>
+      <div class="traffic-light tl-min"></div>
+      <div class="traffic-light tl-max"></div>
+    </div>
+
+    <div class="workspace-tabs">
+      <div class="ws-tab active">
+        <div class="ws-dot" style="background:#38bdf8"></div>
+        main-project
+      </div>
+      <div class="ws-tab">
+        <div class="ws-dot" style="background:#a78bfa"></div>
+        api-server
+      </div>
+      <div class="ws-tab-add">+</div>
+    </div>
+
+    <!-- BEFORE: text abbreviations -->
+    <div class="titlebar-buttons-before before-only">
+      <div class="panel-switcher">
+        <div class="panel-sw-btn active">terminals</div>
+        <div class="panel-sw-btn">panels</div>
+        <div class="panel-sw-btn">kanban</div>
+        <div class="panel-sw-btn">swarm</div>
+      </div>
+      <div class="tb-btn-before">AI</div>
+      <div class="tb-btn-before">SW</div>
+      <div class="tb-sep"></div>
+      <div class="tb-btn-before">RS</div>
+      <div class="tb-btn-before" style="position:relative">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+        <div style="position:absolute;top:0;right:0;width:7px;height:7px;border-radius:50%;background:var(--error);border:1.5px solid var(--bg2)"></div>
+      </div>
+      <div class="tb-btn-before">SET</div>
+    </div>
+
+    <!-- AFTER: SVG icons -->
+    <div class="titlebar-buttons-after after-only">
+      <div class="panel-switcher-after">
+        <div class="panel-sw-after active" title="Terminals">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </div>
+        <div class="panel-sw-after" title="Panels">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+        </div>
+        <div class="panel-sw-after" title="Kanban">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="6" height="14" rx="1"/><rect x="9" y="3" width="6" height="18" rx="1"/><rect x="16" y="10" width="6" height="11" rx="1"/></svg>
+        </div>
+        <div class="panel-sw-after" title="Swarm">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+      </div>
+
+      <!-- Athena AI -->
+      <div class="tb-btn-after" title="Athena (Cmd+J)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93"/><path d="M8.25 9.93A4 4 0 0 1 12 2"/><path d="M12 9v3"/><circle cx="12" cy="5" r="1" fill="currentColor" stroke="none"/><line x1="9" y1="12" x2="15" y2="12"/><path d="M8 12c-2 2-3 6-3 9h14c0-3-1-7-3-9"/></svg>
+      </div>
+
+      <!-- Swarm launch -->
+      <div class="tb-btn-after" title="Launch Swarm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><line x1="7.5" y1="7.5" x2="10.5" y2="10.5"/><line x1="13.5" y1="10.5" x2="16.5" y2="7.5"/><line x1="7.5" y1="16.5" x2="10.5" y2="13.5"/><line x1="13.5" y1="13.5" x2="16.5" y2="16.5"/></svg>
+      </div>
+
+      <div class="tb-sep"></div>
+
+      <!-- Right sidebar toggle -->
+      <div class="tb-btn-after" title="Toggle Sidebar (Cmd+B)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/><polyline points="10 9 7 12 10 15"/></svg>
+      </div>
+
+      <!-- Notifications -->
+      <div class="tb-btn-after active" title="Notifications">
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+        <div class="badge"></div>
+      </div>
+
+      <!-- Settings -->
+      <div class="tb-btn-after" title="Settings (Cmd+,)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ MAIN ROW ═══ -->
+  <div class="main-row">
+
+    <!-- ── SIDEBAR RAIL (COLLAPSED) — BEFORE ── -->
+    <div class="rail-before before-only">
+      <div class="rail-btn-before active">SP</div>
+      <div class="rail-btn-before">FL</div>
+      <div class="rail-btn-before">AG</div>
+      <div class="rail-btn-before">PL</div>
+    </div>
+
+    <!-- ── SIDEBAR RAIL (COLLAPSED) — AFTER ── -->
+    <div class="rail-after after-only">
+      <div class="rail-btn-after active" title="Spaces">
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      </div>
+      <div class="rail-btn-after" title="Files">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      </div>
+      <div class="rail-btn-after" title="Agents">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>
+      </div>
+      <div class="rail-btn-after" title="Plugins">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v7"/><path d="M12 15v7"/><path d="M2 12h7"/><path d="M15 12h7"/><circle cx="12" cy="12" r="3"/></svg>
+      </div>
+      <div class="rail-sep"></div>
+      <div class="rail-btn-after" title="Collapse sidebar" style="margin-top:auto;margin-bottom:8px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 9 12 12 15 15"/><line x1="3" y1="12" x2="12" y2="12"/></svg>
+      </div>
+    </div>
+
+    <!-- ── EXPANDED SIDEBAR ── -->
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <!-- BEFORE: colored dot + text -->
+        <div class="before-only" style="align-items:center;gap:6px;">
+          <div class="ws-dot" style="background:var(--accent)"></div>
+          <span class="sidebar-header-label-before">SPACES</span>
+        </div>
+        <!-- AFTER: icon + text -->
+        <div class="after-only" style="align-items:center;gap:6px;">
+          <svg class="sidebar-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          <span class="sidebar-header-label">SPACES</span>
+        </div>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-collapse-btn" title="Collapse">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+      </div>
+
+      <div class="sidebar-content">
+        <div class="sidebar-item active">
+          <div class="dot" style="background:#38bdf8"></div>
+          <span class="name">main-project</span>
+          <span class="meta">2x2</span>
+        </div>
+        <div class="sidebar-item">
+          <div class="dot" style="background:#a78bfa"></div>
+          <span class="name">api-server</span>
+          <span class="meta">1x3</span>
+        </div>
+        <div class="sidebar-item">
+          <div class="dot" style="background:#f59e0b"></div>
+          <span class="name">ml-pipeline</span>
+          <span class="meta">2x1</span>
+        </div>
+        <div class="sidebar-item" style="justify-content:center;gap:6px;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);">New Workspace</span>
+        </div>
+      </div>
+
+      <!-- BEFORE: text tabs -->
+      <div class="sidebar-tabs-before before-only">
+        <div class="st-btn-before active">SP</div>
+        <div class="st-btn-before">FL</div>
+        <div class="st-btn-before">AG</div>
+        <div class="st-btn-before">PL</div>
+      </div>
+
+      <!-- AFTER: icon tabs -->
+      <div class="sidebar-tabs-after after-only">
+        <div class="st-btn-after active" title="Spaces">
+          <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        </div>
+        <div class="st-btn-after" title="Files">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <div class="st-btn-after" title="Agents">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>
+        </div>
+        <div class="st-btn-after" title="Plugins">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v7"/><path d="M12 15v7"/><path d="M2 12h7"/><path d="M15 12h7"/><circle cx="12" cy="12" r="3"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CENTER CONTENT ── -->
+    <div class="center">
+      <div class="center-header">
+        <div class="center-tab active">main-project</div>
+        <div class="center-tab">api-server</div>
+      </div>
+      <div class="center-body">
+        <div class="term-line"><span class="term-prompt">~/main-project</span> <span class="term-cmd">cargo build --release</span></div>
+        <div class="term-line"><span class="term-output">   Compiling athena-frontend v0.1.0</span></div>
+        <div class="term-line"><span class="term-output">   Compiling athena-core v0.1.0</span></div>
+        <div class="term-line"><span class="term-output">    Finished `release` profile [optimized] target(s) in 47.2s</span></div>
+        <div class="term-line" style="margin-top:8px"><span class="term-prompt">~/main-project</span> <span class="term-cmd">./target/release/athena-core</span></div>
+        <div class="term-line"><span class="term-output">[INFO] Starting MCP server on port 4545</span></div>
+        <div class="term-line"><span class="term-output">[INFO] Agent comms on port 4546</span></div>
+        <div class="term-line"><span class="term-output">[INFO] Workspace loaded: main-project</span></div>
+        <div class="term-line" style="margin-top:8px"><span class="term-prompt">~/main-project</span> <span class="cursor"></span></div>
+      </div>
+    </div>
+
+    <!-- ── RIGHT SIDEBAR ── -->
+    <div class="right-sidebar">
+      <div class="right-tabs">
+        <!-- BEFORE: text-only tabs -->
+        <div class="right-tab-before before-only active">DETAILS</div>
+        <div class="right-tab-before before-only">BROWSER</div>
+        <div class="right-tab-before before-only">OUTPUT</div>
+        <div class="right-tab-before before-only">ASSISTANT</div>
+        <!-- AFTER: icon+text tabs -->
+        <div class="right-tab-after after-only active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          Details
+        </div>
+        <div class="right-tab-after after-only">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          Browser
+        </div>
+        <div class="right-tab-after after-only">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          Output
+        </div>
+        <div class="right-tab-after after-only">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93"/><path d="M8.25 9.93A4 4 0 0 1 12 2"/><line x1="9" y1="12" x2="15" y2="12"/><path d="M8 12c-2 2-3 6-3 9h14c0-3-1-7-3-9"/></svg>
+          Assistant
+        </div>
+      </div>
+      <div class="right-body">
+        <div class="chat-msg">
+          <div class="chat-role user">You</div>
+          <div class="chat-text">Refactor the terminal grid component to use CSS Grid instead of flexbox for better pane alignment.</div>
+        </div>
+        <div class="chat-msg">
+          <div class="chat-role assistant">Athena</div>
+          <div class="chat-text">I'll restructure the TerminalGrid to use explicit grid-template-columns and grid-template-rows. This gives deterministic pane sizing and eliminates the flex-shrink layout drift you're seeing.</div>
+        </div>
+        <textarea class="chat-input" placeholder="Message Athena..."></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ STATUS BAR ═══ -->
+  <div class="statusbar">
+    <!-- BEFORE: text only -->
+    <div class="before-only" style="display:flex;align-items:center;gap:12px;width:100%;">
+      <span class="sb-item">main-project</span>
+      <span class="sb-item">4 panes</span>
+      <span class="sb-item">terminals</span>
+      <span class="sb-spacer"></span>
+      <span class="sb-item">Athena</span>
+    </div>
+    <!-- AFTER: icon+text -->
+    <div class="after-only" style="display:flex;align-items:center;gap:12px;width:100%;">
+      <span class="sb-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+        main-project
+      </span>
+      <span class="sb-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        4 panes
+      </span>
+      <span class="sb-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        terminals
+      </span>
+      <span class="sb-spacer"></span>
+      <span class="sb-item" style="color:var(--success);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="8 12 11 15 16 9"/></svg>
+        Athena
+      </span>
+    </div>
+  </div>
+</div>
+
+<script>
+function setView(cls) {
+  document.body.className = cls;
+  document.querySelectorAll('.mock-header .tab').forEach((t, i) => {
+    t.classList.toggle('active', ['show-before','show-after','show-split'][i] === cls);
+  });
+}
+</script>
+</body>
+</html>
