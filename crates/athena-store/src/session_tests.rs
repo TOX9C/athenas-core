@@ -87,7 +87,10 @@ async fn test_session_with_images() {
         .save_image(&base64_data, "image/png", Some("test.png".to_string()))
         .await
         .unwrap();
-    let session = store.create_session(Some("Session with Image")).await.unwrap();
+    let session = store
+        .create_session(Some("Session with Image"))
+        .await
+        .unwrap();
     let msg = make_session_message_with_image(image_ref.clone());
     let updated = store
         .update_session(&session.id, None, Some(vec![msg]))

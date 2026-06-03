@@ -32,7 +32,7 @@ static NEWLINE_COLLAPSE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n{3,}").unw
 pub fn strip_ansi(input: &str) -> String {
     // Step 1: replace cursor-forward with spaces
     let with_spaces = CURSOR_FORWARD_RE.replace_all(input, |caps: &regex::Captures| {
-        let n: usize = caps[1].parse().unwrap_or(1);
+        let n: usize = caps[1].parse().unwrap_or(1).min(4096);
         " ".repeat(n)
     });
 

@@ -1,5 +1,8 @@
 use crate::components::plugin::agent_status_list::AgentStatusList;
 use crate::components::plugin::plugin_dashboard::PluginDashboard;
+use crate::components::shared::icon::{
+    IconAgents, IconChevronLeft, IconFiles, IconGrid, IconPlugins,
+};
 use crate::components::sidebar_dir::file_explorer::FileExplorer;
 use crate::components::sidebar_dir::workspace_list::WorkspaceList;
 use crate::stores::ui::{use_ui_store, SidebarSection};
@@ -27,12 +30,14 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         SidebarSection::Spaces => "var(--accent)",
         SidebarSection::Files => "var(--warning)",
         SidebarSection::Agents => "var(--success)",
-        SidebarSection::Plugins => "#a78bfa",
+        SidebarSection::Plugins => "var(--info)",
     };
 
     rsx! {
         div {
             class: "sidebar",
+            role: "navigation",
+            "aria-label": "Sidebar",
             style: "width: {sidebar_width}px; min-width: 180px; max-width: 400px; height: 100%; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
 
             // Header
@@ -48,7 +53,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     }
 
                     span {
-                        style: "font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--textMuted);",
+                        style: "font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--textMuted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                         "{section_title}"
                     }
                 }
@@ -60,16 +65,21 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         button {
                             style: "padding: 2px 6px; border-radius: 4px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; font-size: 14px; font-weight: 500;",
                             title: "New workspace",
-                            onclick: move |_| props.on_new_space.call(()),
+                            "aria-label": "New workspace",
+                            onclick: move |_| {
+                                web_sys::console::log_1(&"[Sidebar] Header + clicked".into());
+                                props.on_new_space.call(());
+                            },
                             "+"
                         }
                     }
 
                     button {
-                        style: "padding: 2px 6px; border-radius: 4px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; font-size: 10px;",
+                        style: "padding: 2px 6px; border-radius: 4px; border: none; background: transparent; color: var(--textMuted); cursor: pointer;",
                         title: "Collapse sidebar",
+                        "aria-label": "Collapse sidebar",
                         onclick: move |_| ui_state.write().sidebar_visible = false,
-                        "\u{2039}"
+                        IconChevronLeft { size: Some(14), color: Some("var(--textMuted)".to_string()) }
                     }
                 }
             }
@@ -101,7 +111,10 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 
                     button {
                         style: "width: 100%; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 6px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; font-size: 11px; font-weight: 500; transition: background 0.1s;",
-                        onclick: move |_| props.on_new_space.call(()),
+                        onclick: move |_| {
+                            web_sys::console::log_1(&"[Sidebar] Bottom New Workspace clicked".into());
+                            props.on_new_space.call(());
+                        },
                         span { style: "font-size: 14px; font-weight: 500;", "+" }
                         "New Workspace"
                     }
@@ -131,10 +144,16 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         rsx! {
                             button {
                                 key: "{label}",
-                                style: "padding: 4px 10px; border-radius: 4px; border: none; background: {bg}; color: {color}; cursor: pointer; font-size: 9px; font-weight: 600; letter-spacing: 0.04em; transition: background 0.1s;",
+                                style: "padding: 4px 10px; border-radius: 4px; border: none; background: {bg}; color: {color}; cursor: pointer; transition: background 0.15s;",
                                 title: "{title}",
+                                "aria-label": "{title}",
                                 onclick: move |_| ui_state.write().sidebar_section = sec,
-                                "{label}"
+                                {match sec {
+                                    SidebarSection::Spaces => rsx! { IconGrid { size: Some(14), color: Some(color.to_string()) } },
+                                    SidebarSection::Files => rsx! { IconFiles { size: Some(14), color: Some(color.to_string()) } },
+                                    SidebarSection::Agents => rsx! { IconAgents { size: Some(14), color: Some(color.to_string()) } },
+                                    SidebarSection::Plugins => rsx! { IconPlugins { size: Some(14), color: Some(color.to_string()) } },
+                                }}
                             }
                         }
                     }

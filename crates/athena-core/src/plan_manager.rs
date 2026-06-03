@@ -72,7 +72,8 @@ pub enum PlanManagerError {
 /// Thread-safe plan manager.
 pub struct PlanManager {
     active_plan: Arc<RwLock<Option<ExecutionPlan>>>,
-    event_emitter: Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter:
+        Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 }
 
 impl std::fmt::Debug for PlanManager {
@@ -259,10 +260,7 @@ impl PlanManager {
         *lock = None;
         drop(lock);
 
-        self.emit_event(
-            "athena:planUpdate",
-            &serde_json::json!(null),
-        );
+        self.emit_event("athena:planUpdate", &serde_json::json!(null));
 
         Ok(())
     }

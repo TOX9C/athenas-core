@@ -96,7 +96,7 @@ pub fn SettingsModal(props: SettingsModalProps) -> Element {
                                 "Add custom agent shortcuts"
                             }
                             button {
-                                style: "padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--text); cursor: pointer; font-size: 11px; align-self: flex-start;",
+                                style: "padding: 6px 12px; border-radius: 6px; border: none; background: var(--accent); color: var(--bg); cursor: pointer; font-size: 11px; align-self: flex-start; font-weight: 500; transition: background 0.15s;",
                                 "+ Add Agent"
                             }
                         }

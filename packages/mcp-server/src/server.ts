@@ -19,12 +19,6 @@ import {
   athenaReportErrorSchema,
   athenaReportCompletion,
   athenaReportCompletionSchema,
-  controlPause,
-  controlPauseSchema,
-  controlResume,
-  controlResumeSchema,
-  controlCancel,
-  controlCancelSchema,
   athenaReadOutput,
   athenaReadOutputSchema,
   athenaStreamOutput,
@@ -92,11 +86,6 @@ export class AthenaMcpServer {
           'SEARCH TOOLS (available):',
           ' search_files — Search the codebase using ripgrep with regex, glob, and file type filters',
           '',
-          'PHASE 2 TOOLS (defined, not yet available):',
-          ' control_pause — Pause an agent pane',
-          ' control_resume — Resume a paused agent',
-          ' control_cancel — Cancel/terminate an agent',
-          '',
           'RESOURCES:',
           ' athena://agents — Current state of all agents',
           ' athena://agent/{id} — State of a specific agent',
@@ -126,7 +115,7 @@ export class AthenaMcpServer {
   }
 
   private registerTools(): void {
-    // ── Spec-compliant Phase 1 tools ──────────────────────────────
+    // -- Spec-compliant Phase 1 tools ---
 
     this.server.tool(
       'notify',
@@ -169,7 +158,7 @@ export class AthenaMcpServer {
       async (params) => requestInput(this.bridge, params as any),
     )
 
-    // ── Extended athena_ prefixed tools ───────────────────────────
+    // -- Extended athena_ prefixed tools ---
 
     this.server.tool(
       'athena_notify',
@@ -236,38 +225,7 @@ export class AthenaMcpServer {
       async (params) => athenaReportCompletion(this.bridge, params as any),
     )
 
-    // ── Phase 2 stubs ─────────────────────────────────────────────
-
-    this.server.tool(
-      'control_pause',
-      'Pause the execution of a specific agent pane. (Phase 2 — not yet available)',
-      {
-        paneId: controlPauseSchema.shape.paneId,
-        reason: controlPauseSchema.shape.reason,
-      },
-      async (params) => controlPause(params as any),
-    )
-
-    this.server.tool(
-      'control_resume',
-      'Resume a paused agent pane. (Phase 2 — not yet available)',
-      {
-        paneId: controlResumeSchema.shape.paneId,
-      },
-      async (params) => controlResume(params as any),
-    )
-
-    this.server.tool(
-      'control_cancel',
-      'Cancel and terminate an agent pane. (Phase 2 — not yet available)',
-      {
-        paneId: controlCancelSchema.shape.paneId,
-        force: controlCancelSchema.shape.force,
-      },
-      async (params) => controlCancel(params as any),
-    )
-
-    // ── Output tools ────────────────────────────────────────────
+    // -- Output tools ---
 
     this.server.tool(
       'athena_read_output',
@@ -307,7 +265,7 @@ export class AthenaMcpServer {
       async (params) => athenaGetOutputSince(this.outputBuffer, params as any),
     )
 
-    // ── Search tools ─────────────────────────────────────────────
+    // -- Search tools ---
 
     this.server.tool(
       'search_files',

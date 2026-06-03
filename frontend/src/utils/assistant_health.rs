@@ -4,7 +4,6 @@
 //! circuit breaker checks, and heartbeat checks.
 
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,10 +62,7 @@ struct Inner {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    js_sys::Date::now() as u64
 }
 
 fn compute_overall(checks: &[HealthCheckResult]) -> HealthStatus {

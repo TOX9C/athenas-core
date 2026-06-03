@@ -67,11 +67,6 @@ impl AgentOutputState {
 
     // -- Helpers -----------------------------------------------------------
 
-    #[allow(dead_code)]
-    fn find_buffer_index(&self, pane_id: &str) -> Option<usize> {
-        self.buffers.iter().position(|(id, _)| id == pane_id)
-    }
-
     fn find_buffer_mut(&mut self, pane_id: &str) -> Option<&mut Vec<OutputLine>> {
         self.buffers
             .iter_mut()

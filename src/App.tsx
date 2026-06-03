@@ -302,11 +302,34 @@ export default function App() {
                   <AgentGrid
                     panes={space.panes}
                     cwd={space.dir}
-                    onSelectPane={(paneId) => console.log('Selected pane:', paneId)}
-                    onFullscreenPane={(paneId) => console.log('Fullscreen pane:', paneId)}
-                    onSplitPane={(paneId) => console.log('Split pane:', paneId)}
-                    onMinimizePane={(paneId) => console.log('Minimize pane:', paneId)}
-                    onClosePane={(paneId) => console.log('Close pane:', paneId)}
+                    onSelectPane={(paneId) => {
+                                /* Pane selected — could track active pane for focus management */
+                            }}
+                    onFullscreenPane={(paneId) => {
+                                const el = document.querySelector(`[data-pane-id="${paneId}"]`)
+                                if (el) el.requestFullscreen?.()
+                            }}
+                    onSplitPane={(paneId) => {
+                                const spaceId = useWorkspaceStore.getState().activeSpaceId
+                                if (!spaceId) return
+                                const space = useWorkspaceStore.getState().spaces.find(s => s.id === spaceId)
+                                const existing = space?.panes.find(p => p.id === paneId)
+                                if (!existing) return
+                                const newPane = { ...existing, id: `${paneId}-split-${Date.now()}` }
+                                useWorkspaceStore.getState().addPaneToSpace(spaceId, newPane)
+                            }}
+                    onMinimizePane={(paneId) => {
+                                /* Minimize is a UI-level concern — hide the pane visually */
+                                const el = document.querySelector(`[data-pane-id="${paneId}"]`)
+                                if (el && el instanceof HTMLElement) el.style.display = 'none'
+                            }}
+                    onClosePane={(paneId) => {
+                                const spaceId = useWorkspaceStore.getState().activeSpaceId
+                                if (spaceId) {
+                                    window.athena.pty.kill(paneId)
+                                    useWorkspaceStore.getState().removePaneFromSpace(spaceId, paneId)
+                                }
+                            }}
                   >
                     {(pane) => (
                       <TerminalStub

@@ -8,6 +8,6 @@ pub use store::KeyValueStore;
 pub use types::*;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod session_tests;
+#[cfg(test)]
+mod tests;

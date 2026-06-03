@@ -1,11 +1,8 @@
 pub mod agents;
 pub mod athena;
-pub mod browser;
 pub mod command_palette;
-pub mod editor;
 pub mod kanban;
 pub mod notifications;
-pub mod panel;
 pub mod plugin;
 pub mod right_sidebar;
 pub mod settings;
@@ -13,5 +10,4 @@ pub mod shared;
 pub mod sidebar;
 pub mod sidebar_dir;
 pub mod swarm;
-pub mod terminal;
 pub mod workspace;

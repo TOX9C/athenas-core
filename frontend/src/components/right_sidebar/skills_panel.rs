@@ -49,7 +49,7 @@ pub fn SkillsPanel() -> Element {
                 }
 
                 button {
-                    style: "padding: 4px 10px; border-radius: 6px; border: none; background: var(--accent); color: #0b0e13; font-size: 11px; font-weight: 500; cursor: pointer;",
+                    style: "padding: 4px 10px; border-radius: 6px; border: none; background: var(--accent); color: var(--bg); font-size: 11px; font-weight: 500; cursor: pointer;",
                     onclick: add_skill_name,
                     "+"
                 }

@@ -43,6 +43,9 @@ pub enum PluginError {
 
     #[error("lock poisoned")]
     LockPoisoned,
+
+    #[error("manifest validation failed: {0}")]
+    ValidationFailed(String),
 }
 
 impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, PluginManagerInner>>> for PluginError {
@@ -416,6 +419,141 @@ struct PluginManagerInner {
 }
 
 // ---------------------------------------------------------------------------
+// Manifest validation
+// ---------------------------------------------------------------------------
+
+/// Allowed executable names for MCP server commands.
+const ALLOWED_MCP_COMMANDS: &[&str] = &[
+    "node", "python", "python3", "ruby", "cargo", "sh", "bash", "zsh", "npx", "deno", "uv", "uvx",
+    "pipx",
+];
+
+/// Shell metacharacters that indicate injection risk in hook scripts.
+const SHELL_METACHARACTERS: &[char] = &[';', '|', '&', '$', '`', '\n'];
+
+/// Validate a plugin manifest before registration.
+///
+/// Checks `install` and `mcp_config` fields for unsafe values that could
+/// lead to arbitrary code execution:
+///
+/// - **Hook scripts**: must be simple relative paths (no metacharacters,
+///   no absolute paths, no path traversal).
+/// - **MCP commands**: must be a whitelisted executable name (no absolute
+///   paths, no `./` prefixes).
+/// - **MCP env**: must not override `PATH` or `HOME`.
+pub fn validate_plugin_manifest(manifest: &PluginManifest) -> Result<(), PluginError> {
+    // Validate the install method if present.
+    if let Some(ref install) = manifest.install {
+        validate_plugin_install_method(install)?;
+    }
+
+    // Validate the embedded mcp_config if present.
+    if let Some(ref mcp_config) = manifest.mcp_config {
+        validate_mcp_command(&mcp_config.command)?;
+        if let Some(ref env) = mcp_config.env {
+            validate_mcp_env(env)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a [`PluginInstallMethod`].
+pub fn validate_plugin_install_method(method: &PluginInstallMethod) -> Result<(), PluginError> {
+    match method {
+        PluginInstallMethod::Builtin => Ok(()),
+        PluginInstallMethod::McpServer {
+            command,
+            args: _,
+            env,
+        } => {
+            validate_mcp_command(command)?;
+            if let Some(ref env_map) = env {
+                validate_mcp_env(env_map)?;
+            }
+            Ok(())
+        }
+        PluginInstallMethod::Hook { script } => validate_hook_script(script),
+    }
+}
+
+fn validate_hook_script(script: &str) -> Result<(), PluginError> {
+    // Reject absolute paths.
+    if script.starts_with('/') {
+        return Err(PluginError::ValidationFailed(format!(
+            "hook script must be a relative path, got absolute: {script}"
+        )));
+    }
+
+    // Reject path traversal.
+    if script.starts_with("../") || script.contains("/../") {
+        return Err(PluginError::ValidationFailed(format!(
+            "hook script must not traverse parent directories: {script}"
+        )));
+    }
+
+    // Reject shell metacharacters.
+    if let Some(pos) = script
+        .chars()
+        .position(|c| SHELL_METACHARACTERS.contains(&c))
+    {
+        let ch = script.chars().nth(pos).unwrap_or('?');
+        return Err(PluginError::ValidationFailed(format!(
+            "hook script contains shell metacharacter '{}': {script}",
+            ch
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_mcp_command(command: &str) -> Result<(), PluginError> {
+    // Reject absolute paths.
+    if command.starts_with('/') {
+        return Err(PluginError::ValidationFailed(format!(
+            "MCP command must be a bare executable name, got absolute path: {command}"
+        )));
+    }
+
+    // Reject relative path prefixes (e.g. "./malicious").
+    if command.starts_with("./") || command.starts_with("../") {
+        return Err(PluginError::ValidationFailed(format!(
+            "MCP command must be a bare executable name, got relative path: {command}"
+        )));
+    }
+
+    // Reject if it contains a directory separator (e.g. "bin/node").
+    if command.contains('/') {
+        return Err(PluginError::ValidationFailed(format!(
+            "MCP command must be a bare executable name, got path with '/': {command}"
+        )));
+    }
+
+    // Must be on the whitelist.
+    if !ALLOWED_MCP_COMMANDS.contains(&command) {
+        return Err(PluginError::ValidationFailed(format!(
+            "MCP command '{}' is not allowed. Permitted commands: {}",
+            command,
+            ALLOWED_MCP_COMMANDS.join(", ")
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_mcp_env(env: &HashMap<String, String>) -> Result<(), PluginError> {
+    let forbidden = ["PATH", "HOME"];
+    for key in env.keys() {
+        if forbidden.contains(&key.as_str()) {
+            return Err(PluginError::ValidationFailed(format!(
+                "MCP env must not override '{key}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // PluginManager
 // ---------------------------------------------------------------------------
 
@@ -541,7 +679,17 @@ impl PluginManager {
             };
 
             match serde_json::from_str::<PluginManifest>(&content) {
-                Ok(manifest) => results.push(Ok(manifest)),
+                Ok(manifest) => {
+                    if let Err(e) = validate_plugin_manifest(&manifest) {
+                        results.push(Err(PluginError::ValidationFailed(format!(
+                            "manifest {} failed validation: {}",
+                            path.to_string_lossy(),
+                            e
+                        ))));
+                    } else {
+                        results.push(Ok(manifest));
+                    }
+                }
                 Err(e) => results.push(Err(PluginError::ManifestParse {
                     path: path.to_string_lossy().into_owned(),
                     source: e,
@@ -580,8 +728,11 @@ impl PluginManager {
     /// Register a plugin from its manifest. Returns the plugin ID on success.
     /// Fails if a plugin with the same ID is already registered and not
     /// disabled (mirrors the TS behavior of rejecting double-registration
-    /// of active plugins).
+    /// of active plugins), or if the manifest fails security validation.
     pub fn register_plugin(&self, manifest: PluginManifest) -> Result<String, PluginError> {
+        // Validate install method and MCP config before accepting.
+        validate_plugin_manifest(&manifest)?;
+
         let id = manifest.id.clone();
 
         let mut inner = self.inner.lock()?;
@@ -1883,5 +2034,199 @@ mod tests {
         let shell_caps = default_capabilities(&AgentType::Shell);
         assert!(!shell_caps.contains(&PluginCapability::Tasks));
         assert!(shell_caps.contains(&PluginCapability::Notifications));
+    }
+
+    // -- Manifest validation tests -----------------------------------------
+
+    #[test]
+    fn validate_manifest_accepts_builtin() {
+        let mut manifest = sample_manifest("v1");
+        manifest.install = Some(PluginInstallMethod::Builtin);
+        assert!(validate_plugin_manifest(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_hook_script_rejects_absolute_path() {
+        let mut manifest = sample_manifest("v2");
+        manifest.install = Some(PluginInstallMethod::Hook {
+            script: "/usr/bin/malicious".to_string(),
+        });
+        let err = validate_plugin_manifest(&manifest).unwrap_err();
+        assert!(err.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn validate_hook_script_rejects_path_traversal() {
+        let mut manifest = sample_manifest("v3");
+        manifest.install = Some(PluginInstallMethod::Hook {
+            script: "../escape.sh".to_string(),
+        });
+        let err = validate_plugin_manifest(&manifest).unwrap_err();
+        assert!(err.to_string().contains("traverse"));
+    }
+
+    #[test]
+    fn validate_hook_script_rejects_shell_metacharacters() {
+        let cases = [
+            (";rm -rf", ';'),
+            ("ls | grep", '|'),
+            ("bg &", '&'),
+            ("echo $HOME", '$'),
+            ("echo `whoami`", '`'),
+        ];
+        for (script, ch) in cases {
+            let mut manifest = sample_manifest("v4");
+            manifest.install = Some(PluginInstallMethod::Hook {
+                script: script.to_string(),
+            });
+            let err = validate_plugin_manifest(&manifest).unwrap_err();
+            assert!(
+                err.to_string().contains("metacharacter"),
+                "expected metacharacter error for '{}', got: {}",
+                ch,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn validate_hook_script_accepts_simple_relative_path() {
+        let mut manifest = sample_manifest("v5");
+        manifest.install = Some(PluginInstallMethod::Hook {
+            script: "scripts/setup.sh".to_string(),
+        });
+        assert!(validate_plugin_manifest(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_mcp_command_rejects_absolute_path() {
+        let mut manifest = sample_manifest("v6");
+        manifest.install = Some(PluginInstallMethod::McpServer {
+            command: "/usr/local/bin/node".to_string(),
+            args: None,
+            env: None,
+        });
+        let err = validate_plugin_manifest(&manifest).unwrap_err();
+        assert!(err.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn validate_mcp_command_rejects_dot_slash() {
+        let mut manifest = sample_manifest("v7");
+        manifest.install = Some(PluginInstallMethod::McpServer {
+            command: "./malicious".to_string(),
+            args: None,
+            env: None,
+        });
+        let err = validate_plugin_manifest(&manifest).unwrap_err();
+        assert!(err.to_string().contains("relative path"));
+    }
+
+    #[test]
+    fn validate_mcp_command_rejects_path_with_separator() {
+        let mut manifest = sample_manifest("v8");
+        manifest.install = Some(PluginInstallMethod::McpServer {
+            command: "bin/node".to_string(),
+            args: None,
+            env: None,
+        });
+        let err = validate_plugin_manifest(&manifest).unwrap_err();
+        assert!(err.to_string().contains("'/'"));
+    }
+
+    #[test]
+    fn validate_mcp_command_rejects_unknown_executable() {
+        let mut manifest = sample_manifest("v9");
+        manifest.install = Some(PluginInstallMethod::McpServer {
+            command: "curl".to_string(),
+            args: None,
+            env: None,
+        });
+        let err = validate_plugin_manifest(&manifest).unwrap_err();
+        assert!(err.to_string().contains("not allowed"));
+    }
+
+    #[test]
+    fn validate_mcp_command_accepts_whitelisted_executables() {
+        for cmd in &[
+            "node", "python", "python3", "ruby", "cargo", "sh", "bash", "zsh",
+        ] {
+            let mut manifest = sample_manifest("v10");
+            manifest.install = Some(PluginInstallMethod::McpServer {
+                command: cmd.to_string(),
+                args: None,
+                env: None,
+            });
+            assert!(
+                validate_plugin_manifest(&manifest).is_ok(),
+                "expected '{}' to be allowed",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn validate_mcp_env_rejects_path_override() {
+        let mut env = HashMap::new();
+        env.insert("PATH".to_string(), "/malicious".to_string());
+        let mut manifest = sample_manifest("v11");
+        manifest.install = Some(PluginInstallMethod::McpServer {
+            command: "node".to_string(),
+            args: None,
+            env: Some(env),
+        });
+        let err = validate_plugin_manifest(&manifest).unwrap_err();
+        assert!(err.to_string().contains("PATH"));
+    }
+
+    #[test]
+    fn validate_mcp_env_rejects_home_override() {
+        let mut env = HashMap::new();
+        env.insert("HOME".to_string(), "/malicious".to_string());
+        let mut manifest = sample_manifest("v12");
+        manifest.install = Some(PluginInstallMethod::McpServer {
+            command: "node".to_string(),
+            args: None,
+            env: Some(env),
+        });
+        let err = validate_plugin_manifest(&manifest).unwrap_err();
+        assert!(err.to_string().contains("HOME"));
+    }
+
+    #[test]
+    fn validate_mcp_env_allows_safe_vars() {
+        let mut env = HashMap::new();
+        env.insert("NODE_ENV".to_string(), "production".to_string());
+        let mut manifest = sample_manifest("v13");
+        manifest.install = Some(PluginInstallMethod::McpServer {
+            command: "node".to_string(),
+            args: None,
+            env: Some(env),
+        });
+        assert!(validate_plugin_manifest(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_mcp_config_also_validates() {
+        let mut manifest = sample_manifest("v14");
+        manifest.mcp_config = Some(McpConfig {
+            command: "/usr/bin/wget".to_string(),
+            args: vec![],
+            env: None,
+        });
+        let err = validate_plugin_manifest(&manifest).unwrap_err();
+        assert!(err.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn register_plugin_rejects_unsafe_manifest() {
+        let mut manifest = sample_manifest("v15");
+        manifest.install = Some(PluginInstallMethod::Hook {
+            script: "/usr/bin/evil".to_string(),
+        });
+        let mgr = PluginManager::new();
+        let result = mgr.register_plugin(manifest);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("absolute"));
     }
 }

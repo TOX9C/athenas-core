@@ -1,3 +1,4 @@
+use super::icon::IconClose;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -18,12 +19,14 @@ pub fn Modal(props: ModalProps) -> Element {
     rsx! {
         div {
             class: "modal-overlay",
-            style: "position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);",
-            onclick: move |_| { /* only close from inner click */ },
-
-            div {
-                class: "modal-container",
-                style: "background: var(--bgSecondary, #141820); border: 1px solid var(--border, #2a303e); border-radius: 12px; width: {width_str}; max-width: 90vw; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 25px 50px rgba(0,0,0,0.8);",
+            style: "position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: var(--shadow); backdrop-filter: blur(6px); ",
+        onclick: move |_| props.on_close.call(()),
+        div {
+            class: "modal-container",
+            role: "dialog",
+            "aria-modal": "true",
+            style: "background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 12px; width: {width_str}; max-width: 90vw; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadowLg), 0 0 0 1px var(--borderActive); ",
+            onclick: move |e| e.stop_propagation(),
 
                 // Header
                 div {
@@ -36,9 +39,11 @@ pub fn Modal(props: ModalProps) -> Element {
                     }
 
                     button {
-                        style: "padding: 4px; border-radius: 6px; border: none; background: transparent; cursor: pointer; color: var(--textDim); font-size: 16px; line-height: 1;",
+                        style: "padding: 4px; border-radius: 6px; border: none; background: transparent; cursor: pointer; color: var(--textDim); display: flex; align-items: center; justify-content: center; transition: color 0.15s;",
+                        "aria-label": "Close dialog",
+                        onmouseover: move |_| {},
                         onclick: move |_| props.on_close.call(()),
-                        "\u{00d7}"
+                        IconClose { size: Some(22), color: Some("var(--textDim)".to_string()) }
                     }
                 }
 

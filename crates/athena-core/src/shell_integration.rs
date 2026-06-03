@@ -68,9 +68,27 @@ impl Osc633Parser {
             let osc_start = match self.buffer.find(OSC_PREFIX) {
                 Some(pos) => pos,
                 None => {
-                    // Prevent unbounded buffer growth
+                    // Prevent unbounded buffer growth without splitting an incomplete OSC
+                    // sequence in half. Search backwards from the keep point for the
+                    // last complete OSC boundary (BEL or ST terminator) so that the
+                    // parser state stays valid.
                     if self.buffer.len() > 10_000 {
-                        let keep = self.buffer.len().saturating_sub(4096);
+                        let mut keep = self.buffer.len().saturating_sub(4096);
+                        // Walk backward to find the last BEL or ST before keep
+                        let tail = &self.buffer[..keep];
+                        let last_bel = tail.rfind(BEL);
+                        let last_st = tail.rfind(ST);
+                        if let Some(pos) = last_bel.max(last_st) {
+                            // Advance to just past the terminator
+                            keep = pos
+                                + if last_bel >= last_st {
+                                    BEL.len_utf8()
+                                } else {
+                                    ST.len()
+                                };
+                        }
+                        // Clamp to prevent slicing past the end of the buffer
+                        keep = keep.min(self.buffer.len());
                         self.buffer = self.buffer[keep..].to_string();
                     }
                     break;

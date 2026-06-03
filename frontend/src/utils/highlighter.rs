@@ -6,6 +6,38 @@ fn escape_html(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Escape HTML entities only within text nodes of already-generated highlighted HTML.
+/// Characters inside `<...>` tag boundaries are left alone; only text between
+/// `>` and the next `<` is escaped. This must be used AFTER tokenization so that
+/// raw source characters like `"`, `<`, `>`, `&` are correctly highlighted, while
+/// the same characters that appear as plain text in the output are safely escaped.
+fn escape_text_nodes(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut inside_tag = false;
+
+    for c in html.chars() {
+        if c == '<' {
+            inside_tag = true;
+            result.push(c);
+        } else if c == '>' {
+            inside_tag = false;
+            result.push(c);
+        } else if inside_tag {
+            result.push(c);
+        } else {
+            match c {
+                '&' => result.push_str("&amp;"),
+                '<' => result.push_str("&lt;"),
+                '>' => result.push_str("&gt;"),
+                '"' => result.push_str("&quot;"),
+                _ => result.push(c),
+            }
+        }
+    }
+
+    result
+}
+
 /// Highlight source code based on language.
 pub fn highlight_code(code: &str, language: &str) -> String {
     match language.to_lowercase().as_str() {
@@ -41,19 +73,16 @@ pub fn highlight_code(code: &str, language: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn highlight_rust(code: &str) -> String {
-    let escaped = escape_html(code);
-
-    // Process line by line to handle multi-line comments
     let mut result = String::new();
     let mut in_block_comment = false;
 
-    for line in escaped.lines() {
+    for line in code.lines() {
         let highlighted = highlight_rust_line(line, &mut in_block_comment);
         result.push_str(&highlighted);
         result.push('\n');
     }
 
-    result
+    escape_text_nodes(&result)
 }
 
 fn highlight_rust_line(line: &str, in_block_comment: &mut bool) -> String {
@@ -245,7 +274,9 @@ fn highlight_rust_line(line: &str, in_block_comment: &mut bool) -> String {
                 j += 1;
             }
             output.push_str("<span class=\"token-number\">");
-            while j < rest_len && (rest_chars[j].is_ascii_digit() || rest_chars[j] == '_' || rest_chars[j] == '.') {
+            while j < rest_len
+                && (rest_chars[j].is_ascii_digit() || rest_chars[j] == '_' || rest_chars[j] == '.')
+            {
                 output.push(rest_chars[j]);
                 j += 1;
             }
@@ -286,13 +317,13 @@ fn highlight_rust_line(line: &str, in_block_comment: &mut bool) -> String {
         }
 
         // Operators
-        if "=&lt;&gt;+-*/%&amp;|^!~?:".contains(rest_chars[j])
+        if "=<>+-*/%&|^!~?:".contains(rest_chars[j])
             || (rest_chars[j] == '-' && j + 1 < rest_len && rest_chars[j + 1] == '>')
         {
             output.push_str("<span class=\"token-operator\">");
             output.push(rest_chars[j]);
             j += 1;
-            if j < rest_len && "=&lt;&gt;".contains(rest_chars[j]) {
+            if j < rest_len && "=<>".contains(rest_chars[j]) {
                 output.push(rest_chars[j]);
                 j += 1;
             }
@@ -311,23 +342,82 @@ fn highlight_rust_line(line: &str, in_block_comment: &mut bool) -> String {
 fn is_rust_keyword(word: &str) -> bool {
     matches!(
         word,
-        "fn" | "let" | "mut" | "pub" | "struct" | "impl" | "enum" | "match"
-            | "if" | "else" | "loop" | "for" | "while" | "return" | "use"
-            | "mod" | "crate" | "where" | "type" | "const" | "static" | "async"
-            | "await" | "move" | "ref" | "dyn" | "trait" | "unsafe" | "extern"
-            | "in" | "as" | "break" | "continue" | "try" | "self" | "super"
+        "fn" | "let"
+            | "mut"
+            | "pub"
+            | "struct"
+            | "impl"
+            | "enum"
+            | "match"
+            | "if"
+            | "else"
+            | "loop"
+            | "for"
+            | "while"
+            | "return"
+            | "use"
+            | "mod"
+            | "crate"
+            | "where"
+            | "type"
+            | "const"
+            | "static"
+            | "async"
+            | "await"
+            | "move"
+            | "ref"
+            | "dyn"
+            | "trait"
+            | "unsafe"
+            | "extern"
+            | "in"
+            | "as"
+            | "break"
+            | "continue"
+            | "try"
+            | "self"
+            | "super"
     )
 }
 
 fn is_rust_type(word: &str) -> bool {
     matches!(
         word,
-        "String" | "Vec" | "Option" | "Result" | "HashMap" | "HashSet"
-            | "Box" | "Rc" | "Arc" | "Cell" | "RefCell" | "Cow"
-            | "Some" | "None" | "Ok" | "Err" | "True" | "False"
-            | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-            | "f32" | "f64" | "bool" | "char" | "str"
+        "String"
+            | "Vec"
+            | "Option"
+            | "Result"
+            | "HashMap"
+            | "HashSet"
+            | "Box"
+            | "Rc"
+            | "Arc"
+            | "Cell"
+            | "RefCell"
+            | "Cow"
+            | "Some"
+            | "None"
+            | "Ok"
+            | "Err"
+            | "True"
+            | "False"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "char"
+            | "str"
     )
 }
 
@@ -339,13 +429,35 @@ fn is_rust_macro(word: &str) -> bool {
     word.ends_with('!')
         && matches!(
             word.trim_end_matches('!'),
-            "println" | "eprintln" | "print" | "eprint" | "format"
-                | "vec" | "dbg" | "todo" | "unimplemented" | "panic"
-                | "assert" | "assert_eq" | "assert_ne" | "debug_assert"
-                | "write" | "writeln" | "include" | "include_str"
-                | "include_bytes" | "env" | "option_env" | "concat"
-                | "stringify" | "file" | "line" | "column" | "cfg"
-                | "derive" | "rsx"
+            "println"
+                | "eprintln"
+                | "print"
+                | "eprint"
+                | "format"
+                | "vec"
+                | "dbg"
+                | "todo"
+                | "unimplemented"
+                | "panic"
+                | "assert"
+                | "assert_eq"
+                | "assert_ne"
+                | "debug_assert"
+                | "write"
+                | "writeln"
+                | "include"
+                | "include_str"
+                | "include_bytes"
+                | "env"
+                | "option_env"
+                | "concat"
+                | "stringify"
+                | "file"
+                | "line"
+                | "column"
+                | "cfg"
+                | "derive"
+                | "rsx"
         )
 }
 
@@ -362,21 +474,25 @@ fn highlight_javascript(code: &str) -> String {
 }
 
 fn highlight_javascript_like(code: &str, is_ts: bool) -> String {
-    let escaped = escape_html(code);
     let mut result = String::new();
     let mut in_block_comment = false;
     let mut in_template = false;
 
-    for line in escaped.lines() {
+    for line in code.lines() {
         let highlighted = highlight_js_line(line, &mut in_block_comment, &mut in_template, is_ts);
         result.push_str(&highlighted);
         result.push('\n');
     }
 
-    result
+    escape_text_nodes(&result)
 }
 
-fn highlight_js_line(line: &str, in_block_comment: &mut bool, in_template: &mut bool, is_ts: bool) -> String {
+fn highlight_js_line(
+    line: &str,
+    in_block_comment: &mut bool,
+    in_template: &mut bool,
+    is_ts: bool,
+) -> String {
     let mut output = String::new();
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
@@ -485,7 +601,9 @@ fn highlight_js_line(line: &str, in_block_comment: &mut bool, in_template: &mut 
             || (rest_chars[j] == '.' && j + 1 < rest_len && rest_chars[j + 1].is_ascii_digit())
         {
             output.push_str("<span class=\"token-number\">");
-            while j < rest_len && (rest_chars[j].is_ascii_digit() || rest_chars[j] == '.' || rest_chars[j] == '_') {
+            while j < rest_len
+                && (rest_chars[j].is_ascii_digit() || rest_chars[j] == '.' || rest_chars[j] == '_')
+            {
                 output.push(rest_chars[j]);
                 j += 1;
             }
@@ -508,7 +626,9 @@ fn highlight_js_line(line: &str, in_block_comment: &mut bool, in_template: &mut 
         // Identifier/keyword
         if rest_chars[j].is_alphabetic() || rest_chars[j] == '_' || rest_chars[j] == '$' {
             let mut word = String::new();
-            while j < rest_len && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '_' || rest_chars[j] == '$') {
+            while j < rest_len
+                && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '_' || rest_chars[j] == '$')
+            {
                 word.push(rest_chars[j]);
                 j += 1;
             }
@@ -548,13 +668,44 @@ fn highlight_js_line(line: &str, in_block_comment: &mut bool, in_template: &mut 
 fn is_js_keyword(word: &str, is_ts: bool) -> bool {
     let common = matches!(
         word,
-        "const" | "let" | "var" | "function" | "return" | "if" | "else"
-            | "for" | "while" | "do" | "switch" | "case" | "break"
-            | "continue" | "new" | "this" | "class" | "extends"
-            | "super" | "import" | "export" | "from" | "default"
-            | "try" | "catch" | "finally" | "throw" | "typeof"
-            | "instanceof" | "in" | "of" | "yield" | "async"
-            | "await" | "delete" | "void" | "with" | "debugger"
+        "const"
+            | "let"
+            | "var"
+            | "function"
+            | "return"
+            | "if"
+            | "else"
+            | "for"
+            | "while"
+            | "do"
+            | "switch"
+            | "case"
+            | "break"
+            | "continue"
+            | "new"
+            | "this"
+            | "class"
+            | "extends"
+            | "super"
+            | "import"
+            | "export"
+            | "from"
+            | "default"
+            | "try"
+            | "catch"
+            | "finally"
+            | "throw"
+            | "typeof"
+            | "instanceof"
+            | "in"
+            | "of"
+            | "yield"
+            | "async"
+            | "await"
+            | "delete"
+            | "void"
+            | "with"
+            | "debugger"
     );
     if !is_ts {
         return common;
@@ -562,22 +713,56 @@ fn is_js_keyword(word: &str, is_ts: bool) -> bool {
     common
         || matches!(
             word,
-            "type" | "interface" | "enum" | "implements" | "namespace"
-                | "declare" | "abstract" | "readonly" | "keyof"
-                | "satisfies" | "as" | "is" | "override"
+            "type"
+                | "interface"
+                | "enum"
+                | "implements"
+                | "namespace"
+                | "declare"
+                | "abstract"
+                | "readonly"
+                | "keyof"
+                | "satisfies"
+                | "as"
+                | "is"
+                | "override"
         )
 }
 
 fn is_js_builtin(word: &str) -> bool {
     matches!(
         word,
-        "console" | "document" | "window" | "Math" | "JSON" | "Array"
-            | "Object" | "String" | "Number" | "Boolean" | "Date"
-            | "RegExp" | "Error" | "Map" | "Set" | "WeakMap"
-            | "WeakSet" | "Promise" | "Symbol" | "Proxy" | "Reflect"
-            | "Iterator" | "Generator" | "Int8Array" | "Uint8Array"
-            | "Float32Array" | "Float64Array" | "undefined" | "null"
-            | "NaN" | "Infinity"
+        "console"
+            | "document"
+            | "window"
+            | "Math"
+            | "JSON"
+            | "Array"
+            | "Object"
+            | "String"
+            | "Number"
+            | "Boolean"
+            | "Date"
+            | "RegExp"
+            | "Error"
+            | "Map"
+            | "Set"
+            | "WeakMap"
+            | "WeakSet"
+            | "Promise"
+            | "Symbol"
+            | "Proxy"
+            | "Reflect"
+            | "Iterator"
+            | "Generator"
+            | "Int8Array"
+            | "Uint8Array"
+            | "Float32Array"
+            | "Float64Array"
+            | "undefined"
+            | "null"
+            | "NaN"
+            | "Infinity"
     )
 }
 
@@ -590,16 +775,15 @@ fn is_js_bool(word: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 fn highlight_python(code: &str) -> String {
-    let escaped = escape_html(code);
     let mut result = String::new();
 
-    for line in escaped.lines() {
+    for line in code.lines() {
         let highlighted = highlight_python_line(line);
         result.push_str(&highlighted);
         result.push('\n');
     }
 
-    result
+    escape_text_nodes(&result)
 }
 
 fn highlight_python_line(line: &str) -> String {
@@ -652,7 +836,10 @@ fn highlight_python_line(line: &str) -> String {
             output.push(quote);
             j += 3;
             while j + 2 < rest_len {
-                if rest_chars[j] == quote && rest_chars[j + 1] == quote && rest_chars[j + 2] == quote {
+                if rest_chars[j] == quote
+                    && rest_chars[j + 1] == quote
+                    && rest_chars[j + 2] == quote
+                {
                     output.push(quote);
                     output.push(quote);
                     output.push(quote);
@@ -695,7 +882,9 @@ fn highlight_python_line(line: &str) -> String {
         if rest_chars[j] == '@' && j == 0 {
             output.push_str("<span class=\"token-function\">@");
             j += 1;
-            while j < rest_len && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '_' || rest_chars[j] == '.') {
+            while j < rest_len
+                && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '_' || rest_chars[j] == '.')
+            {
                 output.push(rest_chars[j]);
                 j += 1;
             }
@@ -706,7 +895,9 @@ fn highlight_python_line(line: &str) -> String {
         // Number
         if rest_chars[j].is_ascii_digit() {
             output.push_str("<span class=\"token-number\">");
-            while j < rest_len && (rest_chars[j].is_ascii_digit() || rest_chars[j] == '.' || rest_chars[j] == '_') {
+            while j < rest_len
+                && (rest_chars[j].is_ascii_digit() || rest_chars[j] == '.' || rest_chars[j] == '_')
+            {
                 output.push(rest_chars[j]);
                 j += 1;
             }
@@ -757,25 +948,82 @@ fn highlight_python_line(line: &str) -> String {
 fn is_python_keyword(word: &str) -> bool {
     matches!(
         word,
-        "def" | "class" | "return" | "if" | "elif" | "else" | "for"
-            | "while" | "break" | "continue" | "pass" | "import"
-            | "from" | "as" | "with" | "try" | "except" | "finally"
-            | "raise" | "yield" | "lambda" | "global" | "nonlocal"
-            | "assert" | "del" | "in" | "not" | "and" | "or"
-            | "is" | "async" | "await"
+        "def"
+            | "class"
+            | "return"
+            | "if"
+            | "elif"
+            | "else"
+            | "for"
+            | "while"
+            | "break"
+            | "continue"
+            | "pass"
+            | "import"
+            | "from"
+            | "as"
+            | "with"
+            | "try"
+            | "except"
+            | "finally"
+            | "raise"
+            | "yield"
+            | "lambda"
+            | "global"
+            | "nonlocal"
+            | "assert"
+            | "del"
+            | "in"
+            | "not"
+            | "and"
+            | "or"
+            | "is"
+            | "async"
+            | "await"
     )
 }
 
 fn is_python_builtin(word: &str) -> bool {
     matches!(
         word,
-        "print" | "len" | "range" | "str" | "int" | "float" | "bool"
-            | "list" | "dict" | "set" | "tuple" | "type" | "isinstance"
-            | "issubclass" | "hasattr" | "getattr" | "setattr" | "super"
-            | "property" | "staticmethod" | "classmethod" | "open"
-            | "enumerate" | "zip" | "map" | "filter" | "sorted"
-            | "reversed" | "any" | "all" | "sum" | "min" | "max"
-            | "abs" | "round" | "format" | "input" | "self"
+        "print"
+            | "len"
+            | "range"
+            | "str"
+            | "int"
+            | "float"
+            | "bool"
+            | "list"
+            | "dict"
+            | "set"
+            | "tuple"
+            | "type"
+            | "isinstance"
+            | "issubclass"
+            | "hasattr"
+            | "getattr"
+            | "setattr"
+            | "super"
+            | "property"
+            | "staticmethod"
+            | "classmethod"
+            | "open"
+            | "enumerate"
+            | "zip"
+            | "map"
+            | "filter"
+            | "sorted"
+            | "reversed"
+            | "any"
+            | "all"
+            | "sum"
+            | "min"
+            | "max"
+            | "abs"
+            | "round"
+            | "format"
+            | "input"
+            | "self"
     )
 }
 
@@ -788,16 +1036,15 @@ fn is_python_bool_none(word: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 fn highlight_toml(code: &str) -> String {
-    let escaped = escape_html(code);
     let mut result = String::new();
 
-    for line in escaped.lines() {
+    for line in code.lines() {
         let highlighted = highlight_toml_line(line);
         result.push_str(&highlighted);
         result.push('\n');
     }
 
-    result
+    escape_text_nodes(&result)
 }
 
 fn highlight_toml_line(line: &str) -> String {
@@ -877,7 +1124,12 @@ fn highlight_toml_line(line: &str) -> String {
         // Key (before =)
         if rest_chars[j].is_alphabetic() || rest_chars[j] == '_' || rest_chars[j] == '-' {
             let mut word = String::new();
-            while j < rest_len && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '_' || rest_chars[j] == '-' || rest_chars[j] == '.') {
+            while j < rest_len
+                && (rest_chars[j].is_alphanumeric()
+                    || rest_chars[j] == '_'
+                    || rest_chars[j] == '-'
+                    || rest_chars[j] == '.')
+            {
                 word.push(rest_chars[j]);
                 j += 1;
             }
@@ -894,7 +1146,15 @@ fn highlight_toml_line(line: &str) -> String {
         // Number or boolean
         if rest_chars[j].is_ascii_digit() || rest_chars[j] == '-' {
             output.push_str("<span class=\"token-number\">");
-            while j < rest_len && (rest_chars[j].is_ascii_digit() || rest_chars[j] == '.' || rest_chars[j] == '_' || rest_chars[j] == '-' || rest_chars[j] == '+' || rest_chars[j] == 'e' || rest_chars[j] == 'E') {
+            while j < rest_len
+                && (rest_chars[j].is_ascii_digit()
+                    || rest_chars[j] == '.'
+                    || rest_chars[j] == '_'
+                    || rest_chars[j] == '-'
+                    || rest_chars[j] == '+'
+                    || rest_chars[j] == 'e'
+                    || rest_chars[j] == 'E')
+            {
                 output.push(rest_chars[j]);
                 j += 1;
             }
@@ -939,16 +1199,15 @@ fn highlight_toml_line(line: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn highlight_json(code: &str) -> String {
-    let escaped = escape_html(code);
     let mut result = String::new();
 
-    for line in escaped.lines() {
+    for line in code.lines() {
         let highlighted = highlight_json_line(line);
         result.push_str(&highlighted);
         result.push('\n');
     }
 
-    result
+    escape_text_nodes(&result)
 }
 
 fn highlight_json_line(line: &str) -> String {
@@ -1010,7 +1269,14 @@ fn highlight_json_line(line: &str) -> String {
         // Number
         if rest_chars[j].is_ascii_digit() || rest_chars[j] == '-' {
             output.push_str("<span class=\"token-number\">");
-            while j < rest_len && (rest_chars[j].is_ascii_digit() || rest_chars[j] == '.' || rest_chars[j] == 'e' || rest_chars[j] == 'E' || rest_chars[j] == '+' || rest_chars[j] == '-') {
+            while j < rest_len
+                && (rest_chars[j].is_ascii_digit()
+                    || rest_chars[j] == '.'
+                    || rest_chars[j] == 'e'
+                    || rest_chars[j] == 'E'
+                    || rest_chars[j] == '+'
+                    || rest_chars[j] == '-')
+            {
                 output.push(rest_chars[j]);
                 j += 1;
             }
@@ -1065,16 +1331,15 @@ fn highlight_json_line(line: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn highlight_css(code: &str) -> String {
-    let escaped = escape_html(code);
     let mut result = String::new();
 
-    for line in escaped.lines() {
+    for line in code.lines() {
         let highlighted = highlight_css_line(line);
         result.push_str(&highlighted);
         result.push('\n');
     }
 
-    result
+    escape_text_nodes(&result)
 }
 
 fn highlight_css_line(line: &str) -> String {
@@ -1154,7 +1419,9 @@ fn highlight_css_line(line: &str) -> String {
         // Property name (word followed by :)
         if rest_chars[j].is_alphabetic() || rest_chars[j] == '-' {
             let mut word = String::new();
-            while j < rest_len && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '-' || rest_chars[j] == '_') {
+            while j < rest_len
+                && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '-' || rest_chars[j] == '_')
+            {
                 word.push(rest_chars[j]);
                 j += 1;
             }
@@ -1168,7 +1435,9 @@ fn highlight_css_line(line: &str) -> String {
         }
 
         // Number with unit
-        if rest_chars[j].is_ascii_digit() || (rest_chars[j] == '-' && j + 1 < rest_len && rest_chars[j + 1].is_ascii_digit()) {
+        if rest_chars[j].is_ascii_digit()
+            || (rest_chars[j] == '-' && j + 1 < rest_len && rest_chars[j + 1].is_ascii_digit())
+        {
             if rest_chars[j] == '-' {
                 output.push('-');
                 j += 1;
@@ -1196,7 +1465,9 @@ fn highlight_css_line(line: &str) -> String {
         if rest_chars[j] == '@' {
             output.push_str("<span class=\"token-keyword\">@");
             j += 1;
-            while j < rest_len && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '-' || rest_chars[j] == '_') {
+            while j < rest_len
+                && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '-' || rest_chars[j] == '_')
+            {
                 output.push(rest_chars[j]);
                 j += 1;
             }
@@ -1208,7 +1479,9 @@ fn highlight_css_line(line: &str) -> String {
         if rest_chars[j] == ':' {
             output.push_str("<span class=\"token-function\">:");
             j += 1;
-            while j < rest_len && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '-' || rest_chars[j] == '_') {
+            while j < rest_len
+                && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '-' || rest_chars[j] == '_')
+            {
                 output.push(rest_chars[j]);
                 j += 1;
             }
@@ -1260,16 +1533,15 @@ fn highlight_css_line(line: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn highlight_html(code: &str) -> String {
-    let escaped = escape_html(code);
     let mut result = String::new();
 
-    for line in escaped.lines() {
+    for line in code.lines() {
         let highlighted = highlight_html_line(line);
         result.push_str(&highlighted);
         result.push('\n');
     }
 
-    result
+    escape_text_nodes(&result)
 }
 
 fn highlight_html_line(line: &str) -> String {
@@ -1305,11 +1577,11 @@ fn highlight_html_line(line: &str) -> String {
         && rest_chars[j + 2] == '-'
         && rest_chars[j + 3] == '-'
     {
-        output.push_str("<span class=\"token-comment\">&lt;!--");
+        output.push_str("<span class=\"token-comment\"><!--");
         j += 4;
         while j + 2 < rest_len {
             if rest_chars[j] == '-' && rest_chars[j + 1] == '-' && rest_chars[j + 2] == '>' {
-                output.push_str("--&gt;</span>");
+                output.push_str("--></span>");
                 break;
             }
             output.push(rest_chars[j]);
@@ -1320,11 +1592,16 @@ fn highlight_html_line(line: &str) -> String {
 
     while j < rest_len {
         // Tag opening
-        if rest_chars[j] == '<' && j + 1 < rest_len && (rest_chars[j + 1].is_alphabetic() || rest_chars[j + 1] == '/' || rest_chars[j + 1] == '!') {
-            output.push_str("<span class=\"token-function\">&lt;");
+        if rest_chars[j] == '<'
+            && j + 1 < rest_len
+            && (rest_chars[j + 1].is_alphabetic()
+                || rest_chars[j + 1] == '/'
+                || rest_chars[j + 1] == '!')
+        {
+            output.push_str("<span class=\"token-function\"><");
             j += 1;
             if rest_chars[j] == '/' {
-                output.push_str("/");
+                output.push('/');
                 j += 1;
             }
             // Tag name
@@ -1351,7 +1628,12 @@ fn highlight_html_line(line: &str) -> String {
                     output.push_str("</span>");
                 } else if rest_chars[j].is_alphabetic() {
                     output.push_str("<span class=\"token-keyword\">");
-                    while j < rest_len && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '-' || rest_chars[j] == '_' || rest_chars[j] == ':') {
+                    while j < rest_len
+                        && (rest_chars[j].is_alphanumeric()
+                            || rest_chars[j] == '-'
+                            || rest_chars[j] == '_'
+                            || rest_chars[j] == ':')
+                    {
                         output.push(rest_chars[j]);
                         j += 1;
                     }
@@ -1367,10 +1649,10 @@ fn highlight_html_line(line: &str) -> String {
             if j < rest_len {
                 output.push_str("<span class=\"token-function\">");
                 if j + 1 < rest_len && rest_chars[j + 1] == '/' {
-                    output.push_str("&gt;");
+                    output.push('>');
                     j += 2;
                 } else {
-                    output.push_str("&gt;");
+                    output.push('>');
                     j += 1;
                 }
                 output.push_str("</span>");
@@ -1390,16 +1672,15 @@ fn highlight_html_line(line: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn highlight_bash(code: &str) -> String {
-    let escaped = escape_html(code);
     let mut result = String::new();
 
-    for line in escaped.lines() {
+    for line in code.lines() {
         let highlighted = highlight_bash_line(line);
         result.push_str(&highlighted);
         result.push('\n');
     }
 
-    result
+    escape_text_nodes(&result)
 }
 
 fn highlight_bash_line(line: &str) -> String {
@@ -1504,7 +1785,9 @@ fn highlight_bash_line(line: &str) -> String {
         // Keyword
         if rest_chars[j].is_alphabetic() || rest_chars[j] == '_' {
             let mut word = String::new();
-            while j < rest_len && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '_' || rest_chars[j] == '-') {
+            while j < rest_len
+                && (rest_chars[j].is_alphanumeric() || rest_chars[j] == '_' || rest_chars[j] == '-')
+            {
                 word.push(rest_chars[j]);
                 j += 1;
             }
@@ -1540,11 +1823,37 @@ fn highlight_bash_line(line: &str) -> String {
 fn is_bash_keyword(word: &str) -> bool {
     matches!(
         word,
-        "if" | "then" | "else" | "elif" | "fi" | "for" | "while" | "do"
-            | "done" | "case" | "esac" | "function" | "return" | "exit"
-            | "echo" | "export" | "source" | "alias" | "unset"
-            | "local" | "readonly" | "shift" | "set" | "eval"
-            | "exec" | "trap" | "wait" | "test" | "true" | "false"
-            | "in" | "select" | "until"
+        "if" | "then"
+            | "else"
+            | "elif"
+            | "fi"
+            | "for"
+            | "while"
+            | "do"
+            | "done"
+            | "case"
+            | "esac"
+            | "function"
+            | "return"
+            | "exit"
+            | "echo"
+            | "export"
+            | "source"
+            | "alias"
+            | "unset"
+            | "local"
+            | "readonly"
+            | "shift"
+            | "set"
+            | "eval"
+            | "exec"
+            | "trap"
+            | "wait"
+            | "test"
+            | "true"
+            | "false"
+            | "in"
+            | "select"
+            | "until"
     )
 }

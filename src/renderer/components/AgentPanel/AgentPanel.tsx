@@ -50,36 +50,38 @@ export default function AgentPanel({
       className={`agent-panel ${isSelected ? 'agent-panel--selected' : ''}`}
       style={{
         background: 'var(--panel-bg)',
-        border: isSelected ? '2px solid var(--color-accent)' : 'none',
-        boxShadow: isSelected ? '0 0 0 1px var(--color-accent)' : 'none',
+        borderColor: isSelected ? 'var(--terminal-selected-accent)' : 'transparent',
+        boxShadow: isSelected
+          ? '0 0 0 1px var(--terminal-selected-accent), 0 0 26px color-mix(in srgb, var(--terminal-selected-accent) 24%, transparent)'
+          : 'none',
       }}
-      onClick={(e) => {
-        // Only select if clicking the panel itself (not interactive children)
-        if (e.currentTarget === e.target) {
-          onSelect()
-        }
+      onPointerDown={(event) => {
+        const target = event.target as HTMLElement
+        if (!target.closest('button')) onSelect()
       }}
     >
       {/* Title bar */}
       <div className="agent-panel-titlebar">
-        <div className="agent-panel-titlebar-left">
-          <GripVertical size={16} style={{ cursor: 'grab', color: 'var(--text-muted)' }} />
-          <span className="agent-name">{agentName}</span>
-          <span className="project-name">{projectName || ''}</span>
-        </div>
-        <div className="agent-panel-titlebar-right">
-          <button onClick={onFullscreen} title="Fullscreen">
-            <Maximize2 size={14} />
-          </button>
-          <button onClick={onSplit} title="Split">
-            <LayoutGrid size={14} />
-          </button>
-          <button onClick={onMinimize} title="Minimize">
-            <Minus size={14} />
-          </button>
-          <button onClick={onClose} className="agent-panel-close-btn" title="Close">
-            <X size={14} />
-          </button>
+        <div className="agent-panel-titlebar-pill">
+          <div className="agent-panel-titlebar-left">
+            <GripVertical size={15} className="agent-panel-grip" />
+            <span className="agent-name">{agentName}</span>
+            <span className="project-name">{projectName || ''}</span>
+          </div>
+          <div className="agent-panel-titlebar-right">
+            <button onClick={onSplit} title="Split">
+              <LayoutGrid size={13} />
+            </button>
+            <button onClick={onFullscreen} title="Fullscreen">
+              <Maximize2 size={13} />
+            </button>
+            <button onClick={onMinimize} title="Minimize">
+              <Minus size={13} />
+            </button>
+            <button onClick={onClose} className="agent-panel-close-btn" title="Close">
+              <X size={13} />
+            </button>
+          </div>
         </div>
       </div>
 

@@ -225,7 +225,8 @@ pub fn normalize_url(raw: &str) -> Result<String, BrowserError> {
 /// performed in the `src-tauri` command handlers that call into this struct.
 pub struct BrowserManager {
     panels: Arc<RwLock<HashMap<String, BrowserPanel>>>,
-    event_emitter: Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter:
+        Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 }
 
 impl std::fmt::Debug for BrowserManager {

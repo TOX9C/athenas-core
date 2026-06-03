@@ -184,13 +184,16 @@ pub fn CommandPalette() -> Element {
 
             // Backdrop
             div {
-                style: "position: absolute; inset: 0; background: rgba(0,0,0,0.4);",
+                style: "position: absolute; inset: 0; backdrop-filter: blur(6px); background: rgba(0,0,0,0.5);",
                 onclick: move |_| command_state.write().close(),
             }
 
             // Palette container
             div {
-                style: "position: relative; z-index: 1; width: 520px; max-height: 400px; display: flex; flex-direction: column; border-radius: 12px; box-shadow: 0 25px 50px rgba(0,0,0,0.4); overflow: hidden; background: var(--bgSecondary); border: 1px solid var(--border);",
+                style: "position: relative; z-index: 1; width: 520px; max-height: 400px; display: flex; flex-direction: column; border-radius: var(--radius-lg, 12px); box-shadow: 0 25px 50px rgba(0,0,0,0.4); overflow: hidden; background: var(--bgSecondary); border: 1px solid var(--border);",
+                role: "dialog",
+                "aria-modal": "true",
+                "aria-label": "Command palette",
 
                 // Search input
                 div {
@@ -202,31 +205,90 @@ pub fn CommandPalette() -> Element {
                     }
 
                     input {
-                        style: "flex: 1; background: transparent; border: none; outline: none; font-size: 13px; color: var(--text);",
+                        style: "flex: 1; background: transparent; border: none; outline: none; font-size: 13px; color: var(--text); caret-color: #00c2b5;",
+                        role: "searchbox",
+                        "aria-label": "Search commands",
                         value: "{query}",
                         oninput: move |e| {
                             command_state.write().set_query(e.value());
                             selected_idx.set(0);
                         },
-                        onkeydown: move |e: KeyboardEvent| {
-                            let key = e.key();
-                            match key {
-                                Key::ArrowDown => {
-                                    selected_idx.set((selected_idx() + 1).min(flat_count.saturating_sub(1)));
+                onkeydown: move |e: KeyboardEvent| {
+                    let key = e.key();
+                    match key {
+                        Key::ArrowDown => {
+                            selected_idx.set((selected_idx() + 1).min(flat_count.saturating_sub(1)));
+                        }
+                        Key::ArrowUp => {
+                            selected_idx.set(selected_idx().saturating_sub(1));
+                        }
+                        Key::Enter => {
+                            // Find the command at selected_idx in the flat list
+                            let idx = selected_idx();
+                            let mut running = 0usize;
+                            let mut found_cmd: Option<Command> = None;
+                            for group in &groups {
+                                for cmd in &group.commands {
+                                    if running == idx {
+                                        found_cmd = Some(cmd.clone());
+                                        break;
+                                    }
+                                    running += 1;
                                 }
-                                Key::ArrowUp => {
-                                    selected_idx.set(selected_idx().saturating_sub(1));
-                                }
-                                Key::Enter => {
-                                    // Execute command at selected_idx
-                                    command_state.write().close();
-                                }
-                                Key::Escape => {
-                                    command_state.write().close();
-                                }
-                                _ => {}
+                                if found_cmd.is_some() { break; }
                             }
-                        },
+                            if let Some(cmd) = found_cmd {
+                                command_state.write().record_execution(&cmd.id);
+                                // Dispatch the command action via a hidden trigger element.
+                                // This pattern bridges the keyboard input event to the command's
+                                // registered action handler which is attached to a DOM element
+                                // via a data attribute (e.g. data-open_panel-trigger).
+                                use wasm_bindgen::JsCast;
+                                if let Some(window) = web_sys::window() {
+                                    if let Some(doc) = window.document() {
+                                        let selector = format!("[data-{}-trigger]", cmd.handler_key);
+                                        match doc.query_selector_all(&selector).ok() {
+                                            Some(node_list) => {
+                                                if node_list.length() == 1 {
+                                                    if let Some(el) = doc.query_selector(&selector).ok().flatten() {
+                                                        if let Some(html_el) = el.dyn_ref::<web_sys::HtmlElement>() {
+                                                            html_el.click();
+                                                        }
+                                                    }
+                                                } else if node_list.length() > 1 {
+                                                    // Multiple matches: log and use the first one
+                                                    web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(
+                                                        &format!("Command palette: multiple trigger elements found for selector '{}' ({}), using first", selector, cmd.handler_key)
+                                                    ));
+                                                    if let Some(el) = doc.query_selector(&selector).ok().flatten() {
+                                                        if let Some(html_el) = el.dyn_ref::<web_sys::HtmlElement>() {
+                                                            html_el.click();
+                                                        }
+                                                    }
+                                                } else {
+                                                    // No matches: warn that the command handler wasn't found
+                                                    web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(
+                                                        &format!("Command palette: no trigger element found for selector '{}' (handler_key: {})", selector, cmd.handler_key)
+                                                    ));
+                                                }
+                                            }
+                                            None => {
+                                                web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(
+                                                    &format!("Command palette: failed to query selector '{}' (handler_key: {})", selector, cmd.handler_key)
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            command_state.write().close();
+                        }
+                        Key::Escape => {
+                            command_state.write().close();
+                        }
+                        _ => {}
+                    }
+                },
                         placeholder: "Type a command...",
                         spellcheck: false,
                         autocomplete: "off",
@@ -283,7 +345,8 @@ pub fn CommandPalette() -> Element {
                                     let display_icon = "\u{203a}".to_string();
                                     let shortcut_str = cmd.shortcut.as_ref().map(|s| format_shortcut(s));
                                     let cmd_bg = if is_selected { "var(--bgTertiary)" } else { "transparent" };
-                                    let kbd_bg = if is_selected { "var(--bgSecondary)" } else { "var(--bgTertiary)" };
+                                    let badge_bg = if is_selected { "var(--accent)" } else { "var(--bgTertiary)" };
+                                    let badge_color = if is_selected { "var(--bgPrimary)" } else { "var(--accent)" };
                                     let cmd_id = cmd.id.clone();
                                     let cmd_label = cmd.label.clone();
                                     items.push(rsx! {
@@ -304,7 +367,7 @@ pub fn CommandPalette() -> Element {
 
                                             if let Some(ref sc) = shortcut_str {
                                                 kbd {
-                                                    style: "font-size: 10px; padding: 1px 6px; border-radius: 3px; background: {kbd_bg}; color: var(--textDim);",
+                                                    style: "font-size: 10px; padding: 2px 8px; border-radius: 9999px; background: {badge_bg}; color: {badge_color}; font-family: inherit; display: inline-flex; align-items: center; justify-content: center; min-width: 24px;",
                                                     "{sc}"
                                                 }
                                             }

@@ -1,42 +1,104 @@
 use crate::state::AppState;
-use tauri::{AppHandle, Manager, State};
+use base64::Engine;
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 // ── Path validation helpers ──────────────────────────────────────────────────
 
+/// Get the canonicalized workspace root for path sandboxing.
+fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
+    std::env::current_dir()
+        .map_err(|e| CommandError::Internal(format!("Failed to get workspace root: {}", e)))?
+        .canonicalize()
+        .map_err(|e| {
+            CommandError::Internal(format!("Failed to canonicalize workspace root: {}", e))
+        })
+}
+
 /// Validate that a path exists and return the cleaned path.
 fn validate_path_exists(path: &std::path::Path) -> Result<std::path::PathBuf, CommandError> {
-    let cleaned = path.to_path_buf();
-    if !cleaned.exists() {
+    let root = get_workspace_root()?;
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if !path.exists() {
         return Err(CommandError::NotFound(format!(
             "Path does not exist: {}",
-            cleaned.display()
+            path.display()
         )));
     }
-    Ok(cleaned)
+    let canonicalized = path
+        .canonicalize()
+        .map_err(|e| CommandError::Internal(format!("Failed to canonicalize path: {}", e)))?;
+    if !canonicalized.starts_with(&root) {
+        return Err(CommandError::PermissionDenied(format!(
+            "Path must be within the workspace: {}",
+            root.display()
+        )));
+    }
+    Ok(canonicalized)
 }
 
 /// Validate a path for write operations (creates parent dirs if needed).
 fn validate_path(path: &std::path::Path) -> Result<std::path::PathBuf, CommandError> {
-    let cleaned = path.to_path_buf();
-    if let Some(parent) = cleaned.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| CommandError::Internal(format!("Failed to create parent directories: {}", e)))?;
+    let root = get_workspace_root()?;
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if !path.starts_with(&root) {
+        return Err(CommandError::PermissionDenied(format!(
+            "Path must be within the workspace: {}",
+            root.display()
+        )));
     }
-    Ok(cleaned)
+    if let Ok(remaining) = path.strip_prefix(&root) {
+        for comp in remaining.components() {
+            if matches!(comp, std::path::Component::ParentDir) {
+                return Err(CommandError::PermissionDenied(
+                    "Path escapes the workspace root".to_string(),
+                ));
+            }
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CommandError::Internal(format!("Failed to create parent directories: {}", e))
+        })?;
+    }
+    Ok(path)
 }
 
 /// Build provider config from the persistent store for LLM API calls.
-fn build_provider_config_from_store(state: &AppState) -> Option<athena_core::orchestrator::ProviderConfig> {
-    let provider_str = state.store.get::<String>("llm.provider").ok().flatten().unwrap_or_else(|| "anthropic".to_string());
-    let api_key = state.store.get::<String>("llm.api_key").ok().flatten()
+fn build_provider_config_from_store(
+    state: &AppState,
+) -> Option<athena_core::orchestrator::ProviderConfig> {
+    let provider_str = state
+        .store
+        .get::<String>("llm.provider")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "anthropic".to_string());
+    let api_key = state
+        .store
+        .get::<String>("llm.api_key")
+        .ok()
+        .flatten()
         .or_else(|| {
             keyring::Entry::new("athena", "api_key")
                 .ok()
                 .and_then(|e| e.get_password().ok())
         })
         .unwrap_or_default();
-    let model = state.store.get::<String>("llm.model").ok().flatten().unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+    let model = state
+        .store
+        .get::<String>("llm.model")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
 
     if api_key.is_empty() {
         log::warn!("No API key configured for LLM provider");
@@ -73,6 +135,7 @@ pub enum CommandError {
     InvalidInput(String),
     #[error("Internal error: {0}")]
     Internal(String),
+    #[allow(dead_code)]
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
 }
@@ -171,21 +234,22 @@ pub async fn fs_list_dir(path: String) -> Result<String, CommandError> {
     let validated = validate_path_exists(path_ref)?;
     tokio::task::spawn_blocking(move || {
         let mut entries: Vec<DirEntry> = Vec::new();
-        let read_dir = std::fs::read_dir(&validated).map_err(|e| CommandError::Internal(e.to_string()))?;
+        let read_dir =
+            std::fs::read_dir(&validated).map_err(|e| CommandError::Internal(e.to_string()))?;
         for entry_result in read_dir {
             let entry = entry_result.map_err(|e| CommandError::Internal(e.to_string()))?;
-            let file_type = entry.file_type().map_err(|e| CommandError::Internal(e.to_string()))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|e| CommandError::Internal(e.to_string()))?;
             let name = entry.file_name().to_string_lossy().to_string();
             let path = entry.path().to_string_lossy().to_string();
             let is_dir = file_type.is_dir();
             entries.push(DirEntry { name, path, is_dir });
         }
-        entries.sort_by(|a, b| {
-            match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            }
+        entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
         });
         serde_json::to_string(&entries).map_err(|e| CommandError::Internal(e.to_string()))
     })
@@ -224,8 +288,7 @@ pub async fn fs_read_file_as_base64(path: String) -> Result<String, CommandError
         std::fs::read(&validated_clone).map_err(|e| CommandError::Internal(e.to_string()))
     })
     .await
-    .map_err(|e| CommandError::Internal(format!("Read task failed: {e}")))?
-    ?;
+    .map_err(|e| CommandError::Internal(format!("Read task failed: {e}")))??;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
@@ -246,35 +309,33 @@ pub async fn fs_show_open_dialog(
         dialog = dialog.set_title(t);
     }
 
-    let result = tokio::task::spawn_blocking(move || {
-        match (is_directory, is_multiple) {
-            (true, false) => dialog
-                .blocking_pick_folder()
-                .map(|fp| fp.to_string())
-                .unwrap_or_default(),
-            (true, true) => dialog
-                .blocking_pick_folders()
-                .map(|list| {
-                    list.iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default(),
-            (false, false) => dialog
-                .blocking_pick_file()
-                .map(|fp| fp.to_string())
-                .unwrap_or_default(),
-            (false, true) => dialog
-                .blocking_pick_files()
-                .map(|list| {
-                    list.iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default(),
-        }
+    let result = tokio::task::spawn_blocking(move || match (is_directory, is_multiple) {
+        (true, false) => dialog
+            .blocking_pick_folder()
+            .map(|fp| fp.to_string())
+            .unwrap_or_default(),
+        (true, true) => dialog
+            .blocking_pick_folders()
+            .map(|list| {
+                list.iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default(),
+        (false, false) => dialog
+            .blocking_pick_file()
+            .map(|fp| fp.to_string())
+            .unwrap_or_default(),
+        (false, true) => dialog
+            .blocking_pick_files()
+            .map(|list| {
+                list.iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default(),
     })
     .await
     .map_err(|e| format!("Dialog task failed: {e}"))?;
@@ -314,7 +375,9 @@ pub async fn fs_search_files(pattern: String, path: String) -> Result<String, St
         max_results: Some(50),
         context_lines: Some(2),
     };
-    let result = athena_core::search_code(&options).await.map_err(|e| e.to_string())?;
+    let result = athena_core::search_code(&options)
+        .await
+        .map_err(|e| e.to_string())?;
     serde_json::to_string(&result).map_err(|e| e.to_string())
 }
 
@@ -332,8 +395,16 @@ pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, Comm
 
 /// Set a value in the persistent key-value store.
 #[tauri::command]
-pub async fn store_set(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
-    state.store.set(&key, &value).await.map_err(|e| e.to_string())
+pub async fn store_set(
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    state
+        .store
+        .set(&key, &value)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Check whether a key exists in the persistent key-value store.
@@ -352,7 +423,10 @@ pub async fn store_delete(state: State<'_, AppState>, key: String) -> Result<(),
 
 /// Create a new chat session and return its JSON representation.
 #[tauri::command]
-pub async fn session_create(state: State<'_, AppState>, title: Option<String>) -> Result<String, String> {
+pub async fn session_create(
+    state: State<'_, AppState>,
+    title: Option<String>,
+) -> Result<String, String> {
     let session = state
         .session_store
         .create_session(title.as_deref())
@@ -371,7 +445,10 @@ pub async fn session_get(state: State<'_, AppState>, id: String) -> Result<Strin
         .map_err(|e| CommandError::Internal(e.to_string()))?;
     match session {
         Some(s) => serde_json::to_string(&s).map_err(|e| CommandError::Internal(e.to_string())),
-        None => Err(CommandError::NotFound(format!("Session '{}' not found", id))),
+        None => Err(CommandError::NotFound(format!(
+            "Session '{}' not found",
+            id
+        ))),
     }
 }
 
@@ -417,7 +494,10 @@ pub async fn session_update(
     messages: Option<String>,
 ) -> Result<String, CommandError> {
     let parsed_messages: Option<Vec<athena_store::SessionMessage>> = match messages {
-        Some(json) => Some(serde_json::from_str(&json).map_err(|e| CommandError::InvalidInput(format!("Invalid messages JSON: {}", e)))?),
+        Some(json) => Some(
+            serde_json::from_str(&json)
+                .map_err(|e| CommandError::InvalidInput(format!("Invalid messages JSON: {}", e)))?,
+        ),
         None => None,
     };
     let session = state
@@ -427,7 +507,10 @@ pub async fn session_update(
         .map_err(|e| CommandError::Internal(e.to_string()))?;
     match session {
         Some(s) => serde_json::to_string(&s).map_err(|e| CommandError::Internal(e.to_string())),
-        None => Err(CommandError::NotFound(format!("Session '{}' not found", id))),
+        None => Err(CommandError::NotFound(format!(
+            "Session '{}' not found",
+            id
+        ))),
     }
 }
 
@@ -485,45 +568,221 @@ pub async fn session_add_message(
 // ── PTY commands ─────────────────────────────────────────────────────────────
 
 /// Spawn a new PTY session with the given ID, working directory, and shell.
+/// After spawning, starts a background tokio task that reads PTY output
+/// and emits `terminal:data` events to the frontend.
 #[tauri::command]
 pub async fn pty_spawn(
     state: State<'_, AppState>,
     id: String,
     cwd: String,
     shell: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> Result<(), String> {
-    let pty_manager = state.pty_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let manager = pty_manager.lock().map_err(|e| e.to_string())?;
-        manager.spawn(id, cwd, shell, None).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let cols = cols.unwrap_or(80);
+    let rows = rows.unwrap_or(24);
+    log::info!(
+        "pty_spawn requested: id={} cwd={} shell={} cols={} rows={}",
+        id,
+        cwd,
+        shell,
+        cols,
+        rows
+    );
+    let session_manager = state.session_manager.lock().await;
+    let session_result = session_manager
+        .spawn(id.clone(), &shell, &cwd, cols, rows)
+        .await;
+    drop(session_manager);
+
+    match session_result {
+        Ok(session) => {
+            let _session_id = id.clone();
+            let app_handle = match state.app_handle.lock() {
+                Ok(g) => g.clone(),
+                Err(e) => {
+                    log::error!("app_handle lock poisoned in pty_spawn: {}", e);
+                    return Ok(());
+                }
+            };
+
+            if let Some(handle) = app_handle {
+                let session_id_for_loop = id.clone();
+                tokio::spawn(async move {
+                    pty_read_loop(handle, session_id_for_loop, session).await;
+                });
+            }
+
+            log::info!(
+                "PTY session spawned: id={} cwd={} shell={} cols={} rows={}",
+                id,
+                cwd,
+                shell,
+                cols,
+                rows
+            );
+            Ok(())
+        }
+        Err(e) => {
+            log::error!(
+                "Failed to spawn PTY session: id={} cwd={} shell={} cols={} rows={} error={}",
+                id,
+                cwd,
+                shell,
+                cols,
+                rows,
+                e
+            );
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Background task that reads PTY output and emits Tauri events.
+///
+/// Fans out to two parallel event streams:
+/// - `pty:raw` — base64-encoded raw PTY bytes, consumed by the xterm.js
+///   frontend (which has its own ANSI parser). Emitted on every successful
+///   read regardless of whether the grid state changed.
+/// - `terminal:data` — parsed cell deltas, consumed by the legacy
+///   cell-grid frontend. Emitted only when the grid actually changed.
+async fn pty_read_loop(
+    app_handle: tauri::AppHandle,
+    session_id: String,
+    session: std::sync::Arc<athena_terminal::session::TerminalSession>,
+) {
+    log::info!("pty_read_loop[{}]: starting", session_id);
+    let mut did_emit_ready = false;
+
+    let mut buf = vec![0u8; 4096];
+    loop {
+        // Step 1: pull raw bytes from the PTY. `0` means EAGAIN on a
+        // non-blocking fd — sleep briefly and loop.
+        let n = match session.read_bytes(&mut buf).await {
+            Ok(0) => {
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                continue;
+            }
+            Ok(n) => n,
+            Err(e) => {
+                log::warn!("PTY read error for {}: {}", session_id, e);
+                if e.kind() == std::io::ErrorKind::BrokenPipe
+                    || e.kind() == std::io::ErrorKind::InvalidData
+                {
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                continue;
+            }
+        };
+
+        log::debug!("pty_read_loop[{}]: read {} bytes", session_id, n);
+
+        // Step 2: fan out raw bytes to xterm.js subscribers. Base64 wraps
+        // arbitrary bytes (including invalid UTF-8) into a JSON-safe string.
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+        let raw_event = serde_json::json!({
+            "sessionId": session_id,
+            "data": encoded,
+        });
+        // Serialize to a fully-owned String before calling emit. Passing
+        // `&raw_event` (a `&serde_json::Value`) to emit captured a borrow
+        // that, across concurrent tokio tasks, was observed to be read
+        // after a later task had overwritten the underlying buffer — all
+        // listeners then received payloads whose `sessionId` field matched
+        // whichever task had last serialized. Owning the String forces
+        // serialization to happen on this task, eliminating the race.
+        let raw_event_str = match serde_json::to_string(&raw_event) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!(
+                    "pty_read_loop[{}]: failed to serialize raw_event: {}",
+                    session_id,
+                    e
+                );
+                continue;
+            }
+        };
+        if let Err(e) = app_handle.emit("pty:raw", raw_event_str) {
+            log::warn!("Failed to emit pty:raw event: {}", e);
+        }
+
+        // Step 3: parse the same bytes for the legacy cell-grid frontend.
+        // `parse_bytes` returns `None` when no cells changed, in which
+        // case we skip the structured event entirely.
+        match session.parse_bytes(&buf[..n]).await {
+            Ok(Some(update)) => {
+                if !did_emit_ready {
+                    did_emit_ready = true;
+                    session.mark_ready().await;
+                    // Clone to an owned String to avoid the same borrow-sharing
+                    // race that motivated the pty:raw String-serialize fix.
+                    if let Err(e) = app_handle.emit("terminal:ready", session_id.clone()) {
+                        log::warn!("Failed to emit terminal:ready event: {}", e);
+                    }
+                }
+                let event_data = serde_json::json!({
+                    "sessionId": session_id,
+                    "deltas": update.deltas,
+                    "cursorRow": update.cursor_row,
+                    "cursorCol": update.cursor_col,
+                    "rows": update.rows,
+                    "cols": update.cols,
+                    "cursorVisible": update.cursor_visible,
+                });
+                let event_data_str = match serde_json::to_string(&event_data) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!(
+                            "pty_read_loop[{}]: failed to serialize event_data: {}",
+                            session_id,
+                            e
+                        );
+                        continue;
+                    }
+                };
+                if let Err(e) = app_handle.emit("terminal:data", event_data_str) {
+                    log::warn!("Failed to emit terminal:data event: {}", e);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log::warn!("PTY parse error for {}: {}", session_id, e);
+            }
+        }
+
+        // Rate limit: yield after each successful read to prevent CPU spin
+        // when commands like `yes` produce infinite output.
+        tokio::task::yield_now().await;
+    }
+
+    log::info!("PTY read loop exited for session: {}", session_id);
+    if let Err(e) = app_handle.emit("terminal:exit", session_id) {
+        log::warn!("Failed to emit terminal:exit event: {}", e);
+    }
 }
 
 /// Write data to a PTY session's stdin.
 #[tauri::command]
 pub async fn pty_write(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
-    let pty_manager = state.pty_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let manager = pty_manager.lock().map_err(|e| e.to_string())?;
-        manager.write(&id, data).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let data_len = data.len();
+    let session_manager = state.session_manager.lock().await;
+    let _len = session_manager
+        .write(&id, data.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    log::debug!("pty_write: id={} bytes={}", id, data_len);
+    drop(session_manager);
+    Ok(())
 }
 
 /// Kill a PTY session by its ID.
 #[tauri::command]
 pub async fn pty_kill(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let pty_manager = state.pty_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let manager = pty_manager.lock().map_err(|e| e.to_string())?;
-        manager.kill(&id);
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let session_manager = state.session_manager.lock().await;
+    let result = session_manager.kill(&id).await;
+    drop(session_manager);
+    result.map_err(|e| e.to_string())
 }
 
 /// Resize a PTY session's terminal dimensions.
@@ -534,64 +793,84 @@ pub async fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let pty_manager = state.pty_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let manager = pty_manager.lock().map_err(|e| e.to_string())?;
-        manager.resize(&id, cols, rows).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    log::info!(
+        "pty_resize requested: id={} cols={} rows={}",
+        id,
+        cols,
+        rows
+    );
+    let session_manager = state.session_manager.lock().await;
+    let result = session_manager.resize(&id, cols, rows).await;
+    drop(session_manager);
+    result.map_err(|e| e.to_string())
 }
 
 /// Get the accumulated output history for a PTY session.
+/// Returns the current grid state as a JSON array of rows with cell characters.
 #[tauri::command]
 pub async fn pty_get_history(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    let pty_manager = state.pty_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let manager = pty_manager.lock().map_err(|e| e.to_string())?;
-        Ok(manager.get_history(&id))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let session_manager = state.session_manager.lock().await;
+    let session = session_manager.get_session(&id).await;
+    drop(session_manager);
+
+    if let Some(s) = session {
+        let grid = s.grid.lock().await;
+        let mut rows_json = Vec::new();
+        for row in &grid.rows {
+            let chars: Vec<String> = row.iter().map(|c| c.c.to_string()).collect();
+            rows_json.push(serde_json::json!({ "cells": chars }));
+        }
+        return serde_json::to_string(&serde_json::json!({
+            "rows": rows_json,
+            "cursor_row": grid.cursor.row,
+            "cursor_col": grid.cursor.col,
+        }))
+        .map_err(|e| e.to_string());
+    }
+    Ok("null".to_string())
 }
 
 /// Check whether a PTY session with the given ID exists.
 #[tauri::command]
 pub async fn pty_has_session(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    let pty_manager = state.pty_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let manager = pty_manager.lock().map_err(|e| e.to_string())?;
-        Ok(manager.has_session(&id))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let session_manager = state.session_manager.lock().await;
+    let result = session_manager.has_session(&id).await;
+    drop(session_manager);
+    Ok(result)
 }
 
 /// Check whether a PTY session's shell prompt is visible (ready).
+/// Returns true only when the session status is Ready (shell has started).
 #[tauri::command]
 pub async fn pty_is_ready(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    let pty_manager = state.pty_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let manager = pty_manager.lock().map_err(|e| e.to_string())?;
-        Ok(manager.is_ready(&id))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let session_manager = state.session_manager.lock().await;
+    let result = match session_manager.get_session(&id).await {
+        Some(session) => {
+            let status = session.status.lock().await;
+            *status == athena_terminal::session::PtyStatus::Ready
+        }
+        None => false,
+    };
+    drop(session_manager);
+    Ok(result)
 }
 
 /// Get the working directory of a PTY session, if known.
 #[tauri::command]
 pub async fn pty_get_cwd(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
-    let pty_manager = state.pty_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let manager = pty_manager.lock().map_err(|e| e.to_string())?;
-        Ok(manager.get_cwd(&id))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let session_manager = state.session_manager.lock().await;
+    let session = session_manager.get_session(&id).await;
+    drop(session_manager);
+
+    if let Some(s) = session {
+        Ok(Some(s.cwd.clone()))
+    } else {
+        Ok(None)
+    }
 }
 
-/// Spawn a new PTY session with an agent command to execute after startup.
+/// Spawn a new PTY session with the agent command to execute after startup.
+/// The `agent_cmd` is executed in the shell after the PTY is set up.
 #[tauri::command]
 pub async fn pty_spawn_agent(
     state: State<'_, AppState>,
@@ -599,14 +878,49 @@ pub async fn pty_spawn_agent(
     cwd: String,
     shell: String,
     agent_cmd: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> Result<(), String> {
-    let pty_manager = state.pty_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let manager = pty_manager.lock().map_err(|e| e.to_string())?;
-        manager.spawn(id, cwd, shell, Some(agent_cmd)).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let cols = cols.unwrap_or(80);
+    let rows = rows.unwrap_or(24);
+    let session_manager = state.session_manager.lock().await;
+    let session_result = session_manager
+        .spawn(id.clone(), &shell, &cwd, cols, rows)
+        .await;
+    drop(session_manager);
+
+    match session_result {
+        Ok(session) => {
+            let _session_id = id.clone();
+            let app_handle = match state.app_handle.lock() {
+                Ok(g) => g.clone(),
+                Err(e) => {
+                    log::error!("app_handle lock poisoned in pty_spawn_agent: {}", e);
+                    return Ok(());
+                }
+            };
+
+            // Write the agent command to the PTY
+            if let Err(e) = session.write(agent_cmd.as_bytes()).await {
+                log::error!("Failed to write agent command to PTY: {}", e);
+                return Err(e.to_string());
+            }
+
+            if let Some(handle) = app_handle {
+                let session_id_for_loop = id.clone();
+                tokio::spawn(async move {
+                    pty_read_loop(handle, session_id_for_loop, session).await;
+                });
+            }
+
+            log::info!("PTY agent session spawned: id={}", id);
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("Failed to spawn PTY agent session: {}", e);
+            Err(e.to_string())
+        }
+    }
 }
 
 // ── Athena / Orchestrator commands ───────────────────────────────────────────
@@ -1019,7 +1333,10 @@ pub fn agents_list(state: State<'_, AppState>) -> Result<String, String> {
 
 /// Get the status of a specific agent by its ID.
 #[tauri::command]
-pub fn agent_get_status(state: State<'_, AppState>, agent_id: String) -> Result<String, CommandError> {
+pub fn agent_get_status(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<String, CommandError> {
     let sessions = state.agent_comms.get_agent_sessions();
     let session = sessions
         .iter()
@@ -1094,7 +1411,9 @@ pub async fn search_code(pattern: String, path: String) -> Result<String, String
         max_results: Some(50),
         context_lines: Some(2),
     };
-    let result = athena_core::search_code(&options).await.map_err(|e| e.to_string())?;
+    let result = athena_core::search_code(&options)
+        .await
+        .map_err(|e| e.to_string())?;
     serde_json::to_string(&result).map_err(|e| e.to_string())
 }
 
@@ -1130,7 +1449,7 @@ pub async fn mcp_handle_request(
     let server = state.mcp_server.lock().await;
     let req =
         athena_core::mcp::McpServer::parse_request(&request).ok_or("Invalid JSON-RPC request")?;
-    let resp = server.handle_request(&req);
+    let resp = server.handle_request(&req).await;
     Ok(athena_core::mcp::McpServer::serialize_response(&resp))
 }
 
@@ -1206,7 +1525,10 @@ pub async fn swarm_read_mailbox(
 
 /// Parse OSC 633 sequences from terminal output data.
 #[tauri::command]
-pub async fn shell_integration_parse(state: State<'_, AppState>, data: String) -> Result<String, String> {
+pub async fn shell_integration_parse(
+    state: State<'_, AppState>,
+    data: String,
+) -> Result<String, String> {
     let shell_integration_parser = state.shell_integration_parser.clone();
     tokio::task::spawn_blocking(move || {
         let mut parser = shell_integration_parser.lock().map_err(|e| e.to_string())?;
@@ -1403,7 +1725,10 @@ pub fn plugin_disable(state: State<'_, AppState>, plugin_id: String) -> Result<(
 
 /// Get the configuration for a specific plugin.
 #[tauri::command]
-pub fn plugin_get_config(state: State<'_, AppState>, plugin_id: String) -> Result<String, CommandError> {
+pub fn plugin_get_config(
+    state: State<'_, AppState>,
+    plugin_id: String,
+) -> Result<String, CommandError> {
     let config = state
         .plugin_manager
         .get_plugin_config(&plugin_id)

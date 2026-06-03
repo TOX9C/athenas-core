@@ -154,6 +154,11 @@ pub struct CustomAgent {
 /// Maximum number of messages kept in memory.
 const MAX_MESSAGES: usize = 100;
 
+const DEFAULT_MODEL: &str = "claude";
+const DEFAULT_PROVIDER: &str = "anthropic";
+const DEFAULT_BYPASS_MODE: bool = true;
+const DEFAULT_AUTO_LAUNCH: bool = true;
+
 /// Global Athena chat state.
 #[derive(Clone, PartialEq, Default)]
 pub struct AthenaState {
@@ -179,10 +184,10 @@ impl AthenaState {
             is_streaming: false,
             streaming_status: None,
             error: None,
-            model: "claude".to_string(),
-            provider: "anthropic".to_string(),
-            bypass_mode: true,
-            auto_launch: true,
+            model: DEFAULT_MODEL.to_string(),
+            provider: DEFAULT_PROVIDER.to_string(),
+            bypass_mode: DEFAULT_BYPASS_MODE,
+            auto_launch: DEFAULT_AUTO_LAUNCH,
             custom_agents: Vec::new(),
         }
     }
@@ -287,7 +292,12 @@ impl AthenaState {
 
     /// Handle athena:askUser event — add an AskUser block to the latest assistant message
     /// or create a new message with the AskUser block.
-    pub fn handle_ask_user(&mut self, request_id: String, question: String, options: Vec<AskUserOption>) {
+    pub fn handle_ask_user(
+        &mut self,
+        request_id: String,
+        question: String,
+        options: Vec<AskUserOption>,
+    ) {
         let ask_block = ContentBlock::AskUser(AskUserBlock {
             request_id,
             question,
@@ -297,7 +307,10 @@ impl AthenaState {
         });
 
         // Try to append to the last assistant message
-        let last_is_athena = self.messages.last().map_or(false, |m| m.role == MessageRole::Athena);
+        let last_is_athena = self
+            .messages
+            .last()
+            .map_or(false, |m| m.role == MessageRole::Athena);
         if last_is_athena {
             if let Some(msg) = self.messages.last_mut() {
                 msg.blocks.push(ask_block);
@@ -334,7 +347,10 @@ impl AthenaState {
         });
 
         // Try to update existing plan in last assistant message
-        let last_is_athena = self.messages.last().map_or(false, |m| m.role == MessageRole::Athena);
+        let last_is_athena = self
+            .messages
+            .last()
+            .map_or(false, |m| m.role == MessageRole::Athena);
         if last_is_athena {
             if let Some(msg) = self.messages.last_mut() {
                 // Replace existing plan block or add new one
@@ -390,7 +406,10 @@ impl AthenaState {
         });
 
         // Try to append to last assistant message
-        let last_is_athena = self.messages.last().map_or(false, |m| m.role == MessageRole::Athena);
+        let last_is_athena = self
+            .messages
+            .last()
+            .map_or(false, |m| m.role == MessageRole::Athena);
         if last_is_athena {
             if let Some(msg) = self.messages.last_mut() {
                 msg.blocks.push(eval_block);

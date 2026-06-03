@@ -84,7 +84,8 @@ fn is_light_bg(bg: &str) -> bool {
             if let Ok(r) = u8::from_str_radix(&hex[0..2], 16) {
                 if let Ok(g) = u8::from_str_radix(&hex[2..4], 16) {
                     if let Ok(b) = u8::from_str_radix(&hex[4..6], 16) {
-                        let luminance = (0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64) / 255.0;
+                        let luminance =
+                            (0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64) / 255.0;
                         return luminance > 0.5;
                     }
                 }
@@ -150,15 +151,16 @@ pub fn apply_theme_to_dom(theme: UITheme) {
 fn detect_system_theme() -> &'static str {
     if let Some(window) = web_sys::window() {
         let result = js_sys::Function::new_no_args(
-            "window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'"
-        ).call0(&window);
+            "window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'",
+        )
+        .call0(&window);
         if let Ok(val) = result {
             if let Some(s) = val.as_string() {
                 if s == "light" {
-                    return "paper";
+                    return "dawn";
                 }
             }
         }
     }
-    "void"
+    "noir"
 }

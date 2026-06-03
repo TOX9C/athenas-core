@@ -11,28 +11,28 @@ pub fn RightSidebar() -> Element {
     let active = panel_state.read().active_right_panel;
 
     let tab_btn = |is_active: bool| -> String {
-        let bg = if is_active {
-            "var(--bgTertiary)"
-        } else {
-            "transparent"
-        };
         let fg = if is_active {
-            "var(--text)"
+            "var(--accent)"
         } else {
             "var(--textDim)"
         };
+        let border = if is_active {
+            "1px solid var(--accent)"
+        } else {
+            "1px solid transparent"
+        };
         format!(
-            "padding: 3px 10px; border-radius: 4px; border: none; font-size: 10px; font-weight: 500; cursor: pointer; background: {bg}; color: {fg};"
+            "padding: 6px 14px; border-radius: 2px; border: none; border-bottom: {border}; font-size: 11px; font-weight: 500; cursor: pointer; background: transparent; color: {fg}; transition: color 0.2s ease;"
         )
     };
 
     rsx! {
         div {
-            style: "width: {width}%; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg);",
+            style: "width: {width}%; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); overflow: hidden;",
 
             // Tab bar
             div {
-                style: "display: flex; align-items: center; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
+                style: "display: flex; align-items: center; gap: 0; padding: 0 8px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
 
                 button {
                     style: "{tab_btn(active == RightPanel::Browser)}",
@@ -55,9 +55,9 @@ pub fn RightSidebar() -> Element {
                 div { style: "flex: 1;" }
 
                 button {
-                    style: "padding: 3px 6px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 12px;",
+                    style: "padding: 6px 8px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 13px; line-height: 1;",
                     onclick: move |_| panel_state.write().close_right_panel(),
-                    "\u{00d7}"
+                    "x"
                 }
             }
 

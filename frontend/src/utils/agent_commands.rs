@@ -4,6 +4,10 @@
 
 use crate::types::workspace::AgentType;
 
+/// **SECURITY WARNING**: This flag bypasses all Claude Code permission checks.
+/// Only use this in trusted/development environments. Never use in production.
+const CLAUDE_SKIP_PERMISSIONS_FLAG: &str = "--dangerously-skip-permissions";
+
 /// Get the CLI command for an agent type.
 pub fn get_agent_command(
     agent_type: &AgentType,
@@ -13,7 +17,7 @@ pub fn get_agent_command(
     match agent_type {
         AgentType::Claude => {
             if bypass {
-                Some("claude --dangerously-skip-permissions".to_string())
+                Some(format!("claude {}", CLAUDE_SKIP_PERMISSIONS_FLAG))
             } else {
                 Some("claude".to_string())
             }

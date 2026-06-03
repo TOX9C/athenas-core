@@ -54,6 +54,7 @@ export function TerminalPane({ pane, cwd }: TerminalPaneProps) {
   const [isFullScreen, setIsFullScreen] = useState(false)
   const [isFinished, setIsFinished] = useState(false)
   const [isReady, setIsReady] = useState(false)
+  const [isSelected, setIsSelected] = useState(false)
 
   const agentStatus = useAgentStatusStore((s) => s.statuses[pane.id]?.status)
   const agentStatusObj = useAgentStatusStore((s) => s.statuses[pane.id])
@@ -99,6 +100,16 @@ export function TerminalPane({ pane, cwd }: TerminalPaneProps) {
   }, [isFinished, isReady, agentStatus])
 
   const dotColor = borderColor ?? (isReady || isFinished ? '#10b981' : agentColor)
+  const selectedColor = borderColor ?? '#f97316'
+
+  useEffect(() => {
+    const handlePaneSelect = (event: Event) => {
+      setIsSelected((event as CustomEvent<string>).detail === pane.id)
+    }
+
+    window.addEventListener('athena-terminal-pane-select', handlePaneSelect)
+    return () => window.removeEventListener('athena-terminal-pane-select', handlePaneSelect)
+  }, [pane.id])
 
   useEffect(() => {
     if (pane.agentType === 'shell') return
@@ -167,53 +178,75 @@ export function TerminalPane({ pane, cwd }: TerminalPaneProps) {
         }
         style={{
           background: 'var(--bg)',
-          outline: borderColor ? `1.5px solid ${borderColor}` : 'none',
+          outline: isSelected || borderColor ? `1.5px solid ${selectedColor}` : 'none',
+          boxShadow: isSelected
+            ? `0 0 0 1px ${selectedColor}, 0 0 24px ${selectedColor}35`
+            : 'none',
+        }}
+        onPointerDown={() => {
+          window.dispatchEvent(new CustomEvent('athena-terminal-pane-select', { detail: pane.id }))
         }}
       >
         {/* Pane header */}
         <div
-          className="flex items-center justify-between px-2.5 shrink-0 transition-colors duration-300"
+          className="shrink-0 px-1.5 py-1 transition-colors duration-300"
           style={{
-            height: 28,
-            background: 'var(--bgSecondary)',
+            height: 32,
+            background: 'var(--bg)',
           }}
         >
-          <div className="flex items-center gap-1.5 min-w-0">
-            <div
-              className="w-2 h-2 rounded-full shrink-0 transition-colors duration-300"
-              style={{ background: dotColor }}
-            />
-            <span
-              className="text-[11px] font-medium truncate transition-colors duration-300"
-              style={{ color: borderColor ?? 'var(--textMuted)' }}
-            >
-              {agentLabel} {statusLabel}
-            </span>
-            {agentStatusObj?.progress && (
-              <span className="text-[9px]" style={{ color: 'var(--textDim)' }}>
-                {agentStatusObj.progress.current}/{agentStatusObj.progress.total}
+          <div
+            className="flex h-full items-center justify-between gap-2 rounded-full border px-2 shadow-sm transition-all duration-300"
+            style={{
+              background:
+                'linear-gradient(180deg, color-mix(in srgb, var(--bgSecondary) 94%, white 6%), var(--bgSecondary))',
+              borderColor: isSelected
+                ? selectedColor
+                : 'color-mix(in srgb, var(--border) 72%, transparent)',
+              boxShadow: isSelected
+                ? `inset 0 0 0 1px ${selectedColor}44`
+                : 'inset 0 1px 0 rgba(255,255,255,0.04)',
+            }}
+          >
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="text-[12px] leading-none" style={{ color: dotColor }}>
+                ∴
               </span>
-            )}
-          </div>
-          <div className="flex items-center gap-0.5">
-            <button
-              onClick={() => setIsFullScreen(!isFullScreen)}
-              className="p-0.5 rounded hover:bg-white/10 transition-colors"
-              title={isFullScreen ? 'Exit Full Screen' : 'Full Screen'}
-            >
-              {isFullScreen ? (
-                <Minimize2 size={11} style={{ color: 'var(--textDim)' }} />
-              ) : (
-                <Maximize2 size={11} style={{ color: 'var(--textDim)' }} />
+              <span
+                className="truncate text-[11px] font-semibold transition-colors duration-300"
+                style={{ color: isSelected ? 'var(--text)' : (borderColor ?? 'var(--textMuted)') }}
+              >
+                {agentLabel} {statusLabel}
+              </span>
+              {agentStatusObj?.progress && (
+                <span className="text-[9px]" style={{ color: 'var(--textDim)' }}>
+                  {agentStatusObj.progress.current}/{agentStatusObj.progress.total}
+                </span>
               )}
-            </button>
-            <button
-              onClick={handleClose}
-              className="p-0.5 rounded hover:bg-red-500/20 transition-colors"
-              title="Close"
+            </div>
+            <div
+              className="flex items-center gap-0.5 border-l pl-1.5"
+              style={{ borderColor: 'color-mix(in srgb, var(--border) 52%, transparent)' }}
             >
-              <X size={11} style={{ color: 'var(--textDim)' }} />
-            </button>
+              <button
+                onClick={() => setIsFullScreen(!isFullScreen)}
+                className="grid h-5 w-5 place-items-center rounded-full hover:bg-white/10 transition-colors"
+                title={isFullScreen ? 'Exit Full Screen' : 'Full Screen'}
+              >
+                {isFullScreen ? (
+                  <Minimize2 size={12} style={{ color: 'var(--textDim)' }} />
+                ) : (
+                  <Maximize2 size={12} style={{ color: 'var(--textDim)' }} />
+                )}
+              </button>
+              <button
+                onClick={handleClose}
+                className="grid h-5 w-5 place-items-center rounded-full hover:bg-red-500/20 transition-colors"
+                title="Close"
+              >
+                <X size={12} style={{ color: 'var(--textDim)' }} />
+              </button>
+            </div>
           </div>
         </div>
 

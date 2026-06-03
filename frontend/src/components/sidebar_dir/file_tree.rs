@@ -1,5 +1,5 @@
 use super::file_tree_node::FileTreeNode;
-use crate::stores::editor::{EditorFile, use_editor_store};
+use crate::stores::editor::{use_editor_store, EditorFile};
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
 use dioxus::prelude::*;

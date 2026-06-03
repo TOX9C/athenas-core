@@ -1,6 +1,9 @@
 use chrono::Utc;
 use dioxus::prelude::*;
 
+/// Maximum number of notifications kept in memory.
+const MAX_NOTIFICATIONS: usize = 50;
+
 /// Type of notification.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum NotificationType {
@@ -59,8 +62,17 @@ pub fn provide_notification_store() {
 // -- Mutators for event handling -------------------------------------------
 
 /// Add a new notification to the store.
-pub fn add_notification(notifications: &mut Signal<Vec<NotificationRecord>>, record: NotificationRecord) {
-    notifications.write().push(record);
+pub fn add_notification(
+    notifications: &mut Signal<Vec<NotificationRecord>>,
+    record: NotificationRecord,
+) {
+    let mut guard = notifications.write();
+    guard.push(record);
+    // Keep only the most recent notifications
+    if guard.len() > MAX_NOTIFICATIONS {
+        let remove_count = guard.len() - MAX_NOTIFICATIONS;
+        guard.drain(0..remove_count);
+    }
 }
 
 /// Mark a notification as read by ID.
@@ -70,14 +82,15 @@ pub fn mark_notification_read(notifications: &mut Signal<Vec<NotificationRecord>
     }
 }
 
-/// Mark a notification as dismissed by ID.
+/// Mark a notification as dismissed by ID (removes it from the store).
 pub fn mark_notification_dismissed(notifications: &mut Signal<Vec<NotificationRecord>>, id: &str) {
-    if let Some(n) = notifications.write().iter_mut().find(|n| n.id == id) {
-        n.read = true;
-    }
+    notifications.write().retain(|n| n.id != id);
 }
 
 /// Replace all notifications with a new list.
-pub fn set_notifications(notifications: &mut Signal<Vec<NotificationRecord>>, records: Vec<NotificationRecord>) {
+pub fn set_notifications(
+    notifications: &mut Signal<Vec<NotificationRecord>>,
+    records: Vec<NotificationRecord>,
+) {
     *notifications.write() = records;
 }

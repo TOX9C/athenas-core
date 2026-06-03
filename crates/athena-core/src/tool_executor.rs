@@ -513,9 +513,9 @@ pub fn to_openai_tools() -> Vec<OpenAITool> {
 // Shell escaping
 // ---------------------------------------------------------------------------
 
-/// Shell-escape a single argument using single-quote wrapping.
+/// Shell-escape a single argument using the shell-escape crate.
 pub fn shell_escape(arg: &str) -> String {
-    format!("'{}'", arg.replace('\'', "'\\''"))
+    shell_escape::escape(arg.into()).to_string()
 }
 
 /// Build the agent command string for the given agent type and optional prompt.
@@ -662,6 +662,17 @@ impl ToolExecutor {
             .command
             .as_deref()
             .ok_or_else(|| ToolExecutorError::MissingParam("command".to_string()))?;
+        // Strict allowlist: commands must be explicitly permitted
+        let allowed: Vec<String> = std::env::var("ATHENA_COMMAND_ALLOWLIST")
+            .ok()
+            .map(|s| s.split(',').map(|c| c.trim().to_string()).collect())
+            .unwrap_or_default();
+        if !allowed.contains(&command.trim().to_string()) {
+            return Err(ToolExecutorError::Notification(format!(
+                "Command not in allowlist: '{}'",
+                command
+            )));
+        }
         let agent_count = args.agent_count.unwrap_or(1);
 
         for _ in 0..agent_count {

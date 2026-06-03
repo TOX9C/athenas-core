@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.athena.app",
   "build": {
-    "beforeDevCommand": "bash frontend/build-dist.sh",
+    "beforeDevCommand": "bash frontend/build-dist.sh --debug",
     "beforeBuildCommand": "bash frontend/build-dist.sh",
     "frontendDist": "../frontend/dist"
   },
@@ -20,11 +20,11 @@
         "decorations": true,
         "transparent": false,
         "visible": true,
-        "titleBarStyle": "Visible"
+        "titleBarStyle": "Overlay"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' wasm-unsafe-eval; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:*; font-src 'self' data:; media-src 'self'; frame-src 'self'"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; connect-src 'self'; font-src 'self'; media-src 'self'; frame-src 'self'"
     }
   },
   "bundle": {

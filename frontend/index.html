@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Athena's Core</title>
 <link rel="stylesheet" href="./styles.css" />
+<link rel="stylesheet" href="./vendor/xterm/xterm.css" />
 <style>
 #wasm-loading {
   position: fixed; inset: 0; display: flex; align-items: center;
@@ -185,6 +186,55 @@ document.createElement = function(tag) {
   }
   return el;
 };
+
+// Browse button: intercept clicks on "Browse" buttons and open native folder dialog.
+// The WASM invoke wrapper fails in Dioxus spawn(async) context due to __TAURI__.core
+// cast issues in WKWebView, so we handle it entirely in JS.
+document.addEventListener('click', function(event) {
+  var target = event.target;
+  if (target && target.nodeType === 3) target = target.parentElement;
+  var btn = target && target.closest ? target.closest('button') : null;
+  if (!btn) return;
+  if ((btn.textContent || '').trim() !== 'Browse') return;
+
+  event.stopPropagation();
+  event.preventDefault();
+
+  var input = btn.parentElement ? btn.parentElement.querySelector('input') : null;
+  if (!input) {
+    console.error('[BROWSE-JS] No input found next to Browse button');
+    return;
+  }
+
+  var invoke = null;
+  try {
+    if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+      invoke = window.__TAURI__.core.invoke;
+    }
+  } catch(e) {}
+  if (!invoke) {
+    console.error('[BROWSE-JS] Tauri invoke not available');
+    return;
+  }
+
+  invoke('fs_show_open_dialog', {
+    title: 'Select Working Directory',
+    directory: true,
+    multiple: false
+  }).then(function(result) {
+    console.info('[BROWSE-JS] dialog returned:', result);
+    if (typeof result === 'string' && result.trim() && result.trim() !== 'null') {
+      var nativeSetter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value'
+      ).set;
+      nativeSetter.call(input, result.trim());
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }).catch(function(err) {
+    console.error('[BROWSE-JS] dialog error:', err);
+  });
+}, true);
 </script>
 <link rel="preload" as="script" href="__FRONTEND_ENTRY__" crossorigin></head>
 <body>
@@ -196,6 +246,11 @@ document.createElement = function(tag) {
   </div>
 </div>
 <div id="console-log"></div>
+<script src="./vendor/xterm/xterm.js"></script>
+<script src="./vendor/xterm/addon-fit.js"></script>
+<script src="./vendor/xterm/addon-web-links.js"></script>
+<script src="./vendor/xterm/addon-unicode11.js"></script>
+<script src="./vendor/xterm/addon-search.js"></script>
 <script type="module" async src="__FRONTEND_ENTRY__"></script>
 </body>
 </html>

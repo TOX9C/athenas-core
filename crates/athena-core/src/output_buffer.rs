@@ -72,7 +72,8 @@ pub enum OutputBufferError {
 /// Thread-safe output buffer service.
 pub struct OutputBuffer {
     buffers: Arc<RwLock<HashMap<String, PaneBuffer>>>,
-    event_emitter: Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter:
+        Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 }
 
 impl std::fmt::Debug for OutputBuffer {

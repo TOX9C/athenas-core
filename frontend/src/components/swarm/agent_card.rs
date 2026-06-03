@@ -34,7 +34,7 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
     rsx! {
         div {
             class: "agent-card",
-            style: "padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bgSecondary); display: flex; flex-direction: column; gap: 8px;",
+            style: "padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bgSecondary); display: flex; flex-direction: column; gap: 8px; transition: border-color 0.15s ease, box-shadow 0.15s ease;",
 
             // Header
             div {
@@ -42,7 +42,7 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
 
                 // Status dot (CSS circle, no emoji)
                 div {
-                    style: "width: 6px; height: 6px; border-radius: 50%; background: {status_color}; flex-shrink: 0;",
+                    style: "width: 8px; height: 8px; border-radius: 50%; background: {status_color}; flex-shrink: 0;",
                 }
 
                 span {
@@ -50,27 +50,31 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
                     "{props.agent.id}"
                 }
 
-                SwarmRoleBadge { role: role_str }
+                // Status pill
+                div {
+                    style: "font-size: 9px; font-weight: 600; padding: 1px 7px; border-radius: 10px; background: var(--bgTertiary); color: {status_color}; text-transform: capitalize; white-space: nowrap;",
+                    "{status_label}"
+                }
             }
 
             // Status message
             if !props.agent.last_action.is_empty() {
                 div {
-                    style: "font-size: 10px; color: var(--textDim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                    style: "font-size: 10px; color: var(--textDim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4;",
                     "{props.agent.last_action}"
                 }
             }
 
-            // Status label
+            // Role badge
             div {
-                style: "font-size: 9px; color: {status_color}; text-transform: capitalize;",
-                "{status_label}"
+                style: "display: flex; align-items: center; gap: 4px;",
+                SwarmRoleBadge { role: role_str }
             }
 
             // Nudge button for stalled agents
             if matches!(props.agent.status, crate::stores::swarm::SwarmAgentStatus::Stalled | crate::stores::swarm::SwarmAgentStatus::Blocked) {
                 button {
-                    style: "align-self: flex-start; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--warning); background: transparent; color: var(--warning); cursor: pointer; font-size: 9px;",
+                    style: "align-self: flex-start; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--warning); background: transparent; color: var(--warning); cursor: pointer; font-size: 9px; transition: background 0.15s ease, color 0.15s ease;",
                     onclick: move |_| {
                         // TODO: nudge agent via Tauri IPC
                     },

@@ -25,7 +25,7 @@ pub fn KanbanColumn(props: KanbanColumnProps) -> Element {
                     "{props.title}"
                 }
                 span {
-                    style: "font-size: 10px; padding: 1px 5px; border-radius: 3px; background: var(--bgTertiary); color: var(--textDim);",
+                    style: "font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 10px; background: var(--bgTertiary); color: var(--textDim); min-width: 18px; text-align: center;",
                     "{props.tasks.len()}"
                 }
             }

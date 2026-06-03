@@ -1,8 +1,12 @@
 use super::activity_feed::SwarmActivityFeed;
 use super::agent_card::AgentCard;
-use crate::stores::swarm::{use_swarm_store, MailboxMessage, SwarmAgentStatus, SwarmOverallStatus, SwarmTaskStatus};
+use crate::stores::swarm::{
+    use_swarm_store, MailboxMessage, SwarmAgentStatus, SwarmOverallStatus, SwarmTaskStatus,
+};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Activity feed entry derived from swarm mailbox messages.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -18,6 +22,8 @@ pub struct ActivityEntry {
 pub fn SwarmBoard() -> Element {
     let swarm_state = use_swarm_store();
     let mut mounted = use_signal(|| false);
+    let unlisten: Rc<RefCell<Option<Box<dyn FnOnce()>>>> = use_hook(|| Rc::new(RefCell::new(None)));
+    let unlisten_clone = unlisten.clone();
 
     // Register Tauri event listeners on mount.
     use_effect(move || {
@@ -29,20 +35,30 @@ pub fn SwarmBoard() -> Element {
         let mut store = swarm_state;
 
         // swarm:stateChange — Refresh swarm state display.
-        let _ = tauri_bridge::listen("swarm:stateChange", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("swarm:stateChange", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 // Check if it's a full state replacement.
                 if val.get("id").is_some() {
-                    let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let goal = val.get("goal").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let status_str = val.get("status").and_then(|v| v.as_str()).unwrap_or("active");
+                    let id = val
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let goal = val
+                        .get("goal")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let status_str = val
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("active");
                     let status = match status_str {
                         "paused" => SwarmOverallStatus::Paused,
                         "completed" => SwarmOverallStatus::Completed,
                         _ => SwarmOverallStatus::Active,
                     };
-                    let started_at =
-                        val.get("startedAt").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let started_at = val.get("startedAt").and_then(|v| v.as_i64()).unwrap_or(0);
 
                     // Parse agents.
                     let agents: Vec<crate::stores::swarm::SwarmAgent> = val
@@ -64,10 +80,8 @@ pub fn SwarmBoard() -> Element {
                                         .to_string();
                                     let last_action_at =
                                         a.get("lastActionAt").and_then(|v| v.as_i64()).unwrap_or(0);
-                                    let status_str = a
-                                        .get("status")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("idle");
+                                    let status_str =
+                                        a.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
                                     let agent_status = match status_str {
                                         "thinking" => SwarmAgentStatus::Thinking,
                                         "writing" => SwarmAgentStatus::Writing,
@@ -155,8 +169,7 @@ pub fn SwarmBoard() -> Element {
                             arr.iter()
                                 .filter_map(|m| {
                                     let id = m.get("id").and_then(|v| v.as_str())?.to_string();
-                                    let from =
-                                        m.get("from").and_then(|v| v.as_str())?.to_string();
+                                    let from = m.get("from").and_then(|v| v.as_str())?.to_string();
                                     let to = m.get("to").and_then(|v| v.as_str())?.to_string();
                                     let content =
                                         m.get("content").and_then(|v| v.as_str())?.to_string();
@@ -228,7 +241,10 @@ pub fn SwarmBoard() -> Element {
                             .get("timestamp")
                             .and_then(|v| v.as_i64())
                             .unwrap_or(0);
-                        let read = msg_obj.get("read").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let read = msg_obj
+                            .get("read")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
                         store.write().add_mailbox_message(MailboxMessage {
                             id,
                             from,
@@ -240,7 +256,17 @@ pub fn SwarmBoard() -> Element {
                     }
                 }
             }
-        });
+        }) {
+            *unlisten_clone.borrow_mut() = Some(u);
+        }
+    });
+
+    // Cleanup: unlisten on component unmount.
+    let unlisten_drop = unlisten.clone();
+    use_drop(move || {
+        if let Some(u) = unlisten_drop.borrow_mut().take() {
+            u();
+        }
     });
 
     let (agents, activities) = match &swarm_state.read().active_swarm {
@@ -273,7 +299,7 @@ pub fn SwarmBoard() -> Element {
 
                 div {
                     style: "font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text); display: flex; align-items: center; gap: 6px;",
-                    div { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent);" }
+                    div { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;" }
                     "Swarm"
                 }
 

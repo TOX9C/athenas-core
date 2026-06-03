@@ -42,6 +42,20 @@ fn to_pane_status(agent_status: &AgentStatus) -> AgentPaneStatus {
 }
 
 /// Convert a NotificationRecord to the inspector's local NotificationItem.
+fn status_dot_color(status: &str) -> &'static str {
+    match status {
+        "idle" => "var(--textDim)",
+        "thinking" => "var(--accent)",
+        "working" => "var(--accent)",
+        "waiting_for_input" => "var(--warning)",
+        "completed" => "var(--success)",
+        "error" => "var(--error)",
+        "cancelled" => "var(--error)",
+        "disconnected" => "var(--textDim)",
+        _ => "var(--textDim)",
+    }
+}
+
 fn to_notif_item(rec: &NotificationRecord) -> NotificationItem {
     NotificationItem {
         id: rec.id.clone(),
@@ -123,7 +137,7 @@ pub fn AgentInspector() -> Element {
 
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; border-left: 1px solid var(--border); width: 360px; background: var(--bgSecondary); flex-shrink: 0;",
+            style: "display: flex; flex-direction: column; border-left: 1px solid var(--border); width: 360px; background: var(--bgSecondary); flex-shrink: 0; position: absolute; right: 0; top: 0; bottom: 0; z-index: 90; box-shadow: -4px 0 16px rgba(0,0,0,0.3);",
 
             // Header
             div {
@@ -185,40 +199,44 @@ pub fn AgentInspector() -> Element {
                                 div {
                                     style: "padding: 12px; overflow-y: auto; height: 100%;",
 
-                                    StatusRow { label: "Pane".to_string(), value: st.pane_id.clone() }
-                                    StatusRow { label: "Status".to_string(), value: st.status.clone() }
+                                    div {
+                                        style: "display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bgTertiary);",
 
-                                    if !st.message.is_empty() {
-                                        StatusRow { label: "Message".to_string(), value: st.message.clone() }
-                                    }
+                                        StatusRow { label: "Pane".to_string(), value: st.pane_id.clone() }
+                                        StatusRow { label: "Status".to_string(), value: st.status.clone(), dot_color: status_dot_color(&st.status).to_string() }
 
-                                    if let Some(progress) = &st.progress {
-                                        div {
+                                        if !st.message.is_empty() {
+                                            StatusRow { label: "Message".to_string(), value: st.message.clone() }
+                                        }
+
+                                        if let Some(progress) = &st.progress {
                                             div {
-                                                style: "font-size: 9px; margin-bottom: 4px; color: var(--textDim);",
-                                                "Progress"
-                                            }
-                                            div {
-                                                style: "display: flex; align-items: center; gap: 8px;",
-
                                                 div {
-                                                    style: "flex: 1; height: 4px; border-radius: 9999px; overflow: hidden; background: var(--bgTertiary);",
+                                                    style: "font-size: 9px; margin-bottom: 4px; color: var(--textDim);",
+                                                    "Progress"
+                                                }
+                                                div {
+                                                    style: "display: flex; align-items: center; gap: 8px;",
 
                                                     div {
-                                                        style: "height: 100%; border-radius: 9999px; background: var(--accent); width: {((progress.current * 100) / progress.total.max(1))}%;",
+                                                        style: "flex: 1; height: 4px; border-radius: 9999px; overflow: hidden; background: var(--bgTertiary);",
+
+                                                        div {
+                                                            style: "height: 100%; border-radius: 9999px; background: var(--accent); width: {((progress.current * 100) / progress.total.max(1))}%;",
+                                                        }
+                                                    }
+
+                                                    span {
+                                                        style: "font-size: 9px; color: var(--textDim);",
+                                                        "{progress.current}/{progress.total}"
                                                     }
                                                 }
 
-                                                span {
-                                                    style: "font-size: 9px; color: var(--textDim);",
-                                                    "{progress.current}/{progress.total}"
-                                                }
-                                            }
-
-                                            if let Some(label) = &progress.label {
-                                                span {
-                                                    style: "font-size: 8px; display: block; margin-top: 2px; color: var(--textDim);",
-                                                    "{label}"
+                                                if let Some(label) = &progress.label {
+                                                    span {
+                                                        style: "font-size: 8px; display: block; margin-top: 2px; color: var(--textDim);",
+                                                        "{label}"
+                                                    }
                                                 }
                                             }
                                         }
@@ -327,6 +345,8 @@ pub fn AgentInspector() -> Element {
 struct StatusRowProps {
     label: String,
     value: String,
+    #[props(default)]
+    dot_color: String,
 }
 
 #[component]
@@ -342,6 +362,11 @@ fn StatusRow(props: StatusRowProps) -> Element {
 
             span {
                 style: "font-size: 11px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);",
+                if !props.dot_color.is_empty() {
+                    span {
+                        style: "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: {props.dot_color}; margin-right: 6px; vertical-align: middle;",
+                    }
+                }
                 "{props.value}"
             }
         }

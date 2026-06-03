@@ -9,7 +9,6 @@ import {
   athenaReportErrorSchema,
   athenaReportCompletionSchema,
 } from '../src/tools/index.js'
-import { controlPauseSchema, controlResumeSchema, controlCancelSchema } from '../src/tools/index.js'
 
 describe('notify schema', () => {
   it('validates required fields', () => {
@@ -215,26 +214,3 @@ describe('athena_report_completion schema', () => {
   })
 })
 
-describe('control stubs schema', () => {
-  it('validates control_pause', () => {
-    const result = controlPauseSchema.safeParse({ paneId: 'pane-1' })
-    expect(result.success).toBe(true)
-  })
-
-  it('validates control_resume', () => {
-    const result = controlResumeSchema.safeParse({ paneId: 'pane-1' })
-    expect(result.success).toBe(true)
-  })
-
-  it('validates control_cancel with force', () => {
-    const result = controlCancelSchema.safeParse({ paneId: 'pane-1', force: true })
-    expect(result.success).toBe(true)
-  })
-
-  it('control_cancel defaults force to false', () => {
-    const result = controlCancelSchema.safeParse({ paneId: 'pane-1' })
-    if (result.success) {
-      expect(result.data.force).toBe(false)
-    }
-  })
-})

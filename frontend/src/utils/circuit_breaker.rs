@@ -2,9 +2,27 @@
 //!
 //! Implements the three-state circuit breaker (closed → open → half_open)
 //! with configurable thresholds and time-based reset.
+//!
+//! WASM-safe: uses `js_sys::Date::now()` instead of `std::time::Instant`
+//! / `std::time::SystemTime`, which panic in WASM.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+// ---------------------------------------------------------------------------
+// WASM-safe time helpers
+// ---------------------------------------------------------------------------
+
+/// Returns a monotonically non-decreasing millisecond timestamp suitable for
+/// duration comparisons.  Backed by `js_sys::Date::now()` which is safe in
+/// WASM; `std::time::Instant` panics at runtime in wasm32.
+fn now_timestamp_ms() -> u128 {
+    js_sys::Date::now() as u128
+}
+
+/// Returns the current wall-clock time as milliseconds since the Unix epoch.
+fn now_ms() -> u64 {
+    js_sys::Date::now() as u64
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,18 +38,18 @@ pub enum CircuitState {
 #[derive(Debug, Clone)]
 pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,
-    pub reset_timeout: Duration,
+    pub reset_timeout_ms: u128,
     pub half_open_max_attempts: u32,
-    pub monitoring_window: Duration,
+    pub monitoring_window_ms: u128,
 }
 
 impl Default for CircuitBreakerConfig {
     fn default() -> Self {
         Self {
             failure_threshold: 5,
-            reset_timeout: Duration::from_secs(30),
+            reset_timeout_ms: 30_000,
             half_open_max_attempts: 1,
-            monitoring_window: Duration::from_secs(60),
+            monitoring_window_ms: 60_000,
         }
     }
 }
@@ -99,13 +117,13 @@ struct Inner {
     state: CircuitState,
     failure_count: u32,
     success_count: u32,
-    last_failure_at: Option<Instant>,
-    last_success_at: Option<Instant>,
-    last_state_change_at: Option<Instant>,
+    last_failure_at: Option<u128>,
+    last_success_at: Option<u128>,
+    last_state_change_at: Option<u128>,
     total_trips: u32,
     consecutive_failures: u32,
     half_open_attempts: u32,
-    failure_timestamps: Vec<Instant>,
+    failure_timestamps: Vec<u128>,
     on_state_change: Option<Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>>,
 }
 
@@ -155,7 +173,7 @@ impl CircuitBreaker {
             return;
         }
         inner.state = new_state;
-        inner.last_state_change_at = Some(Instant::now());
+        inner.last_state_change_at = Some(now_timestamp_ms());
         if new_state == CircuitState::Closed {
             inner.consecutive_failures = 0;
             inner.failure_count = 0;
@@ -170,18 +188,19 @@ impl CircuitBreaker {
     }
 
     fn prune_failures(inner: &mut Inner) {
-        let now = Instant::now();
-        let window = inner.config.monitoring_window;
+        let now = now_timestamp_ms();
+        let window = inner.config.monitoring_window_ms;
         inner
             .failure_timestamps
-            .retain(|t| now.duration_since(*t) < window);
+            .retain(|t| now.saturating_sub(*t) < window);
         inner.failure_count = inner.failure_timestamps.len() as u32;
     }
 
     fn check_state(inner: &mut Inner) {
         if inner.state == CircuitState::Open {
             if let Some(last_change) = inner.last_state_change_at {
-                if Instant::now().duration_since(last_change) >= inner.config.reset_timeout {
+                if now_timestamp_ms().saturating_sub(last_change) >= inner.config.reset_timeout_ms
+                {
                     Self::transition_to(inner, CircuitState::HalfOpen);
                 }
             }
@@ -196,7 +215,12 @@ impl CircuitBreaker {
             CircuitState::Closed => true,
             CircuitState::Open => false,
             CircuitState::HalfOpen => {
-                inner.half_open_attempts < inner.config.half_open_max_attempts
+                if inner.half_open_attempts < inner.config.half_open_max_attempts {
+                    inner.half_open_attempts += 1;
+                    true
+                } else {
+                    false
+                }
             }
         }
     }
@@ -204,15 +228,17 @@ impl CircuitBreaker {
     pub fn record_success(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.success_count += 1;
-        inner.last_success_at = Some(Instant::now());
+        inner.last_success_at = Some(now_timestamp_ms());
         if inner.state == CircuitState::HalfOpen {
             Self::transition_to(&mut inner, CircuitState::Closed);
+        } else if inner.state == CircuitState::Closed {
+            inner.consecutive_failures = 0;
         }
     }
 
     pub fn record_failure(&self) {
         let mut inner = self.inner.lock().unwrap();
-        let now = Instant::now();
+        let now = now_timestamp_ms();
         inner.failure_count += 1;
         inner.consecutive_failures += 1;
         inner.last_failure_at = Some(now);
@@ -240,9 +266,9 @@ impl CircuitBreaker {
             return Err(CircuitError::Open(CircuitOpenError {
                 circuit_state: inner.state,
                 retry_at: inner.last_state_change_at.map(|t| {
-                    let elapsed = Instant::now().duration_since(t);
-                    let remaining = inner.config.reset_timeout.saturating_sub(elapsed);
-                    now_ms() + remaining.as_millis() as u64
+                    let elapsed = now_timestamp_ms().saturating_sub(t);
+                    let remaining = inner.config.reset_timeout_ms.saturating_sub(elapsed);
+                    now_ms() + remaining as u64
                 }),
             }));
         }
@@ -269,16 +295,16 @@ impl CircuitBreaker {
             state: inner.state,
             failure_count: inner.failure_count,
             success_count: inner.success_count,
-            last_failure_at: inner.last_failure_at.map(instant_to_ms),
-            last_success_at: inner.last_success_at.map(instant_to_ms),
-            last_state_change_at: inner.last_state_change_at.map(instant_to_ms),
+            last_failure_at: inner.last_failure_at.map(|t| t as u64),
+            last_success_at: inner.last_success_at.map(|t| t as u64),
+            last_state_change_at: inner.last_state_change_at.map(|t| t as u64),
             total_trips: inner.total_trips,
             consecutive_failures: inner.consecutive_failures,
             next_retry_at: if inner.state == CircuitState::Open {
                 inner.last_state_change_at.map(|t| {
-                    let elapsed = Instant::now().duration_since(t);
-                    let remaining = inner.config.reset_timeout.saturating_sub(elapsed);
-                    now_ms() + remaining.as_millis() as u64
+                    let elapsed = now_timestamp_ms().saturating_sub(t);
+                    let remaining = inner.config.reset_timeout_ms.saturating_sub(elapsed);
+                    now_ms() + remaining as u64
                 })
             } else {
                 None
@@ -293,28 +319,15 @@ impl CircuitBreaker {
     }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn instant_to_ms(_t: Instant) -> u64 {
-    // Monotonic instants can't be converted to wall-clock ms directly.
-    // We return 0 as a placeholder — consumers should use relative durations.
-    now_ms()
-}
-
 /// Create a circuit breaker tuned for LLM assistant API calls.
 pub fn create_assistant_circuit_breaker(
     on_state_change: Option<Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>>,
 ) -> CircuitBreaker {
     let config = CircuitBreakerConfig {
         failure_threshold: 5,
-        reset_timeout: Duration::from_secs(30),
+        reset_timeout_ms: 30_000,
         half_open_max_attempts: 2,
-        monitoring_window: Duration::from_secs(60),
+        monitoring_window_ms: 60_000,
     };
     match on_state_change {
         Some(cb) => CircuitBreaker::with_state_change(config, cb),
