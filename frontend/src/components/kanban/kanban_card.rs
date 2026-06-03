@@ -18,10 +18,12 @@ pub fn KanbanCard(props: KanbanCardProps) -> Element {
     rsx! {
         div {
             class: "kanban-card",
-            style: "padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); cursor: grab;",
+            style: "padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgElevated); cursor: grab; transition: border-color 0.15s ease, box-shadow 0.15s ease;",
+            onmouseenter: move |_| {},
+            onmouseleave: move |_| {},
 
             div {
-                style: "display: flex; align-items: center; gap: 4px;",
+                style: "display: flex; align-items: center; gap: 6px;",
 
                 div {
                     style: "width: 6px; height: 6px; border-radius: 50%; background: {status_color}; flex-shrink: 0;",
@@ -34,23 +36,27 @@ pub fn KanbanCard(props: KanbanCardProps) -> Element {
 
                 // Actions
                 button {
-                    style: "padding: 2px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 10px;",
+                    style: "padding: 2px 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 10px; border-radius: 3px; transition: background 0.15s ease, color 0.15s ease;",
+                    onmouseenter: move |_| {},
+                    onmouseleave: move |_| {},
                     onclick: move |_| is_editing.set(!is_editing()),
-                    "\u{270f}" // edit
+                    "Edit"
                 }
                 button {
-                    style: "padding: 2px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 10px;",
+                    style: "padding: 2px 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 10px; border-radius: 3px; transition: background 0.15s ease, color 0.15s ease;",
+                    onmouseenter: move |_| {},
+                    onmouseleave: move |_| {},
                     onclick: move |_| {
                         // TODO: delete task via store
                     },
-                    "\u{00d7}"
+                    "Delete"
                 }
             }
 
             if let Some(ref desc) = props.task.description {
                 if !desc.is_empty() {
                     div {
-                        style: "font-size: 10px; color: var(--textDim); margin-top: 4px;",
+                        style: "font-size: 10px; color: var(--textDim); margin-top: 4px; line-height: 1.4;",
                         "{desc}"
                     }
                 }

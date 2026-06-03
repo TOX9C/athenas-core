@@ -54,7 +54,10 @@ async fn test_persistence() {
     let name = unique_name();
     {
         let store = KeyValueStore::with_name_sync(&name).unwrap();
-        store.set("persist_key", &"persist_value".to_string()).await.unwrap();
+        store
+            .set("persist_key", &"persist_value".to_string())
+            .await
+            .unwrap();
     }
     {
         let store2 = KeyValueStore::with_name_sync(&name).unwrap();

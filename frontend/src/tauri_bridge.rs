@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use wasm_bindgen::prelude::*;
 
 /// Result type for Tauri command invocations.
@@ -12,15 +13,9 @@ where
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("No window"))?;
     let tauri = js_sys::Reflect::get(&window, &JsValue::from_str("__TAURI__"))
         .map_err(|e| JsValue::from(format!("Reflect get error: {:?}", e)))?;
-    let tauri_obj = tauri
-        .dyn_into::<js_sys::Object>()
-        .map_err(|e| JsValue::from(format!("__TAURI__ not an object: {:?}", e)))?;
-    let core = js_sys::Reflect::get(&tauri_obj, &JsValue::from_str("core"))
-        .map_err(|e| JsValue::from(format!("Reflect core error: {:?}", e)))?;
-    let core_obj = core
-        .dyn_into::<js_sys::Object>()
-        .map_err(|e| JsValue::from(format!("__TAURI__.core not available: {:?}", e)))?;
-    let invoke_fn = js_sys::Reflect::get(&core_obj, &JsValue::from_str("invoke"))
+    let core = js_sys::Reflect::get(&tauri, &JsValue::from_str("core"))
+        .map_err(|e| JsValue::from(format!("Reflect get __TAURI__.core error: {:?}", e)))?;
+    let invoke_fn = js_sys::Reflect::get(&core, &JsValue::from_str("invoke"))
         .map_err(|e| JsValue::from(format!("Reflect invoke error: {:?}", e)))?;
     let invoke_fn = invoke_fn
         .dyn_into::<js_sys::Function>()
@@ -33,7 +28,7 @@ where
         .unwrap_or(JsValue::UNDEFINED);
 
     let promise = invoke_fn
-        .call2(&tauri_obj, &JsValue::from_str(command), &args_value)
+        .call2(&core, &JsValue::from_str(command), &args_value)
         .map_err(|e| JsValue::from(format!("Invoke error: {:?}", e)))?;
 
     let result = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
@@ -75,6 +70,34 @@ impl JsValueCast for bool {
     }
     fn to_js_value(&self) -> JsValue {
         JsValue::from_bool(*self)
+    }
+}
+
+impl JsValueCast for () {
+    fn from_js_value(_value: JsValue) -> TauriResult<Self> {
+        Ok(())
+    }
+    fn to_js_value(&self) -> JsValue {
+        JsValue::UNDEFINED
+    }
+}
+
+impl JsValueCast for Option<String> {
+    fn from_js_value(value: JsValue) -> TauriResult<Self> {
+        if value.is_null() || value.is_undefined() {
+            Ok(None)
+        } else {
+            value
+                .as_string()
+                .map(Some)
+                .ok_or_else(|| JsValue::from_str("Not a string or null"))
+        }
+    }
+    fn to_js_value(&self) -> JsValue {
+        match self {
+            Some(value) => JsValue::from_str(value),
+            None => JsValue::NULL,
+        }
     }
 }
 
@@ -179,40 +202,6 @@ pub async fn session_delete(id: &str) -> TauriResult<String> {
         &serde_json::json!({ "id": id }).to_string(),
     )
     .await
-}
-
-/// PTY operations
-pub async fn pty_spawn(id: &str, cwd: &str, shell: &str) -> TauriResult<String> {
-    invoke(
-        "pty_spawn",
-        &serde_json::json!({ "id": id, "cwd": cwd, "shell": shell }).to_string(),
-    )
-    .await
-}
-
-pub async fn pty_write(id: &str, data: &str) -> TauriResult<String> {
-    invoke(
-        "pty_write",
-        &serde_json::json!({ "id": id, "data": data }).to_string(),
-    )
-    .await
-}
-
-pub async fn pty_kill(id: &str) -> TauriResult<String> {
-    invoke("pty_kill", &serde_json::json!({ "id": id }).to_string()).await
-}
-
-pub async fn pty_resize(id: &str, cols: u16, rows: u16) -> TauriResult<String> {
-    invoke(
-        "pty_resize",
-        &serde_json::json!({ "id": id, "cols": cols, "rows": rows }).to_string(),
-    )
-    .await
-}
-
-/// Get the default shell path for the current platform.
-pub async fn pty_default_shell() -> TauriResult<String> {
-    invoke("pty_default_shell", "{}").await
 }
 
 /// Output buffer operations
@@ -419,6 +408,145 @@ pub async fn shell_integration_strip(data: &str) -> TauriResult<String> {
         &serde_json::json!({ "data": data }).to_string(),
     )
     .await
+}
+
+// ---------------------------------------------------------------------------
+// PTY / Terminal operations
+// ---------------------------------------------------------------------------
+
+/// Get the default shell for the current platform.
+pub async fn pty_default_shell() -> TauriResult<String> {
+    invoke("pty_default_shell", "{}").await
+}
+
+static DEFAULT_SHELL_CACHE: OnceLock<String> = OnceLock::new();
+
+/// Get the default shell, cached after the first call. Falls back to
+/// `/bin/zsh` on any error so terminal spawns never block waiting for IPC.
+pub async fn pty_default_shell_cached() -> String {
+    if let Some(s) = DEFAULT_SHELL_CACHE.get() {
+        return s.clone();
+    }
+    let s = pty_default_shell()
+        .await
+        .unwrap_or_else(|_| "/bin/zsh".to_string());
+    let _ = DEFAULT_SHELL_CACHE.set(s.clone());
+    s
+}
+
+/// Spawn a new PTY session with the given shell and dimensions.
+pub async fn pty_spawn(id: &str, cwd: &str, shell: &str, cols: u16, rows: u16) -> TauriResult<()> {
+    invoke(
+        "pty_spawn",
+        &serde_json::json!({ "id": id, "cwd": cwd, "shell": shell, "cols": cols, "rows": rows })
+            .to_string(),
+    )
+    .await
+}
+
+/// Write data to a PTY session.
+pub async fn pty_write(id: &str, data: &str) -> TauriResult<()> {
+    invoke(
+        "pty_write",
+        &serde_json::json!({ "id": id, "data": data }).to_string(),
+    )
+    .await
+}
+
+/// Kill a PTY session.
+pub async fn pty_kill(id: &str) -> TauriResult<()> {
+    invoke("pty_kill", &serde_json::json!({ "id": id }).to_string()).await
+}
+
+/// Resize a PTY session.
+pub async fn pty_resize(id: &str, cols: u16, rows: u16) -> TauriResult<()> {
+    invoke(
+        "pty_resize",
+        &serde_json::json!({ "id": id, "cols": cols, "rows": rows }).to_string(),
+    )
+    .await
+}
+
+/// Check if a PTY session exists.
+pub async fn pty_has_session(id: &str) -> TauriResult<bool> {
+    invoke(
+        "pty_has_session",
+        &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await
+}
+
+/// Check if a PTY session is ready.
+pub async fn pty_is_ready(id: &str) -> TauriResult<bool> {
+    invoke("pty_is_ready", &serde_json::json!({ "id": id }).to_string()).await
+}
+
+/// Get the current working directory of a PTY session.
+pub async fn pty_get_cwd(id: &str) -> TauriResult<Option<String>> {
+    invoke("pty_get_cwd", &serde_json::json!({ "id": id }).to_string()).await
+}
+
+/// Subscribe to the raw PTY output stream for a specific session.
+///
+/// The backend emits `pty:raw` events with a JSON payload of the form
+/// `{ "sessionId": "<id>", "data": "<base64>" }`. This function filters
+/// by `id` and decodes `data` from base64 to `Vec<u8>` before invoking
+/// `callback`. Events for other sessions are dropped silently.
+///
+/// The returned unlisten function must be invoked on component unmount
+/// to release the listener and the underlying closure. Discarding the
+/// return value with `let _ = ...` will keep the listener alive for
+/// the app lifetime.
+pub fn pty_listen_raw(
+    id: &str,
+    mut callback: impl FnMut(Vec<u8>) + 'static,
+) -> Result<Box<dyn FnOnce()>, TauriBridgeError> {
+    let id_owned = id.to_string();
+    listen("pty:raw", move |payload_str: String| {
+        let parsed: serde_json::Value = match serde_json::from_str(&payload_str) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let session_id = match parsed.get("sessionId").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return,
+        };
+        if session_id != id_owned {
+            return;
+        }
+        let data_b64 = match parsed.get("data").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return,
+        };
+
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let atob_val = match js_sys::Reflect::get(&window, &JsValue::from_str("atob")) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let Ok(atob_fn) = atob_val.dyn_into::<js_sys::Function>() else {
+            return;
+        };
+        let s_val = match atob_fn.call1(&JsValue::NULL, &JsValue::from_str(data_b64)) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let Some(s) = s_val.as_string() else {
+            return;
+        };
+
+        // atob returns a "binary string" where each char's code point
+        // equals the byte value (0-255). Iterate to build Vec<u8>.
+        let mut bytes = Vec::with_capacity(s.len());
+        for c in s.chars() {
+            bytes.push(c as u8);
+        }
+
+        callback(bytes);
+    })
 }
 
 /// Tool executor operations
@@ -659,10 +787,15 @@ impl std::error::Error for TauriBridgeError {}
 
 /// Listen for Tauri push events from the backend.
 /// The callback receives the event payload as a String.
-/// The listener closure is intentionally leaked (lives for app lifetime).
-/// Returns `Err(TauriBridgeError)` when called outside a Tauri context
-/// instead of panicking.
-pub fn listen(event: &str, callback: impl FnMut(String) + 'static) -> Result<(), TauriBridgeError> {
+/// Returns a boxed unlisten function that, when called, removes the listener
+/// and allows the closure to be garbage-collected. Callers that want
+/// cleanup should store and invoke the returned function on component unmount.
+/// Callers that discard the return value ("let _ = ") will have the listener
+/// live for the app lifetime (no behavioral change from before).
+pub fn listen(
+    event: &str,
+    callback: impl FnMut(String) + 'static,
+) -> Result<Box<dyn FnOnce()>, TauriBridgeError> {
     let window = web_sys::window().ok_or_else(|| TauriBridgeError {
         message: format!("listen({}): no window object", event),
     })?;
@@ -722,11 +855,28 @@ pub fn listen(event: &str, callback: impl FnMut(String) + 'static) -> Result<(),
         }
     }) as Box<dyn FnMut(JsValue)>);
 
-    listen_fn
+    // Tauri's listen() returns an UnlistenFn (a JS function).
+    let unlisten_val = listen_fn
         .call2(&event_mod, &JsValue::from_str(event), closure.as_ref())
         .map_err(|e| TauriBridgeError {
             message: format!("listen({}): failed to register listener: {:?}", event, e),
         })?;
-    closure.forget();
-    Ok(())
+
+    // Convert the Rust closure to a JS value so it stays rooted in JS GC
+    // as long as the returned unlisten box is alive. Once the unlisten box
+    // is dropped (after calling unlisten), the JS GC can collect both.
+    let closure_js = closure.into_js_value();
+
+    // Build the unlisten function. It calls Tauri's unlisten and then
+    // drops the JS references, allowing GC of both the closure and the
+    // unlisten function object.
+    let unlisten_fn = Box::new(move || {
+        if let Ok(unlisten) = unlisten_val.dyn_into::<js_sys::Function>() {
+            let _ = unlisten.call0(&JsValue::NULL);
+        }
+        // closure_js and unlisten_val are dropped here, releasing JS GC roots
+        drop(closure_js);
+    });
+
+    Ok(unlisten_fn)
 }

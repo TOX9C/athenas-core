@@ -1,9 +1,11 @@
-use crate::components::shared::toast::{Toast, ToastType, use_toast_store};
+use crate::components::shared::toast::{use_toast_store, Toast, ToastType};
 use crate::stores::notification::{
     add_notification, use_notification_store, NotificationRecord, NotificationType,
 };
 use crate::tauri_bridge;
 use dioxus::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Plugin registry entry.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -28,7 +30,6 @@ impl PluginBusState {
             plugins: Vec::new(),
             events: Vec::new(),
         }
-
     }
 
     pub fn upsert_plugin(&mut self, id: String, name: String, version: String, enabled: bool) {
@@ -86,21 +87,32 @@ pub fn PluginEventBus() -> Element {
     let notif_store = use_notification_store();
     let mut mounted = use_signal(|| false);
 
-    // Register Tauri event listeners on mount.
+    let unlistens: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
+        use_hook(|| Rc::new(RefCell::new(Vec::new())));
+
+    let unlistens_effect = unlistens.clone();
     use_effect(move || {
         if mounted() {
             return;
         }
         mounted.set(true);
 
-        // plugin:registryUpdated — Refresh plugin list.
         let mut registry_store = plugin_store;
-        let _ = tauri_bridge::listen("plugin:registryUpdated", move |payload: String| {
+        let registry_unlistens = unlistens_effect.clone();
+        if let Ok(u) = tauri_bridge::listen("plugin:registryUpdated", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 if let Some(plugins_arr) = val.as_array() {
                     for p in plugins_arr {
-                        let id = p.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let id = p
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = p
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let version = p
                             .get("version")
                             .and_then(|v| v.as_str())
@@ -113,15 +125,21 @@ pub fn PluginEventBus() -> Element {
                     }
                 }
             }
-        });
+        }) {
+            registry_unlistens.borrow_mut().push(u);
+        }
 
-        // plugin:registered — Show connected notification.
         let mut registered_store = plugin_store;
         let mut registered_toast = toast_store;
         let mut registered_notif = notif_store;
-        let _ = tauri_bridge::listen("plugin:registered", move |payload: String| {
+        let registered_unlistens = unlistens_effect.clone();
+        if let Ok(u) = tauri_bridge::listen("plugin:registered", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let id = val
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let name = val
                     .get("name")
                     .and_then(|v| v.as_str())
@@ -156,36 +174,46 @@ pub fn PluginEventBus() -> Element {
                 };
                 add_notification(&mut registered_notif, notif);
             }
-        });
+        }) {
+            registered_unlistens.borrow_mut().push(u);
+        }
 
-        // plugin:enabled — Update plugin status.
         let mut enabled_store = plugin_store;
-        let _ = tauri_bridge::listen("plugin:enabled", move |payload: String| {
+        let enabled_unlistens = unlistens_effect.clone();
+        if let Ok(u) = tauri_bridge::listen("plugin:enabled", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty() {
                     enabled_store.write().set_plugin_enabled(id, true);
                 }
             }
-        });
+        }) {
+            enabled_unlistens.borrow_mut().push(u);
+        }
 
-        // plugin:disabled — Update plugin status.
         let mut disabled_store = plugin_store;
-        let _ = tauri_bridge::listen("plugin:disabled", move |payload: String| {
+        let disabled_unlistens = unlistens_effect.clone();
+        if let Ok(u) = tauri_bridge::listen("plugin:disabled", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty() {
                     disabled_store.write().set_plugin_enabled(id, false);
                 }
             }
-        });
+        }) {
+            disabled_unlistens.borrow_mut().push(u);
+        }
 
-        // plugin:error — Show error toast.
         let mut error_store = plugin_store;
         let mut error_toast = toast_store;
-        let _ = tauri_bridge::listen("plugin:error", move |payload: String| {
+        let error_unlistens = unlistens_effect.clone();
+        if let Ok(u) = tauri_bridge::listen("plugin:error", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let id = val
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let error = val
                     .get("error")
                     .and_then(|v| v.as_str())
@@ -202,13 +230,25 @@ pub fn PluginEventBus() -> Element {
                 };
                 error_toast.write().push(toast);
             }
-        });
+        }) {
+            error_unlistens.borrow_mut().push(u);
+        }
 
-        // plugin:event — Display plugin events.
         let mut event_store = plugin_store;
-        let _ = tauri_bridge::listen("plugin:event", move |payload: String| {
+        let event_unlistens = unlistens_effect.clone();
+        if let Ok(u) = tauri_bridge::listen("plugin:event", move |payload: String| {
             event_store.write().add_event(payload.clone());
-        });
+        }) {
+            event_unlistens.borrow_mut().push(u);
+        }
+    });
+
+    let unlistens_drop = unlistens.clone();
+    use_drop(move || {
+        let handles = unlistens_drop.borrow_mut().drain(..).collect::<Vec<_>>();
+        for handle in handles {
+            handle();
+        }
     });
 
     rsx! {}

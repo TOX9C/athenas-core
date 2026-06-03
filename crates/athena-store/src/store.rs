@@ -68,19 +68,15 @@ impl KeyValueStore {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
             .join("athena-core");
         let data_dir_clone = data_dir.clone();
-        tokio::task::spawn_blocking(move || {
-            std::fs::create_dir_all(&data_dir_clone)
-        })
-        .await
-        .map_err(|e| StoreError::Generic(e.to_string()))??;
+        tokio::task::spawn_blocking(move || std::fs::create_dir_all(&data_dir_clone))
+            .await
+            .map_err(|e| StoreError::Generic(e.to_string()))??;
         let path = data_dir.join(format!("{name}.json"));
         let data: std::collections::HashMap<String, serde_json::Value> = if path.exists() {
             let path_clone = path.clone();
-            let content = tokio::task::spawn_blocking(move || {
-                std::fs::read_to_string(&path_clone)
-            })
-            .await
-            .map_err(|e| StoreError::Generic(e.to_string()))??;
+            let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path_clone))
+                .await
+                .map_err(|e| StoreError::Generic(e.to_string()))??;
             serde_json::from_str(&content)?
         } else {
             std::collections::HashMap::new()
@@ -152,9 +148,10 @@ impl KeyValueStore {
             serde_json::to_string_pretty(&*map)?
         };
         let path_clone = self.path.clone();
+        let tmp_path = self.path.with_extension("json.tmp");
         tokio::task::spawn_blocking(move || {
-            let mut file = std::fs::File::create(&path_clone)?;
-            std::io::Write::write_all(&mut file, json.as_bytes())?;
+            std::fs::write(&tmp_path, json.as_bytes())?;
+            std::fs::rename(&tmp_path, &path_clone)?;
             Ok::<_, StoreError>(())
         })
         .await

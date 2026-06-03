@@ -99,11 +99,9 @@ impl SessionStore {
             .map_err(|e| SessionStoreError::InvalidData(e.to_string()))?;
         let path = self.image_path(&image_id);
         let path_clone = path.clone();
-        tokio::task::spawn_blocking(move || {
-            std::fs::write(&path_clone, buffer)
-        })
-        .await
-        .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+        tokio::task::spawn_blocking(move || std::fs::write(&path_clone, buffer))
+            .await
+            .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
         Ok(ImageRef {
             image_id,
             media_type: media_type.to_string(),
@@ -139,7 +137,10 @@ impl SessionStore {
     }
 
     /// Create a new session with the given title.
-    pub async fn create_session(&self, title: Option<&str>) -> Result<ChatSession, SessionStoreError> {
+    pub async fn create_session(
+        &self,
+        title: Option<&str>,
+    ) -> Result<ChatSession, SessionStoreError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -262,14 +263,13 @@ impl SessionStore {
                 continue;
             }
             let path_clone = path.clone();
-            let data = match tokio::task::spawn_blocking(move || {
-                std::fs::read_to_string(&path_clone)
-            })
-            .await
-            {
-                Ok(Ok(d)) => d,
-                _ => continue,
-            };
+            let data =
+                match tokio::task::spawn_blocking(move || std::fs::read_to_string(&path_clone))
+                    .await
+                {
+                    Ok(Ok(d)) => d,
+                    _ => continue,
+                };
             let session: ChatSession = match serde_json::from_str(&data) {
                 Ok(s) => s,
                 Err(_) => continue,
@@ -312,14 +312,13 @@ impl SessionStore {
             };
             let path = entry.path();
             let path_clone = path.clone();
-            let data = match tokio::task::spawn_blocking(move || {
-                std::fs::read_to_string(&path_clone)
-            })
-            .await
-            {
-                Ok(Ok(d)) => d,
-                _ => continue,
-            };
+            let data =
+                match tokio::task::spawn_blocking(move || std::fs::read_to_string(&path_clone))
+                    .await
+                {
+                    Ok(Ok(d)) => d,
+                    _ => continue,
+                };
             let session: ChatSession = match serde_json::from_str(&data) {
                 Ok(s) => s,
                 Err(_) => continue,

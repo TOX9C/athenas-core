@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -86,12 +86,14 @@ pub struct AgentSession {
 struct SessionInternal {
     session: AgentSession,
     sender: Sender<Vec<u8>>,
+    peer_addr: Option<SocketAddr>,
 }
 
 impl std::fmt::Debug for SessionInternal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionInternal")
             .field("session", &self.session)
+            .field("peer_addr", &self.peer_addr)
             .finish()
     }
 }
@@ -101,6 +103,7 @@ impl Clone for SessionInternal {
         Self {
             session: self.session.clone(),
             sender: self.sender.clone(),
+            peer_addr: self.peer_addr,
         }
     }
 }
@@ -469,7 +472,13 @@ impl AgentComms {
                         let token = token.clone();
                         let event_emitter = event_emitter.clone();
                         std::thread::spawn(move || {
-                            handle_connection(stream, sessions, pending_input, token, event_emitter);
+                            handle_connection(
+                                stream,
+                                sessions,
+                                pending_input,
+                                token,
+                                event_emitter,
+                            );
                         });
                     }
                     Err(e) => {
@@ -513,11 +522,20 @@ fn handle_connection(
     token: String,
     event_emitter: Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 ) {
-    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
     log::info!("Agent comms: new connection from {}", peer);
 
     let (tx, _rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    let reader = BufReader::new(stream.try_clone().expect("failed to clone stream"));
+    let reader = match stream.try_clone() {
+        Ok(s) => BufReader::new(s),
+        Err(e) => {
+            log::error!("failed to clone stream: {}", e);
+            return;
+        }
+    };
 
     for line in reader.lines() {
         let line = match line {
@@ -561,7 +579,9 @@ fn handle_incoming_message(
         "initialize" => handle_initialize(stream, msg, sessions, token, event_emitter, tx),
         "notifications/message" => handle_notification(stream, msg, sessions, event_emitter),
         "agents/status" => handle_status(stream, msg, sessions, event_emitter),
-        "agents/requestInput" => handle_request_input(stream, msg, sessions, pending_input, event_emitter),
+        "agents/requestInput" => {
+            handle_request_input(stream, msg, sessions, pending_input, event_emitter)
+        }
         "agents/heartbeat" => handle_heartbeat(stream, msg, sessions),
         _ => {
             if msg.id.is_some() {
@@ -612,7 +632,11 @@ fn handle_initialize(
 
     let session_id = generate_uuid();
     let data = msg.params.get("data").cloned().unwrap_or_default();
-    let plugin_id = data.get("pluginId").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+    let plugin_id = data
+        .get("pluginId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
     let agent_id = data
         .get("agentId")
         .and_then(|v| v.as_str())
@@ -629,12 +653,19 @@ fn handle_initialize(
         status: SessionStatus::Active,
     };
 
+    let peer_addr = stream.peer_addr().ok();
     let internal = SessionInternal {
         session: session.clone(),
         sender: tx.clone(),
+        peer_addr,
     };
 
     if let Ok(mut map) = sessions.lock() {
+        // Evict any existing session from the same peer address to prevent
+        // memory leaks when a client reconnects without proper cleanup.
+        if let Some(addr) = peer_addr {
+            map.retain(|_, existing| existing.peer_addr != Some(addr));
+        }
         map.insert(session_id.clone(), internal);
     }
 
@@ -684,7 +715,11 @@ fn handle_notification(
         update_activity_by_agent_id(sessions, aid);
     }
 
-    let level = msg.params.get("level").and_then(|v| v.as_str()).unwrap_or("info");
+    let level = msg
+        .params
+        .get("level")
+        .and_then(|v| v.as_str())
+        .unwrap_or("info");
     let status = if level == "needs_input" {
         SessionStatus::WaitingInput
     } else {
@@ -821,7 +856,11 @@ fn handle_request_input(
         .unwrap_or(&generate_uuid())
         .to_string();
 
-    let prompt = msg.params.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+    let prompt = msg
+        .params
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let title = msg
         .params
         .get("title")
@@ -937,13 +976,20 @@ fn find_session_by_agent_id(
 
 fn find_session_by_stream(
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    _stream: &TcpStream,
+    stream: &TcpStream,
 ) -> Option<AgentSession> {
+    let peer_addr = match stream.peer_addr() {
+        Ok(addr) => Some(addr),
+        Err(_) => return None,
+    };
     let guard = match sessions.lock() {
         Ok(g) => g,
         Err(_) => return None,
     };
-    guard.values().next().map(|s| s.session.clone())
+    guard
+        .values()
+        .find(|s| s.peer_addr == peer_addr)
+        .map(|s| s.session.clone())
 }
 
 fn update_activity_by_agent_id(
@@ -984,16 +1030,23 @@ fn update_session_status(
 }
 
 fn cleanup_connection(
-    _stream: &TcpStream,
+    stream: &TcpStream,
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
     event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 ) {
+    let peer_addr = match stream.peer_addr() {
+        Ok(addr) => Some(addr),
+        Err(_) => return,
+    };
     let session = {
         let guard = match sessions.lock() {
             Ok(g) => g,
             Err(_) => return,
         };
-        guard.values().next().map(|s| s.session.clone())
+        guard
+            .values()
+            .find(|s| s.peer_addr == peer_addr)
+            .map(|s| s.session.clone())
     };
 
     if let Some(s) = session {

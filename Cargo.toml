@@ -3,11 +3,11 @@ members = [
   "src-tauri", # Tauri backend
   "frontend", # Dioxus frontend
   "crates/athena-core",
-  "crates/athena-terminal",
   "crates/athena-fs",
   "crates/athena-store",
   "crates/athena-browser",
   "crates/athena-plugins",
+  "crates/athena-terminal",
 ]
 resolver = "2"
 
@@ -23,6 +23,17 @@ chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 path-clean = "1.0"
 
+# Dev profile keeps the default "unwind" panic strategy for useful
+# stack traces during debugging.
+
+[profile.dev.package.dioxus-web]
+# Workaround: Dioxus devtools try to open a WebSocket for hot-reload,
+# which WKWebView rejects with SecurityError. Disable debug assertions
+# to prevent this from panicking the WASM runtime in debug builds.
+debug-assertions = false
+
 [profile.release]
 opt-level = "z"
 strip = true
+lto = true
+panic = "abort"

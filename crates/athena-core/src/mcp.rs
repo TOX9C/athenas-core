@@ -5,10 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -314,7 +315,8 @@ pub fn get_tools() -> Vec<ToolDefinition> {
 pub type TaskHandler = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
 pub type SpawnHandler = Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>;
 pub type OutputHandler = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
-pub type AgentCommsHandler = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
+pub type AgentCommsHandler =
+    Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // MCP Server
@@ -332,21 +334,13 @@ pub type AgentCommsHandler = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json:
 /// 3. Server validates token and registers the client for broadcasts
 /// 4. Client calls tools via `tools/call`
 pub struct McpServer {
-    /// Session token required during `initialize`.
     token: String,
-    /// Connected client streams, keyed by peer address.
     active_clients: Arc<Mutex<HashMap<String, TcpStream>>>,
-    /// The TCP listener. `None` when the server is shut down.
     listener: Option<TcpListener>,
-    /// The port the server is bound to.
     port: Option<u16>,
-    /// Handler for task-related tool calls.
     pub task_handler: Option<TaskHandler>,
-    /// Handler for agent spawn tool calls.
     pub spawn_handler: Option<SpawnHandler>,
-    /// Handler for output capture tool calls.
     pub output_handler: Option<OutputHandler>,
-    /// Handler for agent communication tool calls.
     pub agent_comms_handler: Option<AgentCommsHandler>,
 }
 
@@ -394,8 +388,8 @@ impl McpServer {
     /// Returns `Ok(())` immediately. The server runs in the background.
     /// Calling `init` on an already-initialized server is a no-op.
     pub fn init(&mut self, port: u16) -> Result<(), McpError> {
-        if self.port.is_some() {
-            log::warn!("MCP server already initialized on port {}", self.port.unwrap());
+        if let Some(port) = self.port {
+            log::warn!("MCP server already initialized on port {}", port);
             return Ok(());
         }
 
@@ -404,7 +398,6 @@ impl McpServer {
         self.port = Some(port);
         log::info!("MCP server listening on 127.0.0.1:{}", port);
 
-        // Spawn the accept loop in a background thread
         let token = self.token.clone();
         let active_clients = Arc::clone(&self.active_clients);
         let task_handler = self.task_handler.clone();
@@ -412,7 +405,7 @@ impl McpServer {
         let output_handler = self.output_handler.clone();
         let agent_comms_handler = self.agent_comms_handler.clone();
 
-        std::thread::spawn(move || {
+        tokio::spawn(async move {
             accept_loop(
                 listener,
                 token,
@@ -421,7 +414,8 @@ impl McpServer {
                 spawn_handler,
                 output_handler,
                 agent_comms_handler,
-            );
+            )
+            .await;
         });
 
         Ok(())
@@ -444,7 +438,7 @@ impl McpServer {
     ///
     /// Dispatches to the appropriate handler based on the method name.
     /// Returns a `JsonRpcResponse` with either the result or an error.
-    pub fn handle_request(&self, req: &JsonRpcRequest) -> JsonRpcResponse {
+    pub async fn handle_request(&self, req: &JsonRpcRequest) -> JsonRpcResponse {
         handle_request_impl(
             &self.token,
             req,
@@ -453,6 +447,7 @@ impl McpServer {
             &self.output_handler,
             &self.agent_comms_handler,
         )
+        .await
     }
 
     /// Broadcast a notification to all connected clients.
@@ -507,7 +502,7 @@ impl McpServer {
 // the per-connection handler thread).
 // ---------------------------------------------------------------------------
 
-fn handle_request_impl(
+async fn handle_request_impl(
     token: &str,
     req: &JsonRpcRequest,
     task_handler: &Option<TaskHandler>,
@@ -571,7 +566,8 @@ fn handle_request_impl(
                 spawn_handler,
                 output_handler,
                 agent_comms_handler,
-            );
+            )
+            .await;
             JsonRpcResponse {
                 jsonrpc: "2.0".into(),
                 id: req.id.clone(),
@@ -592,7 +588,7 @@ fn handle_request_impl(
     }
 }
 
-fn handle_tool_call_impl(
+async fn handle_tool_call_impl(
     name: &str,
     args: serde_json::Value,
     task_handler: &Option<TaskHandler>,
@@ -683,10 +679,7 @@ fn handle_tool_call_impl(
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            let session_id = args
-                .get("sessionId")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let session_id = args.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
             log::info!(
                 "[MCP athena_forward_output] entries={}, session={}",
                 entries,
@@ -745,9 +738,7 @@ fn handle_tool_call_impl(
                 context_lines,
             };
 
-            let search_result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(crate::search::search_code(&options))
-            });
+            let search_result = crate::search::search_code(&options).await;
 
             match search_result {
                 Ok(result) => {
@@ -770,8 +761,7 @@ fn handle_tool_call_impl(
                                         .map(|(i, l)| {
                                             format!(
                                                 "  {}: {}",
-                                                m.line_number
-                                                    - m.context_before.len() as u32
+                                                m.line_number - m.context_before.len() as u32
                                                     + i as u32,
                                                 l
                                             )
@@ -801,11 +791,7 @@ fn handle_tool_call_impl(
                             "Found {} matches in {} files{}:\n\n",
                             result.stats.total_matches,
                             result.stats.files_matched,
-                            if result.truncated {
-                                " (truncated)"
-                            } else {
-                                ""
-                            }
+                            if result.truncated { " (truncated)" } else { "" }
                         );
 
                         serde_json::json!({ "content": [{ "type": "text", "text": format!("{}{}", header, formatted) }] })
@@ -836,14 +822,8 @@ fn handle_tool_call_impl(
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
 
-            let search_result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(crate::search::search_files(
-                    &path,
-                    &pattern,
-                    glob.as_deref(),
-                    max_results,
-                ))
-            });
+            let search_result =
+                crate::search::search_files(&path, &pattern, glob.as_deref(), max_results).await;
 
             match search_result {
                 Ok(results) => {
@@ -869,8 +849,8 @@ fn handle_tool_call_impl(
 // TCP accept loop and per-connection handler
 // ---------------------------------------------------------------------------
 
-fn accept_loop(
-    listener: TcpListener,
+async fn accept_loop(
+    listener: std::net::TcpListener,
     token: String,
     active_clients: Arc<Mutex<HashMap<String, TcpStream>>>,
     task_handler: Option<TaskHandler>,
@@ -878,10 +858,22 @@ fn accept_loop(
     output_handler: Option<OutputHandler>,
     agent_comms_handler: Option<AgentCommsHandler>,
 ) {
+    // Convert the std listener to a tokio listener for async accept.
+    listener
+        .set_nonblocking(true)
+        .expect("Failed to set non-blocking");
+    let listener = match tokio::net::TcpListener::from_std(listener) {
+        Ok(l) => l,
+        Err(e) => {
+            log::error!("MCP: failed to convert listener to tokio: {}", e);
+            return;
+        }
+    };
+
     log::info!("MCP accept loop started");
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _addr)) => {
                 let handler = ConnectionHandler {
                     token: token.clone(),
                     active_clients: Arc::clone(&active_clients),
@@ -890,8 +882,8 @@ fn accept_loop(
                     output_handler: output_handler.clone(),
                     agent_comms_handler: agent_comms_handler.clone(),
                 };
-                std::thread::spawn(move || {
-                    handler.handle_connection(stream);
+                tokio::spawn(async move {
+                    handler.handle_connection(stream).await;
                 });
             }
             Err(e) => {
@@ -899,7 +891,6 @@ fn accept_loop(
             }
         }
     }
-    log::info!("MCP accept loop stopped");
 }
 
 struct ConnectionHandler {
@@ -912,7 +903,7 @@ struct ConnectionHandler {
 }
 
 impl ConnectionHandler {
-    fn handle_request(&self, req: &JsonRpcRequest) -> JsonRpcResponse {
+    async fn handle_request(&self, req: &JsonRpcRequest) -> JsonRpcResponse {
         handle_request_impl(
             &self.token,
             req,
@@ -921,21 +912,60 @@ impl ConnectionHandler {
             &self.output_handler,
             &self.agent_comms_handler,
         )
+        .await
     }
 
-    fn handle_connection(&self, stream: TcpStream) {
+    async fn handle_connection(&self, stream: tokio::net::TcpStream) {
         let peer = stream
             .peer_addr()
             .map(|a| a.to_string())
             .unwrap_or_default();
         log::info!("MCP: new connection from {}", peer);
 
-        let reader = BufReader::new(stream.try_clone().expect("failed to clone stream"));
+        // Convert back to std briefly to get a clone for active_clients.
+        let std_stream = match stream.into_std() {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("failed to convert tokio stream to std: {}", e);
+                return;
+            }
+        };
+        let std_clone = match std_stream.try_clone() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("failed to clone std stream: {}", e);
+                return;
+            }
+        };
+        // Re-convert to tokio for async I/O.
+        let stream = match tokio::net::TcpStream::from_std(std_stream) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("failed to convert std stream back to tokio: {}", e);
+                return;
+            }
+        };
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
+        // Split into read/write halves for non-blocking I/O.
+        let (read_half, write_half) = tokio::io::split(stream);
+        let reader = BufReader::new(read_half);
+        let write_half = Arc::new(tokio::sync::Mutex::new(write_half));
+        let mut lines = reader.lines();
+
+        // Register the std TcpStream clone for broadcast_notification
+        // (which uses sync I/O). Will be removed on disconnect.
+        if let Ok(mut clients) = self.active_clients.lock() {
+            clients.insert(peer.clone(), std_clone);
+        }
+
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(l)) => l,
+                Ok(None) => break,
+                Err(e) => {
+                    log::warn!("MCP: read error from {}: {}", peer, e);
+                    break;
+                }
             };
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -950,27 +980,19 @@ impl ConnectionHandler {
                 }
             };
 
-            let response = self.handle_request(&req);
+            let response = self.handle_request(&req).await;
 
             // Only send a response for requests (notifications have no id)
             if response.id.is_some() {
                 let json = McpServer::serialize_response(&response) + "\n";
-                let mut writer = match stream.try_clone() {
-                    Ok(w) => w,
-                    Err(_) => break,
-                };
-                if writer.write_all(json.as_bytes()).is_err() {
+                let mut writer = write_half.lock().await;
+                if writer.write_all(json.as_bytes()).await.is_err() {
                     break;
                 }
             }
 
-            // On successful initialize, register the stream for broadcasts
+            // On successful initialize, log it.
             if req.method == "initialize" && response.error.is_none() {
-                if let Ok(clone) = stream.try_clone() {
-                    if let Ok(mut clients) = self.active_clients.lock() {
-                        clients.insert(peer.clone(), clone);
-                    }
-                }
                 log::info!("MCP: client {} initialized", peer);
             }
 

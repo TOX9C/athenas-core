@@ -1,7 +1,10 @@
+// TODO: This is a placeholder from a React port. Dioxus doesn't have
+// React-style error boundaries. This component should be replaced
+// with a proper error handling strategy (e.g., error-propagating contexts
+// or removed entirely).
+
 use dioxus::prelude::*;
 
-/// Error boundary component for Dioxus.
-/// TODO: implement proper error catching once Dioxus supports error boundaries.
 #[derive(Props, Clone, PartialEq)]
 pub struct ErrorBoundaryProps {
     pub children: Element,
@@ -11,9 +14,6 @@ pub struct ErrorBoundaryProps {
 
 #[component]
 pub fn ErrorBoundary(props: ErrorBoundaryProps) -> Element {
-    // Dioxus 0.5 does not have React-style error boundaries.
-    // We render children directly; a future version may support catching.
-    rsx! {
-        {props.children}
-    }
+    // TODO: Replace with proper error handling once Dioxus supports it.
+    rsx! { {props.children} }
 }

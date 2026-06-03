@@ -38,7 +38,7 @@ pub fn SettingsPanel() -> Element {
                 }
 
                 button {
-                    style: "margin-top: 16px; padding: 8px 16px; border-radius: 6px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 11px;",
+                    style: "margin-top: 16px; padding: 8px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--bg); cursor: pointer; font-size: 11px;",
                     onclick: move |_| modal_open.set(true),
                     "Open Full Settings"
                 }

@@ -1,4 +1,6 @@
-use crate::stores::notification::{use_notification_store, NotificationType};
+use crate::stores::notification::{
+    mark_notification_dismissed, use_notification_store, NotificationType,
+};
 use dioxus::prelude::*;
 
 #[component]
@@ -95,21 +97,37 @@ pub fn NotificationPanel() -> Element {
                             rsx! {
                                 div {
                                     key: "{n_id}",
-                                    style: "padding: 8px; border-bottom: 1px solid var(--border); opacity: {opacity};",
+                                    style: "padding: 8px; border-bottom: 1px solid var(--border); opacity: {opacity}; display: flex; align-items: flex-start; gap: 8px;",
 
+                                    // Type dot
                                     div {
-                                        style: "display: flex; align-items: center; gap: 4px;",
+                                        style: "width: 7px; height: 7px; border-radius: 50%; background: {type_color}; flex-shrink: 0; margin-top: 3px;",
+                                    }
+
+                                    // Text content
+                                    div {
+                                        style: "flex: 1; min-width: 0;",
                                         div {
-                                            style: "width: 7px; height: 7px; border-radius: 50%; background: {type_color}; flex-shrink: 0;",
+                                            style: "display: flex; align-items: center; gap: 4px;",
+                                            span {
+                                                style: "font-size: 11px; font-weight: {weight}; color: var(--text);",
+                                                "{n_title}"
+                                            }
                                         }
-                                        span {
-                                            style: "font-size: 11px; font-weight: {weight}; color: var(--text);",
-                                            "{n_title}"
+                                        p {
+                                            style: "font-size: 9px; margin-top: 2px; color: var(--textDim);",
+                                            "{n_msg}"
                                         }
                                     }
-                                    p {
-                                        style: "font-size: 9px; margin-top: 2px; color: var(--textDim);",
-                                        "{n_msg}"
+
+                                    // Dismiss button
+                                    button {
+                                        style: "flex-shrink: 0; padding: 2px 5px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 11px; line-height: 1;",
+                                        onclick: move |e: Event<MouseData>| {
+                                            e.stop_propagation();
+                                            mark_notification_dismissed(&mut notifications, &n_id);
+                                        },
+                                        "×"
                                     }
                                 }
                             }

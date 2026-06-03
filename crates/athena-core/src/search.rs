@@ -25,9 +25,15 @@ pub(crate) async fn find_rg_binary() -> Result<PathBuf, SearchError> {
 
     // Try to find via `which` as last resort
     let which_result = if cfg!(windows) {
-        tokio::process::Command::new("cmd").args(["/c", "where", "rg"]).output().await
+        tokio::process::Command::new("cmd")
+            .args(["/c", "where", "rg"])
+            .output()
+            .await
     } else {
-        tokio::process::Command::new("which").arg("rg").output().await
+        tokio::process::Command::new("which")
+            .arg("rg")
+            .output()
+            .await
     };
 
     if let Ok(output) = which_result {
@@ -157,12 +163,16 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
                     .unwrap_or_default()
                     .to_string();
                 let line_num = data["line_number"].as_u64().unwrap_or(0) as u32;
-                let col = data["submatches"][0]["start"].as_u64().unwrap_or(1) as u32;
+                let submatch = match data["submatches"].as_array() {
+                    Some(arr) if !arr.is_empty() => &arr[0],
+                    _ => continue,
+                };
+                let col = submatch["start"].as_u64().unwrap_or(1) as u32;
                 let line_text = match data["lines"]["text"].as_str() {
                     Some(t) => t.trim_end().to_string(),
                     None => continue,
                 };
-                let match_text = data["submatches"][0]["match"]["text"]
+                let match_text = submatch["match"]["text"]
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
@@ -206,14 +216,15 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
 
     // Assign remaining context lines to after the last match
     if !matches.is_empty() && !pending_context.is_empty() {
-        let last_match = matches.last_mut().unwrap();
-        let context_lines_count = options.context_lines.unwrap_or(0) as u32;
-        for (ctx_file, ctx_line, ctx_text) in &pending_context {
-            if ctx_file == &last_match.file_path
-                && *ctx_line > last_match.line_number
-                && *ctx_line <= last_match.line_number + context_lines_count
-            {
-                last_match.context_after.push(ctx_text.clone());
+        if let Some(last_match) = matches.last_mut() {
+            let context_lines_count = options.context_lines.unwrap_or(0) as u32;
+            for (ctx_file, ctx_line, ctx_text) in &pending_context {
+                if ctx_file == &last_match.file_path
+                    && *ctx_line > last_match.line_number
+                    && *ctx_line <= last_match.line_number + context_lines_count
+                {
+                    last_match.context_after.push(ctx_text.clone());
+                }
             }
         }
     }

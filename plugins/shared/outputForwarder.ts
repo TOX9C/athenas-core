@@ -37,8 +37,13 @@ export class OutputForwarder {
         entries: this.reconnectBuffer.slice(),
         sessionId: this.config.sessionId,
       }
+      await this.sendBatch(batch).catch(() => {
+        if (this.config.bufferOnReconnect) {
+          const reclaimed = batch.entries.slice(-(MAX_BUFFER_SIZE - this.reconnectBuffer.length))
+          this.reconnectBuffer.push(...reclaimed)
+        }
+      })
       this.reconnectBuffer = []
-      await this.sendBatch(batch)
     }
   }
 

@@ -26,6 +26,23 @@ export const searchFilesSchema = z.object({
     .describe('Number of context lines around each match. Defaults to 2.'),
 })
 
+import path from 'path'
+
+const WORKSPACE_ROOT = process.cwd()
+
+function assertInsideWorkspace(targetPath: string): string {
+  const resolved = path.resolve(targetPath)
+  const workspaceRoot = path.resolve(WORKSPACE_ROOT)
+  const relative = path.relative(workspaceRoot, resolved)
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`Path traversal detected: ${targetPath} is outside the workspace`)
+  }
+  if (resolved.length > 4096) {
+    throw new Error('Path too long')
+  }
+  return resolved
+}
+
 export type SearchFilesInput = z.infer<typeof searchFilesSchema>
 
 interface MatchEntry {
@@ -115,8 +132,9 @@ async function executeSearch(input: SearchFilesInput) {
 
   return new Promise<{ isError?: boolean; content: Array<{ type: 'text'; text: string }> }>(
     (resolve) => {
+      const resolvedPath = assertInsideWorkspace(input.path)
       const proc = spawn(rgBin, args, {
-        cwd: input.path,
+        cwd: resolvedPath,
         env: { ...process.env, LC_ALL: 'en_US.UTF-8' },
       })
 

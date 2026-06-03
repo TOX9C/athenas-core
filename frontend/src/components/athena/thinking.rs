@@ -11,12 +11,18 @@ pub fn AthenaThinkingIndicator(props: ThinkingProps) -> Element {
     let status_label = props.status.as_deref().unwrap_or("Thinking");
     let mut dots = use_signal(|| 0u8);
 
-    // Simple animated dots via periodic re-render using gloo timers
-    use_future(move || async move {
+    // Animated dots via periodic re-render. The future is cancelled
+    // on component unmount via use_drop to prevent leaks.
+    let mut animation = use_future(move || async move {
         loop {
             gloo::timers::future::TimeoutFuture::new(500).await;
             dots.set((dots() + 1) % 4);
         }
+    });
+
+    // Cancel the animation loop when this component unmounts.
+    use_drop(move || {
+        animation.cancel();
     });
 
     let dot_str = match dots() {

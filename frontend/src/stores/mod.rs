@@ -3,7 +3,6 @@ pub mod agent_status;
 pub mod athena;
 pub mod command;
 pub mod editor;
-pub mod layout;
 pub mod notification;
 pub mod panel_manager;
 pub mod session;

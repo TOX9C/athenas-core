@@ -1,7 +1,7 @@
 use crate::tool_executor::{to_openai_tools, ToolExecutor, ToolInput};
 use crate::types::*;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Configuration for a specific LLM provider.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -60,6 +60,25 @@ fn build_anthropic_content(text: &str, images: Option<&[ImageData]>) -> serde_js
     }
 }
 
+fn validate_base_url(url: &str) -> Result<(), OrchestratorError> {
+    if !url.starts_with("https://") {
+        return Err(OrchestratorError::Generic(
+            "Base URL must use HTTPS".to_string(),
+        ));
+    }
+    let host = url
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    if host.is_empty() || !host.contains('.') {
+        return Err(OrchestratorError::Generic(
+            "Base URL must have a valid hostname".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn build_openai_content(text: &str, images: Option<&[ImageData]>) -> serde_json::Value {
     match images {
         None | Some(&[]) => serde_json::Value::String(text.to_string()),
@@ -82,41 +101,36 @@ fn build_openai_content(text: &str, images: Option<&[ImageData]>) -> serde_json:
 }
 
 /// Deserialize a JSON value into a `ToolInput`, filling only the fields present.
-fn json_to_tool_input(value: &serde_json::Value) -> ToolInput {
-    serde_json::from_value(value.clone()).unwrap_or_else(|e| {
-        log::warn!(
-            "Failed to deserialize tool input from JSON: {}. Using defaults.",
-            e
-        );
-        ToolInput::default()
-    })
+///
+/// Returns an error instead of silently falling back to defaults so the LLM
+/// can retry with corrected arguments.
+fn json_to_tool_input(value: &serde_json::Value) -> Result<ToolInput, OrchestratorError> {
+    serde_json::from_value(value.clone()).map_err(OrchestratorError::SerializationError)
 }
 
 /// Rate limiter to prevent hammering the LLM API.
+///
+/// Uses `tokio::sync::Mutex` so the lock can be held across `.await`
+/// boundaries, preventing the TOCTOU race condition where two concurrent
+/// requests could both bypass the limiter.
 struct RateLimiter {
-    last_request: Mutex<Instant>,
+    last_request: tokio::sync::Mutex<Instant>,
     min_interval: std::time::Duration,
 }
 
 impl RateLimiter {
     fn new(min_interval_ms: u64) -> Self {
         Self {
-            last_request: Mutex::new(Instant::now()),
+            last_request: tokio::sync::Mutex::new(Instant::now()),
             min_interval: std::time::Duration::from_millis(min_interval_ms),
         }
     }
 
-    fn wait_if_needed(&self) {
-        let mut last = match self.last_request.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                log::warn!("Rate limiter lock poisoned, proceeding without rate limiting");
-                poisoned.into_inner()
-            }
-        };
+    async fn wait_if_needed(&self) {
+        let mut last = self.last_request.lock().await;
         let elapsed = last.elapsed();
         if elapsed < self.min_interval {
-            std::thread::sleep(self.min_interval - elapsed);
+            tokio::time::sleep(self.min_interval - elapsed).await;
         }
         *last = Instant::now();
     }
@@ -151,7 +165,10 @@ impl AthenaOrchestrator {
             openai_messages: Arc::new(Mutex::new(Vec::new())),
             current_session_id: Arc::new(Mutex::new(None)),
             tool_executor: None,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .expect("Failed to build HTTP client"),
             provider_config: Arc::new(Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
         }
@@ -168,7 +185,10 @@ impl AthenaOrchestrator {
             openai_messages: Arc::new(Mutex::new(Vec::new())),
             current_session_id: Arc::new(Mutex::new(None)),
             tool_executor: Some(executor),
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .expect("Failed to build HTTP client"),
             provider_config: Arc::new(Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
         }
@@ -264,8 +284,9 @@ impl AthenaOrchestrator {
                     config.base_url.clone(),
                 ),
                 None => {
-                    let api_key =
-                        std::env::var("ANTHROPIC_API_KEY").ok().ok_or(OrchestratorError::MissingApiKey)?;
+                    let api_key = std::env::var("ANTHROPIC_API_KEY")
+                        .ok()
+                        .ok_or(OrchestratorError::MissingApiKey)?;
                     (
                         LLMProvider::Anthropic,
                         api_key,
@@ -283,23 +304,30 @@ impl AthenaOrchestrator {
             }
         }
 
+        if let Some(ref burl) = &base_url {
+            validate_base_url(burl)?;
+        }
+
         let resolved_base_url = match &provider {
-            LLMProvider::NvidiaNim => {
-                Some("https://integrate.api.nvidia.com/v1".to_string())
+            LLMProvider::NvidiaNim => Some("https://integrate.api.nvidia.com/v1".to_string()),
+            LLMProvider::OpenAI => Some("https://api.openai.com/v1".to_string()),
+            LLMProvider::Lmstudio => {
+                Some(base_url.unwrap_or_else(|| "http://localhost:1234/v1".to_string()))
             }
-            LLMProvider::OpenAI => {
-                Some("https://api.openai.com/v1".to_string())
-            }
-            LLMProvider::Lmstudio => Some(
-                base_url.unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
-            ),
             LLMProvider::Anthropic => None,
         };
 
         match provider {
             LLMProvider::NvidiaNim | LLMProvider::OpenAI | LLMProvider::Lmstudio => {
-                self.send_openai(api_key, model, system_prompt, text, images, resolved_base_url)
-                    .await
+                self.send_openai(
+                    api_key,
+                    model,
+                    system_prompt,
+                    text,
+                    images,
+                    resolved_base_url,
+                )
+                .await
             }
             LLMProvider::Anthropic => {
                 self.send_anthropic(api_key, model, system_prompt, text, images)
@@ -313,7 +341,15 @@ impl AthenaOrchestrator {
     /// Returns a tuple of `(text, is_error)`. If no executor is configured,
     /// returns an error message with `is_error = true`.
     fn execute_tool(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
-        let tool_input = json_to_tool_input(input);
+        let tool_input = match json_to_tool_input(input) {
+            Ok(ti) => ti,
+            Err(e) => {
+                return (
+                    format!("Failed to deserialize tool input for '{}': {}", name, e),
+                    true,
+                )
+            }
+        };
 
         match &self.tool_executor {
             Some(executor_arc) => {
@@ -387,7 +423,7 @@ impl AthenaOrchestrator {
 
         loop {
             // Enforce rate limiting before each API request
-            self.rate_limiter.wait_if_needed();
+            self.rate_limiter.wait_if_needed().await;
 
             let messages = {
                 let msgs = self.anthropic_messages.lock().map_err(|_| {
@@ -555,9 +591,19 @@ impl AthenaOrchestrator {
             });
         }
 
+        // Track the index of the initial user message so that on API error we
+        // can remove it (and any tool-call round-trip messages after it).
+        let user_msg_index: usize = {
+            let msgs = self
+                .openai_messages
+                .lock()
+                .map_err(|_| OrchestratorError::Generic("Failed to lock messages".to_string()))?;
+            msgs.len() - 1
+        };
+
         loop {
             // Enforce rate limiting before each API request
-            self.rate_limiter.wait_if_needed();
+            self.rate_limiter.wait_if_needed().await;
 
             let body_messages: Vec<serde_json::Value> = {
                 let msgs = self.openai_messages.lock().map_err(|_| {
@@ -611,9 +657,7 @@ impl AthenaOrchestrator {
                 let mut msgs = self.openai_messages.lock().map_err(|_| {
                     OrchestratorError::Generic("Failed to lock messages".to_string())
                 })?;
-                if !msgs.is_empty() {
-                    msgs.pop();
-                }
+                msgs.truncate(user_msg_index);
                 return Err(OrchestratorError::Generic(format!(
                     "OpenAI API error {}: {}",
                     status, err_text
@@ -623,10 +667,13 @@ impl AthenaOrchestrator {
             let json: serde_json::Value = response.json().await?;
             let choice = &json["choices"][0];
             let message = &choice["message"];
-            let raw_content = message["content"].as_str().unwrap_or_else(|| {
-                log::warn!("OpenAI response content is not a string, defaulting to empty");
-                ""
-            }).trim();
+            let raw_content = message["content"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    log::warn!("OpenAI response content is not a string, defaulting to empty");
+                    ""
+                })
+                .trim();
 
             // Check for tool calls in the response.
             let tool_calls_value = message.get("tool_calls");

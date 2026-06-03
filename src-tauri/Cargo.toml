@@ -20,11 +20,11 @@ uuid = { workspace = true }
 keyring = "3"
 env_logger = "0.11"
 athena-core = { path = "../crates/athena-core" }
-athena-terminal = { path = "../crates/athena-terminal" }
 athena-fs = { path = "../crates/athena-fs" }
 athena-store = { path = "../crates/athena-store" }
 athena-browser = { path = "../crates/athena-browser" }
 athena-plugins = { path = "../crates/athena-plugins" }
+athena-terminal = { path = "../crates/athena-terminal" }
 
 [target.'cfg(debug_assertions)'.dependencies]
 tauri-plugin-webdriver-automation = "0.1.3"

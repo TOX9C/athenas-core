@@ -1,66 +1,338 @@
-/* Athena's Core — Default theme (Athena) + base styles */
+/* Athena's Core — Default theme (Noir) + base styles */
 
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
 :root {
---bg: #0b0e13;
---bgSecondary: #141820;
---bgTertiary: #1e232e;
---border: #2a303e;
---text: #e0e4ee;
---textMuted: #8890a4;
---textDim: #525a6e;
---accent: #38bdf8;
---accentHover: #7dd3fc;
---success: #22c55e;
---error: #ef4444;
---warning: #f59e0b;
---terminalBg: #0b0e13;
---terminalFg: #e0e4ee;
---terminalCursor: #38bdf8;
---terminalSelection: rgba(56, 189, 248, 0.3);
+  --bg: #0f0d0b;
+  --bgSecondary: #1a1815;
+  --bgTertiary: #242220;
+  --bgHover: #1c1916;
+  --border: #33302c;
+  --borderActive: rgba(229, 164, 67, 0.12);
+  --text: #e8e4df;
+  --textMuted: #a09890;
+  --textDim: #685e56;
+  --accent: #e5a443;
+  --accentHover: #f0b860;
+  --accentSubtle: rgba(229, 164, 67, 0.1);
+  --success: #22c55e;
+  --error: #ef4444;
+  --warning: #f59e0b;
+  --green: #98c379;
+  --blue: #61afef;
+  --orange: #e5c07b;
+  --red: #e06c75;
+  --purple: #c678dd;
+  --cyan: #56b6c2;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadowLg: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --terminalBg: #0f0d0b;
+  --terminalFg: #e8e4df;
+  --terminalCursor: #e5a443;
+  --terminalSelection: rgba(229, 164, 67, 0.3);
+  --fontFamily: "JetBrains Mono", monospace;
+  --fontSize: 14px;
 }
 
 html, body, #main {
-height: 100%;
-width: 100%;
-margin: 0;
-padding: 0;
-overflow: hidden;
-background: var(--bg);
-color: var(--text);
-font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+body, .terminal-pane, .editor-panel, .code-content, .terminal-container {
+  font-family: var(--fontFamily);
+  font-size: var(--fontSize);
 }
 
 ::-webkit-scrollbar {
-width: 4px;
-height: 4px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
-background: transparent;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-background: var(--bgTertiary);
-border-radius: 2px;
+  background: var(--bgTertiary);
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-background: var(--textDim);
+  background: var(--textDim);
+}
+
+/*
+  Terminal cells have their own fg/bg colors.
+  Override the global ::selection so terminal text selection
+  does not get forced to accent-on-bg colors.
+*/
+.terminal-body ::selection {
+  background: inherit;
+  color: inherit;
 }
 
 ::selection {
-background: var(--accent);
-color: var(--bg);
+  background: var(--accent);
+  color: var(--bg);
 }
 
 input, textarea, select {
-font-family: inherit;
+  font-family: inherit;
 }
 
 button {
-cursor: pointer;
-border: none;
-background: none;
-font-family: inherit;
-color: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+  color: inherit;
 }
+
+/* Syntax highlighting tokens */
+.token-keyword { color: var(--purple); }
+.token-string { color: var(--green); }
+.token-comment { color: var(--textDim); font-style: italic; }
+.token-number { color: var(--orange); }
+.token-type { color: var(--orange); }
+.token-function { color: var(--blue); }
+.token-operator { color: var(--cyan); }
+.token-lifetime { color: var(--cyan); }
+
+/* Code line styling */
+.code-line {
+  display: block;
+  padding: 0 8px;
+  white-space: pre;
+  font-family: var(--fontFamily);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.code-line:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.line-number {
+  display: inline-block;
+  width: 3em;
+  text-align: right;
+  padding-right: 1em;
+  color: var(--textDim);
+  user-select: none;
+  opacity: 0.5;
+}
+
+/* ============================================================
+   SEMANTIC UTILITY CLASS TOKENS
+   ============================================================ */
+
+/* Background Classes */
+.bg-base { background-color: var(--bg); }
+.bg-secondary { background-color: var(--bgSecondary); }
+.bg-tertiary { background-color: var(--bgTertiary); }
+.bg-elevated { background-color: var(--bgTertiary); }
+.bg-surface { background-color: var(--bgSecondary); }
+.bg-accent { background-color: var(--accent); }
+.bg-accent-subtle { background-color: var(--accentSubtle); }
+.bg-hover { background-color: var(--bgHover); }
+.bg-transparent { background-color: transparent; }
+
+/* Text Classes */
+.text-primary { color: var(--text); }
+.text-muted { color: var(--textMuted); }
+.text-dim { color: var(--textDim); }
+.text-accent { color: var(--accent); }
+.text-accent-hover { color: var(--accentHover); }
+.text-inverse { color: var(--bg); }
+.text-success { color: var(--success); }
+.text-error { color: var(--error); }
+.text-warning { color: var(--warning); }
+
+/* Border Classes */
+.border-subtle { border: 1px solid var(--border); }
+.border-accent { border: 1px solid var(--accent); }
+.border-transparent { border: 1px solid transparent; }
+
+/* Font Classes */
+.font-ui { font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+.font-mono { font-family: var(--fontFamily); }
+
+/* Layout Classes */
+.panel-base {
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+}
+.fill {
+  width: 100%;
+  height: 100%;
+}
+.flex-col {
+  display: flex;
+  flex-direction: column;
+}
+.flex-row {
+  display: flex;
+  flex-direction: row;
+}
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.flex-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.flex-grow { flex-grow: 1; }
+.flex-shrink { flex-shrink: 0; }
+.gap-2 { gap: 2px; }
+.gap-4 { gap: 4px; }
+.gap-8 { gap: 8px; }
+.gap-12 { gap: 12px; }
+.gap-16 { gap: 16px; }
+.gap-24 { gap: 24px; }
+
+/* Component Semantic Classes */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  background-color: var(--bgTertiary);
+  color: var(--textMuted);
+  border: 1px solid var(--border);
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background-color: var(--accentSubtle);
+  color: var(--accent);
+}
+
+.pane-pill {
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pane-pill-status-dot {
+  display: inline-block;
+}
+
+.pane-pill-status-dot--pulse::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: var(--pill-status-color);
+  opacity: 0.5;
+  animation: pane-pill-pulse 1.5s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+@keyframes pane-pill-pulse {
+  0%   { transform: scale(0.7); opacity: 0.55; }
+  80%  { opacity: 0; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+
+.pane-pill-close:hover {
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+  color: var(--text);
+}
+
+.pane-pill-close:active {
+  background: color-mix(in srgb, var(--border) 110%, transparent);
+  transform: scale(0.92);
+}
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  background-color: var(--accent);
+  color: var(--bg);
+  border: none;
+  cursor: pointer;
+  font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.btn-primary:hover {
+  background-color: var(--accentHover);
+}
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  background-color: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.btn-ghost:hover {
+  background-color: var(--bgHover);
+}
+
+/* Spacing Utilities */
+.p-4 { padding: 4px; }
+.p-8 { padding: 8px; }
+.p-12 { padding: 12px; }
+.p-16 { padding: 16px; }
+.p-24 { padding: 24px; }
+.px-8 { padding-left: 8px; padding-right: 8px; }
+.px-12 { padding-left: 12px; padding-right: 12px; }
+.px-16 { padding-left: 16px; padding-right: 16px; }
+.py-8 { padding-top: 8px; padding-bottom: 8px; }
+.py-12 { padding-top: 12px; padding-bottom: 12px; }
+.py-16 { padding-top: 16px; padding-bottom: 16px; }
+.m-4 { margin: 4px; }
+.m-8 { margin: 8px; }
+.mx-8 { margin-left: 8px; margin-right: 8px; }
+.mx-12 { margin-left: 12px; margin-right: 12px; }
+.my-8 { margin-top: 8px; margin-bottom: 8px; }
+.my-12 { margin-top: 12px; margin-bottom: 12px; }
+
+/* Cursor / Pointer */
+.pointer { cursor: pointer; }
+
+/* Overflow */
+.overflow-hidden { overflow: hidden; }
+.overflow-auto { overflow: auto; }
+.overflow-y-auto { overflow-y: auto; }
+.overflow-x-auto { overflow-x: auto; }
+
+/* Position */
+.relative { position: relative; }
+.absolute { position: absolute; }
+.sticky { position: sticky; }
+
+/* Rounded corners */
+.rounded-sm { border-radius: 4px; }
+.rounded-md { border-radius: 6px; }
+.rounded-lg { border-radius: 8px; }
+.rounded-full { border-radius: 9999px; }

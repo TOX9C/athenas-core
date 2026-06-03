@@ -71,3 +71,7 @@ logs/
 
 # Coverage
 coverage/
+
+# Compiled/binary artifacts
+*.rsbak
+*.scpt

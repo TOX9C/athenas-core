@@ -24,16 +24,6 @@ export type { AthenaReportErrorInput } from './athena-report-error.js'
 export { athenaReportCompletion, athenaReportCompletionSchema } from './athena-report-completion.js'
 export type { AthenaReportCompletionInput } from './athena-report-completion.js'
 
-// Phase 2 stubs
-export { controlPause, controlPauseSchema } from './control-pause.js'
-export type { ControlPauseInput } from './control-pause.js'
-
-export { controlResume, controlResumeSchema } from './control-resume.js'
-export type { ControlResumeInput } from './control-resume.js'
-
-export { controlCancel, controlCancelSchema } from './control-cancel.js'
-export type { ControlCancelInput } from './control-cancel.js'
-
 // Output tools
 export { athenaReadOutput, athenaReadOutputSchema } from './athena-read-output.js'
 export type { AthenaReadOutputInput } from './athena-read-output.js'

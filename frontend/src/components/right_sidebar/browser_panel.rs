@@ -68,7 +68,7 @@ pub fn RightBrowserPanel() -> Element {
 
                 // URL bar
                 input {
-                    style: "flex: 1; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11px; outline: none;",
+                    style: "flex: 1; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none; font-family: var(--fontFamily); transition: border-color 0.2s ease;",
                     value: "{url_input}",
                     oninput: move |e| url_input.set(e.value()),
                     onkeydown: move |e: KeyboardEvent| {
@@ -102,7 +102,7 @@ pub fn RightBrowserPanel() -> Element {
                 for recent_url in ["https://docs.rs", "https://crates.io", "https://localhost:3000"].iter() {
                     div {
                         key: "{recent_url}",
-                        style: "font-size: 11px; padding: 4px 8px; color: var(--textMuted); cursor: pointer; border-radius: 4px;",
+                        style: "font-size: 11px; padding: 6px 10px; color: var(--textMuted); cursor: pointer; border-radius: 4px; transition: color 0.15s ease, background 0.15s ease;",
                         onclick: move |_| {
                             url_input.set(recent_url.to_string());
                             url.set(recent_url.to_string());

@@ -22,9 +22,9 @@ describe('Package exports', () => {
     expect(typeof mod.athenaUpdateStatus).toBe('function')
     expect(typeof mod.athenaReportError).toBe('function')
     expect(typeof mod.athenaReportCompletion).toBe('function')
-    expect(typeof mod.controlPause).toBe('function')
-    expect(typeof mod.controlResume).toBe('function')
-    expect(typeof mod.controlCancel).toBe('function')
+    expect(typeof mod.athenaReadOutput).toBe('function')
+    expect(typeof mod.athenaStreamOutput).toBe('function')
+    expect(typeof mod.athenaListAgents).toBe('function')
   })
 
   it('exports tool schemas', async () => {

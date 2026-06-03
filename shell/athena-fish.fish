@@ -5,6 +5,11 @@
 # This emits VS Code-style OSC 633 sequences that Athena's Core
 # terminal parses to track commands, CWD, and exit codes.
 
+if set -q __ATHENA_SOURCED
+  exit 0
+end
+set -g __ATHENA_SOURCED 1
+
 if test "$ATHENA_SHELL_INTEGRATION" = "1"
   # Already in an Athena PTY — hooks were injected on spawn
   exit 0

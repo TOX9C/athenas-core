@@ -84,22 +84,15 @@ impl AgentStatusState {
             }
         } else {
             self.statuses.push((
-                key,
+                key.clone(),
                 AgentStatus {
-                    pane_id: update
-                        .status
-                        .as_ref()
-                        .map(|_| String::new())
-                        .unwrap_or_default(),
+                    pane_id: key,
                     status: update.status.unwrap_or_default(),
                     message: update.message,
                     progress: update.progress,
                     last_updated_at: now,
                 },
             ));
-            // Fix: set pane_id correctly on new entries.
-            let last = self.statuses.last_mut().unwrap();
-            last.1.pane_id = last.0.clone();
         }
     }
 

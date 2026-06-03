@@ -383,24 +383,22 @@ impl SwarmCoordinator {
                     let state_path = ade_dir.join("swarm-state.json");
 
                     match serde_json::to_string_pretty(&state) {
-                        Ok(serialized) => {
-                            match fs::File::create(&tmp_path).await {
-                                Ok(mut file) => {
-                                    if let Err(e) = file.write_all(serialized.as_bytes()).await {
-                                        log::error!("swarm state write failed: {}", e);
-                                    }
-                                    if let Err(e) = file.flush().await {
-                                        log::error!("swarm state flush failed: {}", e);
-                                    }
-                                    if let Err(e) = fs::rename(&tmp_path, &state_path).await {
-                                        log::error!("swarm state rename failed: {}", e);
-                                    }
+                        Ok(serialized) => match fs::File::create(&tmp_path).await {
+                            Ok(mut file) => {
+                                if let Err(e) = file.write_all(serialized.as_bytes()).await {
+                                    log::error!("swarm state write failed: {}", e);
                                 }
-                                Err(e) => {
-                                    log::error!("swarm state file create failed: {}", e);
+                                if let Err(e) = file.flush().await {
+                                    log::error!("swarm state flush failed: {}", e);
+                                }
+                                if let Err(e) = fs::rename(&tmp_path, &state_path).await {
+                                    log::error!("swarm state rename failed: {}", e);
                                 }
                             }
-                        }
+                            Err(e) => {
+                                log::error!("swarm state file create failed: {}", e);
+                            }
+                        },
                         Err(e) => {
                             log::error!("swarm state serialization failed: {}", e);
                         }

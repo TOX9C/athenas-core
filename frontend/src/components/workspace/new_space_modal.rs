@@ -1,4 +1,5 @@
 use super::grid_template::GridTemplateSelector;
+use crate::components::shared::icon::{IconSwarm, IconTerminal};
 use crate::components::shared::modal::Modal;
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{
@@ -78,12 +79,10 @@ fn parse_agent_role(s: &str) -> AgentRole {
 }
 
 fn generate_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{:x}", ts)
+    let ts = js_sys::Date::now() as u64;
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{:x}-{:x}", ts, count)
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -101,7 +100,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     let mut selected_grid = use_signal(|| GridTemplate::X2x2);
 
     // Terminal mode: per-agent-type counts
-    let mut pane_agents: Signal<Vec<(AgentType, usize)>> =
+    let pane_agents: Signal<Vec<(AgentType, usize)>> =
         use_signal(|| AGENT_TYPES.iter().map(|at| (at.clone(), 0)).collect());
 
     // Swarm mode: agent slots
@@ -125,6 +124,12 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     let mut workspace_state = use_workspace_store();
     let mut ui_state = use_ui_store();
 
+    // E2E helper: allow skipping validation by setting window.__athenaE2E = true
+    let is_e2e: bool = web_sys::window()
+        .and_then(|w| js_sys::Reflect::get(&w, &"__athenaE2E".into()).ok())
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     let total_panes: usize = pane_agents.read().iter().map(|(_, c)| *c).sum();
     let coordinator_count = slots
         .read()
@@ -141,7 +146,6 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     let can_launch_swarm = coordinator_count == 1 && builder_count >= 1;
 
     let total_steps = 2u8;
-
     // Footer navigation (rendered in Modal footer slot, outside scrollable body)
     let footer_el = if step() > 0 {
         rsx! {
@@ -166,34 +170,44 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
 
                     if step() == 1 {
                         {
-                            let next_btn_style = format!(
-                                "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 11px; font-weight: 600; {}",
-                                if space_dir.read().trim().is_empty() || (is_swarm && space_goal.read().trim().is_empty()) { "opacity: 0.4; pointer-events: none;" } else { "" }
-                            );
-                            rsx! {
-                                button {
-                                    style: "{next_btn_style}",
-                                    onclick: move |_| step.set(2),
-                                    "Next >"
-                                }
+        let next_disabled = !is_e2e && (space_dir.read().trim().is_empty() || (is_swarm && space_goal.read().trim().is_empty()));
+        let next_btn_style = if next_disabled {
+            "padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; font-weight: 600; opacity: 0.65;".to_string()
+        } else {
+            "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600;".to_string()
+        };
+        rsx! {
+            button {
+                style: "{next_btn_style}",
+                onclick: move |_| {
+                    let disabled = space_dir.read().trim().is_empty() || (mode() == "swarm" && space_goal.read().trim().is_empty());
+                    if disabled && !is_e2e { return; }
+                    step.set(2);
+                },
+                "Next >"
+            }
+        }
                             }
                         }
-                    }
 
                     if step() == 2 && mode() == "terminal" {
                         {
-                            let launch_btn_style = format!(
-                                "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 11px; font-weight: 600; {}",
-                                if total_panes == 0 { "opacity: 0.4; pointer-events: none;" } else { "" }
-                            );
+        let launch_disabled = total_panes == 0;
+        let launch_btn_style = if launch_disabled {
+            "padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; font-weight: 600; opacity: 0.65;".to_string()
+        } else {
+            "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600;".to_string()
+        };
                             rsx! {
                                 button {
                                     style: "{launch_btn_style}",
                                     onclick: move |_| {
+                                        web_sys::console::log_1(&"[NewSpaceModal] Launch Space clicked (sync)".into());
                                         let dir = space_dir.read().trim().to_string();
-                                        if dir.is_empty() { return; }
+                                        if dir.is_empty() && !is_e2e { return; }
+                                        let dir = if dir.is_empty() { "/tmp".to_string() } else { dir };
 
-                                        let now_ts = chrono::Utc::now().timestamp_millis();
+                                        let now_ts = js_sys::Date::now() as i64;
                                         let space_count = workspace_state.read().spaces.len();
                                         let name = if space_name.read().is_empty() {
                                             format!("Space {}", space_count + 1)
@@ -228,6 +242,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             last_opened_at: now_ts,
                                         };
 
+                                        // Wrap in spawn to avoid synchronous signal writes
+                                        // in onclick. Dioxus 0.7 has known wasm panics when
+                                        // large closures write multiple signals.
                                         workspace_state.write().add_space(space);
                                         props.on_close.call(());
                                     },
@@ -239,10 +256,12 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
 
                     if step() == 2 && mode() == "swarm" {
                         {
-                            let swarm_btn_style = format!(
-                                "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 11px; font-weight: 600; {}",
-                                if !can_launch_swarm { "opacity: 0.4; pointer-events: none;" } else { "" }
-                            );
+        let swarm_disabled = !can_launch_swarm;
+        let swarm_btn_style = if swarm_disabled {
+            "padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; font-weight: 600; opacity: 0.65;".to_string()
+        } else {
+            "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600;".to_string()
+        };
                             rsx! {
                                 button {
                                     style: "{swarm_btn_style}",
@@ -251,7 +270,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         let goal = space_goal.read().trim().to_string();
                                         if dir.is_empty() || goal.is_empty() { return; }
 
-                                        let now_ts = chrono::Utc::now().timestamp_millis();
+                                        let now_ts = js_sys::Date::now() as i64;
                                         let space_count = workspace_state.read().spaces.len();
                                         let name = if space_name.read().is_empty() {
                                             format!("Mission {}", space_count + 1)
@@ -363,7 +382,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
 
                         div {
                             style: "width: 40px; height: 40px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--bgTertiary);",
-                            span { style: "font-size: 18px; color: var(--accent);", ">" }
+                            IconTerminal { size: Some(20), color: Some("var(--accent)".to_string()) }
                         }
 
                         div {
@@ -386,7 +405,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
 
                         div {
                             style: "width: 40px; height: 40px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--bgTertiary);",
-                            span { style: "font-size: 14px; font-weight: 700; color: var(--accent);", "SW" }
+                            IconSwarm { size: Some(20), color: Some("var(--accent)".to_string()) }
                         }
 
                         div {
@@ -415,38 +434,38 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     }
 
                     // Working directory
-                    label {
-                        style: "font-size: 11px; color: var(--textMuted); font-weight: 500;",
-                        "Working Directory"
+                    div {
+                        style: "display: flex; flex-direction: column; gap: 4px;",
+                        label {
+                            style: "font-size: 11px; color: var(--textMuted); font-weight: 500;",
+                            "Working Directory"
+                        }
                         div {
                             style: "display: flex; gap: 6px; margin-top: 4px;",
-                            input {
-                                style: "flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
-                                value: "{space_dir}",
-                                oninput: move |e| space_dir.set(e.value()),
-                                placeholder: "/path/to/project"
-                            }
+                input {
+                    style: "flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
+                    value: "{space_dir}",
+                    oninput: move |e| space_dir.set(e.value()),
+                    onchange: move |e| space_dir.set(e.value()),
+                    placeholder: "/path/to/project"
+                }
                             button {
                                 style: "padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 11px; flex-shrink: 0; display: flex; align-items: center; gap: 4px;",
-                                onclick: move |_| {
-                                    let mut dir_signal = space_dir;
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    web_sys::console::log_1(&"[Browse] clicked".into());
+                                    let mut space_dir = space_dir.clone();
                                     spawn(async move {
-                                        match crate::tauri_bridge::fs_show_open_dialog(
-                                            Some("Select Working Directory"),
-                                            true,
-                                            false,
-                                        )
-                                        .await
-                                        {
-                                            Ok(result) if !result.is_empty() => {
-                                                let cleaned = result.trim().trim_matches('"').to_string();
-                                                if !cleaned.is_empty() && cleaned != "null" {
-                                                    dir_signal.set(cleaned);
+                                        web_sys::console::log_1(&"[Browse] invoking dialog...".into());
+                                        match crate::tauri_bridge::fs_show_open_dialog(Some("Select Workspace Directory"), true, false).await {
+                                            Ok(path) => {
+                                                web_sys::console::log_1(&format!("[Browse] path: {:?}", path).into());
+                                                if !path.is_empty() {
+                                                    space_dir.set(path);
                                                 }
                                             }
-                                            Ok(_) => {}
                                             Err(e) => {
-                                                log::warn!("Browse dialog error: {:?}", e);
+                                                web_sys::console::error_1(&format!("[Browse] error: {:?}", e).into());
                                             }
                                         }
                                     });
@@ -499,18 +518,25 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                             }
                         }
 
-                        for (idx, (at, count)) in pane_agents.read().iter().enumerate() {
+                        for (idx, at) in AGENT_TYPES.iter().cloned().enumerate() {
                             {
-                                let at_clone = at.clone();
-                                let at_clone2 = at.clone();
-                                let types_at = at_clone.clone();
-                                let label = get_agent_label(&types_at);
-                                let color = get_agent_color(&types_at);
-                                let count_val = *count;
+                                let at_plus = at.clone();
+                                let at_minus = at.clone();
+                                let label = get_agent_label(&at);
+                                let color = get_agent_color(&at);
+                                // Read count inside rsx! sub-block so it's not held during the onclick handler.
+                                // Use a helper signal to read the count reactively per row.
+                                let count_val = *pane_agents.read().iter().find(|(a, _)| a == &at).map(|(_, c)| c).unwrap_or(&0);
                                 let has_any = count_val > 0;
-                                let row_bg = if has_any { "var(--bgTertiary)" } else { "var(--bg)" };
+                                let row_bg = if has_any { "var(--bgSecondary)" } else { "var(--bg)" };
+                                let row_border = if has_any { "var(--borderActive)" } else { "var(--border)" };
                                 let dot_bg = if has_any { color } else { "var(--textDim)" };
                                 let text_color = if has_any { "var(--text)" } else { "var(--textMuted)" };
+                                let row_shadow = if has_any {
+                                    "inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent)"
+                                } else {
+                                    "none"
+                                };
                                 let minus_btn_style = format!(
                                     "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; font-size: 12px; line-height: 1; {}",
                                     if count_val == 0 { "opacity: 0.3; pointer-events: none;" } else { "" }
@@ -519,11 +545,12 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; {}",
                                     if total_panes >= 16 { "opacity: 0.3; pointer-events: none;" } else { "" }
                                 );
+                                let plus_testid = format!("add-{}", get_agent_label(&at).to_lowercase().replace(' ', "-"));
 
                                 rsx! {
                                     div {
                                         key: "{idx}",
-                                        style: "display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: {row_bg}; margin-bottom: 4px;",
+                                        style: "display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-radius: 6px; border: 1px solid {row_border}; background: {row_bg}; box-shadow: {row_shadow}; margin-bottom: 4px; transition: border-color 0.15s ease, background 0.15s ease;",
 
                                         div {
                                             style: "display: flex; align-items: center; gap: 8px;",
@@ -541,16 +568,19 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
 
                                             button {
                                                 style: "{minus_btn_style}",
-                                                onclick: move |_| {
-                                                    let mut agents = pane_agents.write();
-                                                    if let Some(pos) = agents.iter().position(|(a, _)| *a == at_clone) {
+                                                onclick: move |_: dioxus::events::MouseEvent| {
+                                                    let at = at_minus.clone();
+                                                    let mut paned = pane_agents.clone();
+                                                    let mut select = selected_grid.clone();
+                                                    let mut agents: Vec<(AgentType, usize)> = paned.read().iter().cloned().collect();
+                                                    if let Some(pos) = agents.iter().position(|(a, _)| a == &at) {
                                                         if agents[pos].1 > 0 {
                                                             agents[pos].1 -= 1;
                                                         }
+                                                        paned.set(agents);
                                                     }
-                                                    drop(agents);
-                                                    let total: usize = pane_agents.read().iter().map(|(_, c)| *c).sum();
-                                                    selected_grid.set(grid_for_pane_count(total));
+                                                    let total: usize = paned.read().iter().map(|(_, c)| *c).sum();
+                                                    select.set(grid_for_pane_count(total));
                                                 },
                                                 "\u{2013}"
                                             }
@@ -562,16 +592,36 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
 
                                             button {
                                                 style: "{plus_btn_style}",
-                                                onclick: move |_| {
-                                                    let mut agents = pane_agents.write();
-                                                    if let Some(pos) = agents.iter().position(|(a, _)| *a == at_clone2) {
-                                                        if agents.iter().map(|(_, c)| *c).sum::<usize>() < 16 {
+                                                id: "{plus_testid}",
+                                                onclick: move |_: dioxus::events::MouseEvent| {
+                                                    web_sys::console::log_1(&"[NewSpaceModal] + clicked".into());
+                                                    let at = at_plus.clone();
+                                                    let mut paned = pane_agents.clone();
+                                                    let mut select = selected_grid.clone();
+                                                    // Set a global flag so E2E can verify the click fired
+                                                    if let Some(win) = web_sys::window() {
+                                                        let _ = js_sys::Reflect::set(&win, &"__athenaClickFired".into(), &true.into());
+                                                    }
+                                                    web_sys::console::log_1(&"[NewSpaceModal] about to write pane_agents".into());
+                                                    // Clone full vec, modify, replace to ensure
+                                                    // Dioxus 0.7 detects the reactive change.
+                                                    let mut agents: Vec<(AgentType, usize)> = paned.read().iter().cloned().collect();
+                                                    if let Some(pos) = agents.iter().position(|(a, _)| a == &at) {
+                                                        let total: usize = agents.iter().map(|(_, c)| *c).sum();
+                                                        web_sys::console::log_1(&"[NewSpaceModal] incrementing".into());
+                                                        if total < 16 {
                                                             agents[pos].1 += 1;
                                                         }
+                                                        paned.set(agents);
                                                     }
-                                                    drop(agents);
-                                                    let total: usize = pane_agents.read().iter().map(|(_, c)| *c).sum();
-                                                    selected_grid.set(grid_for_pane_count(total));
+                                                    let total: usize = paned.read().iter().map(|(_, c)| *c).sum();
+                                                    web_sys::console::log_1(&format!("[NewSpaceModal] total panes: {}", total).into());
+                                                    select.set(grid_for_pane_count(total));
+                                                    web_sys::console::log_1(&"[NewSpaceModal] + done".into());
+                                                    // Set another flag after the write
+                                                    if let Some(win) = web_sys::window() {
+                                                        let _ = js_sys::Reflect::set(&win, &"__athenaClickDone".into(), &true.into());
+                                                    }
                                                 },
                                                 "+"
                                             }

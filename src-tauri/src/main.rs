@@ -13,9 +13,11 @@ use tauri::Manager;
 fn main() {
     let app_state = state::AppState::new();
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Debug)
-            .build())
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .level(log::LevelFilter::Debug)
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init());
 
@@ -159,9 +161,7 @@ fn main() {
             store_api_key,
             clear_api_key,
         ])
-        .setup(|app| {
-            Ok(())
-        })
+        .setup(|_app| Ok(()))
         .build(tauri::generate_context!("tauri.conf.json"))
         .expect("error while building tauri application");
 
@@ -176,11 +176,6 @@ fn main() {
             log::info!("Exit requested -- initiating graceful shutdown");
 
             let state = app_handle.state::<state::AppState>();
-
-            // Kill all active PTY sessions
-            if let Ok(manager) = state.pty_manager.lock() {
-                manager.graceful_shutdown();
-            }
 
             // Shut down MCP server (synchronous — no tokio runtime on main thread)
             {

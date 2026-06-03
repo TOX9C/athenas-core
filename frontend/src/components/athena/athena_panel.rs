@@ -7,12 +7,19 @@ use crate::stores::athena::{
 };
 use crate::tauri_bridge;
 use dioxus::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[component]
 pub fn AthenaPanel() -> Element {
-    let athena_state = use_athena_store();
+    let mut athena_state = use_athena_store();
     let mut show_sessions = use_signal(|| false);
     let mut mounted = use_signal(|| false);
+    let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
+        use_hook(|| Rc::new(RefCell::new(Vec::new())));
+    let unlisteners_clone = unlisteners.clone();
+
+    let is_open = athena_state.read().is_open;
 
     // Register Tauri event listeners on mount.
     use_effect(move || {
@@ -25,7 +32,7 @@ pub fn AthenaPanel() -> Element {
 
         // athena:status — Update thinking/working/idle state.
         let mut status_store = store;
-        let _ = tauri_bridge::listen("athena:status", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("athena:status", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let status = val.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
                 let detail = val
@@ -34,11 +41,13 @@ pub fn AthenaPanel() -> Element {
                     .map(|s| s.to_string());
                 status_store.write().handle_status_event(status, detail);
             }
-        });
+        }) {
+            unlisteners_clone.borrow_mut().push(u);
+        }
 
         // athena:askUser — Show interactive user question modal.
         let mut ask_store = store;
-        let _ = tauri_bridge::listen("athena:askUser", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("athena:askUser", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let request_id = val
                     .get("requestId")
@@ -67,13 +76,17 @@ pub fn AthenaPanel() -> Element {
                             .collect()
                     })
                     .unwrap_or_default();
-                ask_store.write().handle_ask_user(request_id, question, options);
+                ask_store
+                    .write()
+                    .handle_ask_user(request_id, question, options);
             }
-        });
+        }) {
+            unlisteners_clone.borrow_mut().push(u);
+        }
 
         // athena:planUpdate — Update plan display.
         let mut plan_store = store;
-        let _ = tauri_bridge::listen("athena:planUpdate", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("athena:planUpdate", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let plan_id = val
                     .get("planId")
@@ -85,7 +98,10 @@ pub fn AthenaPanel() -> Element {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let status_str = val.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+                let status_str = val
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("pending");
                 let status = match status_str {
                     "in_progress" => PlanStatus::InProgress,
                     "completed" => PlanStatus::Completed,
@@ -110,8 +126,10 @@ pub fn AthenaPanel() -> Element {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let step_status_str =
-                                    s.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+                                let step_status_str = s
+                                    .get("status")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("pending");
                                 let step_status = match step_status_str {
                                     "in_progress" => PlanStepStatus::InProgress,
                                     "completed" => PlanStepStatus::Completed,
@@ -141,11 +159,13 @@ pub fn AthenaPanel() -> Element {
                     .write()
                     .handle_plan_update(plan_id, goal, steps, status);
             }
-        });
+        }) {
+            unlisteners_clone.borrow_mut().push(u);
+        }
 
         // athena:planEvaluated — Show evaluation results.
         let mut eval_store = store;
-        let _ = tauri_bridge::listen("athena:planEvaluated", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("athena:planEvaluated", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let plan_id = val
                     .get("planId")
@@ -173,10 +193,8 @@ pub fn AthenaPanel() -> Element {
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|s| {
-                                let step_id =
-                                    s.get("stepId").and_then(|v| v.as_str())?.to_string();
-                                let status =
-                                    s.get("status").and_then(|v| v.as_str())?.to_string();
+                                let step_id = s.get("stepId").and_then(|v| v.as_str())?.to_string();
+                                let status = s.get("status").and_then(|v| v.as_str())?.to_string();
                                 let summary = s
                                     .get("summary")
                                     .and_then(|v| v.as_str())
@@ -199,8 +217,22 @@ pub fn AthenaPanel() -> Element {
                     reasoning,
                 );
             }
-        });
+        }) {
+            unlisteners_clone.borrow_mut().push(u);
+        }
     });
+
+    // Cleanup: unlisten all event listeners on component unmount.
+    let unlisteners_drop = unlisteners.clone();
+    use_drop(move || {
+        for unlisten in unlisteners_drop.borrow_mut().drain(..) {
+            unlisten();
+        }
+    });
+
+    if !is_open {
+        return rsx! {};
+    }
 
     let state = athena_state.read();
 
@@ -213,7 +245,7 @@ pub fn AthenaPanel() -> Element {
     rsx! {
         div {
             class: "athena-panel",
-            style: "display: flex; flex-direction: row; height: 100%; background: var(--bg); color: var(--text);",
+            style: "position: absolute; bottom: 0; left: 0; right: 0; height: 35vh; display: flex; flex-direction: row; background: var(--bg); color: var(--text); border-top: 1px solid var(--border); z-index: 100; box-shadow: 0 -4px 16px rgba(0,0,0,0.4);",
 
             // Session list sidebar (toggle)
             if show_sessions() {
@@ -252,6 +284,13 @@ pub fn AthenaPanel() -> Element {
                             style: "font-size: 9px; color: var(--accent);",
                             "streaming..."
                         }
+                    }
+
+                    button {
+                        style: "padding: 4px 8px; border-radius: 4px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; font-size: 13px; margin-left: 4px;",
+                        title: "Close panel (Cmd+J)",
+                        onclick: move |_| athena_state.write().is_open = false,
+                        "\u{2715}"
                     }
                 }
 

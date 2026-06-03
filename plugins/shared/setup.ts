@@ -150,7 +150,9 @@ function writeMcpConfig(
     fs.mkdirSync(dir, { recursive: true })
   }
 
-  fs.writeFileSync(discovery.configPath!, JSON.stringify(existing, null, 2) + '\n')
+  const tmpPath = discovery.configPath! + '.tmp'
+  fs.writeFileSync(tmpPath, JSON.stringify(existing, null, 2) + '\n')
+  fs.renameSync(tmpPath, discovery.configPath!)
 
   return {
     success: true,
@@ -178,7 +180,9 @@ export function removeMcpEntry(
     }
 
     delete cfg.athena
-    fs.writeFileSync(discovery.configPath, JSON.stringify(cfg, null, 2) + '\n')
+    const tmpPath = discovery.configPath + '.tmp'
+    fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2) + '\n')
+    fs.renameSync(tmpPath, discovery.configPath)
 
     return { success: true, configPath: discovery.configPath, created: false, updated: true }
   } catch (err: any) {

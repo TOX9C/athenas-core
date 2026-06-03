@@ -9,6 +9,11 @@
 # (Athena sets this automatically for its own PTY sessions), the hooks
 # are installed automatically by the terminal itself.
 
+if [[ -n "$__ATHENA_SOURCED" ]]; then
+  return 0
+fi
+__ATHENA_SOURCED=1
+
 if [[ "$ATHENA_SHELL_INTEGRATION" == "1" ]]; then
   # Already in an Athena PTY — hooks were injected on spawn
   return 0

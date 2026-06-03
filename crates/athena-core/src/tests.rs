@@ -3,9 +3,7 @@
 // ---------------------------------------------------------------------------
 
 mod output_buffer_tests {
-    use crate::output_buffer::{
-        GetOutputOptions, OutputBuffer,
-    };
+    use crate::output_buffer::{GetOutputOptions, OutputBuffer};
 
     fn make_buffer() -> OutputBuffer {
         OutputBuffer::new()
@@ -174,9 +172,7 @@ mod output_buffer_tests {
 // ---------------------------------------------------------------------------
 
 mod plan_manager_tests {
-    use crate::plan_manager::{
-        PlanInput, PlanManager, PlanStepInput, PlanStatus, StepStatus,
-    };
+    use crate::plan_manager::{PlanInput, PlanManager, PlanStatus, PlanStepInput, StepStatus};
 
     fn make_manager() -> PlanManager {
         PlanManager::new()
@@ -397,10 +393,7 @@ mod notification_tests {
     fn test_mark_all_read() {
         let svc = make_service();
         for i in 0..5 {
-            svc.push_notification(make_event(
-                NotificationType::Info,
-                &format!("msg {}", i),
-            ));
+            svc.push_notification(make_event(NotificationType::Info, &format!("msg {}", i)));
         }
         let marked = svc.mark_all_read();
         assert_eq!(marked, 5);
@@ -420,10 +413,7 @@ mod notification_tests {
     fn test_clear_all() {
         let svc = make_service();
         for i in 0..10 {
-            svc.push_notification(make_event(
-                NotificationType::Info,
-                &format!("msg {}", i),
-            ));
+            svc.push_notification(make_event(NotificationType::Info, &format!("msg {}", i)));
         }
         let cleared = svc.clear_all();
         assert_eq!(cleared, 10);
@@ -434,10 +424,7 @@ mod notification_tests {
     fn test_max_history() {
         let svc = make_service();
         for i in 0..510 {
-            svc.push_notification(make_event(
-                NotificationType::Info,
-                &format!("msg {}", i),
-            ));
+            svc.push_notification(make_event(NotificationType::Info, &format!("msg {}", i)));
         }
         let history = svc.get_all_history();
         assert_eq!(history.len(), 500);
@@ -448,10 +435,7 @@ mod notification_tests {
     fn test_get_history_with_limit() {
         let svc = make_service();
         for i in 0..10 {
-            svc.push_notification(make_event(
-                NotificationType::Info,
-                &format!("msg {}", i),
-            ));
+            svc.push_notification(make_event(NotificationType::Info, &format!("msg {}", i)));
         }
         let opts = HistoryOptions {
             limit: Some(3),
@@ -565,9 +549,7 @@ mod agent_comms_tests {
 // ---------------------------------------------------------------------------
 
 mod swarm_tests {
-    use crate::swarm::{
-        SwarmCoordinator, SwarmState,
-    };
+    use crate::swarm::{SwarmCoordinator, SwarmState};
 
     fn make_coordinator() -> SwarmCoordinator {
         SwarmCoordinator::new()
@@ -740,9 +722,8 @@ mod shell_integration_tests {
     #[test]
     fn test_process_sequences_full_flow() {
         let mut tracker = CommandTracker::new();
-        let data = format!(
-            "\x1b]633;B;cargo build\x07\x1b]633;C\x07\x1b]633;E\x07\x1b]633;D;0\x07"
-        );
+        let data =
+            format!("\x1b]633;B;cargo build\x07\x1b]633;C\x07\x1b]633;E\x07\x1b]633;D;0\x07");
         let parsed = parse_osc633(&data);
         let events = process_sequences(&mut tracker, &parsed, "pane-1");
         assert_eq!(events.len(), 3);
@@ -762,9 +743,7 @@ mod shell_integration_tests {
 
     #[test]
     fn test_strip_osc_multiple_sequences() {
-        let input = format!(
-            "start\x1b]633;P;/tmp\x07mid\x1b]633;A\x07end"
-        );
+        let input = format!("start\x1b]633;P;/tmp\x07mid\x1b]633;A\x07end");
         let stripped = strip_osc633(&input);
         assert_eq!(stripped, "startmidend");
     }
@@ -902,9 +881,7 @@ mod search_tests {
             Ok(search_result) => {
                 assert_eq!(search_result.stats.total_matches, 1);
                 assert_eq!(search_result.stats.files_matched, 1);
-                assert!(search_result.matches[0]
-                    .line_text
-                    .contains("hello"));
+                assert!(search_result.matches[0].line_text.contains("hello"));
             }
             Err(SearchError::RgNotFound) => {
                 println!("ripgrep not found — skipping search test");

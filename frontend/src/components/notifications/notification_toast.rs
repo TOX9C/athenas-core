@@ -1,4 +1,4 @@
-use crate::components::shared::toast::{Toast, ToastItem, ToastType, use_toast_store};
+use crate::components::shared::toast::{use_toast_store, Toast, ToastItem, ToastType};
 use crate::stores::notification::{
     add_notification, use_notification_store, NotificationRecord, NotificationType,
 };
@@ -23,7 +23,11 @@ pub fn NotificationToast() -> Element {
         let mut notif_store = notifications;
         let _ = tauri_bridge::listen("notifications:new", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let id = val
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let title = val
                     .get("title")
                     .and_then(|v| v.as_str())
@@ -84,7 +88,7 @@ pub fn NotificationToast() -> Element {
     rsx! {
         div {
             class: "notification-toast-container",
-            style: "position: fixed; bottom: 16px; right: 16px; z-index: 100; display: flex; flex-direction: column; gap: 8px; pointer-events: none;",
+            style: "position: fixed; bottom: 16px; right: 16px; z-index: 100; display: flex; flex-direction: column; gap: 10px; pointer-events: none; ",
 
             for toast in toasts.read().toasts.iter() {
                 ToastItem { key: "{toast.id}", toast: toast.clone() }

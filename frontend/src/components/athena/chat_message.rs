@@ -17,25 +17,20 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
         (
             "U",
             "var(--bgTertiary)",
-            "var(--text)",
+            "var(--accent)",
             "var(--bgTertiary)",
             "flex-end",
         )
     } else {
         (
             "A",
-            "#38bdf822",
-            "#38bdf8",
+            "var(--bgSecondary)",
+            "var(--accent)",
             "var(--bgSecondary)",
             "flex-start",
         )
     };
 
-    let border_color = if is_error {
-        "var(--error)"
-    } else {
-        "var(--border)"
-    };
     let content_color = if is_error {
         "var(--error)"
     } else {
@@ -44,7 +39,7 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
 
     let time_str = {
         // Simple timestamp formatting
-        let secs = msg.timestamp / 1000;
+        let secs = msg.timestamp;
         let hours = ((secs / 3600) % 24) as u8;
         let mins = ((secs / 60) % 60) as u8;
         format!("{:02}:{:02}", hours, mins)
@@ -80,7 +75,7 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
 
                 // Content
                 div {
-                    style: "padding: 10px 14px; border-radius: 8px; border: 1px solid {border_color}; background: {bg}; color: {content_color}; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;",
+                    style: "padding: 10px 14px; background: {bg}; color: {content_color}; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;",
 
                     "{msg.content}"
                 }

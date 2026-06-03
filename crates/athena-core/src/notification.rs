@@ -97,7 +97,8 @@ pub enum NotificationError {
 /// Thread-safe notification service.
 pub struct NotificationService {
     history: Arc<RwLock<Vec<NotificationRecord>>>,
-    event_emitter: Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter:
+        Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 }
 
 impl std::fmt::Debug for NotificationService {

@@ -28,6 +28,14 @@ echo "Copying build output to dist..."
 rm -rf "$DIST_DIR"
 cp -r "$BUILD_DIR" "$DIST_DIR"
 
+# Tauri serves dist/ as static files, so vendored assets must be copied into it.
+VENDOR_DIR="$SCRIPT_DIR/vendor"
+if [ -d "$VENDOR_DIR" ]; then
+  cp -r "$VENDOR_DIR" "$DIST_DIR/vendor"
+  VENDOR_FILES=$(find "$DIST_DIR/vendor" -type f | wc -l | tr -d ' ')
+  echo "Vendored assets copied: $VENDOR_FILES files in dist/vendor/"
+fi
+
 # Create symlinks for hashed filenames BEFORE checking entry path.
 # Dioxus release builds output to assets/ with hashes; debug builds to wasm/ without.
 for wasm in "$DIST_DIR"/assets/athena-frontend_bg-dx*.wasm; do
