@@ -16,6 +16,14 @@ pub enum AgentType {
     Shell,
 }
 
+/// Configuration for a custom agent that the user adds via Settings > Agents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CustomAgent {
+    pub id: String,
+    pub alias: String,
+    pub command: String,
+}
+
 /// Grid layout template for a space.
 #[derive(
     Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, Default, Copy,
@@ -57,6 +65,9 @@ pub struct PaneConfig {
     /// Name of the model currently used by this pane's agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_name: Option<String>,
+    /// Resume session ID for agents that support session resumption (e.g. Claude Code).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_id: Option<String>,
 }
 
 /// A workspace space (tab group) containing panes.

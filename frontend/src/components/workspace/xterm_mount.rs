@@ -1,5 +1,6 @@
 use crate::stores::terminal::use_terminal_store;
 use crate::stores::terminal::TerminalSession;
+use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
     pty_default_shell_cached, pty_listen_raw, pty_resize, pty_spawn, pty_write,
 };
@@ -32,6 +33,8 @@ struct XtermCleanup {
     _size_watch_interval_id: Option<i32>,
     /// Rooted interval callback closure for the size watcher.
     _size_watch_closure: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+    /// Rooted keydown handler for custom macOS keyboard shortcuts.
+    _keydown_handler: Option<JsValue>,
 }
 
 /// Mount an xterm.js Terminal into a div with id `pane_id`.
@@ -39,12 +42,13 @@ struct XtermCleanup {
 /// Subscribes to the raw PTY output stream for the pane's session and
 /// pipes incoming bytes directly into the terminal.
 #[component]
-pub fn XtermMount(pane_id: String, cwd: String) -> Element {
+pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id: Option<String>) -> Element {
     let mount_id = pane_id.clone();
     let mut cleanup: Signal<Option<XtermCleanup>> = use_signal(|| None);
     let mut is_initialized = use_signal(|| false);
     let term_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let mut terminal_store = use_terminal_store();
+    let workspace_store = use_workspace_store();
 
     use_effect(move || {
         if is_initialized() {
@@ -66,6 +70,8 @@ pub fn XtermMount(pane_id: String, cwd: String) -> Element {
 
         is_initialized.set(true);
 
+        let agent_type_for_spawn = agent_type.clone();
+        let resume_id_for_spawn = resume_id.clone();
         let mount_id_for_spawn = mount_id.clone();
         let spawn_cwd = if cwd.trim().is_empty() {
             "/tmp".to_string()
@@ -114,6 +120,27 @@ pub fn XtermMount(pane_id: String, cwd: String) -> Element {
                     .into(),
                 );
                 store.write().ensure_session(&mount_id_for_spawn, 80, 24);
+
+                // Auto-resume agent session if a resume_id is stored
+                if let Some(ref id) = resume_id_for_spawn {
+                    let cmd = match agent_type_for_spawn {
+                        AgentType::Claude => format!("claude --resume {}\n", id),
+                        AgentType::Codex => format!("codex --resume {}\n", id),
+                        AgentType::Opencode => format!("opencode --resume {}\n", id),
+                        AgentType::Gemini => format!("gemini --resume {}\n", id),
+                        _ => String::new(),
+                    };
+                    if !cmd.is_empty() {
+                        let mount_id_for_resume = mount_id_for_spawn.clone();
+                        spawn(async move {
+                            if let Err(e) = pty_write(&mount_id_for_resume, &cmd).await {
+                                web_sys::console::error_1(
+                                    &format!("XtermMount: resume write failed: {:?}", e).into(),
+                                );
+                            }
+                        });
+                    }
+                }
             } else {
                 web_sys::console::log_1(
                     &format!(
@@ -216,6 +243,63 @@ pub fn XtermMount(pane_id: String, cwd: String) -> Element {
                 &format!("[XtermMount] terminal opened for id={}", mount_id).into(),
             );
 
+            // ── Custom keyboard shortcuts (macOS) ────────────────────────────
+            // xterm.js does not send distinct sequences for Shift+Enter or
+            // Cmd+Delete.  We intercept them in capture phase, write the
+            // appropriate escape sequence to the PTY, and prevent xterm.js
+            // from also forwarding its default sequence.
+            let pane_id_keydown = mount_id.clone();
+            let keydown_handler = Closure::wrap(Box::new(
+                move |event: web_sys::KeyboardEvent| {
+                    let is_mac = web_sys::window()
+                        .and_then(|w| w.navigator().platform().ok())
+                        .map(|p| {
+                            let p = p.to_lowercase();
+                            p.contains("mac") || p.contains("darwin")
+                        })
+                        .unwrap_or(false);
+
+                    if !is_mac {
+                        return;
+                    }
+
+                    let meta = event.meta_key();
+                    let shift = event.shift_key();
+                    let ctrl = event.ctrl_key();
+                    let alt = event.alt_key();
+                    let key = event.key();
+
+                    // Shift+Enter → literal newline (not execute)
+                    if key == "Enter" && shift && !meta && !ctrl && !alt {
+                        event.prevent_default();
+                        event.stop_propagation();
+                        let pane_id = pane_id_keydown.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ = pty_write(&pane_id, "\n").await;
+                        });
+                        return;
+                    }
+
+                    // Cmd+Delete (Backspace) → delete to beginning of line
+                    // Maps to readline's unix-line-discard (Ctrl+U).
+                    if key == "Backspace" && meta && !shift && !ctrl && !alt {
+                        event.prevent_default();
+                        event.stop_propagation();
+                        let pane_id = pane_id_keydown.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ = pty_write(&pane_id, "\x15").await;
+                        });
+                        return;
+                    }
+                },
+            ) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+            let keydown_handler_js = keydown_handler.into_js_value();
+            let _ = container.add_event_listener_with_callback_and_bool(
+                "keydown",
+                keydown_handler_js.as_ref().unchecked_ref(),
+                true,
+            );
+
             // On a brand new PTY, clear once before the first fit-triggered
             // resize to avoid a duplicated initial prompt. When reusing an
             // existing PTY session, do not clear; instead, we restore the
@@ -233,8 +317,37 @@ pub fn XtermMount(pane_id: String, cwd: String) -> Element {
             term_ref.set(Some(term_val.clone()));
 
             let term_for_write = term_val.clone();
+            let mount_id_for_scan = mount_id.clone();
+            let workspace_for_scan = workspace_store.clone();
             let unlisten = match pty_listen_raw(&mount_id, move |bytes: Vec<u8>| {
                 write_bytes_to_term(&term_for_write, &bytes);
+                let text = String::from_utf8_lossy(&bytes);
+                if let Some(id) = scan_for_resume_id(&text) {
+                    let mid = mount_id_for_scan.clone();
+                    let mut ws = workspace_for_scan.clone();
+                    spawn(async move {
+                        let mut space_id: Option<String> = None;
+                        {
+                            let ws_guard = ws.read();
+                            for space in &ws_guard.spaces {
+                                if space.panes.iter().any(|p| p.id == mid) {
+                                    space_id = Some(space.id.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(sid) = space_id {
+                            ws.write().update_space(&sid, |space| {
+                                for pane in &mut space.panes {
+                                    if pane.id == mid {
+                                        pane.resume_id = Some(id.clone());
+                                        break;
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
             }) {
                 Ok(u) => u,
                 Err(e) => {
@@ -304,12 +417,13 @@ pub fn XtermMount(pane_id: String, cwd: String) -> Element {
             let mut size_watch_closure_holder: Option<wasm_bindgen::closure::Closure<dyn FnMut()>> =
                 None;
             if let Some(fit_instance) = try_activate_addon(&window, "FitAddon", &term_val) {
-                schedule_fit(&window, &fit_instance);
+                schedule_fit(&window, &fit_instance, &container);
 
                 let fit_for_ro = fit_instance.clone();
+                let container_for_ro = container.clone();
                 let ro_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
                     if let Some(w) = web_sys::window() {
-                        schedule_fit(&w, &fit_for_ro);
+                        schedule_fit(&w, &fit_for_ro, &container_for_ro);
                     }
                 })
                     as Box<dyn FnMut()>);
@@ -349,11 +463,14 @@ pub fn XtermMount(pane_id: String, cwd: String) -> Element {
                     let rect = container_for_size_watch.get_bounding_client_rect();
                     let width = rect.width().round() as i32;
                     let height = rect.height().round() as i32;
+                    if width <= 0 || height <= 0 {
+                        return;
+                    }
                     let mut last = last_size_for_watch.borrow_mut();
-                    if width > 0 && height > 0 && (width, height) != *last {
+                    if (width, height) != *last {
                         *last = (width, height);
                         if let Some(w) = web_sys::window() {
-                            schedule_fit(&w, &fit_for_size_watch);
+                            schedule_fit(&w, &fit_for_size_watch, &container_for_size_watch);
                         }
                     }
                 })
@@ -380,6 +497,7 @@ pub fn XtermMount(pane_id: String, cwd: String) -> Element {
                 _ro_closure: ro_closure_holder,
                 _size_watch_interval_id: size_watch_interval_id,
                 _size_watch_closure: size_watch_closure_holder,
+                _keydown_handler: Some(keydown_handler_js),
             }));
         });
     });
@@ -524,7 +642,11 @@ fn restore_term_from_session(term_val: &JsValue, session: &TerminalSession) {
     write_str_to_term(term_val, &snapshot);
 }
 
-fn call_fit(fit_instance: &JsValue) {
+fn call_fit(fit_instance: &JsValue, container: &web_sys::Element) {
+    let rect = container.get_bounding_client_rect();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
     let Ok(fit_val) = js_sys::Reflect::get(fit_instance, &JsValue::from_str("fit")) else {
         return;
     };
@@ -534,11 +656,40 @@ fn call_fit(fit_instance: &JsValue) {
     let _ = fit_fn.call0(fit_instance);
 }
 
-fn schedule_fit(window: &web_sys::Window, fit_instance: &JsValue) {
+fn schedule_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &web_sys::Element) {
     let fit_for_raf = fit_instance.clone();
+    let container_for_raf = container.clone();
     let raf_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-        call_fit(&fit_for_raf);
+        call_fit(&fit_for_raf, &container_for_raf);
     }) as Box<dyn FnMut()>);
     let _ = window.request_animation_frame(raf_closure.as_ref().unchecked_ref());
     raf_closure.forget();
+}
+
+/// Scan raw PTY output for a resume session ID.
+/// Looks for patterns like "claude --resume <id>" or "To resume: codex --resume <id>".
+fn scan_for_resume_id(text: &str) -> Option<String> {
+    // Try common resume patterns (case-insensitive)
+    let lower = text.to_lowercase();
+    let patterns = [
+        "claude --resume ",
+        "codex --resume ",
+        "opencode --resume ",
+        "gemini --resume ",
+    ];
+    for pat in &patterns {
+        if let Some(idx) = lower.find(pat) {
+            let start = idx + pat.len();
+            let rest = &text[start..];
+            // Extract the ID (alphanumeric, hyphens, underscores)
+            let id: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if !id.is_empty() {
+                return Some(id);
+            }
+        }
+    }
+    None
 }

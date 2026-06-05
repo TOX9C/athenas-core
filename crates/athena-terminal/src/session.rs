@@ -209,6 +209,7 @@ impl SessionManager {
                     let _ = libc::dup2(slave_fd, 2);
                 }
                 let _ = close(slave_fd);
+                let _ = nix::unistd::chdir(std::path::Path::new(cwd));
                 let _ = nix::unistd::execvp(&shell_cstr, &args);
                 std::process::exit(1);
             }

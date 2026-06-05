@@ -77,6 +77,7 @@ pub struct UIState {
     pub right_sidebar_tab: String,
     pub font_family: String,
     pub font_size: u8,
+    pub custom_agents: Vec<crate::types::workspace::CustomAgent>,
 }
 
 impl Default for UIState {
@@ -97,6 +98,7 @@ impl Default for UIState {
             right_sidebar_tab: String::from("details"),
             font_family: String::from("JetBrains Mono"),
             font_size: 14,
+            custom_agents: Vec::new(),
         }
     }
 }

@@ -16,6 +16,7 @@ use components::plugin::input_request_modal::InputRequestModal;
 use components::plugin::plugin_event_bus::{provide_plugin_bus_store, PluginEventBus};
 use components::right_sidebar::panel::RightSidebar;
 use components::settings::settings_modal::SettingsModal;
+use components::settings::SettingsPanel;
 use components::shared::icon::{
     IconAgents, IconFiles, IconGrid, IconPlugins, IconSettings, IconSwarm, IconTerminal, IconZap,
 };
@@ -39,7 +40,7 @@ use stores::swarm::provide_swarm_store;
 use stores::task::provide_task_store;
 use stores::terminal::{provide_terminal_store, use_terminal_store};
 use stores::ui::{provide_ui_store, use_ui_store, Panel, SidebarSection};
-use stores::workspace::{provide_workspace_store, use_workspace_store, Space};
+use stores::workspace::{provide_workspace_store, use_workspace_store, AgentType, PaneConfig, Space, WorkspaceState};
 
 /// Root application component — faithful port of App.tsx.
 #[component]
@@ -77,7 +78,48 @@ pub fn App() -> Element {
     });
     let mut is_maximized = use_signal(|| false);
 
-    // Apply theme and font on mount
+    // Apply theme and font on mount (load persisted values from store)
+    {
+        let mut ui_state_for_load = ui_state.clone();
+        use_effect(move || {
+            let mut ui = ui_state_for_load.clone();
+            spawn(async move {
+                // Load theme from persist
+                if let Ok(theme_name) = crate::tauri_bridge::store_get("theme").await {
+                    if !theme_name.is_empty() {
+                        let theme = crate::stores::ui::UITheme::from_name(&theme_name);
+                        ui.write().theme = theme;
+                        crate::themes::apply_theme_to_dom(&theme_name);
+                    }
+                }
+                // Load font family from persist
+                if let Ok(font_family) = crate::tauri_bridge::store_get("font_family").await {
+                    if !font_family.is_empty() {
+                        ui.write().font_family = font_family.clone();
+                        crate::themes::apply_font_to_dom(&font_family, ui.read().font_size);
+                    }
+                }
+                // Load font size from persist
+                if let Ok(font_size_str) = crate::tauri_bridge::store_get("font_size").await {
+                    if let Ok(size) = font_size_str.parse::<u8>() {
+                        ui.write().font_size = size;
+                        let fam = ui.read().font_family.clone();
+                        crate::themes::apply_font_to_dom(&fam, size);
+                    }
+                }
+                // Load custom agents from persist
+                if let Ok(agents_json) = crate::tauri_bridge::store_get("custom_agents").await {
+                    if !agents_json.is_empty() {
+                        if let Ok(agents) = serde_json::from_str::<Vec<crate::types::workspace::CustomAgent>>(&agents_json) {
+                            ui.write().custom_agents = agents;
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    // Also apply current local settings synchronously on mount (in case store fetch is slow)
     {
         let theme_name = ui_state.read().theme.name().to_string();
         let font_family = ui_state.read().font_family.clone();
@@ -86,6 +128,18 @@ pub fn App() -> Element {
             crate::themes::apply_theme_to_dom(&theme_name);
             crate::themes::apply_font_to_dom(&font_family, font_size);
         });
+    }
+
+    // Restore workspaces from persistent store on startup
+    {
+        let mut ws = workspace.clone();
+        use_effect(move || {
+            spawn(async move {
+                let loaded = WorkspaceState::load().await;
+                *ws.write() = loaded;
+            });
+        });
+        // Mark effect as run-once by not capturing any reactive dependencies
     }
 
     // Track mounted spaces
@@ -244,6 +298,28 @@ pub fn App() -> Element {
                         Key::Character(ref c) if c == "P" => {
                             let v = ui_state.read().command_palette_open; ui_state.write().command_palette_open = !v;
                         }
+                        Key::Character(ref c) if c == "A" => {
+                            let active_id = {
+                                let ws = workspace.read();
+                                ws.active_space_id.clone()
+                            };
+                            if let Some(sid) = active_id {
+                                let ts = js_sys::Date::now() as u64;
+                                let pane = PaneConfig {
+                                    id: format!("{:x}-sh", ts),
+                                    agent_type: AgentType::Shell,
+                                    custom_cmd: None,
+                                    custom_agent_id: None,
+                                    label: None,
+                                    bypass_mode: None,
+                                    project_name: None,
+                                    model_name: None,
+                                    resume_id: None,
+                                };
+                                workspace_mut.write().add_pane_to_space(&sid, pane);
+                                e.prevent_default();
+                            }
+                        }
                         Key::Character(ref c) if c == "R" => {
                             ui_state.write().sidebar_width = 240.0;
                             ui_state.write().panel = Panel::Workspace;
@@ -321,6 +397,36 @@ pub fn App() -> Element {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Add Shell pane
+                    if active_space.is_some() {
+                        button {
+                            style: "padding: 6px; border-radius: 6px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.1s;",
+                            title: "Add Shell (Cmd+Shift+A)",
+                            onclick: move |_| {
+                                let active_id = {
+                                    let ws = workspace.read();
+                                    ws.active_space_id.clone()
+                                };
+                                if let Some(sid) = active_id {
+                                    let ts = js_sys::Date::now() as u64;
+                                    let pane = PaneConfig {
+                                        id: format!("{:x}-sh", ts),
+                                        agent_type: AgentType::Shell,
+                                        custom_cmd: None,
+                                        custom_agent_id: None,
+                                        label: None,
+                                        bypass_mode: None,
+                                        project_name: None,
+                                        model_name: None,
+                                    resume_id: None,
+                                    };
+                                    workspace_mut.write().add_pane_to_space(&sid, pane);
+                                }
+                            },
+                            "+"
                         }
                     }
 
@@ -529,12 +635,12 @@ pub fn App() -> Element {
                                         SwarmBoard {}
                                     }
                                     div {
-                                        style: if !matches!(active_panel, Panel::Workspace | Panel::Editor | Panel::Kanban | Panel::Swarm) {
+                                        style: if active_panel == Panel::Settings {
                                             "flex: 1; display: flex; min-width: 0; min-height: 0;"
                                         } else {
                                             "display: none;"
                                         },
-                                        div { style: "flex: 1; overflow: hidden;", "Panel not implemented" }
+                                        SettingsPanel {}
                                     }
                                 }
                             }
