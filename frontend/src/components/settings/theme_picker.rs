@@ -109,14 +109,15 @@ struct ThemeSwatchProps {
 fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
     let mut ui_state = use_ui_store();
     let border = if props.is_selected {
-        "2px solid var(--accent)"
+        "2px solid #ffffff"
     } else {
-        "1px solid var(--border)"
+        "2px solid transparent"
     };
+    let bg_box_shadow = "inset 0 0 0 1px rgba(0,0,0,0.4), 0 1px 3px rgba(0,0,0,0.2)";
 
     rsx! {
         button {
-            style: "padding: 8px; border-radius: 8px; border: {border}; background: var(--bgTertiary); cursor: pointer; text-align: center; transition: border-color 0.15s;",
+            style: "padding: 8px 10px; border-radius: 8px; border: {border}; background: var(--bgSecondary); cursor: pointer; text-align: center; transition: border-color 0.15s, box-shadow 0.15s;",
             onclick: move |_| {
                 ui_state.write().theme = props.theme;
                 apply_theme_to_dom(props.theme);
@@ -127,11 +128,18 @@ fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
             },
 
             div {
-                style: "width: 32px; height: 32px; border-radius: 6px; background: {props.bg}; margin: 0 auto 4px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05); transition: border-color 0.15s;",
-                div { style: "width: 12px; height: 12px; border-radius: 50%; background: {props.accent}; opacity: 0.8;" }
+                style: "width: 36px; height: 36px; border-radius: 6px; background: {props.bg}; margin: 0 auto 6px; border: 1px solid rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: {bg_box_shadow}; transition: border-color 0.15s;",
+                if props.is_selected {
+                    span {
+                        style: "font-size: 18px; color: #ffffff; text-shadow: 0 1px 3px rgba(0,0,0,0.6); font-weight: 700; margin-top: -2px;",
+                        "\u{2713}"
+                    }
+                } else {
+                    div { style: "width: 6px; height: 6px; border-radius: 50%; background: {props.accent}; opacity: 0.8;" }
+                }
             }
             span {
-                style: "font-size: 10px; color: var(--text);",
+                style: "font-size: 10px; color: var(--text); display: block;",
                 "{props.label}"
             }
         }

@@ -122,14 +122,13 @@ fn GeneralSettings() -> Element {
                         for font in AVAILABLE_FONTS {
                             {
                                 let is_selected = *font == ui_state.read().font_family;
-                                let bg = if is_selected { "var(--accent)" } else { "var(--bgTertiary)" };
-                                let fg = if is_selected { "var(--text)" } else { "var(--textMuted)" };
-                                let shadow = if is_selected { "0 0 0 2px var(--accentHover), 0 2px 8px rgba(0,0,0,0.25)" } else { "none" };
+                                let bg = if is_selected { "var(--accent)" } else { "var(--bgSecondary)" };
+                                let fg = if is_selected { "#ffffff" } else { "var(--textMuted)" };
                                 let font_str = font.to_string();
                                 rsx! {
                                     button {
                                         key: "{font}",
-                                        style: "padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border); background: {bg}; color: {fg}; cursor: pointer; font-size: 11px; font-family: '{font}', monospace; transition: all 0.15s; box-shadow: {shadow};",
+                                        style: "padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border); background: {bg}; color: {fg}; cursor: pointer; font-size: 11px; font-family: '{font}', monospace; transition: all 0.15s;",
                                         onclick: move |_| {
                                             let font_clone = font_str.clone();
                                             let fam = font_str.clone();
