@@ -1,9 +1,8 @@
-use super::grid_template::GridTemplateSelector;
 use crate::components::shared::icon::{IconSwarm, IconTerminal};
 use crate::components::shared::modal::Modal;
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{
-    grid_for_pane_count, use_workspace_store, AgentType, GridTemplate, PaneConfig, Space,
+    grid_for_pane_count, use_workspace_store, AgentType, PaneConfig, Space,
 };
 use crate::types::swarm::{AgentRole, SwarmAgent, SwarmAgentStatus};
 use crate::utils::agent_commands::{get_agent_color, get_agent_label};
@@ -93,11 +92,10 @@ pub struct NewSpaceModalProps {
 #[component]
 pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     let mut step = use_signal(|| 0u8);
-    let mut mode = use_signal(|| "terminal".to_string());
+    let mut mode = use_signal(|| "".to_string());
     let mut space_name = use_signal(String::new);
     let mut space_dir = use_signal(String::new);
     let mut space_goal = use_signal(String::new);
-    let mut selected_grid = use_signal(|| GridTemplate::X2x2);
 
     // Terminal mode: per-agent-type counts
     let pane_agents: Signal<Vec<(AgentType, usize)>> =
@@ -161,7 +159,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     style: "display: flex; gap: 8px;",
 
                     button {
-                        style: "padding: 6px 14px; border-radius: 6px; border: none; background: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 11px;",
+                        style: "padding: 6px 14px; border-radius: 6px; border: none; background-color: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 11px; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;",
                         onclick: move |_| {
                             if step() == 1 { step.set(0); } else { step.set(step() - 1); }
                         },
@@ -172,13 +170,13 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                         {
         let next_disabled = !is_e2e && (space_dir.read().trim().is_empty() || (is_swarm && space_goal.read().trim().is_empty()));
         let next_btn_style = if next_disabled {
-            "padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; font-weight: 600; opacity: 0.65;".to_string()
+            "padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background-color: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; font-weight: 600; opacity: 0.65; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;".to_string()
         } else {
-            "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600;".to_string()
+            "padding: 6px 16px; border-radius: 6px; border: none; background-color: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;".to_string()
         };
         rsx! {
             button {
-                style: "{next_btn_style}",
+                style: next_btn_style ,
                 onclick: move |_| {
                     let disabled = space_dir.read().trim().is_empty() || (mode() == "swarm" && space_goal.read().trim().is_empty());
                     if disabled && !is_e2e { return; }
@@ -194,13 +192,13 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                         {
         let launch_disabled = total_panes == 0;
         let launch_btn_style = if launch_disabled {
-            "padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; font-weight: 600; opacity: 0.65;".to_string()
+            "padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background-color: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; font-weight: 600; opacity: 0.65; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;".to_string()
         } else {
-            "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600;".to_string()
+            "padding: 6px 16px; border-radius: 6px; border: none; background-color: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;".to_string()
         };
                             rsx! {
                                 button {
-                                    style: "{launch_btn_style}",
+                                    style: launch_btn_style ,
                                     onclick: move |_| {
                                         web_sys::console::log_1(&"[NewSpaceModal] Launch Space clicked (sync)".into());
                                         let dir = space_dir.read().trim().to_string();
@@ -227,15 +225,17 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     bypass_mode: None,
                                                     project_name: None,
                                                     model_name: None,
+                                                    resume_id: None,
                                                 });
                                             }
                                         }
 
+                                        let grid = grid_for_pane_count(panes.len());
                                         let space = Space {
                                             id: generate_id(),
                                             name,
                                             dir,
-                                            grid: selected_grid(),
+                                            grid,
                                             panes,
                                             color: TAB_COLORS[space_count % TAB_COLORS.len()].to_string(),
                                             created_at: now_ts,
@@ -258,13 +258,13 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                         {
         let swarm_disabled = !can_launch_swarm;
         let swarm_btn_style = if swarm_disabled {
-            "padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; font-weight: 600; opacity: 0.65;".to_string()
+            "padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background-color: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; font-weight: 600; opacity: 0.65; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;".to_string()
         } else {
-            "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600;".to_string()
+            "padding: 6px 16px; border-radius: 6px; border: none; background-color: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;".to_string()
         };
                             rsx! {
                                 button {
-                                    style: "{swarm_btn_style}",
+                                    style: swarm_btn_style ,
                                     onclick: move |_| {
                                         let dir = space_dir.read().trim().to_string();
                                         let goal = space_goal.read().trim().to_string();
@@ -292,6 +292,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 bypass_mode: None,
                                                 project_name: None,
                                                 model_name: None,
+                                                    resume_id: None,
                                             });
                                             _swarm_agents.push(SwarmAgent {
                                                 id: agent_id,
@@ -305,11 +306,12 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             });
                                         }
 
+                                        let grid = grid_for_pane_count(pane_configs.len());
                                         let space = Space {
                                             id: generate_id(),
                                             name,
                                             dir,
-                                            grid: GridTemplate::X2x2,
+                                            grid,
                                             panes: pane_configs,
                                             color: TAB_COLORS[space_count % TAB_COLORS.len()].to_string(),
                                             created_at: now_ts,
@@ -371,9 +373,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     // Terminal Workspace card
                     button {
                         style: if mode() == "terminal" {
-                            "display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 8px; border: 1px solid var(--accent); background: var(--bg); color: var(--text); cursor: pointer; text-align: left; width: 100%; transition: border-color 0.15s;"
+                            "display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 8px; border: 1px solid var(--accent); background-color: var(--bg); color: var(--text); cursor: pointer; text-align: left; width: 100%; transition: border-color 0.15s; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;"
                         } else {
-                            "display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; text-align: left; width: 100%; transition: border-color 0.15s;"
+                            "display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg); color: var(--text); cursor: pointer; text-align: left; width: 100%; transition: border-color 0.15s; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;"
                         },
                         onclick: move |_| {
                             mode.set("terminal".to_string());
@@ -394,9 +396,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     // Swarm Mission card
                     button {
                         style: if mode() == "swarm" {
-                            "display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 8px; border: 1px solid var(--accent); background: var(--bg); color: var(--text); cursor: pointer; text-align: left; width: 100%; transition: border-color 0.15s;"
+                            "display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 8px; border: 1px solid var(--accent); background-color: var(--bg); color: var(--text); cursor: pointer; text-align: left; width: 100%; transition: border-color 0.15s; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;"
                         } else {
-                            "display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; text-align: left; width: 100%; transition: border-color 0.15s;"
+                            "display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg); color: var(--text); cursor: pointer; text-align: left; width: 100%; transition: border-color 0.15s; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;"
                         },
                         onclick: move |_| {
                             mode.set("swarm".to_string());
@@ -450,7 +452,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     placeholder: "/path/to/project"
                 }
                             button {
-                                style: "padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 11px; flex-shrink: 0; display: flex; align-items: center; gap: 4px;",
+                                style: "padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background-color: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 11px; flex-shrink: 0; display: flex; align-items: center; gap: 4px; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none;",
                                 onclick: move |e| {
                                     e.stop_propagation();
                                     web_sys::console::log_1(&"[Browse] clicked".into());
@@ -491,20 +493,10 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 }
             }
 
-            // Step 2: Grid + agents (terminal mode)
+            // Step 2: Agents (terminal mode)
             if step() == 2 && mode() == "terminal" {
                 div {
                     style: "display: flex; flex-direction: column; gap: 14px;",
-
-                    // Grid layout selector
-                    label {
-                        style: "font-size: 11px; color: var(--textMuted); font-weight: 500;",
-                        "Preset Layout"
-                        GridTemplateSelector {
-                            selected: selected_grid(),
-                            on_select: move |g| selected_grid.set(g)
-                        }
-                    }
 
                     // Agent configuration
                     div {
@@ -538,11 +530,11 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     "none"
                                 };
                                 let minus_btn_style = format!(
-                                    "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; font-size: 12px; line-height: 1; {}",
-                                    if count_val == 0 { "opacity: 0.3; pointer-events: none;" } else { "" }
+                                    "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--border); background-color: var(--bg); color: var(--text); font-size: 14px; line-height: 1; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none; {}",
+                                    if count_val == 0 { "opacity: 0.3; cursor: default;" } else { "cursor: pointer;" }
                                 );
                                 let plus_btn_style = format!(
-                                    "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; {}",
+                                    "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--border); background-color: var(--bg); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none; {}",
                                     if total_panes >= 16 { "opacity: 0.3; pointer-events: none;" } else { "" }
                                 );
                                 let plus_testid = format!("add-{}", get_agent_label(&at).to_lowercase().replace(' ', "-"));
@@ -567,22 +559,26 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             style: "display: flex; align-items: center; gap: 8px;",
 
                                             button {
-                                                style: "{minus_btn_style}",
+                                                style: minus_btn_style,
                                                 onclick: move |_: dioxus::events::MouseEvent| {
+                                                    web_sys::console::log_1(&"[NewSpaceModal] - clicked".into());
                                                     let at = at_minus.clone();
                                                     let mut paned = pane_agents.clone();
-                                                    let mut select = selected_grid.clone();
                                                     let mut agents: Vec<(AgentType, usize)> = paned.read().iter().cloned().collect();
                                                     if let Some(pos) = agents.iter().position(|(a, _)| a == &at) {
                                                         if agents[pos].1 > 0 {
+                                                            web_sys::console::log_1(&"[NewSpaceModal] decrementing".into());
                                                             agents[pos].1 -= 1;
+                                                        } else {
+                                                            web_sys::console::log_1(&"[NewSpaceModal] count already 0, cannot decrement".into());
                                                         }
                                                         paned.set(agents);
+                                                        let total: usize = paned.read().iter().map(|(_, c)| *c).sum();
+                                                        web_sys::console::log_1(&format!("[NewSpaceModal] total panes after decrement: {}", total).into());
                                                     }
-                                                    let total: usize = paned.read().iter().map(|(_, c)| *c).sum();
-                                                    select.set(grid_for_pane_count(total));
+                                                    web_sys::console::log_1(&"[NewSpaceModal] - done".into());
                                                 },
-                                                "\u{2013}"
+                                                "-"
                                             }
 
                                             span {
@@ -591,13 +587,12 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             }
 
                                             button {
-                                                style: "{plus_btn_style}",
+                                                style: plus_btn_style,
                                                 id: "{plus_testid}",
                                                 onclick: move |_: dioxus::events::MouseEvent| {
                                                     web_sys::console::log_1(&"[NewSpaceModal] + clicked".into());
                                                     let at = at_plus.clone();
                                                     let mut paned = pane_agents.clone();
-                                                    let mut select = selected_grid.clone();
                                                     // Set a global flag so E2E can verify the click fired
                                                     if let Some(win) = web_sys::window() {
                                                         let _ = js_sys::Reflect::set(&win, &"__athenaClickFired".into(), &true.into());
@@ -616,7 +611,6 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     }
                                                     let total: usize = paned.read().iter().map(|(_, c)| *c).sum();
                                                     web_sys::console::log_1(&format!("[NewSpaceModal] total panes: {}", total).into());
-                                                    select.set(grid_for_pane_count(total));
                                                     web_sys::console::log_1(&"[NewSpaceModal] + done".into());
                                                     // Set another flag after the write
                                                     if let Some(win) = web_sys::window() {
@@ -668,7 +662,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     "{team_label}"
                                 }
                                 button {
-                                    style: "{add_btn_style}",
+                                    style: add_btn_style ,
                                     onclick: move |_| {
                                         if slots.read().len() < 10 {
                                             slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude });
@@ -685,8 +679,8 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     let dot_c = role_color(&slot.role);
                                     let cur_slots_len = slots.read().len();
                                     let remove_btn_style = format!(
-                                        "padding: 2px 6px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 14px; {}",
-                                        if cur_slots_len <= 2 { "opacity: 0.2; pointer-events: none;" } else { "" }
+                                        "padding: 2px 6px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); font-size: 14px; {}",
+                                        if cur_slots_len <= 2 { "opacity: 0.2; cursor: default;" } else { "cursor: pointer;" }
                                     );
                                     rsx! {
                                         div {
@@ -731,7 +725,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             div { style: "flex: 1;" }
 
                                             button {
-                                                style: "{remove_btn_style}",
+                                                style: remove_btn_style ,
                                                 onclick: move |_| {
                                                     if slots.read().len() > 2 {
                                                         slots.write().remove(idx);

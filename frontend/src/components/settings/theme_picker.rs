@@ -127,7 +127,7 @@ fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
             },
 
             div {
-                style: "width: 32px; height: 32px; border-radius: 6px; background: {props.bg}; margin: 0 auto 4px; border: 1px solid rgba(128,128,128,0.2); display: flex; align-items: center; justify-content: center; overflow: hidden;",
+                style: "width: 32px; height: 32px; border-radius: 6px; background: {props.bg}; margin: 0 auto 4px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05); transition: border-color 0.15s;",
                 div { style: "width: 12px; height: 12px; border-radius: 50%; background: {props.accent}; opacity: 0.8;" }
             }
             span {

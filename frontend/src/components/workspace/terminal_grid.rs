@@ -10,8 +10,8 @@ use crate::utils::agent_commands::{get_agent_color, get_agent_label};
 use crate::components::workspace::xterm_mount::XtermMount;
 
 #[cfg(feature = "xterm")]
-fn render_shell_pane(pane_id: String, cwd: String) -> Element {
-    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd } }
+fn render_shell_pane(pane_id: String, cwd: String, agent_type: AgentType, resume_id: Option<String>) -> Element {
+    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id } }
 }
 
 #[cfg(not(feature = "xterm"))]
@@ -43,6 +43,7 @@ struct DragInfo {
     start_y: f64,
     initial_left: f64,
     initial_right: f64,
+    dimension_pixels: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,6 +131,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     rsx! {
         div {
             class: "workspace-grid-root",
+            "data-space-id": "{space.id}",
             style: "flex: 1; display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden; background: var(--bg); min-height: 0; min-width: 0; position: relative;",
 
             for row_idx in 0..actual_row_count {
@@ -156,24 +158,11 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                     };
                                     let has_right_separator = rel_idx + 1 < row_panes.len();
                                     let has_bottom_separator = row_idx + 1 < actual_row_count;
-                                    let separator_style = format!(
-                                        "box-sizing: border-box; border-right: {}; border-bottom: {};",
-                                        if has_right_separator {
-                                            "1px solid color-mix(in srgb, var(--border) 58%, transparent)"
-                                        } else {
-                                            "none"
-                                        },
-                                        if has_bottom_separator {
-                                            "1px solid color-mix(in srgb, var(--border) 58%, transparent)"
-                                        } else {
-                                            "none"
-                                        }
-                                    );
                                     let is_active = active_pane_id.as_deref() == Some(pane.id.as_str());
 
                                     let wrapper_style = format!(
-                                        "position: relative; flex: {}; min-height: 0; min-width: 0; padding: 0; display: flex; flex-direction: column; {}",
-                                        flex_weight, separator_style
+                                        "position: relative; flex: {}; min-height: 0; min-width: 0; padding: 0; display: flex; flex-direction: column;",
+                                        flex_weight
                                     );
 
                                     rsx! {
@@ -187,6 +176,18 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 }
                                             }
 
+                                            if has_right_separator {
+                                                div {
+                                                    style: "position: absolute; right: 0; top: 0; bottom: 0; width: 1px; background-color: color-mix(in srgb, var(--border, #888) 58%, transparent); pointer-events: none; z-index: 3;",
+                                                }
+                                            }
+
+                                            if has_bottom_separator {
+                                                div {
+                                                    style: "position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background-color: color-mix(in srgb, var(--border, #888) 58%, transparent); pointer-events: none; z-index: 3;",
+                                                }
+                                            }
+
                                             PaneItem {
                                                 key: "pane-{space.id}-{pane.id}",
                                                 space_id: space.id.clone(),
@@ -194,12 +195,14 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 cwd: space.dir.clone(),
                                                 agent_type: pane.agent_type.clone(),
                                                 is_shell: matches!(pane.agent_type, AgentType::Shell),
+                                                resume_id: pane.resume_id.clone(),
                                             }
                                         }
 
                                         if rel_idx + 1 < row_panes.len() {
                                             ColDivider {
                                                 key: "col-div-{row_idx}-{rel_idx}",
+                                                space_id: space.id.clone(),
                                                 row_index: row_idx,
                                                 index: rel_idx,
                                                 col_widths: col_widths,
@@ -214,6 +217,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                         if row_idx + 1 < actual_row_count {
                             RowDivider {
                                 key: "row-div-{row_idx}",
+                                space_id: space.id.clone(),
                                 index: row_idx,
                                 row_heights: row_heights,
                                 drag: drag,
@@ -245,6 +249,7 @@ struct PaneItemProps {
     cwd: String,
     agent_type: AgentType,
     is_shell: bool,
+    resume_id: Option<String>,
 }
 
 #[component]
@@ -257,10 +262,6 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let agent_label = get_agent_label(&props.agent_type);
     let agent_color = get_agent_color(&props.agent_type);
     let display_id: String = props.pane_id.chars().take(10).collect();
-    let pill_bg = "linear-gradient(180deg, color-mix(in srgb, var(--bgSecondary) 96%, white 4%), var(--bgSecondary))";
-    let pill_border = "color-mix(in srgb, var(--border) 72%, transparent)";
-    let pill_shadow = "inset 0 1px 0 rgba(255,255,255,0.04)";
-    let badge_bg = "var(--bgTertiary)";
 
     rsx! {
         div {
@@ -270,28 +271,29 @@ fn PaneItem(props: PaneItemProps) -> Element {
             },
 
             div {
-                style: "padding: 6px 8px 4px 8px; background: var(--bg); border-bottom: none; flex-shrink: 0; position: relative; z-index: 1;",
+                style: "padding: 8px 10px 5px 10px; background: var(--bg); border-bottom: none; flex-shrink: 0; position: relative; z-index: 1;",
                 div {
-                    style: "display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px; border-radius: 999px; background: {pill_bg}; border: 1px solid {pill_border}; box-shadow: {pill_shadow}; min-width: 0;",
+                    class: "pane-pill",
+                    style: "display: flex; align-items: center; justify-content: space-between; gap: 8px;",
 
                     div {
-                        style: "display: flex; align-items: center; gap: 8px; min-width: 0;",
+                        style: "display: flex; align-items: center; gap: 8px; min-width: 0; transition: all 0.3s cubic-bezier(.25,.8,.25,1);",
                         span {
-                            style: "font-size: 12px; line-height: 1; color: {agent_color}; flex-shrink: 0;",
+                            style: "font-size: 12px; line-height: 1; color: {agent_color}; flex-shrink: 0; transition: text-shadow 0.3s ease;",
                             "∴"
                         }
                         span {
-                            style: "font-size: 11px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                            style: "font-size: 11px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.3s ease;",
                             "{agent_label}"
                         }
                         span {
-                            style: "font-size: 9px; padding: 1px 6px; border-radius: 999px; background: {badge_bg}; color: var(--textDim); flex-shrink: 0;",
+                            class: "pane-pill-id",
                             "{display_id}"
                         }
                     }
 
                     button {
-                        style: "width: 20px; height: 20px; display: grid; place-items: center; border-radius: 999px; border: none; background: transparent; color: var(--textDim); cursor: pointer; flex-shrink: 0;",
+                        class: "pane-pill-close",
                         title: "Close pane",
                         onclick: move |e| {
                             e.stop_propagation();
@@ -322,7 +324,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
             div {
                 style: "flex: 1; min-width: 0; min-height: 0; padding: 0; background: var(--bg);",
                 if props.is_shell {
-                    { render_shell_pane(props.pane_id.clone(), props.cwd.clone()) }
+                    { render_shell_pane(props.pane_id.clone(), props.cwd.clone(), props.agent_type.clone(), props.resume_id.clone()) }
                 } else {
                     TerminalPaneBody { pane_id: props.pane_id.clone() }
                 }
@@ -400,6 +402,7 @@ fn TerminalCellItem(props: TerminalCellItemProps) -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct ColDividerProps {
+    space_id: String,
     row_index: usize,
     index: usize,
     col_widths: Signal<Vec<Vec<f64>>>,
@@ -413,6 +416,8 @@ fn ColDivider(props: ColDividerProps) -> Element {
     let row_index = props.row_index;
     let index = props.index;
 
+    let space_id_for_col_resize = props.space_id.clone();
+
     let onmousedown = move |e: MouseEvent| {
         let coords = e.data.client_coordinates();
         let (initial_left, initial_right) = {
@@ -422,6 +427,7 @@ fn ColDivider(props: ColDividerProps) -> Element {
             let right = row.and_then(|r| r.get(index + 1)).copied().unwrap_or(1.0);
             (left, right)
         };
+        let dimension_pixels = workspace_grid_dimension(DragKind::Col, &space_id_for_col_resize).unwrap_or(0.0);
         drag.set(Some(DragInfo {
             kind: DragKind::Col,
             scope_index: Some(row_index),
@@ -430,6 +436,7 @@ fn ColDivider(props: ColDividerProps) -> Element {
             start_y: coords.y,
             initial_left,
             initial_right,
+            dimension_pixels,
         }));
     };
 
@@ -451,6 +458,7 @@ fn ColDivider(props: ColDividerProps) -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct RowDividerProps {
+    space_id: String,
     index: usize,
     row_heights: Signal<Vec<f64>>,
     drag: Signal<Option<DragInfo>>,
@@ -462,6 +470,8 @@ fn RowDivider(props: RowDividerProps) -> Element {
     let row_heights = props.row_heights;
     let index = props.index;
 
+    let space_id_for_row_resize = props.space_id.clone();
+
     let onmousedown = move |e: MouseEvent| {
         let coords = e.data.client_coordinates();
         let (initial_left, initial_right) = {
@@ -470,6 +480,7 @@ fn RowDivider(props: RowDividerProps) -> Element {
             let right = heights.get(index + 1).copied().unwrap_or(1.0);
             (left, right)
         };
+        let dimension_pixels = workspace_grid_dimension(DragKind::Row, &space_id_for_row_resize).unwrap_or(0.0);
         drag.set(Some(DragInfo {
             kind: DragKind::Row,
             scope_index: None,
@@ -478,6 +489,7 @@ fn RowDivider(props: RowDividerProps) -> Element {
             start_y: coords.y,
             initial_left,
             initial_right,
+            dimension_pixels,
         }));
     };
 
@@ -514,12 +526,10 @@ fn DragOverlay(props: DragOverlayProps) -> Element {
         if let Some(drag_info) = *drag.read() {
             let coords = e.data.client_coordinates();
             let total = drag_info.initial_left + drag_info.initial_right;
-            let dimension = workspace_grid_dimension(match drag_info.kind {
-                DragKind::Col => DragKind::Col,
-                DragKind::Row => DragKind::Row,
-            })
-            .unwrap_or(1.0)
-            .max(1.0);
+            let dimension = drag_info.dimension_pixels;
+            if dimension <= 0.0 {
+                return;
+            }
 
             match drag_info.kind {
                 DragKind::Col => {
@@ -604,10 +614,11 @@ fn resize_pair_from_drag(
     Some((new_left, new_right))
 }
 
-fn workspace_grid_dimension(kind: DragKind) -> Option<f64> {
+fn workspace_grid_dimension(kind: DragKind, space_id: &str) -> Option<f64> {
     let window = web_sys::window()?;
     let document = window.document()?;
-    let element = document.query_selector(".workspace-grid-root").ok()??;
+    let selector = format!(".workspace-grid-root[data-space-id=\"{}\"]", space_id);
+    let element = document.query_selector(&selector).ok()??;
     let html_el = element.dyn_into::<web_sys::HtmlElement>().ok()?;
     let rect = html_el.get_bounding_client_rect();
     match kind {
