@@ -59,7 +59,39 @@ async fn submit_message_async(
         .set_streaming_status(Some("Sending to Athena...".to_string()));
     athena_state.write().clear_error();
 
-    match tauri_bridge::athena_chat(&text).await {
+    // Include dropped context in the prompt
+    let context_fragment = {
+        let athena_guard = athena_state.read();
+        if athena_guard.dropped_context.is_empty() {
+            String::new()
+        } else {
+            let mut parts: Vec<String> = Vec::new();
+            parts.push("\n[Pinned Context]".to_string());
+            for item in &athena_guard.dropped_context {
+                match item {
+                    crate::stores::athena::DraggableItem::Agent { pane_id, agent_type, label } => {
+                        parts.push(format!("- Agent {}: {} (label: {})", pane_id, agent_type, label));
+                    }
+                    crate::stores::athena::DraggableItem::KanbanTask { task_id, title, status } => {
+                        parts.push(format!("- Kanban Task {}: {} ({})", task_id, title, status));
+                    }
+                    crate::stores::athena::DraggableItem::File { path, name } => {
+                        parts.push(format!("- File: {} ({})", name, path));
+                    }
+                }
+            }
+            parts.push(String::new());
+            parts.join("\n")
+        }
+    };
+
+    let full_prompt = if context_fragment.is_empty() {
+        text.to_string()
+    } else {
+        format!("{}{}", text, context_fragment)
+    };
+
+    match tauri_bridge::athena_chat(&full_prompt).await {
         Ok(response) => {
             let assistant_msg = AthenaMessage {
                 id: format!("msg-{}", chrono::Utc::now().timestamp_millis()),

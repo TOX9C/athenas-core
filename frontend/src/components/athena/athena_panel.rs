@@ -384,6 +384,38 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     }
                 }
 
+                // Pinned context bar
+                if !state.dropped_context.is_empty() {
+                    div {
+                        style: "background: var(--bgTertiary); border-bottom: 1px solid var(--border); padding: 4px 12px; font-size: 11px; color: var(--textMuted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center;",
+                        span { style: "font-weight: 600; color: var(--accent);", "Context:" }
+                        for (i, item) in state.dropped_context.iter().enumerate() {
+                            {
+                                let display = match item {
+                                    crate::stores::athena::DraggableItem::Agent { pane_id, label, .. } => format!("Agent: {}", label),
+                                    crate::stores::athena::DraggableItem::KanbanTask { title, .. } => format!("Task: {}", title),
+                                    crate::stores::athena::DraggableItem::File { name, .. } => format!("File: {}", name),
+                                };
+                                rsx! {
+                                    span {
+                                        key: "context-{i}",
+                                        style: "padding: 1px 6px; border-radius: 4px; background: var(--bg); border: 1px solid var(--border); font-size: 10px;"
+                                        "{display}"
+                                    }
+                                }
+                            }
+                        }
+                        button {
+                            style: "margin-left: 4px; padding: 0 4px; background: none; border: none; color: var(--textMuted); cursor: pointer; font-size: 10px;",
+                            onclick: move |_| {
+                                let mut athena = athena_state.write();
+                                athena.dropped_context.clear();
+                            },
+                            "\u{2715}"
+                        }
+                    }
+                }
+
                 // Messages
                 div {
                     style: "flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px;",
