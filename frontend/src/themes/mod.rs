@@ -110,7 +110,7 @@ pub fn get_theme(name: &str) -> ThemeColors {
             terminal_bg: "#f5f0eb",
             terminal_fg: "#2a2520",
             terminal_cursor: "#c45c26",
-            terminal_selection:"rgba(196, 92, 38, 0.2)",
+            terminal_selection: "rgba(196, 92, 38, 0.2)",
         },
         _ => get_theme("noir"),
     }

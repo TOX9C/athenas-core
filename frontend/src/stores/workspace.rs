@@ -106,13 +106,17 @@ impl WorkspaceState {
         let json = match serde_json::to_string(self) {
             Ok(j) => j,
             Err(e) => {
-                web_sys::console::error_1(&format!("[WorkspaceState] serialize error: {}", e).into());
+                web_sys::console::error_1(
+                    &format!("[WorkspaceState] serialize error: {}", e).into(),
+                );
                 return;
             }
         };
         wasm_bindgen_futures::spawn_local(async move {
             if let Err(e) = kv_set(WORKSPACES_KEY, &json).await {
-                web_sys::console::error_1(&format!("[WorkspaceState] store_set error: {:?}", e).into());
+                web_sys::console::error_1(
+                    &format!("[WorkspaceState] store_set error: {:?}", e).into(),
+                );
             }
         });
     }
@@ -128,13 +132,17 @@ impl WorkspaceState {
                 match serde_json::from_str(&json) {
                     Ok(state) => state,
                     Err(e) => {
-                        web_sys::console::error_1(&format!("[WorkspaceState] deserialize error: {}", e).into());
+                        web_sys::console::error_1(
+                            &format!("[WorkspaceState] deserialize error: {}", e).into(),
+                        );
                         Self::new()
                     }
                 }
             }
             Err(e) => {
-                web_sys::console::error_1(&format!("[WorkspaceState] store_get error: {:?}", e).into());
+                web_sys::console::error_1(
+                    &format!("[WorkspaceState] store_get error: {:?}", e).into(),
+                );
                 Self::new()
             }
         }

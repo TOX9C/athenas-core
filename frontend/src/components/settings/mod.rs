@@ -2,8 +2,8 @@ pub mod settings_modal;
 pub mod shortcuts_ref;
 pub mod theme_picker;
 
-use settings_modal::SettingsContent;
 use dioxus::prelude::*;
+use settings_modal::SettingsContent;
 
 #[component]
 pub fn SettingsPanel() -> Element {

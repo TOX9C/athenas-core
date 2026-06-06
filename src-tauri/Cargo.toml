@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.82"
 
 [dependencies]
-tauri = { version = "2.0", features = ["devtools"] }
+tauri = { version = "2.0", features = ["devtools", "unstable"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
@@ -16,6 +16,7 @@ tokio = { version = "1.43", features = ["full"] }
 log = { workspace = true }
 base64 = "0.22"
 path-clean = "1.0"
+tauri-runtime = "2"
 uuid = { workspace = true }
 keyring = "3"
 env_logger = "0.11"

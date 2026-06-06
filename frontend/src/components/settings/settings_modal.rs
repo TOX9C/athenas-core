@@ -1,13 +1,13 @@
 use super::shortcuts_ref::ShortcutsRef;
 use super::theme_picker::ThemePicker;
 use crate::components::shared::modal::Modal;
-use crate::stores::ui::{use_ui_store, UIState, UITheme};
-use crate::themes::AVAILABLE_FONTS;
+use crate::stores::ui::use_ui_store;
+use crate::themes::{get_theme, AVAILABLE_FONTS};
 use dioxus::prelude::*;
 
 /* =============================================================
-   SettingsContent – shared by modal overlay and full-page panel
-   ============================================================= */
+SettingsContent – shared by modal overlay and full-page panel
+============================================================= */
 
 #[component]
 pub fn SettingsContent() -> Element {
@@ -74,8 +74,8 @@ pub fn SettingsContent() -> Element {
 }
 
 /* =============================================================
-   SettingsModal – wraps SettingsContent in a modal overlay
-   ============================================================= */
+SettingsModal – wraps SettingsContent in a modal overlay
+============================================================= */
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SettingsModalProps {
@@ -95,8 +95,8 @@ pub fn SettingsModal(props: SettingsModalProps) -> Element {
 }
 
 /* =============================================================
-   Tab: General
-   ============================================================= */
+Tab: General
+============================================================= */
 
 #[component]
 fn GeneralSettings() -> Element {
@@ -122,7 +122,8 @@ fn GeneralSettings() -> Element {
                         for font in AVAILABLE_FONTS {
                             {
                                 let is_selected = *font == ui_state.read().font_family;
-                                let bg = if is_selected { "var(--accent)" } else { "var(--bgSecondary)" };
+                                let current_theme = get_theme(ui_state.read().theme.name());
+                                let bg = if is_selected { current_theme.accent } else { current_theme.bg_tertiary };
                                 let fg = if is_selected { "#ffffff" } else { "var(--textMuted)" };
                                 let font_str = font.to_string();
                                 rsx! {
@@ -131,7 +132,6 @@ fn GeneralSettings() -> Element {
                                         style: "padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border); background: {bg}; color: {fg}; cursor: pointer; font-size: 11px; font-family: '{font}', monospace; transition: all 0.15s;",
                                         onclick: move |_| {
                                             let font_clone = font_str.clone();
-                                            let fam = font_str.clone();
                                             ui_state.write().font_family = font_clone;
                                             let size = ui_state.read().font_size;
                                             crate::themes::apply_font_to_dom(&font_str, size);
@@ -202,34 +202,118 @@ fn GeneralSettings() -> Element {
 }
 
 /* =============================================================
-   Tab: Athena
-   ============================================================= */
+Tab: Athena
+============================================================= */
 
 #[component]
 fn AthenaSettings() -> Element {
+    let mut api_key = use_signal(String::new);
+    let mut base_url = use_signal(|| "https://api.openai.com/v1".to_string());
+    let mut model = use_signal(|| "gpt-4o".to_string());
+    let mut is_saved = use_signal(|| false);
+
+    // Load saved values from store on mount
+    use_effect(move || {
+        spawn(async move {
+            if let Ok(key) = crate::tauri_bridge::store_get("llm.api_key").await {
+                api_key.set(key);
+            }
+            if let Ok(url) = crate::tauri_bridge::store_get("llm.base_url").await {
+                base_url.set(url);
+            }
+            if let Ok(m) = crate::tauri_bridge::store_get("llm.model").await {
+                model.set(m);
+            }
+        });
+    });
+
+    let do_save = move || {
+        let key = api_key.read().clone();
+        let url = base_url.read().clone();
+        let m = model.read().clone();
+        spawn(async move {
+            let _ = crate::tauri_bridge::store_set("llm.api_key", &key).await;
+            let _ = crate::tauri_bridge::store_set("llm.base_url", &url).await;
+            let _ = crate::tauri_bridge::store_set("llm.model", &m).await;
+        });
+    };
+
     rsx! {
         div {
             style: "display: flex; flex-direction: column; gap: 20px; max-width: 560px;",
 
-            SectionHeader { title: "Athena", desc: "Configure your AI assistant preferences" }
+            SectionHeader { title: "Athena", desc: "Configure your LLM provider. Athena works with any OpenAI-compatible API or Anthropic." }
 
             div {
-                style: "display: flex; flex-direction: column; gap: 12px;",
-                SettingRow { label: "Default Model".to_string(), value: "claude".to_string() }
-                SettingRow { label: "Provider".to_string(), value: "anthropic".to_string() }
-                SettingRow { label: "Bypass Mode".to_string(), value: "enabled".to_string() }
-                SettingRow { label: "Auto Launch".to_string(), value: "enabled".to_string() }
-            }
+                style: "display: flex; flex-direction: column; gap: 16px;",
 
-            div {
-                style: "margin-top: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bgSecondary);",
+                // API Key
                 div {
-                    style: "font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 6px;",
-                    "API Keys"
+                    style: "display: flex; flex-direction: column; gap: 6px;",
+                    div {
+                        style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                        "API Key"
+                    }
+                    input {
+                        value: "{api_key}",
+                        r#type: "password",
+                        style: "width: 100%; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgSecondary); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
+                        placeholder: "sk-...",
+                        oninput: move |e| { api_key.set(e.value()); is_saved.set(false); },
+                    }
                 }
+
+                // Base URL
                 div {
-                    style: "font-size: 10px; color: var(--textDim);",
-                    "Configure API keys via environment variables"
+                    style: "display: flex; flex-direction: column; gap: 6px;",
+                    div {
+                        style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                        "Base URL"
+                    }
+                    input {
+                        value: "{base_url}",
+                        style: "width: 100%; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgSecondary); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
+                        placeholder: "https://api.openai.com/v1",
+                        oninput: move |e| { base_url.set(e.value()); is_saved.set(false); },
+                    }
+                    div {
+                        style: "font-size: 9px; color: var(--textDim);",
+                        "e.g. https://api.openai.com/v1, https://api.groq.com/openai/v1, http://localhost:1234/v1"
+                    }
+                }
+
+                // Model
+                div {
+                    style: "display: flex; flex-direction: column; gap: 6px;",
+                    div {
+                        style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                        "Model"
+                    }
+                    input {
+                        value: "{model}",
+                        style: "width: 100%; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgSecondary); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
+                        placeholder: "gpt-4o, gpt-4, llama3.1, ...",
+                        oninput: move |e| { model.set(e.value()); is_saved.set(false); },
+                    }
+                }
+
+                // Save button
+                div {
+                    style: "display: flex; align-items: center; gap: 12px; margin-top: 4px;",
+                    button {
+                        style: "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 500;",
+                        onclick: move |_| {
+                            do_save();
+                            is_saved.set(true);
+                        },
+                        "Save"
+                    }
+                    if is_saved() {
+                        span {
+                            style: "font-size: 11px; color: var(--success);",
+                            "✓ Saved"
+                        }
+                    }
                 }
             }
         }
@@ -237,8 +321,8 @@ fn AthenaSettings() -> Element {
 }
 
 /* =============================================================
-   Tab: Agents
-   ============================================================= */
+Tab: Agents
+============================================================= */
 
 #[component]
 fn AgentsSettings() -> Element {
@@ -261,8 +345,7 @@ fn AgentsSettings() -> Element {
         });
     };
 
-    let mut ui_state_for_agents = ui_state.clone();
-    let has_agents = !agents_snapshot.is_empty();
+    let _has_agents = !agents_snapshot.is_empty();
 
     rsx! {
         div {
@@ -386,7 +469,7 @@ fn AgentsSettings() -> Element {
 // Component that renders the list of custom agents from the store
 #[component]
 fn CustomAgentList() -> Element {
-    let mut ui_state = use_ui_store();
+    let ui_state = use_ui_store();
     let agents = ui_state.read().custom_agents.clone();
 
     if agents.is_empty() {
@@ -455,8 +538,8 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
 }
 
 /* =============================================================
-   Tab: About
-   ============================================================= */
+Tab: About
+============================================================= */
 
 #[component]
 fn AboutSettings() -> Element {
@@ -481,8 +564,8 @@ fn AboutSettings() -> Element {
 }
 
 /* =============================================================
-   Shared primitives
-   ============================================================= */
+Shared primitives
+============================================================= */
 
 #[derive(Props, Clone, PartialEq)]
 struct SectionHeaderProps {

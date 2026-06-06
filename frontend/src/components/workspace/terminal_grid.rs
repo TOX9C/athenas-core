@@ -10,8 +10,14 @@ use crate::utils::agent_commands::{get_agent_color, get_agent_label};
 use crate::components::workspace::xterm_mount::XtermMount;
 
 #[cfg(feature = "xterm")]
-fn render_shell_pane(pane_id: String, cwd: String, agent_type: AgentType, resume_id: Option<String>) -> Element {
-    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id } }
+fn render_shell_pane(
+    pane_id: String,
+    cwd: String,
+    agent_type: AgentType,
+    resume_id: Option<String>,
+    custom_cmd: Option<String>,
+) -> Element {
+    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id, custom_cmd } }
 }
 
 #[cfg(not(feature = "xterm"))]
@@ -194,8 +200,9 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 pane_id: pane.id.clone(),
                                                 cwd: space.dir.clone(),
                                                 agent_type: pane.agent_type.clone(),
-                                                is_shell: matches!(pane.agent_type, AgentType::Shell),
+                                                is_shell: matches!(pane.agent_type, AgentType::Shell | AgentType::Custom),
                                                 resume_id: pane.resume_id.clone(),
+                                                custom_cmd: pane.custom_cmd.clone(),
                                             }
                                         }
 
@@ -250,6 +257,7 @@ struct PaneItemProps {
     agent_type: AgentType,
     is_shell: bool,
     resume_id: Option<String>,
+    custom_cmd: Option<String>,
 }
 
 #[component]
@@ -324,7 +332,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
             div {
                 style: "flex: 1; min-width: 0; min-height: 0; padding: 0; background: var(--bg);",
                 if props.is_shell {
-                    { render_shell_pane(props.pane_id.clone(), props.cwd.clone(), props.agent_type.clone(), props.resume_id.clone()) }
+                    { render_shell_pane(props.pane_id.clone(), props.cwd.clone(), props.agent_type.clone(), props.resume_id.clone(), props.custom_cmd.clone()) }
                 } else {
                     TerminalPaneBody { pane_id: props.pane_id.clone() }
                 }
@@ -427,7 +435,8 @@ fn ColDivider(props: ColDividerProps) -> Element {
             let right = row.and_then(|r| r.get(index + 1)).copied().unwrap_or(1.0);
             (left, right)
         };
-        let dimension_pixels = workspace_grid_dimension(DragKind::Col, &space_id_for_col_resize).unwrap_or(0.0);
+        let dimension_pixels =
+            workspace_grid_dimension(DragKind::Col, &space_id_for_col_resize).unwrap_or(0.0);
         drag.set(Some(DragInfo {
             kind: DragKind::Col,
             scope_index: Some(row_index),
@@ -480,7 +489,8 @@ fn RowDivider(props: RowDividerProps) -> Element {
             let right = heights.get(index + 1).copied().unwrap_or(1.0);
             (left, right)
         };
-        let dimension_pixels = workspace_grid_dimension(DragKind::Row, &space_id_for_row_resize).unwrap_or(0.0);
+        let dimension_pixels =
+            workspace_grid_dimension(DragKind::Row, &space_id_for_row_resize).unwrap_or(0.0);
         drag.set(Some(DragInfo {
             kind: DragKind::Row,
             scope_index: None,

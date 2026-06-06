@@ -139,14 +139,6 @@ pub struct AthenaMessage {
     pub blocks: Vec<ContentBlock>,
 }
 
-/// A user-defined custom agent shortcut.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct CustomAgent {
-    pub id: String,
-    pub name: String,
-    pub command: String,
-}
-
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -172,7 +164,6 @@ pub struct AthenaState {
     pub provider: String,
     pub bypass_mode: bool,
     pub auto_launch: bool,
-    pub custom_agents: Vec<CustomAgent>,
 }
 
 impl AthenaState {
@@ -188,7 +179,6 @@ impl AthenaState {
             provider: DEFAULT_PROVIDER.to_string(),
             bypass_mode: DEFAULT_BYPASS_MODE,
             auto_launch: DEFAULT_AUTO_LAUNCH,
-            custom_agents: Vec::new(),
         }
     }
 
@@ -244,18 +234,6 @@ impl AthenaState {
 
     pub fn set_auto_launch(&mut self, auto: bool) {
         self.auto_launch = auto;
-    }
-
-    pub fn add_custom_agent(&mut self, agent: CustomAgent) {
-        self.custom_agents.push(agent);
-    }
-
-    pub fn set_custom_agents(&mut self, agents: Vec<CustomAgent>) {
-        self.custom_agents = agents;
-    }
-
-    pub fn remove_custom_agent(&mut self, id: &str) {
-        self.custom_agents.retain(|a| a.id != id);
     }
 
     pub fn clear_messages(&mut self) {

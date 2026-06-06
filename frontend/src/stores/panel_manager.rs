@@ -21,6 +21,7 @@ pub enum RightPanel {
     None,
     Browser,
     Assistant,
+    Editor,
     Skills,
 }
 

@@ -39,6 +39,7 @@ pub fn ThemePicker() -> Element {
                                     label: label.to_string(),
                                     bg: colors.bg.to_string(),
                                     accent: colors.accent.to_string(),
+                                    bg_secondary: colors.bg_secondary.to_string(),
                                     is_selected,
                                     theme: theme_enum,
                                 }
@@ -66,6 +67,7 @@ pub fn ThemePicker() -> Element {
                                     label: label.to_string(),
                                     bg: colors.bg.to_string(),
                                     accent: colors.accent.to_string(),
+                                    bg_secondary: colors.bg_secondary.to_string(),
                                     is_selected,
                                     theme: theme_enum,
                                 }
@@ -101,6 +103,7 @@ struct ThemeSwatchProps {
     label: String,
     bg: String,
     accent: String,
+    bg_secondary: String,
     is_selected: bool,
     theme: UITheme,
 }
@@ -117,7 +120,7 @@ fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
 
     rsx! {
         button {
-            style: "padding: 8px 10px; border-radius: 8px; border: {border}; background: var(--bgSecondary); cursor: pointer; text-align: center; transition: border-color 0.15s, box-shadow 0.15s;",
+            style: "padding: 8px 10px; border-radius: 8px; border: {border}; background: {props.bg_secondary}; cursor: pointer; text-align: center; transition: border-color 0.15s, box-shadow 0.15s;",
             onclick: move |_| {
                 ui_state.write().theme = props.theme;
                 apply_theme_to_dom(props.theme);

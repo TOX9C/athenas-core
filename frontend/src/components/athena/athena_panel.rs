@@ -10,8 +10,24 @@ use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Rendering mode for the Athena chat panel.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum AthenaPanelMode {
+    /// Slide-up overlay fixed to the bottom of the viewport.
+    #[default]
+    Overlay,
+    /// Contained panel that fills its parent's flex container.
+    Compact,
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct AthenaPanelProps {
+    #[props(default = AthenaPanelMode::Overlay)]
+    pub mode: AthenaPanelMode,
+}
+
 #[component]
-pub fn AthenaPanel() -> Element {
+pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
     let mut athena_state = use_athena_store();
     let mut show_sessions = use_signal(|| false);
     let mut mounted = use_signal(|| false);
@@ -20,6 +36,13 @@ pub fn AthenaPanel() -> Element {
     let unlisteners_clone = unlisteners.clone();
 
     let is_open = athena_state.read().is_open;
+    let mode = props.mode;
+
+    // Only gate visibility by is_open in overlay mode.
+    // In compact mode the parent (right sidebar) controls visibility.
+    if mode == AthenaPanelMode::Overlay && !is_open {
+        return rsx! {};
+    }
 
     // Register Tauri event listeners on mount.
     use_effect(move || {
@@ -230,10 +253,6 @@ pub fn AthenaPanel() -> Element {
         }
     });
 
-    if !is_open {
-        return rsx! {};
-    }
-
     let state = athena_state.read();
 
     let model_label = if state.model.is_empty() {
@@ -242,10 +261,15 @@ pub fn AthenaPanel() -> Element {
         state.model.clone()
     };
 
+    let wrapper_style = match mode {
+        AthenaPanelMode::Overlay => "position: absolute; bottom: 0; left: 0; right: 0; height: 35vh; display: flex; flex-direction: row; background: var(--bg); color: var(--text); border-top: 1px solid var(--border); z-index: 100; box-shadow: 0 -4px 16px rgba(0,0,0,0.4);",
+        AthenaPanelMode::Compact => "flex: 1; display: flex; flex-direction: row; min-width: 0; min-height: 0; background: var(--bg); color: var(--text); overflow: hidden;",
+    };
+
     rsx! {
         div {
             class: "athena-panel",
-            style: "position: absolute; bottom: 0; left: 0; right: 0; height: 35vh; display: flex; flex-direction: row; background: var(--bg); color: var(--text); border-top: 1px solid var(--border); z-index: 100; box-shadow: 0 -4px 16px rgba(0,0,0,0.4);",
+            style: wrapper_style,
 
             // Session list sidebar (toggle)
             if show_sessions() {
@@ -257,7 +281,7 @@ pub fn AthenaPanel() -> Element {
 
             // Main chat area
             div {
-                style: "flex: 1; display: flex; flex-direction: column; min-width: 0;",
+                style: "flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;",
 
                 // Header
                 div {

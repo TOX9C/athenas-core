@@ -3,6 +3,35 @@ use crate::types::*;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// System prompt defining Athena as a workspace-aware orchestrator.
+/// This prompt is injected into every LLM conversation unless the user
+/// explicitly overrides it in their provider configuration.
+pub const SYSTEM_PROMPT: &str = r#"You are Athena, the orchestrator of a developer desktop environment.
+
+You have access to tools that let you interact with the user's workspace.
+IMPORTANT: You are workspace-aware. When asked about agents, ALWAYS check which
+workspace the user is on first.
+
+NEVER launch an agent implicitly. Always check the current state first.
+If asked to "prompt 4 agents" but only 3 exist, ask the user what the 4th should be.
+
+When a command would modify state (spawn agent, run command, create task),
+confirm with the user first.
+
+Available tools:
+- close_terminals: Close, remove, or replace terminal panes/agents from the UI.
+- launch_builtin_agent: Launch standard background agents (claude, codex, opencode, gemini, shell).
+- launch_custom_agent: Launch a user-defined custom agent via CLI command.
+- run_command_in_terminals: Run a CLI command in already-open shell/terminal panes.
+- read_agent_output: Read captured terminal output from a specific agent pane.
+- list_agents: List all currently running agent panes with their IDs, types, line counts, and timestamps.
+- check_agent_status: Check the current status of a specific agent by ID.
+- create_execution_plan: Create a structured execution plan before dispatching agents.
+- dispatch_plan_step: Launch an agent to execute a specific plan step.
+- prompt_agent: Send a prompt to an already-running agent pane.
+- ask_user: Ask the user a clarifying question with selectable options.
+- evaluate_results: Evaluate the results of an execution plan."#;
+
 /// Configuration for a specific LLM provider.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProviderConfig {
@@ -146,6 +175,14 @@ pub struct AthenaOrchestrator {
     http_client: reqwest::Client,
     provider_config: Arc<Mutex<Option<ProviderConfig>>>,
     rate_limiter: RateLimiter,
+    /// Reference to the output buffer for reading agent pane state.
+    output_buffer: Option<Arc<crate::output_buffer::OutputBuffer>>,
+    /// Reference to the plan manager for reading the active execution plan.
+    plan_manager: Option<Arc<crate::plan_manager::PlanManager>>,
+    /// Reference to the agent comms service for reading active sessions.
+    agent_comms: Option<Arc<crate::agent_comms::AgentComms>>,
+    /// The name of the currently active workspace (updated at runtime).
+    workspace_name: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for AthenaOrchestrator {
@@ -171,6 +208,36 @@ impl AthenaOrchestrator {
                 .expect("Failed to build HTTP client"),
             provider_config: Arc::new(Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
+            output_buffer: None,
+            plan_manager: None,
+            agent_comms: None,
+            workspace_name: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Create an orchestrator with service references for building
+    /// the app state snapshot injected before every LLM call.
+    pub fn with_context(
+        executor: Arc<Mutex<ToolExecutor>>,
+        output_buffer: Arc<crate::output_buffer::OutputBuffer>,
+        plan_manager: Arc<crate::plan_manager::PlanManager>,
+        agent_comms: Arc<crate::agent_comms::AgentComms>,
+    ) -> Self {
+        Self {
+            anthropic_messages: Arc::new(Mutex::new(Vec::new())),
+            openai_messages: Arc::new(Mutex::new(Vec::new())),
+            current_session_id: Arc::new(Mutex::new(None)),
+            tool_executor: Some(executor),
+            http_client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .expect("Failed to build HTTP client"),
+            provider_config: Arc::new(Mutex::new(None)),
+            rate_limiter: RateLimiter::new(1000),
+            output_buffer: Some(output_buffer),
+            plan_manager: Some(plan_manager),
+            agent_comms: Some(agent_comms),
+            workspace_name: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -191,6 +258,10 @@ impl AthenaOrchestrator {
                 .expect("Failed to build HTTP client"),
             provider_config: Arc::new(Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
+            output_buffer: None,
+            plan_manager: None,
+            agent_comms: None,
+            workspace_name: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -265,24 +336,132 @@ impl AthenaOrchestrator {
         self.provider_config.lock().ok().and_then(|g| g.clone())
     }
 
+    /// Set the active workspace name for state snapshot injection.
+    pub fn set_workspace_name(&self, name: String) {
+        if let Ok(mut guard) = self.workspace_name.lock() {
+            *guard = Some(name);
+        }
+    }
+
+    /// Build a snapshot of the current app state for context injection.
+    fn build_app_state_snapshot(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        lines.push("====== ATHENA STATE SNAPSHOT ======".to_string());
+        lines.push(String::new());
+
+        // Active workspace
+        let workspace = self
+            .workspace_name
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+        lines.push(format!("Active Workspace: {}", workspace));
+        lines.push(String::new());
+
+        // Running agents from output buffer
+        lines.push("--- Running Agents ---".to_string());
+        let mut has_agents = false;
+        if let Some(ref ob) = self.output_buffer {
+            let panes = ob.get_agent_list();
+            if !panes.is_empty() {
+                has_agents = true;
+                for pane in &panes {
+                    let activity = chrono::DateTime::from_timestamp_millis(pane.last_activity_at as i64)
+                        .map(|dt| dt.to_rfc3339())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    lines.push(format!(
+                        "  {} | type={} | lines={} | last_activity={}",
+                        pane.pane_id, pane.agent_type, pane.line_count, activity
+                    ));
+                }
+            }
+        }
+        if let Some(ref ac) = self.agent_comms {
+            let sessions = ac.get_agent_sessions();
+            if !sessions.is_empty() {
+                has_agents = true;
+                for s in &sessions {
+                    let connected = chrono::DateTime::from_timestamp_millis(s.connected_at as i64)
+                        .map(|dt| dt.to_rfc3339())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let status = &s.status;
+                    lines.push(format!(
+                        "  session={} | agent={} | plugin={} | status={} | connected_at={}",
+                        s.id, s.agent_id, s.plugin_id, status, connected
+                    ));
+                }
+            }
+        }
+        if !has_agents {
+            lines.push("  (no agents currently running)".to_string());
+        }
+        lines.push(String::new());
+
+        // Active execution plan
+        lines.push("--- Active Execution Plan ---".to_string());
+        if let Some(ref pm) = self.plan_manager {
+            if let Some(plan) = pm.get_active_plan() {
+                lines.push(format!("  ID: {}", plan.id));
+                lines.push(format!("  Goal: {}", plan.goal));
+                lines.push(format!("  Status: {:?}", plan.status));
+                if !plan.steps.is_empty() {
+                    lines.push("  Steps:".to_string());
+                    for step in &plan.steps {
+                        lines.push(format!(
+                            "    {}: {} — status={:?}",
+                            step.id, step.description, step.status
+                        ));
+                    }
+                }
+            } else {
+                lines.push("  (no active execution plan)".to_string());
+            }
+        } else {
+            lines.push("  (no active execution plan)".to_string());
+        }
+        lines.push(String::new());
+
+        // Kanban tasks (placeholder: not yet persisted to backend)
+        lines.push("--- Kanban Tasks ---".to_string());
+        lines.push("  (kanban task state is managed on the frontend only — no backend snapshot available yet)".to_string());
+        lines.push(String::new());
+
+        lines.push("=====================================".to_string());
+        lines.push(String::new());
+
+        lines.join("\n")
+    }
+
     /// Send a message to the configured LLM provider.
     pub async fn send_message(
         &self,
         text: String,
         images: Option<Vec<ImageData>>,
     ) -> Result<String, OrchestratorError> {
+        // Build current app state snapshot and prepend it to the user text
+        let snapshot = self.build_app_state_snapshot();
+        let full_text = format!("{}\n{}", snapshot, text);
+
         let (provider, api_key, model, system_prompt, base_url) = {
             let guard = self.provider_config.lock().map_err(|_| {
                 OrchestratorError::Generic("Failed to lock provider config".to_string())
             })?;
             match guard.as_ref() {
-                Some(config) => (
-                    config.provider.clone(),
-                    config.api_key.clone(),
-                    config.model.clone(),
-                    config.system_prompt.clone(),
-                    config.base_url.clone(),
-                ),
+                Some(config) => {
+                    let sp = if config.system_prompt.trim().is_empty() {
+                        SYSTEM_PROMPT.to_string()
+                    } else {
+                        config.system_prompt.clone()
+                    };
+                    (
+                        config.provider.clone(),
+                        config.api_key.clone(),
+                        config.model.clone(),
+                        sp,
+                        config.base_url.clone(),
+                    )
+                }
                 None => {
                     let api_key = std::env::var("ANTHROPIC_API_KEY")
                         .ok()
@@ -291,7 +470,7 @@ impl AthenaOrchestrator {
                         LLMProvider::Anthropic,
                         api_key,
                         "claude-sonnet-4-20250514".to_string(),
-                        "You are the Athena Orchestrator.".to_string(),
+                        SYSTEM_PROMPT.to_string(),
                         None,
                     )
                 }
@@ -323,14 +502,14 @@ impl AthenaOrchestrator {
                     api_key,
                     model,
                     system_prompt,
-                    text,
+                    full_text,
                     images,
                     resolved_base_url,
                 )
                 .await
             }
             LLMProvider::Anthropic => {
-                self.send_anthropic(api_key, model, system_prompt, text, images)
+                self.send_anthropic(api_key, model, system_prompt, full_text, images)
                     .await
             }
         }

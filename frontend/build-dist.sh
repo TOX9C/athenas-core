@@ -22,6 +22,13 @@ CUSTOM_HTML="$SCRIPT_DIR/index.html"
 
 echo "Building Dioxus frontend ($PROFILE)..."
 cd "$SCRIPT_DIR"
+
+# Clean stale hashed assets from the build cache BEFORE building so dx doesn't accumulate
+# old WASM/JS from prior builds alongside the new ones.
+if [ -d "$BUILD_DIR/assets" ]; then
+  find "$BUILD_DIR/assets" -maxdepth 1 \( -name 'athena-frontend_bg-dx*.wasm' -o -name 'athena-frontend-dx*.js' \) -delete 2>/dev/null || true
+fi
+
 ~/.cargo/bin/dx build $DX_FLAG
 
 echo "Copying build output to dist..."
@@ -36,19 +43,20 @@ if [ -d "$VENDOR_DIR" ]; then
   echo "Vendored assets copied: $VENDOR_FILES files in dist/vendor/"
 fi
 
-# Create symlinks for hashed filenames BEFORE checking entry path.
+# Create stable-name aliases for hashed filenames BEFORE checking entry path.
 # Dioxus release builds output to assets/ with hashes; debug builds to wasm/ without.
+# Use hard copies (not symlinks) so Tauri's asset embedder picks them up for release bundles.
 for wasm in "$DIST_DIR"/assets/athena-frontend_bg-dx*.wasm; do
-  [ -f "$wasm" ] && ln -sf "$(basename "$wasm")" "$DIST_DIR/assets/athena-frontend_bg.wasm"
+  [ -f "$wasm" ] && cp -f "$wasm" "$DIST_DIR/assets/athena-frontend_bg.wasm"
 done
 for js in "$DIST_DIR"/assets/athena-frontend-dx*.js; do
-  [ -f "$js" ] && ln -sf "$(basename "$js")" "$DIST_DIR/assets/athena-frontend.js"
+  [ -f "$js" ] && cp -f "$js" "$DIST_DIR/assets/athena-frontend.js"
 done
 for wasm in "$DIST_DIR"/wasm/athena-frontend_bg-dx*.wasm; do
-  [ -f "$wasm" ] && ln -sf "$(basename "$wasm")" "$DIST_DIR/wasm/athena-frontend_bg.wasm"
+  [ -f "$wasm" ] && cp -f "$wasm" "$DIST_DIR/wasm/athena-frontend_bg.wasm"
 done
 for js in "$DIST_DIR"/wasm/athena-frontend-dx*.js; do
-  [ -f "$js" ] && ln -sf "$(basename "$js")" "$DIST_DIR/wasm/athena-frontend.js"
+  [ -f "$js" ] && cp -f "$js" "$DIST_DIR/wasm/athena-frontend.js"
 done
 
 # Replace Dioxus-generated index.html with our custom one (has WASM fixes + console capture)

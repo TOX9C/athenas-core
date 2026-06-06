@@ -251,6 +251,8 @@ pub struct TerminalSession {
     pub last_update_ms: f64,
     /// Whether the session has exited.
     pub exited: bool,
+    /// Whether the session is rendered by xterm.js (skip grid updates).
+    pub is_xterm: bool,
 }
 
 impl TerminalSession {
@@ -274,6 +276,7 @@ impl TerminalSession {
             generation: 0,
             last_update_ms: 0.0,
             exited: false,
+            is_xterm: false,
         }
     }
 
@@ -380,6 +383,13 @@ impl TerminalStore {
         }
     }
 
+    /// Mark a session as being backed by xterm.js (or not).
+    pub fn set_session_xterm(&mut self, id: &str, is_xterm: bool) {
+        if let Some(session) = self.sessions.get_mut(id) {
+            session.is_xterm = is_xterm;
+        }
+    }
+
     /// Fire the async PTY bridge call (does NOT touch store state).
     pub async fn spawn_bridge(
         &self,
@@ -440,6 +450,18 @@ impl TerminalStore {
         };
 
         if let Some(session) = self.sessions.get_mut(id) {
+            // For xterm-managed sessions, skip grid updates and generation bump.
+            // Cursor position and visibility are still updated in case other
+            // UI reads them (e.g. restore_term_from_session).
+            if session.is_xterm {
+                session.cursor_x = event.cursorCol;
+                session.cursor_y = event.cursorRow;
+                if let Some(visible) = event.cursorVisible {
+                    session.cursor_visible = visible;
+                }
+                return;
+            }
+
             // Resize grid if the backend reports different dimensions.
             if event.rows as u16 != session.rows || event.cols as u16 != session.cols {
                 session.resize(event.cols as u16, event.rows as u16);
