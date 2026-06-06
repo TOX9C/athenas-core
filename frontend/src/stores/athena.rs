@@ -119,6 +119,25 @@ impl ContentBlock {
     }
 }
 
+/// An item that has been dragged/dropped onto the Athena panel for context.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DraggableItem {
+    Agent {
+        pane_id: String,
+        agent_type: String,
+        label: String,
+    },
+    KanbanTask {
+        task_id: String,
+        title: String,
+        status: String,
+    },
+    File {
+        path: String,
+        name: String,
+    },
+}
+
 /// Role of a message sender.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum MessageRole {
@@ -166,6 +185,8 @@ pub struct AthenaState {
     pub auto_launch: bool,
     pub session_id: Option<String>,
     pub session_title: String,
+    /// Items dragged/dropped or explicitly pinned to Athena's context for the current conversation.
+    pub dropped_context: Vec<DraggableItem>,
 }
 
 impl AthenaState {
