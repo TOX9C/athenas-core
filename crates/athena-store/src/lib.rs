@@ -4,7 +4,7 @@ pub mod types;
 
 // Re-export types for convenient access
 pub use session::SessionStore;
-pub use store::KeyValueStore;
+pub use store::{KeyValueStore, StoreError};
 pub use types::*;
 
 #[cfg(test)]

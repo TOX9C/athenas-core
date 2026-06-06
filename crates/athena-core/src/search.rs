@@ -240,6 +240,216 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
     })
 }
 
+/// Locate the ripgrep binary synchronously.
+pub fn find_rg_binary_sync() -> Result<PathBuf, SearchError> {
+    let candidates = if cfg!(windows) {
+        vec!["rg.exe"]
+    } else {
+        vec![
+            "rg",
+            "/usr/local/bin/rg",
+            "/opt/homebrew/bin/rg",
+            "/usr/bin/rg",
+        ]
+    };
+
+    for candidate in &candidates {
+        let candidate_path = PathBuf::from(candidate);
+        if candidate_path.exists() {
+            return Ok(candidate_path);
+        }
+    }
+
+    // Try to find via `which` as last resort
+    let which_result = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/c", "where", "rg"])
+            .output()
+    } else {
+        std::process::Command::new("which").arg("rg").output()
+    };
+
+    if let Ok(output) = which_result {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Ok(PathBuf::from(path));
+            }
+        }
+    }
+
+    Err(SearchError::RgNotFound)
+}
+
+/// Synchronous version of `search_code` — runs ripgrep and parses results.
+pub fn search_code_sync(options: &SearchOptions) -> Result<SearchResult, SearchError> {
+    let rg_bin = find_rg_binary_sync()?;
+
+    let mut args: Vec<String> = vec![
+        "--json".into(),
+        "--with-filename".into(),
+        "--line-number".into(),
+        "--column".into(),
+        "--color=never".into(),
+    ];
+
+    if options.case_sensitive {
+        args.push("--case-sensitive".into());
+    } else {
+        args.push("--ignore-case".into());
+    }
+
+    if let Some(max) = options.max_results {
+        args.push("--max-count".into());
+        args.push(max.to_string());
+    }
+
+    if let Some(ctx) = options.context_lines {
+        if ctx > 0 {
+            args.push("--context".into());
+            args.push(ctx.to_string());
+        }
+    }
+
+    if let Some(glob) = &options.glob {
+        args.push("--glob".into());
+        args.push(glob.clone());
+    }
+
+    args.push("--".into());
+    args.push(options.pattern.clone());
+    args.push(options.path.clone());
+
+    let output = std::process::Command::new(&rg_bin)
+        .args(&args)
+        .env("LC_ALL", "en_US.UTF-8")
+        .output()?;
+
+    let status = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if status != 0 && status != 1 {
+        return Err(SearchError::RgExit {
+            code: status,
+            stderr: stderr.into_owned(),
+        });
+    }
+
+    let mut matches: Vec<SearchMatch> = Vec::new();
+    let mut files_matched: HashSet<String> = HashSet::new();
+    let mut truncated = false;
+    let mut pending_context: Vec<(String, u32, String)> = Vec::new();
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let parsed: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let data_type = parsed["type"].as_str().unwrap_or_default();
+
+        match data_type {
+            "context" => {
+                let data = &parsed["data"];
+                let file_path = data["path"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let line_num = data["line_number"].as_u64().unwrap_or(0) as u32;
+                let text = match data["lines"]["text"].as_str() {
+                    Some(t) => t.trim_end().to_string(),
+                    None => continue,
+                };
+                pending_context.push((file_path, line_num, text));
+            }
+            "match" => {
+                let data = &parsed["data"];
+                let file_path = data["path"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let line_num = data["line_number"].as_u64().unwrap_or(0) as u32;
+                let submatch = match data["submatches"].as_array() {
+                    Some(arr) if !arr.is_empty() => &arr[0],
+                    _ => continue,
+                };
+                let col = submatch["start"].as_u64().unwrap_or(1) as u32;
+                let line_text = match data["lines"]["text"].as_str() {
+                    Some(t) => t.trim_end().to_string(),
+                    None => continue,
+                };
+                let match_text = submatch["match"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+
+                files_matched.insert(file_path.clone());
+
+                let mut context_before: Vec<String> = Vec::new();
+                let context_after: Vec<String> = Vec::new();
+
+                let context_lines_count = options.context_lines.unwrap_or(0) as u32;
+                for (ctx_file, ctx_line, ctx_text) in &pending_context {
+                    if ctx_file == &file_path
+                        && *ctx_line < line_num
+                        && *ctx_line >= line_num.saturating_sub(context_lines_count)
+                    {
+                        context_before.push(ctx_text.clone());
+                    }
+                }
+
+                matches.push(SearchMatch {
+                    file_path,
+                    line_number: line_num,
+                    column: col,
+                    line_text,
+                    match_text,
+                    context_before,
+                    context_after,
+                });
+
+                if let Some(max) = options.max_results {
+                    if matches.len() >= max {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !matches.is_empty() && !pending_context.is_empty() {
+        if let Some(last_match) = matches.last_mut() {
+            let context_lines_count = options.context_lines.unwrap_or(0) as u32;
+            for (ctx_file, ctx_line, ctx_text) in &pending_context {
+                if ctx_file == &last_match.file_path
+                    && *ctx_line > last_match.line_number
+                    && *ctx_line <= last_match.line_number + context_lines_count
+                {
+                    last_match.context_after.push(ctx_text.clone());
+                }
+            }
+        }
+    }
+
+    let total_matches = matches.len();
+    Ok(SearchResult {
+        matches,
+        truncated,
+        stats: SearchStats {
+            files_matched: files_matched.len(),
+            total_matches,
+        },
+    })
+}
+
 /// List files matching a pattern in a directory.
 pub async fn search_files(
     directory: &str,

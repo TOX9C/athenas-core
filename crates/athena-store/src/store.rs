@@ -127,6 +127,39 @@ impl KeyValueStore {
         self.persist().await
     }
 
+    /// Set a key synchronously and persist to disk (blocking I/O).
+    pub fn set_sync<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
+        let json_value = serde_json::to_value(value)?;
+        let json = {
+            let mut map = self
+                .data
+                .lock()
+                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+            map.insert(key.to_string(), json_value);
+            serde_json::to_string_pretty(&*map)?
+        };
+        let tmp_path = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, json.as_bytes())?;
+        std::fs::rename(&tmp_path, &self.path)?;
+        Ok(())
+    }
+
+    /// Delete a key synchronously and persist to disk (blocking I/O).
+    pub fn delete_sync(&self, key: &str) -> Result<(), StoreError> {
+        let json = {
+            let mut map = self
+                .data
+                .lock()
+                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+            map.remove(key);
+            serde_json::to_string_pretty(&*map)?
+        };
+        let tmp_path = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, json.as_bytes())?;
+        std::fs::rename(&tmp_path, &self.path)?;
+        Ok(())
+    }
+
     /// Check if a key exists.
     pub fn has(&self, key: &str) -> bool {
         self.data

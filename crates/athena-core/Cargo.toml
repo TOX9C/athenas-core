@@ -16,6 +16,7 @@ regex = "1.10"
 uuid = { workspace = true }
 chrono = { workspace = true }
 log = { workspace = true }
+athena-store = { path = "../athena-store" }
 
 [dev-dependencies]
 tempfile = "3"

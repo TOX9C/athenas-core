@@ -3,6 +3,10 @@ use crate::types::*;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+// Session persistence types
+use athena_store::SessionMessage as StoreMessage;
+use athena_store::MessageRole as StoreMessageRole;
+
 /// System prompt defining Athena as a workspace-aware orchestrator.
 /// This prompt is injected into every LLM conversation unless the user
 /// explicitly overrides it in their provider configuration.
@@ -30,7 +34,14 @@ Available tools:
 - dispatch_plan_step: Launch an agent to execute a specific plan step.
 - prompt_agent: Send a prompt to an already-running agent pane.
 - ask_user: Ask the user a clarifying question with selectable options.
-- evaluate_results: Evaluate the results of an execution plan."#;
+- evaluate_results: Evaluate the results of an execution plan.
+- kanban_list_tasks: List all tasks on the active workspace's Kanban board.
+- kanban_create_task: Create a new Kanban task (requires title, space_id).
+- kanban_update_task: Update a Kanban task (requires task_id).
+- kanban_delete_task: Delete a Kanban task by ID (requires task_id).
+- fs_read_file: Read the contents of a file from the workspace.
+- fs_list_dir: List the contents of a directory in the workspace.
+- fs_search: Search files in the workspace using ripgrep."#;
 
 /// Configuration for a specific LLM provider.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -183,6 +194,8 @@ pub struct AthenaOrchestrator {
     agent_comms: Option<Arc<crate::agent_comms::AgentComms>>,
     /// The name of the currently active workspace (updated at runtime).
     workspace_name: Arc<Mutex<Option<String>>>,
+    /// Optional session store for persisting conversations.
+    session_store: Option<Arc<athena_store::SessionStore>>,
 }
 
 impl Default for AthenaOrchestrator {
@@ -212,6 +225,7 @@ impl AthenaOrchestrator {
             plan_manager: None,
             agent_comms: None,
             workspace_name: Arc::new(Mutex::new(None)),
+            session_store: None,
         }
     }
 
@@ -222,6 +236,7 @@ impl AthenaOrchestrator {
         output_buffer: Arc<crate::output_buffer::OutputBuffer>,
         plan_manager: Arc<crate::plan_manager::PlanManager>,
         agent_comms: Arc<crate::agent_comms::AgentComms>,
+        session_store: Option<Arc<athena_store::SessionStore>>,
     ) -> Self {
         Self {
             anthropic_messages: Arc::new(Mutex::new(Vec::new())),
@@ -238,6 +253,7 @@ impl AthenaOrchestrator {
             plan_manager: Some(plan_manager),
             agent_comms: Some(agent_comms),
             workspace_name: Arc::new(Mutex::new(None)),
+            session_store,
         }
     }
 
@@ -262,6 +278,7 @@ impl AthenaOrchestrator {
             plan_manager: None,
             agent_comms: None,
             workspace_name: Arc::new(Mutex::new(None)),
+            session_store: None,
         }
     }
 
@@ -340,6 +357,126 @@ impl AthenaOrchestrator {
     pub fn set_workspace_name(&self, name: String) {
         if let Ok(mut guard) = self.workspace_name.lock() {
             *guard = Some(name);
+        }
+    }
+
+    /// Set the session store for persisting conversations.
+    pub fn set_session_store(&mut self, store: Arc<athena_store::SessionStore>) {
+        self.session_store = Some(store);
+    }
+
+    /// Get a reference to the session store, if configured.
+    pub fn session_store(&self) -> Option<&Arc<athena_store::SessionStore>> {
+        self.session_store.as_ref()
+    }
+
+    /// Save the current conversation history to the session store.
+    pub async fn save_conversation(&self, session_id: &str) -> Result<(), OrchestratorError> {
+        let Some(ref store) = self.session_store else {
+            return Ok(());
+        };
+
+        // Prefer openai messages (default format) for persistence.
+        let store_messages: Vec<StoreMessage> = {
+            let openai = self.openai_messages.lock().map_err(|_| {
+                OrchestratorError::Generic("Failed to lock openai messages".to_string())
+            })?;
+
+            let mut store_messages = Vec::new();
+            for msg in openai.iter() {
+                if msg.role == "system" || msg.role == "tool" {
+                    continue;
+                }
+                let role = if msg.role == "user" {
+                    StoreMessageRole::User
+                } else {
+                    StoreMessageRole::Athena
+                };
+                let content = match &msg.content {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => String::new(),
+                    other => other.to_string(),
+                };
+                store_messages.push(StoreMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    role,
+                    content,
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64,
+                    is_error: None,
+                    image_refs: None,
+                });
+            }
+            store_messages
+        }; // guard dropped here before any await
+
+        store
+            .update_session(session_id, None, Some(store_messages))
+            .await
+            .map_err(|e| OrchestratorError::Generic(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Load a previous conversation from the session store into the orchestrator.
+    pub async fn load_conversation(&self, session_id: &str) -> Result<(), OrchestratorError> {
+        let Some(ref store) = self.session_store else {
+            return Ok(());
+        };
+
+        let session = store
+            .get_session(session_id)
+            .await
+            .map_err(|e| OrchestratorError::Generic(e.to_string()))?
+            .ok_or_else(|| OrchestratorError::Generic(format!("Session '{}' not found", session_id)))?;
+
+        let anthropic: Vec<AnthropicMessage> = session
+            .messages
+            .iter()
+            .map(|msg| AnthropicMessage {
+                role: match msg.role {
+                    StoreMessageRole::User => "user".to_string(),
+                    StoreMessageRole::Athena => "assistant".to_string(),
+                },
+                content: serde_json::Value::String(msg.content.clone()),
+            })
+            .collect();
+
+        let openai: Vec<OpenAIMessage> = session
+            .messages
+            .iter()
+            .map(|msg| OpenAIMessage {
+                role: match msg.role {
+                    StoreMessageRole::User => "user".to_string(),
+                    StoreMessageRole::Athena => "assistant".to_string(),
+                },
+                content: serde_json::Value::String(msg.content.clone()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            })
+            .collect();
+
+        if let Ok(mut a) = self.anthropic_messages.lock() {
+            *a = anthropic;
+        }
+        if let Ok(mut o) = self.openai_messages.lock() {
+            *o = openai;
+        }
+        if let Ok(mut id) = self.current_session_id.lock() {
+            *id = Some(session_id.to_string());
+        }
+
+        Ok(())
+    }
+
+    /// Attempt to auto-save the current conversation to the session store.
+    pub async fn try_auto_save(&self) -> Result<(), OrchestratorError> {
+        if let Some(session_id) = self.get_current_session_id() {
+            self.save_conversation(&session_id).await
+        } else {
+            Ok(())
         }
     }
 
@@ -422,9 +559,9 @@ impl AthenaOrchestrator {
         }
         lines.push(String::new());
 
-        // Kanban tasks (placeholder: not yet persisted to backend)
+        // Kanban tasks (backend persistence is now available via kanban_list_tasks)
         lines.push("--- Kanban Tasks ---".to_string());
-        lines.push("  (kanban task state is managed on the frontend only — no backend snapshot available yet)".to_string());
+        lines.push("  (tasks are persisted to the backend; use kanban_list_tasks to query them)".to_string());
         lines.push(String::new());
 
         lines.push("=====================================".to_string());
@@ -496,7 +633,7 @@ impl AthenaOrchestrator {
             LLMProvider::Anthropic => None,
         };
 
-        match provider {
+        let result = match provider {
             LLMProvider::NvidiaNim | LLMProvider::OpenAI | LLMProvider::Lmstudio => {
                 self.send_openai(
                     api_key,
@@ -512,7 +649,15 @@ impl AthenaOrchestrator {
                 self.send_anthropic(api_key, model, system_prompt, full_text, images)
                     .await
             }
+        };
+
+        if result.is_ok() {
+            if let Err(e) = self.try_auto_save().await {
+                log::warn!("Failed to auto-save conversation: {}", e);
+            }
         }
+
+        result
     }
 
     /// Execute a single tool call through the configured executor.

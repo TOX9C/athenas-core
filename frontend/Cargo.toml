@@ -28,6 +28,7 @@ regex = "1.10"
 strum = { version = "0.26", features = ["derive"] }
 strum_macros = "0.26"
 gloo = { version = "0.11", features = ["futures"] }
+uuid = { version = "1", default-features = false, features = ["v4", "js"] }
 
 [features]
 default = ["xterm"]

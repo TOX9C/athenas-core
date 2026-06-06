@@ -4,6 +4,7 @@
 //! `to_openai_tools` conversion, and shell escaping utilities.
 
 use crate::agent_comms::AgentComms;
+use crate::kanban::{KanbanBackend, KanbanBackendStatus, KanbanBackendTask};
 use crate::notification::NotificationService;
 use crate::output_buffer::OutputBuffer;
 use crate::plan_manager::{
@@ -11,6 +12,8 @@ use crate::plan_manager::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -74,6 +77,15 @@ pub struct ToolInput {
     pub message: Option<String>,
     pub target_agent_id: Option<String>,
     pub message_type: Option<String>,
+    // Kanban
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub status: Option<String>,
+    pub task_id: Option<String>,
+    pub space_id: Option<String>,
+    // FS
+    pub path: Option<String>,
+    pub pattern: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +468,165 @@ pub fn orchestrator_tools() -> Vec<ToolDefinition> {
                 ]),
             },
         },
+        ToolDefinition {
+            name: "kanban_list_tasks".to_string(),
+            description: "List all tasks on the active workspace's Kanban board.".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: Some(HashMap::new()),
+                required: None,
+            },
+        },
+        ToolDefinition {
+            name: "kanban_create_task".to_string(),
+            description: "Create a new Kanban task in the specified workspace.".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: Some({
+                    let mut props = HashMap::new();
+                    props.insert("title".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("Title of the task.".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props.insert("description".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("Optional description of the task.".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props.insert("status".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("Status of the task. Must be one of: 'todo', 'in_progress', 'in_review', 'complete'.".to_string()),
+                        items: None,
+                        r#enum: Some(vec!["todo".to_string(), "in_progress".to_string(), "in_review".to_string(), "complete".to_string()]),
+                    });
+                    props.insert("space_id".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("The workspace (space) ID to create the task in.".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props
+                }),
+                required: Some(vec!["title".to_string(), "space_id".to_string()]),
+            },
+        },
+        ToolDefinition {
+            name: "kanban_update_task".to_string(),
+            description: "Update an existing Kanban task.".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: Some({
+                    let mut props = HashMap::new();
+                    props.insert("task_id".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("The ID of the task to update.".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props.insert("title".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("Optional new title for the task.".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props.insert("description".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("Optional new description for the task.".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props.insert("status".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("Optional new status. Must be one of: 'todo', 'in_progress', 'in_review', 'complete'.".to_string()),
+                        items: None,
+                        r#enum: Some(vec!["todo".to_string(), "in_progress".to_string(), "in_review".to_string(), "complete".to_string()]),
+                    });
+                    props
+                }),
+                required: Some(vec!["task_id".to_string()]),
+            },
+        },
+        ToolDefinition {
+            name: "kanban_delete_task".to_string(),
+            description: "Delete a Kanban task by its ID.".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: Some({
+                    let mut props = HashMap::new();
+                    props.insert("task_id".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("The ID of the task to delete.".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props
+                }),
+                required: Some(vec!["task_id".to_string()]),
+            },
+        },
+        ToolDefinition {
+            name: "fs_read_file".to_string(),
+            description: "Read the contents of a file from the workspace.".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: Some({
+                    let mut props = HashMap::new();
+                    props.insert("path".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("Path of the file to read (relative to workspace root or absolute).".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props
+                }),
+                required: Some(vec!["path".to_string()]),
+            },
+        },
+        ToolDefinition {
+            name: "fs_list_dir".to_string(),
+            description: "List the contents of a directory in the workspace.".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: Some({
+                    let mut props = HashMap::new();
+                    props.insert("path".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("Path of the directory to list (relative to workspace root or absolute).".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props
+                }),
+                required: Some(vec!["path".to_string()]),
+            },
+        },
+        ToolDefinition {
+            name: "fs_search".to_string(),
+            description: "Search files in the workspace using ripgrep.".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: Some({
+                    let mut props = HashMap::new();
+                    props.insert("pattern".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("The regex or literal pattern to search for.".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props.insert("path".to_string(), ToolPropertySchema {
+                        prop_type: "string".to_string(),
+                        description: Some("The directory path to search in.".to_string()),
+                        items: None,
+                        r#enum: None,
+                    });
+                    props
+                }),
+                required: Some(vec!["pattern".to_string(), "path".to_string()]),
+            },
+        },
     ]
 }
 
@@ -590,6 +761,7 @@ pub struct ToolExecutor {
     plan_manager: Arc<PlanManager>,
     agent_comms: Arc<AgentComms>,
     event_sender: Arc<dyn ToolEventSender>,
+    kanban_backend: KanbanBackend,
 }
 
 impl std::fmt::Debug for ToolExecutor {
@@ -605,13 +777,16 @@ impl ToolExecutor {
         plan_manager: Arc<PlanManager>,
         agent_comms: Arc<AgentComms>,
         event_sender: Arc<dyn ToolEventSender>,
+        store: Arc<athena_store::KeyValueStore>,
     ) -> Self {
+        let kanban_backend = KanbanBackend::new(Arc::clone(&store));
         Self {
             output_buffer,
             notification_service,
             plan_manager,
             agent_comms,
             event_sender,
+            kanban_backend,
         }
     }
 
@@ -634,6 +809,13 @@ impl ToolExecutor {
             "prompt_agent" => self.prompt_agent(args),
             "ask_user" => self.ask_user(args),
             "evaluate_results" => self.evaluate_results(args),
+            "kanban_list_tasks" => self.kanban_list_tasks(),
+            "kanban_create_task" => self.kanban_create_task(args),
+            "kanban_update_task" => self.kanban_update_task(args),
+            "kanban_delete_task" => self.kanban_delete_task(args),
+            "fs_read_file" => self.fs_read_file(args),
+            "fs_list_dir" => self.fs_list_dir(args),
+            "fs_search" => self.fs_search(args),
             _ => Err(ToolExecutorError::UnknownTool(name.to_string())),
         }
     }
@@ -1139,5 +1321,342 @@ impl ToolExecutor {
             ),
             is_error: None,
         })
+    }
+
+    // -- Kanban tools -------------------------------------------------------
+
+    fn get_workspace_root(&self) -> Result<PathBuf, ToolExecutorError> {
+        std::env::current_dir()
+            .and_then(|p| p.canonicalize())
+            .map_err(|e| {
+                ToolExecutorError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to get workspace root: {}", e),
+                ))
+            })
+    }
+
+    fn validate_path(&self, path: &str) -> Result<PathBuf, ToolExecutorError> {
+        let root = self.get_workspace_root()?;
+        let path = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            root.join(path)
+        };
+        Ok(path)
+    }
+
+    fn get_current_time_ms(&self) -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64
+    }
+
+    fn kanban_list_tasks(&self) -> Result<ToolCallResult, ToolExecutorError> {
+        let workspace_id = match self.kanban_backend.get_active_workspace_id() {
+            Ok(id) => id,
+            Err(_) => {
+                return Ok(ToolCallResult {
+                    text: "No active workspace found.".to_string(),
+                    is_error: None,
+                })
+            }
+        };
+
+        let tasks = match self.kanban_backend.get_tasks(&workspace_id) {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Error reading kanban tasks: {}", e),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        if tasks.is_empty() {
+            return Ok(ToolCallResult {
+                text: "No tasks found on the Kanban board.".to_string(),
+                is_error: None,
+            });
+        }
+
+        let json = match serde_json::to_string(&tasks) {
+            Ok(j) => j,
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Error serializing tasks: {}", e),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        Ok(ToolCallResult {
+            text: json,
+            is_error: None,
+        })
+    }
+
+    fn kanban_create_task(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
+        let title = args
+            .title
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("title".to_string()))?;
+        let space_id = args
+            .space_id
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("space_id".to_string()))?;
+
+        let status = match args.status.as_deref() {
+            Some(s) => KanbanBackendStatus::from_str(s).unwrap_or(KanbanBackendStatus::Todo),
+            None => KanbanBackendStatus::Todo,
+        };
+
+        let task = KanbanBackendTask {
+            id: format!("task-{}", Uuid::new_v4()),
+            space_id: space_id.to_string(),
+            title: title.to_string(),
+            description: args.description.clone(),
+            assigned_agent: None,
+            status,
+            order: 0,
+            created_at: self.get_current_time_ms(),
+        };
+
+        match self.kanban_backend.create_task(space_id, task) {
+            Ok(created) => Ok(ToolCallResult {
+                text: format!(
+                    "Task created: {} (ID: {})",
+                    created.title, created.id
+                ),
+                is_error: None,
+            }),
+            Err(e) => Ok(ToolCallResult {
+                text: format!("Error creating task: {}", e),
+                is_error: Some(true),
+            }),
+        }
+    }
+
+    fn kanban_update_task(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
+        let task_id = args
+            .task_id
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("task_id".to_string()))?;
+
+        let workspace_id = match self.kanban_backend.get_active_workspace_id() {
+            Ok(id) => id,
+            Err(_) => {
+                return Ok(ToolCallResult {
+                    text: "No active workspace found.".to_string(),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        let status = args
+            .status
+            .as_ref()
+            .and_then(|s| KanbanBackendStatus::from_str(s).ok());
+
+        match self
+            .kanban_backend
+            .update_task(&workspace_id, task_id, args.title.clone(), args.description.clone(), status)
+        {
+            Ok(updated) => Ok(ToolCallResult {
+                text: format!("Task updated: {} (ID: {})", updated.title, updated.id),
+                is_error: None,
+            }),
+            Err(e) => Ok(ToolCallResult {
+                text: format!("Error updating task: {}", e),
+                is_error: Some(true),
+            }),
+        }
+    }
+
+    fn kanban_delete_task(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
+        let task_id = args
+            .task_id
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("task_id".to_string()))?;
+
+        let workspace_id = match self.kanban_backend.get_active_workspace_id() {
+            Ok(id) => id,
+            Err(_) => {
+                return Ok(ToolCallResult {
+                    text: "No active workspace found.".to_string(),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        match self.kanban_backend.delete_task(&workspace_id, task_id) {
+            Ok(_) => Ok(ToolCallResult {
+                text: format!("Task {} deleted.", task_id),
+                is_error: None,
+            }),
+            Err(e) => Ok(ToolCallResult {
+                text: format!("Error deleting task: {}", e),
+                is_error: Some(true),
+            }),
+        }
+    }
+
+    // -- File system tools --------------------------------------------------
+
+    fn fs_read_file(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
+        let path = args
+            .path
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("path".to_string()))?;
+
+        let validated = match self.validate_path(path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Invalid path '{}': {}", path, e),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        if !validated.exists() {
+            return Ok(ToolCallResult {
+                text: format!("File not found: {}", validated.display()),
+                is_error: Some(true),
+            });
+        }
+
+        match std::fs::read_to_string(&validated) {
+            Ok(contents) => Ok(ToolCallResult {
+                text: contents,
+                is_error: None,
+            }),
+            Err(e) => Ok(ToolCallResult {
+                text: format!("Failed to read file '{}': {}", validated.display(), e),
+                is_error: Some(true),
+            }),
+        }
+    }
+
+    fn fs_list_dir(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
+        let path = args
+            .path
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("path".to_string()))?;
+
+        let validated = match self.validate_path(path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Invalid path '{}': {}", path, e),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        if !validated.exists() {
+            return Ok(ToolCallResult {
+                text: format!("Directory not found: {}", validated.display()),
+                is_error: Some(true),
+            });
+        }
+
+        let entries = match std::fs::read_dir(&validated) {
+            Ok(dir) => dir,
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Failed to read directory '{}': {}", validated.display(), e),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        let mut results: Vec<serde_json::Value> = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(e) => {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let path = e.path().to_string_lossy().to_string();
+                    let is_dir = match e.file_type() {
+                        Ok(ft) => ft.is_dir(),
+                        Err(_) => false,
+                    };
+                    results.push(serde_json::json!({
+                        "name": name,
+                        "path": path,
+                        "is_dir": is_dir,
+                    }));
+                }
+                Err(_) => continue,
+            }
+        }
+
+        let json = match serde_json::to_string(&results) {
+            Ok(j) => j,
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Error serializing directory entries: {}", e),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        Ok(ToolCallResult {
+            text: json,
+            is_error: None,
+        })
+    }
+
+    fn fs_search(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
+        let pattern = args
+            .pattern
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("pattern".to_string()))?;
+        let path = args
+            .path
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("path".to_string()))?;
+
+        let validated = match self.validate_path(path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Invalid path '{}': {}", path, e),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        let options = crate::types::SearchOptions {
+            pattern: pattern.to_string(),
+            path: validated.to_string_lossy().to_string(),
+            glob: None,
+            case_sensitive: false,
+            max_results: Some(50),
+            context_lines: Some(2),
+        };
+
+        match crate::search::search_code_sync(&options) {
+            Ok(result) => {
+                let json = match serde_json::to_string(&result) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        return Ok(ToolCallResult {
+                            text: format!("Error serializing search results: {}", e),
+                            is_error: Some(true),
+                        })
+                    }
+                };
+                Ok(ToolCallResult {
+                    text: json,
+                    is_error: None,
+                })
+            }
+            Err(e) => Ok(ToolCallResult {
+                text: format!("Search failed: {}", e),
+                is_error: Some(true),
+            }),
+        }
     }
 }

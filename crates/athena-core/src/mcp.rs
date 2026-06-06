@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::tool_executor::ToolExecutor;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -342,6 +344,8 @@ pub struct McpServer {
     pub spawn_handler: Option<SpawnHandler>,
     pub output_handler: Option<OutputHandler>,
     pub agent_comms_handler: Option<AgentCommsHandler>,
+    /// Optional reference to the tool executor for delegating tool calls
+    pub tool_executor: Option<Arc<Mutex<ToolExecutor>>>,
 }
 
 impl std::fmt::Debug for McpServer {
@@ -370,6 +374,7 @@ impl McpServer {
             spawn_handler: None,
             output_handler: None,
             agent_comms_handler: None,
+            tool_executor: None,
         }
     }
 
@@ -439,6 +444,59 @@ impl McpServer {
     /// Dispatches to the appropriate handler based on the method name.
     /// Returns a `JsonRpcResponse` with either the result or an error.
     pub async fn handle_request(&self, req: &JsonRpcRequest) -> JsonRpcResponse {
+        // Try to delegate tool calls to the tool executor first
+        if req.method == "tools/call" {
+            if let Some(ref tool_exec_arc) = self.tool_executor {
+                let name = req
+                    .params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let args = req
+                    .params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_default();
+
+                // Map MCP tool name to ToolExecutor tool name
+                let executor_name = map_mcp_to_executor_name(name);
+
+                // Convert args to ToolInput
+                if let Some(tool_input) = args_to_tool_input(&args) {
+                    if let Ok(tool_exec) = tool_exec_arc.lock() {
+                        match tool_exec.execute_tool_call(executor_name, &tool_input) {
+                            Ok(result) => {
+                                return JsonRpcResponse {
+                                    jsonrpc: "2.0".into(),
+                                    id: req.id.clone(),
+                                    result: Some(serde_json::json!({
+                                        "content": [{ "type": "text", "text": result.text }]
+                                    })),
+                                    error: None,
+                                };
+                            }
+                            Err(crate::tool_executor::ToolExecutorError::UnknownTool(_)) => {
+                                // Fall through to existing handlers
+                            }
+                            Err(e) => {
+                                return JsonRpcResponse {
+                                    jsonrpc: "2.0".into(),
+                                    id: req.id.clone(),
+                                    result: None,
+                                    error: Some(JsonRpcError {
+                                        code: -32603,
+                                        message: format!("Tool execution error: {}", e),
+                                        data: None,
+                                    }),
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fall through to the existing handler implementation
         handle_request_impl(
             &self.token,
             req,
@@ -1009,4 +1067,134 @@ impl ConnectionHandler {
         }
         log::info!("MCP: connection closed from {}", peer);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions for tool executor delegation
+// ---------------------------------------------------------------------------
+
+/// Map MCP tool names to ToolExecutor tool names.
+fn map_mcp_to_executor_name(mcp_name: &str) -> &str {
+    match mcp_name {
+        "create_tasks" => "kanban_create_task",
+        "get_next_task" => "kanban_list_tasks",
+        "update_task_status" => "kanban_update_task",
+        "spawn_agents" => "launch_builtin_agent",
+        "get_output" => "read_agent_output",
+        "list_agent_panes" => "list_agents",
+        "code_search" => "fs_search",
+        "search_files" => "fs_search",
+        "run_command_in_terminals" => "run_command_in_terminals",
+        "close_terminals" => "close_terminals",
+        "prompt_agent" => "prompt_agent",
+        "launch_builtin_agent" => "launch_builtin_agent",
+        _ => mcp_name,
+    }
+}
+
+/// Convert JSON-RPC tool call arguments into a `ToolInput` structure,
+/// handling both camelCase and snake_case keys.
+fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::ToolInput> {
+    let map = args.as_object()?;
+
+    let mut ti = crate::tool_executor::ToolInput::default();
+
+    // Kanban
+    ti.title = map.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
+    ti.description = map.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+    ti.status = map.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
+    if let Some(v) = map.get("taskId").or_else(|| map.get("task_id")) {
+        ti.task_id = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(v) = map.get("spaceId").or_else(|| map.get("space_id")) {
+        ti.space_id = v.as_str().map(|s| s.to_string());
+    }
+
+    // Agent / Pane
+    if let Some(v) = map.get("agentType").or_else(|| map.get("agent_type")) {
+        ti.agent_type = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(n) = map.get("agentCount").or_else(|| map.get("agent_count")).and_then(|v| v.as_u64()) {
+        ti.agent_count = Some(n as u32);
+    }
+    if let Some(v) = map.get("taskPrompt").or_else(|| map.get("task_prompt")) {
+        ti.task_prompt = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(v) = map.get("command").and_then(|v| v.as_str()) {
+        ti.command = Some(v.to_string());
+    }
+    if let Some(v) = map.get("paneId").or_else(|| map.get("pane_id")) {
+        ti.pane_id = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(v) = map.get("agentId").or_else(|| map.get("agent_id")) {
+        ti.agent_id = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(arr) = map.get("paneIds").or_else(|| map.get("pane_ids")) {
+        if let Some(arr) = arr.as_array() {
+            ti.pane_ids = Some(arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
+        }
+    }
+
+    // FS / Search
+    if let Some(v) = map.get("path").and_then(|v| v.as_str()) {
+        ti.path = Some(v.to_string());
+    }
+    if let Some(v) = map.get("pattern").and_then(|v| v.as_str()) {
+        ti.pattern = Some(v.to_string());
+    }
+    if let Some(n) = map.get("limit").and_then(|v| v.as_u64()) {
+        ti.limit = Some(n as usize);
+    }
+    if let Some(n) = map.get("sinceLine").or_else(|| map.get("since_line")).and_then(|v| v.as_u64()) {
+        ti.since_line = Some(n as u32);
+    }
+
+    // Plan
+    if let Some(v) = map.get("goal").and_then(|v| v.as_str()) {
+        ti.goal = Some(v.to_string());
+    }
+    if let Some(v) = map.get("reasoning").and_then(|v| v.as_str()) {
+        ti.reasoning = Some(v.to_string());
+    }
+    if let Some(v) = map.get("stepId").or_else(|| map.get("step_id")) {
+        ti.step_id = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(v) = map.get("planId").or_else(|| map.get("plan_id")) {
+        ti.plan_id = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(v) = map.get("prompt").and_then(|v| v.as_str()) {
+        ti.prompt = Some(v.to_string());
+    }
+    if let Some(v) = map.get("overallStatus").or_else(|| map.get("overall_status")) {
+        ti.overall_status = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(arr) = map.get("stepEvaluations").or_else(|| map.get("step_evaluations")) {
+        if let Some(arr) = arr.as_array() {
+            ti.step_evaluations = Some(arr.clone());
+        }
+    }
+    if let Some(v) = map.get("nextAction").or_else(|| map.get("next_action")) {
+        ti.next_action = v.as_str().map(|s| s.to_string());
+    }
+
+    // Misc
+    if let Some(v) = map.get("question").and_then(|v| v.as_str()) {
+        ti.question = Some(v.to_string());
+    }
+    if let Some(arr) = map.get("options") {
+        if let Some(arr) = arr.as_array() {
+            ti.options = Some(arr.clone());
+        }
+    }
+    if let Some(v) = map.get("message").and_then(|v| v.as_str()) {
+        ti.message = Some(v.to_string());
+    }
+    if let Some(v) = map.get("targetAgentId").or_else(|| map.get("target_agent_id")) {
+        ti.target_agent_id = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(v) = map.get("messageType").or_else(|| map.get("message_type")) {
+        ti.message_type = v.as_str().map(|s| s.to_string());
+    }
+
+    Some(ti)
 }

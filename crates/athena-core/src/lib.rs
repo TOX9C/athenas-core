@@ -1,4 +1,5 @@
 pub mod agent_comms;
+pub mod kanban;
 pub mod mcp;
 pub mod notification;
 pub mod orchestrator;
@@ -13,7 +14,7 @@ pub mod tool_executor;
 pub mod types;
 
 pub use orchestrator::AthenaOrchestrator;
-pub use search::{search_code, search_files};
+pub use search::{search_code, search_code_sync, search_files};
 pub use types::*;
 
 #[cfg(test)]
