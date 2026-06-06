@@ -138,6 +138,7 @@ fn main() {
             browser_back,
             browser_forward,
             browser_reload,
+            browser_open_external,
             // Plugins
             plugin_list,
             plugin_get,

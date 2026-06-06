@@ -12,18 +12,59 @@ const TAB_COLORS: &[&str] = &[
     "#0ea5e9", "#22c55e", "#f59e0b", "#ef4444", "#06b6d4", "#f97316", "#64748b",
 ];
 
-const AGENT_TYPES: &[AgentType] = &[
-    AgentType::Claude,
-    AgentType::Codex,
-    AgentType::Opencode,
-    AgentType::Gemini,
-    AgentType::Shell,
-];
+/// Represents a selectable agent row in the New Workspace modal.
+/// For built-in agents, `custom_id` is `None`. For custom agents,
+/// the `label`, `custom_id`, and `custom_cmd` fields carry the values
+/// set by the user in Settings > Agents.
+#[derive(Debug, Clone, PartialEq)]
+struct AgentRowState {
+    agent_type: AgentType,
+    label: String,
+    custom_id: Option<String>,
+    custom_cmd: Option<String>,
+    count: usize,
+}
+
+/// Build the initial list of agent rows, merging built-ins with
+/// any user-defined custom agents from the UI store.
+fn init_agent_rows(custom_agents: &[crate::types::workspace::CustomAgent]) -> Vec<AgentRowState> {
+    let mut rows = Vec::new();
+    for at in [
+        AgentType::Claude,
+        AgentType::Codex,
+        AgentType::Opencode,
+        AgentType::Gemini,
+        AgentType::Shell,
+    ]
+    .iter()
+    {
+        rows.push(AgentRowState {
+            agent_type: at.clone(),
+            label: get_agent_label(at).to_string(),
+            custom_id: None,
+            custom_cmd: None,
+            count: 0,
+        });
+    }
+    for ca in custom_agents {
+        rows.push(AgentRowState {
+            agent_type: AgentType::Custom,
+            label: ca.alias.clone(),
+            custom_id: Some(ca.id.clone()),
+            custom_cmd: Some(ca.command.clone()),
+            count: 0,
+        });
+    }
+    rows
+}
 
 #[derive(Debug, Clone, PartialEq)]
 struct AgentSlot {
     role: AgentRole,
     agent_type: AgentType,
+    custom_id: Option<String>,
+    custom_cmd: Option<String>,
+    label: Option<String>,
 }
 
 fn role_color(role: &AgentRole) -> &'static str {
@@ -67,6 +108,39 @@ fn parse_agent_type(s: &str) -> AgentType {
     }
 }
 
+/// Encode an AgentSlot for the swarm <select> `value` attribute.
+/// For built-in agents, returns e.g. "claude". For custom agents,
+/// embeds the custom id so the option can be uniquely identified.
+fn slot_value(slot: &AgentSlot) -> String {
+    if let Some(ref id) = slot.custom_id {
+        format!("custom${}", id)
+    } else {
+        agent_type_str(&slot.agent_type).to_string()
+    }
+}
+
+/// Decode a swarm <select> value and update an AgentSlot in place.
+fn apply_slot_value(
+    slot: &mut AgentSlot,
+    val: &str,
+    custom_agents: &[crate::types::workspace::CustomAgent],
+) {
+    if let Some(id) = val.strip_prefix("custom$") {
+        if let Some(ca) = custom_agents.iter().find(|c| c.id == id) {
+            slot.agent_type = AgentType::Custom;
+            slot.custom_id = Some(ca.id.clone());
+            slot.custom_cmd = Some(ca.command.clone());
+            slot.label = Some(ca.alias.clone());
+            return;
+        }
+    }
+    let at = parse_agent_type(val);
+    slot.agent_type = at;
+    slot.custom_id = None;
+    slot.custom_cmd = None;
+    slot.label = None;
+}
+
 fn parse_agent_role(s: &str) -> AgentRole {
     match s {
         "coordinator" => AgentRole::Coordinator,
@@ -97,9 +171,13 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     let mut space_dir = use_signal(String::new);
     let mut space_goal = use_signal(String::new);
 
-    // Terminal mode: per-agent-type counts
-    let pane_agents: Signal<Vec<(AgentType, usize)>> =
-        use_signal(|| AGENT_TYPES.iter().map(|at| (at.clone(), 0)).collect());
+    // Move store access above signals that need it for init
+    let mut workspace_state = use_workspace_store();
+    let mut ui_state = use_ui_store();
+
+    // Terminal mode: per-row counts (built-in + custom agents)
+    let _init_snapshot = ui_state.read().custom_agents.clone();
+    let pane_agents: Signal<Vec<AgentRowState>> = use_signal(|| init_agent_rows(&_init_snapshot));
 
     // Swarm mode: agent slots
     let mut slots: Signal<Vec<AgentSlot>> = use_signal(|| {
@@ -107,20 +185,26 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
             AgentSlot {
                 role: AgentRole::Coordinator,
                 agent_type: AgentType::Claude,
+                custom_id: None,
+                custom_cmd: None,
+                label: None,
             },
             AgentSlot {
                 role: AgentRole::Builder,
                 agent_type: AgentType::Claude,
+                custom_id: None,
+                custom_cmd: None,
+                label: None,
             },
             AgentSlot {
                 role: AgentRole::Builder,
                 agent_type: AgentType::Claude,
+                custom_id: None,
+                custom_cmd: None,
+                label: None,
             },
         ]
     });
-
-    let mut workspace_state = use_workspace_store();
-    let mut ui_state = use_ui_store();
 
     // E2E helper: allow skipping validation by setting window.__athenaE2E = true
     let is_e2e: bool = web_sys::window()
@@ -128,7 +212,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let total_panes: usize = pane_agents.read().iter().map(|(_, c)| *c).sum();
+    let total_panes: usize = pane_agents.read().iter().map(|r| r.count).sum();
     let coordinator_count = slots
         .read()
         .iter()
@@ -214,14 +298,14 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         };
 
                                         let mut panes = Vec::new();
-                                        for (at, count) in pane_agents.read().iter() {
-                                            for _ in 0..*count {
+                                        for row in pane_agents.read().iter() {
+                                            for _ in 0..row.count {
                                                 panes.push(PaneConfig {
                                                     id: generate_id(),
-                                                    agent_type: at.clone(),
-                                                    custom_cmd: None,
-                                                    custom_agent_id: None,
-                                                    label: None,
+                                                    agent_type: row.agent_type.clone(),
+                                                    custom_cmd: row.custom_cmd.clone(),
+                                                    custom_agent_id: row.custom_id.clone(),
+                                                    label: Some(row.label.clone()),
                                                     bypass_mode: None,
                                                     project_name: None,
                                                     model_name: None,
@@ -286,13 +370,13 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             pane_configs.push(PaneConfig {
                                                 id: pane_id.clone(),
                                                 agent_type: slot.agent_type.clone(),
-                                                custom_cmd: None,
-                                                custom_agent_id: None,
-                                                label: None,
+                                                custom_cmd: slot.custom_cmd.clone(),
+                                                custom_agent_id: slot.custom_id.clone(),
+                                                label: slot.label.clone(),
                                                 bypass_mode: None,
                                                 project_name: None,
                                                 model_name: None,
-                                                    resume_id: None,
+                                                resume_id: None,
                                             });
                                             _swarm_agents.push(SwarmAgent {
                                                 id: agent_id,
@@ -510,16 +594,11 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                             }
                         }
 
-                        for (idx, at) in AGENT_TYPES.iter().cloned().enumerate() {
+                        for (idx, row) in pane_agents.read().iter().enumerate() {
                             {
-                                let at_plus = at.clone();
-                                let at_minus = at.clone();
-                                let label = get_agent_label(&at);
-                                let color = get_agent_color(&at);
-                                // Read count inside rsx! sub-block so it's not held during the onclick handler.
-                                // Use a helper signal to read the count reactively per row.
-                                let count_val = *pane_agents.read().iter().find(|(a, _)| a == &at).map(|(_, c)| c).unwrap_or(&0);
+                                let count_val = row.count;
                                 let has_any = count_val > 0;
+                                let color = get_agent_color(&row.agent_type);
                                 let row_bg = if has_any { "var(--bgSecondary)" } else { "var(--bg)" };
                                 let row_border = if has_any { "var(--borderActive)" } else { "var(--border)" };
                                 let dot_bg = if has_any { color } else { "var(--textDim)" };
@@ -537,7 +616,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--border); background-color: var(--bg); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; appearance: none; -webkit-appearance: none; outline: none; box-shadow: none; {}",
                                     if total_panes >= 16 { "opacity: 0.3; pointer-events: none;" } else { "" }
                                 );
-                                let plus_testid = format!("add-{}", get_agent_label(&at).to_lowercase().replace(' ', "-"));
+                                let plus_testid = format!("add-{}", row.label.to_lowercase().replace(' ', "-"));
 
                                 rsx! {
                                     div {
@@ -551,7 +630,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             }
                                             span {
                                                 style: "font-size: 12px; font-weight: 500; color: {text_color};",
-                                                "{label}"
+                                                "{row.label}"
                                             }
                                         }
 
@@ -562,18 +641,17 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 style: minus_btn_style,
                                                 onclick: move |_: dioxus::events::MouseEvent| {
                                                     web_sys::console::log_1(&"[NewSpaceModal] - clicked".into());
-                                                    let at = at_minus.clone();
                                                     let mut paned = pane_agents.clone();
-                                                    let mut agents: Vec<(AgentType, usize)> = paned.read().iter().cloned().collect();
-                                                    if let Some(pos) = agents.iter().position(|(a, _)| a == &at) {
-                                                        if agents[pos].1 > 0 {
+                                                    let mut agents: Vec<AgentRowState> = paned.read().iter().cloned().collect();
+                                                    if let Some(r) = agents.get_mut(idx) {
+                                                        if r.count > 0 {
                                                             web_sys::console::log_1(&"[NewSpaceModal] decrementing".into());
-                                                            agents[pos].1 -= 1;
+                                                            r.count -= 1;
                                                         } else {
                                                             web_sys::console::log_1(&"[NewSpaceModal] count already 0, cannot decrement".into());
                                                         }
                                                         paned.set(agents);
-                                                        let total: usize = paned.read().iter().map(|(_, c)| *c).sum();
+                                                        let total: usize = paned.read().iter().map(|ag| ag.count).sum();
                                                         web_sys::console::log_1(&format!("[NewSpaceModal] total panes after decrement: {}", total).into());
                                                     }
                                                     web_sys::console::log_1(&"[NewSpaceModal] - done".into());
@@ -591,28 +669,23 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 id: "{plus_testid}",
                                                 onclick: move |_: dioxus::events::MouseEvent| {
                                                     web_sys::console::log_1(&"[NewSpaceModal] + clicked".into());
-                                                    let at = at_plus.clone();
                                                     let mut paned = pane_agents.clone();
-                                                    // Set a global flag so E2E can verify the click fired
                                                     if let Some(win) = web_sys::window() {
                                                         let _ = js_sys::Reflect::set(&win, &"__athenaClickFired".into(), &true.into());
                                                     }
                                                     web_sys::console::log_1(&"[NewSpaceModal] about to write pane_agents".into());
-                                                    // Clone full vec, modify, replace to ensure
-                                                    // Dioxus 0.7 detects the reactive change.
-                                                    let mut agents: Vec<(AgentType, usize)> = paned.read().iter().cloned().collect();
-                                                    if let Some(pos) = agents.iter().position(|(a, _)| a == &at) {
-                                                        let total: usize = agents.iter().map(|(_, c)| *c).sum();
+                                                    let mut agents: Vec<AgentRowState> = paned.read().iter().cloned().collect();
+                                                    let total: usize = agents.iter().map(|ag| ag.count).sum();
+                                                    if let Some(r) = agents.get_mut(idx) {
                                                         web_sys::console::log_1(&"[NewSpaceModal] incrementing".into());
                                                         if total < 16 {
-                                                            agents[pos].1 += 1;
+                                                            r.count += 1;
                                                         }
                                                         paned.set(agents);
                                                     }
-                                                    let total: usize = paned.read().iter().map(|(_, c)| *c).sum();
+                                                    let total: usize = paned.read().iter().map(|ag| ag.count).sum();
                                                     web_sys::console::log_1(&format!("[NewSpaceModal] total panes: {}", total).into());
                                                     web_sys::console::log_1(&"[NewSpaceModal] + done".into());
-                                                    // Set another flag after the write
                                                     if let Some(win) = web_sys::window() {
                                                         let _ = js_sys::Reflect::set(&win, &"__athenaClickDone".into(), &true.into());
                                                     }
@@ -665,7 +738,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     style: add_btn_style ,
                                     onclick: move |_| {
                                         if slots.read().len() < 10 {
-                                            slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude });
+                                            slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude, custom_id: None, custom_cmd: None, label: None });
                                         }
                                     },
                                     "+ Add"
@@ -675,7 +748,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                             for (idx, slot) in slots.read().iter().enumerate() {
                                 {
                                     let slot_role_val = agent_role_str(&slot.role);
-                                    let slot_agent_val = agent_type_str(&slot.agent_type);
+                                    let slot_agent_val = slot_value(&slot);
                                     let dot_c = role_color(&slot.role);
                                     let cur_slots_len = slots.read().len();
                                     let remove_btn_style = format!(
@@ -710,9 +783,12 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 style: "padding: 3px 6px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--text); font-size: 11px; outline: none;",
                                                 value: "{slot_agent_val}",
                                                 onchange: move |e| {
-                                                    let at = parse_agent_type(&e.value());
+                                                    let ca_list = {
+                                                        let ui = ui_state.read();
+                                                        ui.custom_agents.clone()
+                                                    };
                                                     if let Some(s) = slots.write().get_mut(idx) {
-                                                        s.agent_type = at;
+                                                        apply_slot_value(s, &e.value(), &ca_list);
                                                     }
                                                 },
                                                 option { value: "claude", "Claude Code" }
@@ -720,6 +796,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 option { value: "opencode", "OpenCode" }
                                                 option { value: "gemini", "Gemini CLI" }
                                                 option { value: "shell", "Shell" }
+                                                for ca in ui_state.read().custom_agents.clone() {
+                                                    option { value: "custom${ca.id}", "{ca.alias}" }
+                                                }
                                             }
 
                                             div { style: "flex: 1;" }

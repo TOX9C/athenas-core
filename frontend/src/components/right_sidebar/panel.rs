@@ -1,13 +1,13 @@
 use super::browser_panel::RightBrowserPanel;
+use super::editor_panel::RightEditorPanel;
 use super::skills_panel::SkillsPanel;
-use crate::components::athena::athena_panel::AthenaPanel;
+use crate::components::athena::athena_panel::{AthenaPanel, AthenaPanelMode};
 use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
 use dioxus::prelude::*;
 
 #[component]
 pub fn RightSidebar() -> Element {
     let mut panel_state = use_panel_manager_store();
-    let width = panel_state.read().right_panel_width_percent;
     let active = panel_state.read().active_right_panel;
 
     let tab_btn = |is_active: bool| -> String {
@@ -28,7 +28,7 @@ pub fn RightSidebar() -> Element {
 
     rsx! {
         div {
-            style: "width: {width}%; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); overflow: hidden;",
+            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); overflow: hidden;",
 
             // Tab bar
             div {
@@ -43,7 +43,13 @@ pub fn RightSidebar() -> Element {
                 button {
                     style: "{tab_btn(active == RightPanel::Assistant)}",
                     onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Assistant),
-                    "Assistant"
+                    "Athena"
+                }
+
+                button {
+                    style: "{tab_btn(active == RightPanel::Editor)}",
+                    onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Editor),
+                    "Editor"
                 }
 
                 button {
@@ -63,11 +69,12 @@ pub fn RightSidebar() -> Element {
 
             // Content
             div {
-                style: "flex: 1; min-height: 0; overflow: hidden;",
+                style: "flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column;",
 
                 match active {
                     RightPanel::Browser => rsx! { RightBrowserPanel {} },
-                    RightPanel::Assistant => rsx! { AthenaPanel {} },
+                    RightPanel::Assistant => rsx! { AthenaPanel { mode: AthenaPanelMode::Compact } },
+                    RightPanel::Editor => rsx! { RightEditorPanel {} },
                     RightPanel::Skills => rsx! { SkillsPanel {} },
                     RightPanel::None => rsx! {},
                 }

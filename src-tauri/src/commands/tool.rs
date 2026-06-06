@@ -9,18 +9,13 @@ pub async fn tool_execute(
     tool_name: String,
     arguments: String,
 ) -> Result<String, CommandError> {
-    let tool_executor = state.tool_executor.clone();
-    tokio::task::spawn_blocking(move || {
-        let executor = tool_executor.lock().map_err(|e| CommandError::Internal(e.to_string()))?;
-        let input: athena_core::tool_executor::ToolInput =
-            serde_json::from_str(&arguments).map_err(|e| CommandError::InvalidInput(format!("Invalid arguments JSON: {}", e)))?;
-        let result = executor
-            .execute_tool_call(&tool_name, &input)
-            .map_err(|e| CommandError::Internal(e.to_string()))?;
-        serde_json::to_string(&result).map_err(|e| CommandError::Internal(e.to_string()))
-    })
-    .await
-    .map_err(|e| CommandError::Internal(e.to_string()))?
+    let executor = state.tool_executor.lock().map_err(|e| CommandError::Internal(e.to_string()))?;
+    let input: athena_core::tool_executor::ToolInput =
+        serde_json::from_str(&arguments).map_err(|e| CommandError::InvalidInput(format!("Invalid arguments JSON: {}", e)))?;
+    let result = executor
+        .execute_tool_call(&tool_name, &input)
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    serde_json::to_string(&result).map_err(|e| CommandError::Internal(e.to_string()))
 }
 
 /// List all built-in tools available in the tool executor.

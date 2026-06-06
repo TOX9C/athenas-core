@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use athena_core::plan_manager::ExecutionPlan;
@@ -6,48 +6,201 @@ use athena_core::tool_executor::ToolEventSender;
 use tauri::{AppHandle, Emitter};
 
 // ---------------------------------------------------------------------------
-// TauriEventSender — real implementation (PTY operations are no-ops)
+// TauriEventSender — real implementation (wired to SessionManager)
 // ---------------------------------------------------------------------------
 
 /// Real [`ToolEventSender`] that emits Tauri events for user questions,
-/// plan updates, and plan evaluations. PTY operations are no-ops now that
-/// the terminal crate has been removed.
+/// plan updates, plan evaluations, and PTY operations.
 ///
-/// Plan/notification events are currently no-ops; they can be extended
-/// later to emit Tauri events over the app handle.
+/// PTY methods (`agent_spawned`, `close_panes`, `pty_write`, `has_session`)
+/// delegate to the real `SessionManager` from `athena-terminal`.
+///
+/// Plan/notification events can be extended later to emit Tauri events
+/// over the app handle.
 pub struct TauriEventSender {
     app_handle: Arc<std::sync::Mutex<Option<AppHandle>>>,
     pending_questions: Arc<std::sync::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
+    session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
+    /// Best-effort synchronous cache of "known" session IDs so that
+    /// `has_session` can answer from a sync trait method.
+    active_sessions: Arc<std::sync::Mutex<HashSet<String>>>,
+    /// Lazily-cached tokio runtime handle so we can spawn async work from
+    /// sync trait methods (e.g. when called from spawn_blocking).
+    runtime_handle: Arc<std::sync::Mutex<Option<tokio::runtime::Handle>>>,
 }
 
 impl TauriEventSender {
     pub fn new(
         app_handle: Arc<std::sync::Mutex<Option<AppHandle>>>,
         pending_questions: Arc<std::sync::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
+        session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
     ) -> Self {
         Self {
             app_handle,
             pending_questions,
+            session_manager,
+            active_sessions: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            runtime_handle: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Return a clone of the cached tokio runtime handle if available,
+    /// otherwise try to acquire the current handle and cache it.
+    fn get_runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        if let Ok(guard) = self.runtime_handle.lock() {
+            if let Some(h) = guard.as_ref() {
+                return Some(h.clone());
+            }
+        }
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                if let Ok(mut guard) = self.runtime_handle.lock() {
+                    *guard = Some(handle.clone());
+                }
+                Some(handle)
+            }
+            Err(e) => {
+                log::error!("No tokio runtime available: {}", e);
+                None
+            }
         }
     }
 }
 
 impl ToolEventSender for TauriEventSender {
-    fn agent_spawned(&self, _id: &str, _agent_type: &str, _agent_cmd: &str) {
-        log::warn!("agent_spawned is a no-op: PTY support has been removed");
+    fn agent_spawned(&self, id: &str, _agent_type: &str, agent_cmd: &str) {
+        // Track as active so `has_session` can answer synchronously.
+        if let Ok(mut guard) = self.active_sessions.lock() {
+            guard.insert(id.to_string());
+        }
+
+        let session_manager = Arc::clone(&self.session_manager);
+        let app_handle = match self.app_handle.lock() {
+            Ok(g) => g.clone(),
+            Err(e) => {
+                log::error!("app_handle lock poisoned in agent_spawned: {}", e);
+                return;
+            }
+        };
+        let id = id.to_string();
+        let agent_cmd = agent_cmd.to_string();
+
+        let handle = match self.get_runtime_handle() {
+            Some(h) => h,
+            None => {
+                log::error!("No tokio runtime for agent_spawned, cannot spawn PTY");
+                return;
+            }
+        };
+
+        handle.spawn(async move {
+            let default_shell =
+                std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "/".to_string());
+
+            let sm = session_manager.lock().await;
+            let session_result = sm.spawn(id.clone(), &default_shell, &cwd, 80, 24).await;
+            drop(sm);
+
+            match session_result {
+                Ok(session) => {
+                    if let Err(e) = session.write(agent_cmd.as_bytes()).await {
+                        log::error!("Failed to write agent command to PTY {}: {}", id, e);
+                        return;
+                    }
+
+                    if let Some(ref handle) = app_handle {
+                        let session_id_for_loop = id.clone();
+                        let handle = handle.clone();
+                        tokio::spawn(async move {
+                            crate::commands::pty_read_loop(
+                                handle,
+                                session_id_for_loop,
+                                session,
+                            )
+                            .await;
+                        });
+                    }
+
+                    log::info!("PTY agent session spawned via agent_spawned: id={}", id);
+                }
+                Err(e) => {
+                    log::error!("Failed to spawn PTY agent session {}: {}", id, e);
+                }
+            }
+        });
     }
 
-    fn close_panes(&self, _pane_ids: &[String]) {
-        log::warn!("close_panes is a no-op: PTY support has been removed");
+    fn close_panes(&self, pane_ids: &[String]) {
+        // Remove from active set first so `has_session` reflects the change.
+        if let Ok(mut guard) = self.active_sessions.lock() {
+            for pid in pane_ids {
+                guard.remove(pid);
+            }
+        }
+
+        let session_manager = Arc::clone(&self.session_manager);
+        let pane_ids: Vec<String> = pane_ids.to_vec();
+
+        let handle = match self.get_runtime_handle() {
+            Some(h) => h,
+            None => {
+                log::error!("No tokio runtime for close_panes, cannot kill PTY sessions");
+                return;
+            }
+        };
+
+        handle.spawn(async move {
+            for pane_id in pane_ids {
+                let sm = session_manager.lock().await;
+                if let Err(e) = sm.kill(&pane_id).await {
+                    log::error!("Failed to kill PTY session {}: {}", pane_id, e);
+                }
+            }
+        });
     }
 
-    fn pty_write(&self, _pane_id: &str, _data: &str) {
-        log::warn!("pty_write is a no-op: PTY support has been removed");
+    fn pty_write(&self, pane_id: &str, data: &str) {
+        let session_manager = Arc::clone(&self.session_manager);
+        let pane_id = pane_id.to_string();
+        let data = data.to_string();
+
+        let handle = match self.get_runtime_handle() {
+            Some(h) => h,
+            None => {
+                log::error!("No tokio runtime for pty_write, cannot write to PTY");
+                return;
+            }
+        };
+
+        handle.spawn(async move {
+            let sm = session_manager.lock().await;
+            if let Err(e) = sm.write(&pane_id, data.as_bytes()).await {
+                log::error!("Failed to write to PTY session {}: {}", pane_id, e);
+            }
+        });
     }
 
-    fn has_session(&self, _pane_id: &str) -> bool {
-        log::warn!("has_session is a no-op: PTY support has been removed");
-        false
+    fn has_session(&self, pane_id: &str) -> bool {
+        // Fast path: check the active sessions cache.
+        if let Ok(guard) = self.active_sessions.lock() {
+            if guard.contains(pane_id) {
+                return true;
+            }
+        }
+        // Fallback: ask the real session manager via a cached tokio handle.
+        let handle = match self.get_runtime_handle() {
+            Some(h) => h,
+            None => return false,
+        };
+        let session_manager = Arc::clone(&self.session_manager);
+        let pane_id = pane_id.to_string();
+        handle.block_on(async move {
+            let sm = session_manager.lock().await;
+            sm.has_session(&pane_id).await
+        })
     }
 
     fn ask_user(&self, request_id: &str, question: &str, options: &[serde_json::Value]) -> String {
@@ -131,7 +284,6 @@ impl ToolEventSender for TauriEventSender {
         // TODO: Emit a Tauri event so the frontend can display evaluation results.
     }
 }
-
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
@@ -157,6 +309,8 @@ pub struct AppState {
 
     #[allow(dead_code)]
     pub browser_manager: athena_browser::BrowserManager,
+    /// Labels of active child webviews managed in-browser (right sidebar).
+    pub child_webview_labels: std::sync::Mutex<std::collections::HashSet<String>>,
     #[allow(dead_code)]
     pub plugin_manager: athena_plugins::PluginManager,
 
@@ -259,6 +413,7 @@ impl AppState {
         let event_sender: Arc<dyn ToolEventSender> = Arc::new(TauriEventSender::new(
             Arc::clone(&app_handle),
             Arc::clone(&pending_questions),
+            Arc::clone(&session_manager),
         ));
 
         // -- Build ToolExecutor with the SAME Arc<T> instances ---------
@@ -275,15 +430,43 @@ impl AppState {
 
         // -- Build the orchestrator, wired to the tool executor ------------
 
-        let orchestrator = Arc::new(tokio::sync::Mutex::new(
-            athena_core::AthenaOrchestrator::new_with_executor(Arc::clone(&tool_executor)),
-        ));
+        let orchestrator = {
+            let orch = athena_core::AthenaOrchestrator::with_context(
+                Arc::clone(&tool_executor),
+                Arc::clone(&output_buffer),
+                Arc::clone(&plan_manager),
+                Arc::clone(&agent_comms),
+            );
+
+            // Try to restore the active workspace name from the store
+            if let Ok(Some(json)) = store.get::<String>("workspaces") {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+                    if let Some(active_id) = val.get("active_space_id").and_then(|v| v.as_str()) {
+                        if let Some(spaces) = val.get("spaces").and_then(|v| v.as_array()) {
+                            for space in spaces {
+                                if let Some(id) = space.get("id").and_then(|v| v.as_str()) {
+                                    if active_id == id {
+                                        if let Some(name) = space.get("name").and_then(|v| v.as_str()) {
+                                            orch.set_workspace_name(name.to_string());
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Arc::new(tokio::sync::Mutex::new(orch))
+        };
 
         Self {
             store,
             session_store,
             app_handle,
             browser_manager,
+            child_webview_labels: std::sync::Mutex::new(HashSet::new()),
             plugin_manager,
             output_buffer,
             plan_manager,
@@ -321,6 +504,17 @@ impl AppState {
         self.wire_swarm_events();
         self.wire_browser_events();
         self.wire_plugin_events();
+    }
+
+    /// Retrieve a clone of the Tauri `AppHandle`.
+    pub fn get_app_handle(&self) -> Option<AppHandle> {
+        match self.app_handle.lock() {
+            Ok(guard) => guard.clone(),
+            Err(e) => {
+                log::error!("app_handle lock poisoned in get_app_handle: {}", e);
+                None
+            }
+        }
     }
 
     /// PTY read loops are started per-session when pty_spawn is invoked.

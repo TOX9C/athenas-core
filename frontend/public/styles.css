@@ -456,3 +456,26 @@ button {
 .rounded-md { border-radius: 6px; }
 .rounded-lg { border-radius: 8px; }
 .rounded-full { border-radius: 9999px; }
+
+/* ────────────────────────────────────────────────────────────
+   XTERM.JS OVERRIDES
+   Fix hardcoded #000 viewport background, reduce layout
+   thrashing, and prevent canvas clipping during scroll.
+   ──────────────────────────────────────────────────────────── */
+/* Match xterm viewport background to the active theme so it
+   does not flash/hardcode pure black behind the canvas. */
+.xterm .xterm-viewport {
+  background-color: var(--bg) !important;
+}
+
+/* Isolate paint/layout work in the terminal mount so scroll
+   and resize do not thrash the parent flex chain. */
+.xterm-mount {
+  contain: layout paint;
+}
+
+/* Ensure the xterm canvas does not peek outside the pane
+   during fast resize or theme transitions. */
+.xterm-mount .xterm {
+  overflow: hidden;
+}

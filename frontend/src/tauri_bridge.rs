@@ -122,6 +122,10 @@ pub async fn window_is_maximized() -> TauriResult<bool> {
     invoke("window_is_maximized", "{}").await
 }
 
+pub async fn window_platform() -> TauriResult<String> {
+    invoke("window_platform", "{}").await
+}
+
 /// File system operations
 pub async fn fs_read_file(path: &str) -> TauriResult<String> {
     invoke(
@@ -657,6 +661,15 @@ pub async fn browser_reload(id: &str) -> TauriResult<JsValue> {
     invoke(
         "browser_reload",
         &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await
+}
+
+/// Open a URL in a native webview window (fallback for iframe-blocked sites).
+pub async fn browser_open_external(url: &str) -> TauriResult<JsValue> {
+    invoke(
+        "browser_open_external",
+        &serde_json::json!({"url": url}).to_string(),
     )
     .await
 }

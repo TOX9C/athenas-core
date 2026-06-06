@@ -1,5 +1,6 @@
 use crate::stores::terminal::use_terminal_store;
 use crate::stores::terminal::TerminalSession;
+use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
     pty_default_shell_cached, pty_listen_raw, pty_resize, pty_spawn, pty_write,
@@ -28,13 +29,13 @@ struct XtermCleanup {
     /// Rooted ResizeObserver callback closure. Kept alive while the observer
     /// is connected; dropped on unmount to avoid leaking the closure.
     _ro_closure: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
-    /// Fallback polling watcher for WKWebView/flex layouts where ResizeObserver
-    /// does not always fire during pane resizing.
-    _size_watch_interval_id: Option<i32>,
-    /// Rooted interval callback closure for the size watcher.
-    _size_watch_closure: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
     /// Rooted keydown handler for custom macOS keyboard shortcuts.
     _keydown_handler: Option<JsValue>,
+    /// IntersectionObserver that detects when the terminal container
+    /// becomes visible after being hidden (e.g. display:none toggle).
+    _visibility_observer: Option<JsValue>,
+    /// Rooted IntersectionObserver callback closure.
+    _vis_callback: Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>>,
 }
 
 /// Mount an xterm.js Terminal into a div with id `pane_id`.
@@ -42,13 +43,20 @@ struct XtermCleanup {
 /// Subscribes to the raw PTY output stream for the pane's session and
 /// pipes incoming bytes directly into the terminal.
 #[component]
-pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id: Option<String>) -> Element {
+pub fn XtermMount(
+    pane_id: String,
+    cwd: String,
+    agent_type: AgentType,
+    resume_id: Option<String>,
+    custom_cmd: Option<String>,
+) -> Element {
     let mount_id = pane_id.clone();
     let mut cleanup: Signal<Option<XtermCleanup>> = use_signal(|| None);
     let mut is_initialized = use_signal(|| false);
     let term_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let mut terminal_store = use_terminal_store();
     let workspace_store = use_workspace_store();
+    let ui_state = use_ui_store();
 
     use_effect(move || {
         if is_initialized() {
@@ -72,6 +80,7 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
 
         let agent_type_for_spawn = agent_type.clone();
         let resume_id_for_spawn = resume_id.clone();
+        let custom_cmd_for_spawn = custom_cmd.clone();
         let mount_id_for_spawn = mount_id.clone();
         let spawn_cwd = if cwd.trim().is_empty() {
             "/tmp".to_string()
@@ -141,6 +150,23 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
                         });
                     }
                 }
+
+                // Write custom agent command into newly spawned shell
+                if let Some(ref cmd_str) = custom_cmd_for_spawn {
+                    if matches!(agent_type_for_spawn, AgentType::Custom) {
+                        let cmd_with_newline = format!("{}\n", cmd_str);
+                        let mount_id_for_custom = mount_id_for_spawn.clone();
+                        spawn(async move {
+                            if let Err(e) = pty_write(&mount_id_for_custom, &cmd_with_newline).await
+                            {
+                                web_sys::console::error_1(
+                                    &format!("XtermMount: custom command write failed: {:?}", e)
+                                        .into(),
+                                );
+                            }
+                        });
+                    }
+                }
             } else {
                 web_sys::console::log_1(
                     &format!(
@@ -152,6 +178,7 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
             }
 
             let mount_id = mount_id_for_spawn;
+            store.write().set_session_xterm(&mount_id, true);
 
             let term_ctor_val = js_sys::Reflect::get(&window, &JsValue::from_str("Terminal"))
                 .unwrap_or(JsValue::UNDEFINED);
@@ -217,6 +244,11 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
                 &JsValue::from_bool(true),
             );
             let _ = js_sys::Reflect::set(&options, &JsValue::from_str("theme"), &theme);
+            let _ = js_sys::Reflect::set(
+                &options,
+                &JsValue::from_str("rendererType"),
+                &JsValue::from_str("canvas"),
+            );
 
             let term_val =
                 match js_sys::Reflect::construct(&term_ctor, &js_sys::Array::of1(&options)) {
@@ -249,50 +281,49 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
             // appropriate escape sequence to the PTY, and prevent xterm.js
             // from also forwarding its default sequence.
             let pane_id_keydown = mount_id.clone();
-            let keydown_handler = Closure::wrap(Box::new(
-                move |event: web_sys::KeyboardEvent| {
-                    let is_mac = web_sys::window()
-                        .and_then(|w| w.navigator().platform().ok())
-                        .map(|p| {
-                            let p = p.to_lowercase();
-                            p.contains("mac") || p.contains("darwin")
-                        })
-                        .unwrap_or(false);
+            let keydown_handler = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+                let is_mac = web_sys::window()
+                    .and_then(|w| w.navigator().platform().ok())
+                    .map(|p| {
+                        let p = p.to_lowercase();
+                        p.contains("mac") || p.contains("darwin")
+                    })
+                    .unwrap_or(false);
 
-                    if !is_mac {
-                        return;
-                    }
+                if !is_mac {
+                    return;
+                }
 
-                    let meta = event.meta_key();
-                    let shift = event.shift_key();
-                    let ctrl = event.ctrl_key();
-                    let alt = event.alt_key();
-                    let key = event.key();
+                let meta = event.meta_key();
+                let shift = event.shift_key();
+                let ctrl = event.ctrl_key();
+                let alt = event.alt_key();
+                let key = event.key();
 
-                    // Shift+Enter → literal newline (not execute)
-                    if key == "Enter" && shift && !meta && !ctrl && !alt {
-                        event.prevent_default();
-                        event.stop_propagation();
-                        let pane_id = pane_id_keydown.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let _ = pty_write(&pane_id, "\n").await;
-                        });
-                        return;
-                    }
+                // Shift+Enter → literal newline (not execute)
+                if key == "Enter" && shift && !meta && !ctrl && !alt {
+                    event.prevent_default();
+                    event.stop_propagation();
+                    let pane_id = pane_id_keydown.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = pty_write(&pane_id, "\n").await;
+                    });
+                    return;
+                }
 
-                    // Cmd+Delete (Backspace) → delete to beginning of line
-                    // Maps to readline's unix-line-discard (Ctrl+U).
-                    if key == "Backspace" && meta && !shift && !ctrl && !alt {
-                        event.prevent_default();
-                        event.stop_propagation();
-                        let pane_id = pane_id_keydown.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let _ = pty_write(&pane_id, "\x15").await;
-                        });
-                        return;
-                    }
-                },
-            ) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+                // Cmd+Delete (Backspace) → delete to beginning of line
+                // Maps to readline's unix-line-discard (Ctrl+U).
+                if key == "Backspace" && meta && !shift && !ctrl && !alt {
+                    event.prevent_default();
+                    event.stop_propagation();
+                    let pane_id = pane_id_keydown.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = pty_write(&pane_id, "\x15").await;
+                    });
+                    return;
+                }
+            })
+                as Box<dyn FnMut(web_sys::KeyboardEvent)>);
             let keydown_handler_js = keydown_handler.into_js_value();
             let _ = container.add_event_listener_with_callback_and_bool(
                 "keydown",
@@ -316,12 +347,38 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
             // Store terminal reference for focus on click
             term_ref.set(Some(term_val.clone()));
 
-            let term_for_write = term_val.clone();
+            // ── Write Coalescing — accumulate PTY bytes and flush on rAF ─────
+            let wq_term = term_val.clone();
+            let wq_queue: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let wq_scheduled: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+            let wq_flush = wq_queue.clone();
+            let wq_sched = wq_scheduled.clone();
+
             let mount_id_for_scan = mount_id.clone();
             let workspace_for_scan = workspace_store.clone();
             let unlisten = match pty_listen_raw(&mount_id, move |bytes: Vec<u8>| {
-                write_bytes_to_term(&term_for_write, &bytes);
-                let text = String::from_utf8_lossy(&bytes);
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                wq_queue.borrow_mut().push(bytes);
+                if !*wq_scheduled.borrow() {
+                    *wq_scheduled.borrow_mut() = true;
+                    let q = wq_flush.clone();
+                    let s = wq_sched.clone();
+                    let t = wq_term.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let closure = Closure::once_into_js(Box::new(move || {
+                            let chunks = q.borrow_mut().drain(..).collect::<Vec<_>>();
+                            for chunk in chunks {
+                                write_bytes_to_term(&t, &chunk);
+                            }
+                            *s.borrow_mut() = false;
+                        })
+                            as Box<dyn FnOnce()>);
+                        let _ = web_sys::window().and_then(|w| {
+                            w.request_animation_frame(closure.as_ref().unchecked_ref())
+                                .ok()
+                        });
+                    });
+                }
                 if let Some(id) = scan_for_resume_id(&text) {
                     let mid = mount_id_for_scan.clone();
                     let mut ws = workspace_for_scan.clone();
@@ -411,19 +468,39 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
                 let _ = on_resize_fn.call1(&term_val, on_resize_closure_js.as_ref());
             }
 
+            let _ = try_activate_addon(&window, "CanvasAddon", &term_val);
+
             let mut resize_observer_holder: Option<JsValue> = None;
             let mut ro_closure_holder: Option<wasm_bindgen::closure::Closure<dyn FnMut()>> = None;
-            let mut size_watch_interval_id: Option<i32> = None;
-            let mut size_watch_closure_holder: Option<wasm_bindgen::closure::Closure<dyn FnMut()>> =
-                None;
             if let Some(fit_instance) = try_activate_addon(&window, "FitAddon", &term_val) {
+                // Initial fit so the terminal has correct cols/rows before any data arrives.
                 schedule_fit(&window, &fit_instance, &container);
 
                 let fit_for_ro = fit_instance.clone();
                 let container_for_ro = container.clone();
+                let ro_timer: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
+                let ro_timer_for_cb = ro_timer.clone();
                 let ro_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
                     if let Some(w) = web_sys::window() {
-                        schedule_fit(&w, &fit_for_ro, &container_for_ro);
+                        if let Some(id) = ro_timer_for_cb.borrow_mut().take() {
+                            let _ = w.clear_timeout_with_handle(id);
+                        }
+                        let fit_for_cb = fit_for_ro.clone();
+                        let container_for_cb = container_for_ro.clone();
+                        let timer = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                            if let Some(win) = web_sys::window() {
+                                schedule_fit(&win, &fit_for_cb, &container_for_cb);
+                            }
+                        })
+                            as Box<dyn FnMut()>);
+                        let handle = w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                            timer.as_ref().unchecked_ref(),
+                            50,
+                        );
+                        if let Ok(h) = handle {
+                            *ro_timer_for_cb.borrow_mut() = Some(h);
+                        }
+                        timer.forget();
                     }
                 })
                     as Box<dyn FnMut()>);
@@ -454,39 +531,98 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
                         // ro_closure dropped naturally when it goes out of scope
                     }
                 }
-
-                let last_size = Rc::new(RefCell::new((0_i32, 0_i32)));
-                let last_size_for_watch = last_size.clone();
-                let fit_for_size_watch = fit_instance.clone();
-                let container_for_size_watch = container.clone();
-                let size_watch_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                    let rect = container_for_size_watch.get_bounding_client_rect();
-                    let width = rect.width().round() as i32;
-                    let height = rect.height().round() as i32;
-                    if width <= 0 || height <= 0 {
+                // NOTE: removed the 75ms setInterval fallback. ResizeObserver
+                // handles all shape changes; the interval caused jitter by
+                // calling fit() during scroll / continuous output.
+            }
+            // ── IntersectionObserver: redraw when container becomes visible ──
+            // When the terminal is hidden inside a display:none subtree (e.g. panel
+            // switch), the browser discards the <canvas> backing store, leaving the
+            // terminal blank. Detect visibility restoration and force a full redraw.
+            let term_for_vis = term_val.clone();
+            let term_for_vis_fit = term_val.clone();
+            let vis_closure =
+                wasm_bindgen::closure::Closure::wrap(Box::new(move |entries: JsValue| {
+                    let Ok(arr) = entries.dyn_into::<js_sys::Array>() else {
                         return;
-                    }
-                    let mut last = last_size_for_watch.borrow_mut();
-                    if (width, height) != *last {
-                        *last = (width, height);
-                        if let Some(w) = web_sys::window() {
-                            schedule_fit(&w, &fit_for_size_watch, &container_for_size_watch);
+                    };
+                    for entry in arr.iter() {
+                        let is_intersecting =
+                            js_sys::Reflect::get(&entry, &JsValue::from_str("isIntersecting"))
+                                .ok()
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                        if is_intersecting {
+                            let rows =
+                                js_sys::Reflect::get(&term_for_vis, &JsValue::from_str("rows"))
+                                    .ok()
+                                    .and_then(|v| v.as_f64())
+                                    .map(|v| v as i32)
+                                    .unwrap_or(24);
+                            if rows > 0 {
+                                if let Ok(refresh_val) = js_sys::Reflect::get(
+                                    &term_for_vis,
+                                    &JsValue::from_str("refresh"),
+                                ) {
+                                    if let Ok(refresh_fn) =
+                                        refresh_val.dyn_into::<js_sys::Function>()
+                                    {
+                                        let _ = refresh_fn.call2(
+                                            &term_for_vis,
+                                            &JsValue::from_f64(0.0),
+                                            &JsValue::from_f64((rows - 1) as f64),
+                                        );
+                                    }
+                                }
+                            }
+                            // Also refit after becoming visible again:
+                            let fit_ref = term_for_vis_fit.clone();
+                            let _ = web_sys::window().and_then(|w| {
+                                w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                    Closure::once_into_js(Box::new(move || {
+                                        if let Ok(fit_val) = js_sys::Reflect::get(
+                                            &fit_ref,
+                                            &JsValue::from_str("fit"),
+                                        ) {
+                                            if let Ok(fit_fn) =
+                                                fit_val.dyn_into::<js_sys::Function>()
+                                            {
+                                                let _ = fit_fn.call0(&fit_ref);
+                                            }
+                                        }
+                                    }))
+                                    .unchecked_ref(),
+                                    50,
+                                )
+                                .ok()
+                            });
+                            break;
                         }
                     }
-                })
-                    as Box<dyn FnMut()>);
-                if let Ok(interval_id) = window
-                    .set_interval_with_callback_and_timeout_and_arguments_0(
-                        size_watch_closure.as_ref().unchecked_ref(),
-                        75,
-                    )
+                }) as Box<dyn FnMut(JsValue)>);
+            let vis_observer =
+                js_sys::Reflect::get(&window, &JsValue::from_str("IntersectionObserver"))
+                    .ok()
+                    .and_then(|ctor| ctor.dyn_into::<js_sys::Function>().ok())
+                    .and_then(|ctor| {
+                        js_sys::Reflect::construct(&ctor, &js_sys::Array::of1(vis_closure.as_ref()))
+                            .ok()
+                    });
+            let mut vis_observer_holder: Option<JsValue> = None;
+            let mut vis_callback_holder: Option<
+                wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>,
+            > = None;
+            if let Some(ref observer) = vis_observer {
+                if let Ok(observe_fn) =
+                    js_sys::Reflect::get(observer, &JsValue::from_str("observe"))
                 {
-                    size_watch_interval_id = Some(interval_id);
-                    size_watch_closure_holder = Some(size_watch_closure);
+                    if let Ok(observe_fn) = observe_fn.dyn_into::<js_sys::Function>() {
+                        let _ = observe_fn.call1(observer, container.as_ref());
+                    }
                 }
+                vis_observer_holder = Some(observer.clone());
+                vis_callback_holder = Some(vis_closure);
             }
-            let _ = try_activate_addon(&window, "WebLinksAddon", &term_val);
-            let _ = try_activate_addon(&window, "Unicode11Addon", &term_val);
 
             cleanup.set(Some(XtermCleanup {
                 term: term_val,
@@ -495,11 +631,71 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
                 _on_resize_closure: on_resize_closure_js,
                 _resize_observer: resize_observer_holder,
                 _ro_closure: ro_closure_holder,
-                _size_watch_interval_id: size_watch_interval_id,
-                _size_watch_closure: size_watch_closure_holder,
                 _keydown_handler: Some(keydown_handler_js),
+                _visibility_observer: vis_observer_holder,
+                _vis_callback: vis_callback_holder,
             }));
         });
+    });
+
+    // ── Reactive theme update ────────────────────────────────────────────────
+    // When the app theme changes, re-read the CSS variables and push them
+    // into the already-instantiated xterm.js terminal.
+    let term_ref_for_theme = term_ref.clone();
+    use_effect(move || {
+        let _theme = ui_state.read().theme;
+        let initialized = is_initialized();
+        let term_opt = term_ref_for_theme();
+
+        if !initialized || term_opt.is_none() {
+            return;
+        }
+
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Some(term) = term_opt else {
+            return;
+        };
+
+        let bg = read_css_var(&window, "--terminalBg");
+        let fg = read_css_var(&window, "--terminalFg");
+        let cursor = read_css_var(&window, "--terminalCursor");
+        let selection = read_css_var(&window, "--terminalSelection");
+
+        let new_theme = js_sys::Object::new();
+        if !bg.is_empty() {
+            let _ = js_sys::Reflect::set(
+                &new_theme,
+                &JsValue::from_str("background"),
+                &JsValue::from_str(&bg),
+            );
+        }
+        if !fg.is_empty() {
+            let _ = js_sys::Reflect::set(
+                &new_theme,
+                &JsValue::from_str("foreground"),
+                &JsValue::from_str(&fg),
+            );
+        }
+        if !cursor.is_empty() {
+            let _ = js_sys::Reflect::set(
+                &new_theme,
+                &JsValue::from_str("cursor"),
+                &JsValue::from_str(&cursor),
+            );
+        }
+        if !selection.is_empty() {
+            let _ = js_sys::Reflect::set(
+                &new_theme,
+                &JsValue::from_str("selectionBackground"),
+                &JsValue::from_str(&selection),
+            );
+        }
+
+        if let Ok(options) = js_sys::Reflect::get(&term, &JsValue::from_str("options")) {
+            let _ = js_sys::Reflect::set(&options, &JsValue::from_str("theme"), &new_theme);
+        }
     });
 
     use_drop(move || {
@@ -516,12 +712,15 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
                     }
                 }
             }
-            if let Some(interval_id) = c._size_watch_interval_id.take() {
-                if let Some(window) = web_sys::window() {
-                    window.clear_interval_with_handle(interval_id);
+            if let Some(observer) = c._visibility_observer.take() {
+                if let Ok(disconnect_val) =
+                    js_sys::Reflect::get(&observer, &JsValue::from_str("disconnect"))
+                {
+                    if let Ok(disconnect_fn) = disconnect_val.dyn_into::<js_sys::Function>() {
+                        let _ = disconnect_fn.call0(&observer);
+                    }
                 }
             }
-            let _ = c._size_watch_closure.take();
             if let Ok(dispose_val) = js_sys::Reflect::get(&c.term, &JsValue::from_str("dispose")) {
                 if let Ok(dispose_fn) = dispose_val.dyn_into::<js_sys::Function>() {
                     let _ = dispose_fn.call0(&c.term);
@@ -534,17 +733,27 @@ pub fn XtermMount(pane_id: String, cwd: String, agent_type: AgentType, resume_id
         div {
             id: "{pane_id}",
             class: "xterm-mount",
-            style: "width: 100%; height: 100%; min-height: 0; flex: 1; background: var(--bg); position: relative;",
+            style: "width: 100%; height: 100%; min-height: 0; flex: 1; background: var(--bg); position: relative; overflow: hidden; padding-bottom: 4px; box-sizing: border-box;",
             onpointerdown: move |e| {
                 e.stop_propagation();
                 terminal_store.write().set_active(pane_id.clone());
-                // Focus the xterm.js instance. Use the stored term_ref so we
-                // don't create a stale closure over a temporary JsValue.
                 if let Some(term) = term_ref() {
+                    // Focus the xterm.js instance.
                     if let Ok(focus_val) = js_sys::Reflect::get(&term, &JsValue::from_str("focus")) {
                         if let Ok(focus_fn) = focus_val.dyn_into::<js_sys::Function>() {
                             if let Err(e) = focus_fn.call0(&term) {
                                 web_sys::console::warn_1(&format!("XtermMount: focus() failed: {e:?}").into());
+                            }
+                        }
+                    }
+                    // If the canvas was blanked by a display:none or resize
+                    // race, force a full redraw so content is readable again.
+                    if let Ok(rows_val) = js_sys::Reflect::get(&term, &JsValue::from_str("rows")) {
+                        if let Some(rows) = rows_val.as_f64() {
+                            if let Ok(refresh_val) = js_sys::Reflect::get(&term, &JsValue::from_str("refresh")) {
+                                if let Ok(refresh_fn) = refresh_val.dyn_into::<js_sys::Function>() {
+                                    let _ = refresh_fn.call2(&term, &JsValue::from_f64(0.0), &JsValue::from_f64(rows - 1.0));
+                                }
                             }
                         }
                     }
@@ -666,22 +875,52 @@ fn schedule_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &we
     raf_closure.forget();
 }
 
+/// Debounced `fit()` — waits 150 ms after the last resize event. This lets
+/// CSS flex transitions (like the sidebar expanding) settle before xterm
+/// recalculates its dimensions, avoiding a race that blanks the canvas.
+fn debounced_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &web_sys::Element) {
+    let fit_for_cb = fit_instance.clone();
+    let container_for_cb = container.clone();
+    let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+        call_fit(&fit_for_cb, &container_for_cb);
+    }) as Box<dyn FnMut()>);
+    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        closure.as_ref().unchecked_ref(),
+        150,
+    );
+    closure.forget();
+}
+
 /// Scan raw PTY output for a resume session ID.
 /// Looks for patterns like "claude --resume <id>" or "To resume: codex --resume <id>".
+/// This runs on every data chunk, so it must be allocation-free and fast.
 fn scan_for_resume_id(text: &str) -> Option<String> {
-    // Try common resume patterns (case-insensitive)
-    let lower = text.to_lowercase();
-    let patterns = [
+    // Only scan the tail end where a prompt would appear—resume IDs are short
+    // and never appear in the middle of a massive stdout flood.
+    let scan = if text.len() > 256 {
+        let mut start = text.len() - 256;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        &text[start..]
+    } else {
+        text
+    };
+
+    // Case-insensitive search without allocating a lowercase copy.
+    for pat in [
         "claude --resume ",
         "codex --resume ",
         "opencode --resume ",
         "gemini --resume ",
-    ];
-    for pat in &patterns {
-        if let Some(idx) = lower.find(pat) {
+    ] {
+        if let Some(idx) = scan.as_bytes().windows(pat.len()).position(|w| {
+            w.iter()
+                .zip(pat.bytes())
+                .all(|(a, b)| a.eq_ignore_ascii_case(&b))
+        }) {
             let start = idx + pat.len();
-            let rest = &text[start..];
-            // Extract the ID (alphanumeric, hyphens, underscores)
+            let rest = &scan[start..];
             let id: String = rest
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')

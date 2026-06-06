@@ -8,5 +8,5 @@ pub mod plan_block;
 pub mod session_list;
 pub mod thinking;
 
-// Re-export main panel component
-pub use athena_panel::AthenaPanel;
+// Re-export main panel component and mode
+pub use athena_panel::{AthenaPanel, AthenaPanelMode};

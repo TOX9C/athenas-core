@@ -7,7 +7,7 @@ pub mod utils;
 
 use components::agents::agent_inspector::AgentInspector;
 use components::agents::output_event_bus::OutputEventBus;
-use components::athena::athena_panel::AthenaPanel;
+use components::athena::athena_panel::AthenaPanelMode;
 use components::command_palette::CommandPalette;
 use components::kanban::kanban_board::KanbanBoard;
 use components::notifications::notification_bell::NotificationBell;
@@ -34,13 +34,15 @@ use stores::athena::{provide_athena_store, use_athena_store};
 use stores::command::provide_command_store;
 use stores::editor::provide_editor_store;
 use stores::notification::provide_notification_store;
-use stores::panel_manager::provide_panel_manager_store;
+use stores::panel_manager::{provide_panel_manager_store, use_panel_manager_store, RightPanel};
 use stores::session::provide_session_store;
 use stores::swarm::provide_swarm_store;
 use stores::task::provide_task_store;
 use stores::terminal::{provide_terminal_store, use_terminal_store};
 use stores::ui::{provide_ui_store, use_ui_store, Panel, SidebarSection};
-use stores::workspace::{provide_workspace_store, use_workspace_store, AgentType, PaneConfig, Space, WorkspaceState};
+use stores::workspace::{
+    provide_workspace_store, use_workspace_store, AgentType, PaneConfig, Space, WorkspaceState,
+};
 
 /// Root application component — faithful port of App.tsx.
 #[component]
@@ -66,17 +68,37 @@ pub fn App() -> Element {
     let workspace = use_workspace_store();
     let mut workspace_mut = use_workspace_store();
     let mut athena_state = use_athena_store();
+    let mut panel_state = use_panel_manager_store();
     let mut terminal_store = use_terminal_store();
 
     let mut mounted_spaces = use_signal(std::collections::HashSet::<String>::new);
-    let platform = use_signal(|| {
-        if crate::utils::platform_utils::is_mac() {
-            "MacIntel".to_string()
-        } else {
-            "unknown".to_string()
-        }
+    let mut platform = use_signal(|| {
+        crate::utils::platform_utils::is_mac()
+            .then_some("MacIntel")
+            .unwrap_or("unknown")
+            .to_string()
     });
     let mut is_maximized = use_signal(|| false);
+
+    // ─── Resizable right sidebar state ─────────────────────────────────
+    let mut right_sidebar_width = use_signal(|| 480i32);
+    let mut rsb_drag_start_x = use_signal(|| 0i32);
+    let mut rsb_drag_start_w = use_signal(|| 0i32);
+    let mut rsb_is_dragging = use_signal(|| false);
+
+    // Override platform with authoritative value from Tauri backend (navigator.userAgent is
+    // unreliable in the release WKWebView — it strips "Mac" from the UA string).
+    use_effect(move || {
+        spawn(async move {
+            if let Ok(os) = crate::tauri_bridge::window_platform().await {
+                if os.contains("macos") || os.contains("mac") || os.contains("darwin") {
+                    platform.set("MacIntel".to_string());
+                } else {
+                    platform.set(os);
+                }
+            }
+        });
+    });
 
     // Apply theme and font on mount (load persisted values from store)
     {
@@ -110,7 +132,10 @@ pub fn App() -> Element {
                 // Load custom agents from persist
                 if let Ok(agents_json) = crate::tauri_bridge::store_get("custom_agents").await {
                     if !agents_json.is_empty() {
-                        if let Ok(agents) = serde_json::from_str::<Vec<crate::types::workspace::CustomAgent>>(&agents_json) {
+                        if let Ok(agents) = serde_json::from_str::<
+                            Vec<crate::types::workspace::CustomAgent>,
+                        >(&agents_json)
+                        {
                             ui.write().custom_agents = agents;
                         }
                     }
@@ -236,7 +261,15 @@ pub fn App() -> Element {
                             let v = ui_state.read().command_palette_open; ui_state.write().command_palette_open = !v;
                         }
                         Key::Character(ref c) if c == "j" => {
-                            athena_state.write().toggle_open();
+                            // Toggle right sidebar to Assistant (Athena) tab
+                            let sidebar_open = ui_state.read().right_sidebar_open;
+                            let active = panel_state.read().active_right_panel;
+                            if !sidebar_open || active != RightPanel::Assistant {
+                                panel_state.write().active_right_panel = RightPanel::Assistant;
+                                ui_state.write().right_sidebar_open = true;
+                            } else {
+                                ui_state.write().right_sidebar_open = false;
+                            }
                         }
                         Key::Character(ref c) if c == "t" => {
                             ui_state.write().show_new_space_modal = true;
@@ -345,7 +378,7 @@ pub fn App() -> Element {
                     ui.show_new_space_modal = false;
                     ui.show_swarm_modal = false;
                     ui.show_settings_modal = false;
-                    athena_state.write().is_open = false;
+                    athena_state.write().is_open = false; // keep in sync for any legacy listeners
                     e.stop_propagation();
                 }
             },
@@ -436,7 +469,14 @@ pub fn App() -> Element {
                         style: "padding: 6px; border-radius: 6px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.1s; pointer-events: auto;",
                         title: "Athena (Cmd+J)",
                         onclick: move |_| {
-                            athena_state.write().toggle_open();
+                            let sidebar_open = ui_state.read().right_sidebar_open;
+                            let active = panel_state.read().active_right_panel;
+                            if !sidebar_open || active != RightPanel::Assistant {
+                                panel_state.write().active_right_panel = RightPanel::Assistant;
+                                ui_state.write().right_sidebar_open = true;
+                            } else {
+                                ui_state.write().right_sidebar_open = false;
+                            }
                         },
                         IconTerminal { size: Some(16), color: Some("var(--textMuted)".to_string()) }
                     }
@@ -646,19 +686,50 @@ pub fn App() -> Element {
                             }
                         }
 
-                        // Right sidebar (browser/assistant)
+                        // Right sidebar (browser/assistant/editor)
                         if ui_state.read().right_sidebar_open {
-                            div { style: "width: 3px; flex-shrink: 0; cursor: col-resize; background: var(--border); transition: background 0.15s;" }
-                            div { style: "flex-basis: 40%; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;",
+                            div {
+                                class: "resize-handle-col",
+                                style: "width: 1px; flex-shrink: 0; cursor: col-resize; background: var(--border); position: relative; align-self: stretch;",
+                                onmouseover: move |e| { let _ = e; },
+                                onmousedown: move |e: MouseEvent| {
+                                    e.prevent_default();
+                                    let coords = e.data.client_coordinates();
+                                    rsb_drag_start_x.set(coords.x as i32);
+                                    rsb_drag_start_w.set(right_sidebar_width());
+                                    rsb_is_dragging.set(true);
+                                },
+                                div { style: "position: absolute; top: 0; bottom: 0; left: -4px; width: 9px; background: transparent;" }
+                            }
+                            div {
+                                style: "width: {right_sidebar_width}px; min-width: {right_sidebar_width}px; flex-shrink: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;",
                                 RightSidebar {}
+                            }
+                            // Global drag capture overlay (while resizing)
+                            if rsb_is_dragging() {
+                                div {
+                                    style: "position: fixed; inset: 0; z-index: 9999; cursor: col-resize;",
+                                    onmousemove: move |e: MouseEvent| {
+                                        let coords = e.data.client_coordinates();
+                                        let dx = coords.x as i32 - rsb_drag_start_x();
+                                        let new_w = rsb_drag_start_w() - dx;
+                                        let clamped = new_w.clamp(200, 900);
+                                        right_sidebar_width.set(clamped);
+                                    },
+                                    onmouseup: move |_| {
+                                        rsb_is_dragging.set(false);
+                                    },
+                                    onmouseleave: move |_| {
+                                        rsb_is_dragging.set(false);
+                                    },
+                                }
                             }
                         }
                     }
 
                 }
 
-                // Athena slide-up panel (absolute overlay)
-                AthenaPanel {}
+                // Athena is rendered inside the right sidebar when active
 
                 // Agent inspector (absolute overlay)
                 AgentInspector {}

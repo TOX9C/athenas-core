@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use base64::Engine;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
 // ── Path validation helpers ──────────────────────────────────────────────────
@@ -81,7 +81,7 @@ fn build_provider_config_from_store(
         .get::<String>("llm.provider")
         .ok()
         .flatten()
-        .unwrap_or_else(|| "anthropic".to_string());
+        .unwrap_or_else(|| "openai".to_string());
     let api_key = state
         .store
         .get::<String>("llm.api_key")
@@ -98,7 +98,13 @@ fn build_provider_config_from_store(
         .get::<String>("llm.model")
         .ok()
         .flatten()
-        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+        .unwrap_or_else(|| "gpt-4o".to_string());
+    let base_url = state
+        .store
+        .get::<String>("llm.base_url")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
     if api_key.is_empty() {
         log::warn!("No API key configured for LLM provider");
@@ -121,7 +127,7 @@ fn build_provider_config_from_store(
         api_key,
         model,
         system_prompt: String::new(),
-        base_url: None,
+        base_url: Some(base_url),
     })
 }
 
@@ -642,11 +648,12 @@ pub async fn pty_spawn(
 ///
 /// Fans out to two parallel event streams:
 /// - `pty:raw` — base64-encoded raw PTY bytes, consumed by the xterm.js
-///   frontend (which has its own ANSI parser). Emitted on every successful
-///   read regardless of whether the grid state changed.
+///   frontend (which has its own ANSI parser). Emitted in coalesced
+///   batches (one event per flush) to reduce per-event overhead and
+///   give the frontend larger, more stable chunks to render.
 /// - `terminal:data` — parsed cell deltas, consumed by the legacy
 ///   cell-grid frontend. Emitted only when the grid actually changed.
-async fn pty_read_loop(
+pub(crate) async fn pty_read_loop(
     app_handle: tauri::AppHandle,
     session_id: String,
     session: std::sync::Arc<athena_terminal::session::TerminalSession>,
@@ -654,33 +661,32 @@ async fn pty_read_loop(
     log::info!("pty_read_loop[{}]: starting", session_id);
     let mut did_emit_ready = false;
 
-    let mut buf = vec![0u8; 4096];
-    loop {
-        // Step 1: pull raw bytes from the PTY. `0` means EAGAIN on a
-        // non-blocking fd — sleep briefly and loop.
-        let n = match session.read_bytes(&mut buf).await {
-            Ok(0) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                continue;
-            }
-            Ok(n) => n,
-            Err(e) => {
-                log::warn!("PTY read error for {}: {}", session_id, e);
-                if e.kind() == std::io::ErrorKind::BrokenPipe
-                    || e.kind() == std::io::ErrorKind::InvalidData
-                {
-                    break;
-                }
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                continue;
-            }
-        };
+    // 16 KB read buffer — reduces per-read syscall overhead while staying
+    // below typical kernel pagecache sizes for good latency.
+    let mut read_buf = vec![0u8; 16 * 1024];
 
-        log::debug!("pty_read_loop[{}]: read {} bytes", session_id, n);
+    // Coalescing buffer for `pty:raw` PTY output. Pre-allocate to 32 KB
+    // to avoid reallocation churn during active output.
+    let mut coalesce_buf: Vec<u8> = Vec::with_capacity(32 * 1024);
 
-        // Step 2: fan out raw bytes to xterm.js subscribers. Base64 wraps
-        // arbitrary bytes (including invalid UTF-8) into a JSON-safe string.
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+    // 8 ms flush interval — balances latency with batching efficiency.
+    let mut flush_interval = tokio::time::interval(tokio::time::Duration::from_millis(8));
+    flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    /// Flush accumulated raw PTY bytes as a single `pty:raw` event.
+    fn flush_pty_raw(coalesce_buf: &mut Vec<u8>, app_handle: &tauri::AppHandle, session_id: &str) {
+        if coalesce_buf.is_empty() {
+            return;
+        }
+        // NOTE: Tauri's `emit` serializes payloads to JSON before crossing
+        // the IPC boundary. JSON cannot natively carry raw byte arrays,
+        // so we must base64-encode. Passing `Vec<u8>` directly would only
+        // result in an array-of-numbers JSON payload (more expensive to
+        // parse and emit than a compact base64 string). True ArrayBuffer
+        // transfer (ZeroCopy) over Tauri's `postMessage` IPC is not
+        // supported by `tauri::Emitter::emit`, so base64 is the optimal
+        // serialization for this event type.
+        let encoded = base64::engine::general_purpose::STANDARD.encode(coalesce_buf.as_slice());
         let raw_event = serde_json::json!({
             "sessionId": session_id,
             "data": encoded,
@@ -700,17 +706,72 @@ async fn pty_read_loop(
                     session_id,
                     e
                 );
-                continue;
+                coalesce_buf.clear();
+                return;
             }
         };
         if let Err(e) = app_handle.emit("pty:raw", raw_event_str) {
             log::warn!("Failed to emit pty:raw event: {}", e);
         }
+        coalesce_buf.clear();
+    }
 
-        // Step 3: parse the same bytes for the legacy cell-grid frontend.
+    loop {
+        let n: usize = tokio::select! {
+            // `biased` ensures the read branch is preferred when data is
+            // available, so we drain the PTY eagerly without dropping
+            // completed reads because of an interval tick.
+            biased;
+
+            result = session.read_bytes(&mut read_buf) => {
+                match result {
+                    Ok(0) => {
+                        // `Ok(0)` on a non-blocking fd means no data is
+                        // available (EAGAIN) — a lull in output. Flush any
+                        // pending coalesced data so the frontend gets prompt
+                        // feedback after a burst of output.
+                        if !coalesce_buf.is_empty() {
+                            flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+                        continue;
+                    }
+                    Ok(n) => n,
+                    Err(e) => {
+                        // Flush any pending data before handling the error
+                        // so the frontend doesn't lose the tail of output.
+                        if !coalesce_buf.is_empty() {
+                            flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+                        }
+                        log::warn!("PTY read error for {}: {}", session_id, e);
+                        if e.kind() == std::io::ErrorKind::BrokenPipe
+                            || e.kind() == std::io::ErrorKind::InvalidData
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                        continue;
+                    }
+                }
+            }
+
+            _ = flush_interval.tick() => {
+                // Timer-based flush: guarantees the frontend receives data
+                // at least every 8 ms, even during a slow trickle where
+                // `read_bytes` never returns `Ok(0)`.
+                if !coalesce_buf.is_empty() {
+                    flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+                }
+                continue;
+            }
+        };
+
+        log::trace!("pty_read_loop[{}]: read {} bytes", session_id, n);
+
+        // Step 1: parse the same bytes for the legacy cell-grid frontend.
         // `parse_bytes` returns `None` when no cells changed, in which
         // case we skip the structured event entirely.
-        match session.parse_bytes(&buf[..n]).await {
+        match session.parse_bytes(&read_buf[..n]).await {
             Ok(Some(update)) => {
                 if !did_emit_ready {
                     did_emit_ready = true;
@@ -751,12 +812,28 @@ async fn pty_read_loop(
             }
         }
 
+        // Step 2: accumulate raw bytes into the coalescing buffer.
+        coalesce_buf.extend_from_slice(&read_buf[..n]);
+
+        // Step 3: size-threshold flush — prevents unbounded growth when
+        // commands like `yes` produce continuous output.
+        if coalesce_buf.len() >= 32 * 1024 {
+            flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+        }
+
         // Rate limit: yield after each successful read to prevent CPU spin
         // when commands like `yes` produce infinite output.
         tokio::task::yield_now().await;
     }
 
     log::info!("PTY read loop exited for session: {}", session_id);
+
+    // Flush any remaining coalesced data before signaling exit so the
+    // frontend doesn't miss the tail of the session's output.
+    if !coalesce_buf.is_empty() {
+        flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+    }
+
     if let Err(e) = app_handle.emit("terminal:exit", session_id) {
         log::warn!("Failed to emit terminal:exit event: {}", e);
     }
@@ -1594,59 +1671,157 @@ pub fn tool_openai_schema() -> Result<String, String> {
     serde_json::to_string(&schemas).map_err(|e| e.to_string())
 }
 
-// ── Browser commands ─────────────────────────────────────────────────────────
+// ── Browser commands (child webview) ─────────────────────────────────────────
 
-/// Open a browser window with the given URL.
+fn get_normalized_url(url: &str) -> Result<String, String> {
+    athena_browser::normalize_url(url).map_err(|e| e.to_string())
+}
+
+/// Child webview label for a given browser panel id.
+fn child_label(id: &str) -> String {
+    format!("browser-child-{}", id)
+}
+
+/// Find the main window. In Tauri 2.0, the default window label is "main".
+fn main_window(state: &AppState) -> Result<tauri::Window, String> {
+    let handle = state.get_app_handle().ok_or("AppHandle not available")?;
+    handle
+        .get_window("main")
+        .ok_or_else(|| "Main window not found".to_string())
+}
+
+/// Calculate default position and size for the right sidebar browser child webview.
+fn sidebar_bounds(window: &tauri::Window) -> Result<(tauri_runtime::dpi::LogicalPosition<f64>, tauri_runtime::dpi::LogicalSize<f64>), String> {
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let sidebar_w = 420u32;
+    let x = size.width.saturating_sub(sidebar_w).saturating_sub(15) as f64;
+    let y = 120.0f64; // below header/toolbar
+    let w = sidebar_w as f64;
+    let h = (size.height.saturating_sub(120).saturating_sub(60)) as f64;
+    Ok((tauri_runtime::dpi::LogicalPosition::new(x, y), tauri_runtime::dpi::LogicalSize::new(w, h)))
+}
+
+/// Open (show) a browser panel — creates the child webview if not already present.
 #[tauri::command]
 pub fn browser_show(state: State<'_, AppState>, id: String, url: String) -> Result<(), String> {
-    state
-        .browser_manager
-        .open_browser(id, &url)
-        .map_err(|e| e.to_string())
+    let normalized = get_normalized_url(&url)?;
+    let label = child_label(&id);
+    let handle = state.get_app_handle().ok_or("AppHandle not available")?;
+
+    if handle.get_webview(&label).is_none() {
+        let w = main_window(&state)?;
+        let parsed = tauri::Url::parse(&normalized).map_err(|e| e.to_string())?;
+        let builder = tauri::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed));
+        let (pos, sz) = sidebar_bounds(&w)?;
+        w.add_child(builder, pos, sz).map_err(|e| e.to_string())?;
+        if let Ok(mut labels) = state.child_webview_labels.lock() {
+            labels.insert(label);
+        }
+    }
+
+    state.browser_manager.open_browser(&id, &normalized).map_err(|e| e.to_string())
 }
 
-/// Close a browser window by its ID.
+/// Hide (close) a browser panel — destroys the child webview.
 #[tauri::command]
 pub fn browser_hide(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state
-        .browser_manager
-        .close_browser(&id)
-        .map_err(|e| e.to_string())
+    let label = child_label(&id);
+    let handle = state.get_app_handle().ok_or("AppHandle not available")?;
+
+    if let Some(webview) = handle.get_webview(&label) {
+        let _ = webview.close();
+    }
+    if let Ok(mut labels) = state.child_webview_labels.lock() {
+        labels.remove(&label);
+    }
+
+    state.browser_manager.close_browser(&id).map_err(|e| e.to_string())
 }
 
-/// Navigate a browser window to a new URL.
+/// Navigate a browser panel to a new URL.
 #[tauri::command]
 pub fn browser_navigate(state: State<'_, AppState>, id: String, url: String) -> Result<(), String> {
-    state
-        .browser_manager
-        .navigate(&id, &url)
-        .map_err(|e| e.to_string())
+    let normalized = get_normalized_url(&url)?;
+    let label = child_label(&id);
+    let handle = state.get_app_handle().ok_or("AppHandle not available")?;
+
+    if let Some(webview) = handle.get_webview(&label) {
+        let parsed = tauri::Url::parse(&normalized).map_err(|e| e.to_string())?;
+        webview.navigate(parsed).map_err(|e| e.to_string())?;
+    } else {
+        let w = main_window(&state)?;
+        let parsed = tauri::Url::parse(&normalized).map_err(|e| e.to_string())?;
+        let builder = tauri::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed));
+        let (pos, sz) = sidebar_bounds(&w)?;
+        w.add_child(builder, pos, sz).map_err(|e| e.to_string())?;
+        if let Ok(mut labels) = state.child_webview_labels.lock() {
+            labels.insert(label);
+        }
+    }
+
+    state.browser_manager.navigate(&id, &normalized).map_err(|e| e.to_string())
 }
 
-/// Navigate a browser window back one page.
+/// Navigate back in browser history.
 #[tauri::command]
 pub fn browser_back(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    state
-        .browser_manager
-        .go_back(&id)
-        .map_err(|e| e.to_string())
+    let url = state.browser_manager.go_back(&id).map_err(|e| e.to_string())?;
+    let label = child_label(&id);
+    let handle = state.get_app_handle().ok_or("AppHandle not available")?;
+
+    if let Some(webview) = handle.get_webview(&label) {
+        let parsed = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+        webview.navigate(parsed).map_err(|e| e.to_string())?;
+    }
+
+    Ok(url)
 }
 
-/// Navigate a browser window forward one page.
+/// Navigate forward in browser history.
 #[tauri::command]
 pub fn browser_forward(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    state
-        .browser_manager
-        .go_forward(&id)
-        .map_err(|e| e.to_string())
+    let url = state.browser_manager.go_forward(&id).map_err(|e| e.to_string())?;
+    let label = child_label(&id);
+    let handle = state.get_app_handle().ok_or("AppHandle not available")?;
+
+    if let Some(webview) = handle.get_webview(&label) {
+        let parsed = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+        webview.navigate(parsed).map_err(|e| e.to_string())?;
+    }
+
+    Ok(url)
 }
 
-/// Reload a browser window.
+/// Reload the current browser page.
 #[tauri::command]
 pub fn browser_reload(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let label = child_label(&id);
+    let handle = state.get_app_handle().ok_or("AppHandle not available")?;
+
+    if let Some(webview) = handle.get_webview(&label) {
+        webview.reload().map_err(|e| e.to_string())?;
+    }
+
     state.browser_manager.reload(&id).map_err(|e| e.to_string())
 }
 
+/// Open a URL in a native webview window (external fallback).
+#[tauri::command]
+pub fn browser_open_external(state: State<'_, AppState>, url: String) -> Result<(), String> {
+    let handle = state.get_app_handle().ok_or("AppHandle not available")?;
+    let label = format!("browser-external-{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
+
+    let parsed = tauri::Url::parse(&url).map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
+
+    WebviewWindowBuilder::new(&handle, &label, WebviewUrl::External(parsed))
+        .inner_size(1200.0, 800.0)
+        .center()
+        .title(format!("Browser: {}", url))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
 // ── Plugin commands ──────────────────────────────────────────────────────────
 
 /// List all registered plugins.
