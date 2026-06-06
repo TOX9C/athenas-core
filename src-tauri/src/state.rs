@@ -300,8 +300,8 @@ impl ToolEventSender for TauriEventSender {
 /// Types that require external synchronization (`SessionManager`,
 /// `Osc633Parser`) remain wrapped in `Arc<Mutex<T>>`.
 pub struct AppState {
-    pub store: athena_store::KeyValueStore,
-    pub session_store: athena_store::SessionStore,
+    pub store: Arc<athena_store::KeyValueStore>,
+    pub session_store: Arc<athena_store::SessionStore>,
 
     /// Tauri app handle for emitting events to the frontend.
     /// Set once after the Tauri app is built via `set_app_handle`.
@@ -365,22 +365,22 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let store = match athena_store::KeyValueStore::with_name_sync("store") {
+        let store = Arc::new(match athena_store::KeyValueStore::with_name_sync("store") {
             Ok(s) => s,
             Err(e) => {
                 log::error!("KeyValueStore init failed, using empty fallback: {e}");
                 athena_store::KeyValueStore::with_name_sync("store")
                     .unwrap_or_else(|_| athena_store::KeyValueStore::new_empty())
             }
-        };
-        let session_store = match athena_store::SessionStore::new_sync() {
+        });
+        let session_store = Arc::new(match athena_store::SessionStore::new_sync() {
             Ok(s) => s,
             Err(e) => {
                 log::error!("SessionStore init failed, using empty fallback: {e}");
                 athena_store::SessionStore::new_sync()
                     .unwrap_or_else(|_| athena_store::SessionStore::new_empty())
             }
-        };
+        });
         let browser_manager = athena_browser::BrowserManager::new();
         let plugin_manager = athena_plugins::PluginManager::new();
 
@@ -396,6 +396,7 @@ impl AppState {
         ));
 
         let mcp_server = Arc::new(tokio::sync::Mutex::new(athena_core::mcp::McpServer::new()));
+        // Tool executor reference for MCP server — wire it up after both are created
         let swarm_coordinator = Arc::new(tokio::sync::Mutex::new(
             athena_core::swarm::SwarmCoordinator::new(),
         ));
@@ -425,8 +426,16 @@ impl AppState {
                 Arc::clone(&plan_manager),
                 Arc::clone(&agent_comms),
                 event_sender,
+                Arc::clone(&store),
             ),
         ));
+
+        // Wire the MCP server to the tool executor so external tools
+        // (Claude Code, OpenCode) can control agents, kanban, files, etc.
+        {
+            let mut mcp = mcp_server.blocking_lock();
+            mcp.tool_executor = Some(Arc::clone(&tool_executor));
+        }
 
         // -- Build the orchestrator, wired to the tool executor ------------
 
@@ -436,6 +445,7 @@ impl AppState {
                 Arc::clone(&output_buffer),
                 Arc::clone(&plan_manager),
                 Arc::clone(&agent_comms),
+                Some(Arc::clone(&session_store)),
             );
 
             // Try to restore the active workspace name from the store
@@ -504,6 +514,26 @@ impl AppState {
         self.wire_swarm_events();
         self.wire_browser_events();
         self.wire_plugin_events();
+
+        // Auto-start the MCP server on a background thread
+        let mcp_server = Arc::clone(&self.mcp_server);
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("Failed to create tokio runtime for MCP server: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(async {
+                let mut server = mcp_server.lock().await;
+                if let Err(e) = server.init(4545) {
+                    log::error!("Failed to start MCP server: {}", e);
+                } else {
+                    log::info!("MCP server auto-started on port 4545");
+                }
+            });
+        });
     }
 
     /// Retrieve a clone of the Tauri `AppHandle`.

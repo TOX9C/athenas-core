@@ -200,6 +200,26 @@ pub async fn session_list() -> TauriResult<String> {
     invoke("session_list", "{}").await
 }
 
+pub async fn session_get(id: &str) -> TauriResult<String> {
+    invoke(
+        "session_get",
+        &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await
+}
+
+pub async fn session_update(id: &str, title: Option<&str>, messages: Option<&str>) -> TauriResult<String> {
+    invoke(
+        "session_update",
+        &serde_json::json!({
+            "id": id,
+            "title": title,
+            "messages": messages
+        }).to_string(),
+    )
+    .await
+}
+
 pub async fn session_delete(id: &str) -> TauriResult<String> {
     invoke(
         "session_delete",

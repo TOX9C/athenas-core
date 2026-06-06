@@ -164,6 +164,8 @@ pub struct AthenaState {
     pub provider: String,
     pub bypass_mode: bool,
     pub auto_launch: bool,
+    pub session_id: Option<String>,
+    pub session_title: String,
 }
 
 impl AthenaState {
@@ -179,6 +181,8 @@ impl AthenaState {
             provider: DEFAULT_PROVIDER.to_string(),
             bypass_mode: DEFAULT_BYPASS_MODE,
             auto_launch: DEFAULT_AUTO_LAUNCH,
+            session_id: None,
+            session_title: String::new(),
         }
     }
 
@@ -243,6 +247,83 @@ impl AthenaState {
 
     pub fn set_messages(&mut self, messages: Vec<AthenaMessage>) {
         self.messages = messages;
+        self.error = None;
+    }
+
+    pub fn set_session_id(&mut self, id: Option<String>) {
+        self.session_id = id;
+    }
+
+    pub fn set_session_title(&mut self, title: impl Into<String>) {
+        self.session_title = title.into();
+    }
+
+    /// Convert messages to a JSON string suitable for the backend session store.
+    pub fn messages_as_json(&self) -> String {
+        let msgs: Vec<serde_json::Value> = self
+            .messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": &m.id,
+                    "role": match m.role {
+                        MessageRole::User => "user",
+                        MessageRole::Athena => "athena",
+                    },
+                    "content": &m.content,
+                    "timestamp": m.timestamp,
+                    "isError": m.is_error,
+                })
+            })
+            .collect();
+        serde_json::to_string(&msgs).unwrap_or_default()
+    }
+
+    /// Load messages from a session JSON string (produced by the backend).
+    pub fn load_messages_from_json(&mut self, json: &str) {
+        let parsed: Vec<serde_json::Value> = match serde_json::from_str(json) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let mut loaded = Vec::new();
+        for val in parsed {
+            let role = val
+                .get("role")
+                .and_then(|v| v.as_str())
+                .map(|s| match s {
+                    "user" => MessageRole::User,
+                    _ => MessageRole::Athena,
+                })
+                .unwrap_or(MessageRole::User);
+            let content = val
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let id = val
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let timestamp = val
+                .get("timestamp")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(|| chrono::Utc::now().timestamp());
+            let is_error = val
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            loaded.push(AthenaMessage {
+                id,
+                role,
+                content,
+                timestamp,
+                is_error,
+                images: Vec::new(),
+                blocks: Vec::new(),
+            });
+        }
+        self.messages = loaded;
         self.error = None;
     }
 

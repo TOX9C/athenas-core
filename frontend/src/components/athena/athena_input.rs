@@ -2,6 +2,97 @@ use crate::stores::athena::{use_athena_store, AthenaMessage, AthenaState, Messag
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 
+/// Ensure the athena store has an active session ID. Creates one if not.
+async fn ensure_session_id(athena_state: &mut Signal<AthenaState>) -> String {
+    {
+        if let Some(id) = &athena_state.read().session_id {
+            return id.clone();
+        }
+    }
+
+    let title = athena_state.read().session_title.clone();
+    let create_result = tauri_bridge::session_create(Some(&title)).await;
+    let session_json = match create_result {
+        Ok(j) => j,
+        Err(e) => {
+            web_sys::console::warn_1(&format!("[ensure_session_id] failed: {:?}", e).into());
+            return uuid::Uuid::new_v4().to_string();
+        }
+    };
+
+    let session_id = match serde_json::from_str::<serde_json::Value>(&session_json) {
+        Ok(val) => val
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        Err(_) => uuid::Uuid::new_v4().to_string(),
+    };
+
+    athena_state.write().set_session_id(Some(session_id.clone()));
+    session_id
+}
+
+/// Save the current Athena messages to the backend session store.
+async fn save_conversation(athena_state: &mut Signal<AthenaState>) {
+    let session_id = match athena_state.read().session_id.clone() {
+        Some(id) => id,
+        None => return,
+    };
+    let title = athena_state.read().session_title.clone();
+    let messages_json = athena_state.read().messages_as_json();
+    let _ = tauri_bridge::session_update(&session_id, Some(&title), Some(&messages_json)).await;
+}
+
+/// Async body of the submit flow: sends the message and persists the result.
+async fn submit_message_async(
+    text: String,
+    athena_state: &mut Signal<AthenaState>,
+) {
+    let _ = ensure_session_id(athena_state).await;
+
+    // Set loading state
+    athena_state.write().set_loading(true);
+    athena_state.write().set_streaming(true);
+    athena_state
+        .write()
+        .set_streaming_status(Some("Sending to Athena...".to_string()));
+    athena_state.write().clear_error();
+
+    match tauri_bridge::athena_chat(&text).await {
+        Ok(response) => {
+            let assistant_msg = AthenaMessage {
+                id: format!("msg-{}", chrono::Utc::now().timestamp_millis()),
+                role: MessageRole::Athena,
+                content: response,
+                timestamp: chrono::Utc::now().timestamp(),
+                is_error: false,
+                images: Vec::new(),
+                blocks: Vec::new(),
+            };
+            athena_state.write().add_message(assistant_msg);
+        }
+        Err(e) => {
+            let error_msg = AthenaMessage {
+                id: format!("msg-{}", chrono::Utc::now().timestamp_millis()),
+                role: MessageRole::Athena,
+                content: format!("Error: {:?}", e),
+                timestamp: chrono::Utc::now().timestamp(),
+                is_error: true,
+                images: Vec::new(),
+                blocks: Vec::new(),
+            };
+            athena_state.write().add_message(error_msg);
+            athena_state.write().set_error(Some(format!("{:?}", e)));
+        }
+    }
+
+    save_conversation(athena_state).await;
+    athena_state.write().set_loading(false);
+    athena_state.write().set_streaming(false);
+    athena_state.write().set_streaming_status(None);
+}
+
 /// Submit the current input text to the Athena chat orchestrator.
 fn submit_message(
     text: &str,
@@ -33,49 +124,10 @@ fn submit_message(
     athena_state.write().add_message(user_msg);
     input_text.set(String::new());
 
-    // Set loading state
-    athena_state.write().set_loading(true);
-    athena_state.write().set_streaming(true);
-    athena_state
-        .write()
-        .set_streaming_status(Some("Sending to Athena...".to_string()));
-    athena_state.write().clear_error();
-
-    let message_text = text.to_string();
-    let mut athena = *athena_state;
-
-    // Spawn async task to call the orchestrator backend
+    let text_owned = text.to_string();
+    let mut athena_state = *athena_state;
     spawn(async move {
-        match tauri_bridge::athena_chat(&message_text).await {
-            Ok(response) => {
-                let assistant_msg = AthenaMessage {
-                    id: format!("msg-{}", chrono::Utc::now().timestamp_millis()),
-                    role: MessageRole::Athena,
-                    content: response,
-                    timestamp: chrono::Utc::now().timestamp(),
-                    is_error: false,
-                    images: Vec::new(),
-                    blocks: Vec::new(),
-                };
-                athena.write().add_message(assistant_msg);
-            }
-            Err(e) => {
-                let error_msg = AthenaMessage {
-                    id: format!("msg-{}", chrono::Utc::now().timestamp_millis()),
-                    role: MessageRole::Athena,
-                    content: format!("Error: {:?}", e),
-                    timestamp: chrono::Utc::now().timestamp(),
-                    is_error: true,
-                    images: Vec::new(),
-                    blocks: Vec::new(),
-                };
-                athena.write().add_message(error_msg);
-                athena.write().set_error(Some(format!("{:?}", e)));
-            }
-        }
-        athena.write().set_loading(false);
-        athena.write().set_streaming(false);
-        athena.write().set_streaming_status(None);
+        submit_message_async(text_owned, &mut athena_state).await;
     });
 }
 

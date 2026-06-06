@@ -3,7 +3,8 @@ use super::chat_message::AthenaChatMessage;
 use super::session_list::SessionList;
 use super::thinking::AthenaThinkingIndicator;
 use crate::stores::athena::{
-    use_athena_store, AskUserOption, PlanStatus, PlanStepStatus, StepEvaluation,
+    use_athena_store, AskUserOption, AthenaMessage, MessageRole, PlanStatus, PlanStepStatus,
+    StepEvaluation,
 };
 use crate::tauri_bridge;
 use dioxus::prelude::*;
@@ -243,6 +244,71 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         }) {
             unlisteners_clone.borrow_mut().push(u);
         }
+    });
+
+    // Load most recent session on mount (restoration on restart).
+    use_effect(move || {
+        let mut athena = athena_state;
+        spawn(async move {
+            match tauri_bridge::session_list().await {
+                Ok(json) => {
+                    if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&json) {
+                        if let Some(session) = parsed.first() {
+                            if let Some(id) = session.get("id").and_then(|v| v.as_str()) {
+                                if let Ok(session_json) = tauri_bridge::session_get(id).await {
+                                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&session_json) {
+                                        if let Some(messages) = val.get("messages").and_then(|v| v.as_array()) {
+                                            let loaded: Vec<AthenaMessage> = messages
+                                                .iter()
+                                                .filter_map(|m| {
+                                                    let role_str = m.get("role")?.as_str()?;
+                                                    let role = if role_str.eq("user") {
+                                                        MessageRole::User
+                                                    } else {
+                                                        MessageRole::Athena
+                                                    };
+                                                    let content = m.get("content")?.as_str()?.to_string();
+                                                    let id_val = m
+                                                        .get("id")
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or_default()
+                                                        .to_string();
+                                                    let timestamp = m
+                                                        .get("timestamp")
+                                                        .and_then(|v| v.as_u64())
+                                                        .unwrap_or_else(|| chrono::Utc::now().timestamp() as u64)
+                                                        as i64;
+                                                    let is_error = m
+                                                        .get("isError")
+                                                        .and_then(|v| v.as_bool())
+                                                        .unwrap_or(false);
+                                                    Some(AthenaMessage {
+                                                        id: id_val,
+                                                        role,
+                                                        content,
+                                                        timestamp,
+                                                        is_error,
+                                                        images: Vec::new(),
+                                                        blocks: Vec::new(),
+                                                    })
+                                                })
+                                                .collect();
+                                            athena.write().set_messages(loaded);
+                                            athena.write().set_session_id(Some(id.to_string()));
+                                            let title = session.get("title").and_then(|v| v.as_str()).unwrap_or("New Chat").to_string();
+                                            athena.write().set_session_title(title);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(&format!("[AthenaPanel] Failed to load sessions: {:?}", e).into());
+                }
+            }
+        });
     });
 
     // Cleanup: unlisten all event listeners on component unmount.

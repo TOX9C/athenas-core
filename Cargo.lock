@@ -195,6 +195,7 @@ dependencies = [
 name = "athena-core"
 version = "0.1.0"
 dependencies = [
+ "athena-store",
  "chrono",
  "log",
  "regex",
@@ -227,6 +228,7 @@ dependencies = [
  "serde_json",
  "strum",
  "strum_macros",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
