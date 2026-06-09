@@ -33,6 +33,8 @@ pub struct SubscriptionState {
 
 /// Maximum lines retained per output buffer.
 const MAX_LINES_PER_BUFFER: usize = 5000;
+/// Maximum characters retained per output line (prevents DoS from huge single lines).
+const MAX_TEXT_LENGTH: usize = 10000;
 
 // ---------------------------------------------------------------------------
 // State
@@ -94,8 +96,12 @@ impl AgentOutputState {
         }
     }
 
-    pub fn append_line(&mut self, line: OutputLine) {
+    pub fn append_line(&mut self, mut line: OutputLine) {
         let pane_id = line.pane_id.clone();
+        // Truncate overly long lines to prevent memory spikes
+        if line.text.len() > MAX_TEXT_LENGTH {
+            line.text.truncate(MAX_TEXT_LENGTH);
+        }
         if let Some(buf) = self.find_buffer_mut(&pane_id) {
             buf.push(line);
             Self::trim_lines(buf);

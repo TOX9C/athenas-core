@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -478,15 +478,17 @@ pub fn validate_plugin_install_method(method: &PluginInstallMethod) -> Result<()
 }
 
 fn validate_hook_script(script: &str) -> Result<(), PluginError> {
-    // Reject absolute paths.
-    if script.starts_with('/') {
+    let path = Path::new(script);
+
+    // Reject absolute paths (has root component or drive letter on Windows).
+    if path.is_absolute() || path.has_root() {
         return Err(PluginError::ValidationFailed(format!(
             "hook script must be a relative path, got absolute: {script}"
         )));
     }
 
-    // Reject path traversal.
-    if script.starts_with("../") || script.contains("/../") {
+    // Reject path traversal (.. in any form, including Windows ..\).
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(PluginError::ValidationFailed(format!(
             "hook script must not traverse parent directories: {script}"
         )));

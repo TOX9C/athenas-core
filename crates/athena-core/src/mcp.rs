@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -345,7 +346,7 @@ pub struct McpServer {
     pub output_handler: Option<OutputHandler>,
     pub agent_comms_handler: Option<AgentCommsHandler>,
     /// Optional reference to the tool executor for delegating tool calls
-    pub tool_executor: Option<Arc<Mutex<ToolExecutor>>>,
+    pub tool_executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>,
 }
 
 impl std::fmt::Debug for McpServer {
@@ -385,6 +386,11 @@ impl McpServer {
         &self.token
     }
 
+    /// Returns the port the server is currently listening on, if initialized.
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
     /// Initialize the MCP TCP server on the given port.
     ///
     /// Binds the listener and spawns a background thread that accepts
@@ -400,8 +406,9 @@ impl McpServer {
 
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr)?;
-        self.port = Some(port);
-        log::info!("MCP server listening on 127.0.0.1:{}", port);
+        let actual_port = listener.local_addr()?.port();
+        self.port = Some(actual_port);
+        log::info!("MCP server listening on 127.0.0.1:{}", actual_port);
 
         let token = self.token.clone();
         let active_clients = Arc::clone(&self.active_clients);
@@ -463,7 +470,8 @@ impl McpServer {
 
                 // Convert args to ToolInput
                 if let Some(tool_input) = args_to_tool_input(&args) {
-                    if let Ok(tool_exec) = tool_exec_arc.lock() {
+                    let tool_exec = tool_exec_arc.lock();
+                    {
                         match tool_exec.execute_tool_call(executor_name, &tool_input) {
                             Ok(result) => {
                                 return JsonRpcResponse {
@@ -939,6 +947,7 @@ async fn accept_loop(
                     spawn_handler: spawn_handler.clone(),
                     output_handler: output_handler.clone(),
                     agent_comms_handler: agent_comms_handler.clone(),
+                    authenticated: AtomicBool::new(false),
                 };
                 tokio::spawn(async move {
                     handler.handle_connection(stream).await;
@@ -958,6 +967,7 @@ struct ConnectionHandler {
     spawn_handler: Option<SpawnHandler>,
     output_handler: Option<OutputHandler>,
     agent_comms_handler: Option<AgentCommsHandler>,
+    authenticated: AtomicBool,
 }
 
 impl ConnectionHandler {
@@ -1038,7 +1048,22 @@ impl ConnectionHandler {
                 }
             };
 
-            let response = self.handle_request(&req).await;
+            // Per-connection auth gate: every non-initialize method requires
+            // a successful initialize first.
+            let response = if !self.authenticated.load(Ordering::SeqCst) && req.method != "initialize" {
+                JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32600,
+                        message: "Unauthenticated: initialize required".into(),
+                        data: None,
+                    }),
+                }
+            } else {
+                self.handle_request(&req).await
+            };
 
             // Only send a response for requests (notifications have no id)
             if response.id.is_some() {
@@ -1049,8 +1074,9 @@ impl ConnectionHandler {
                 }
             }
 
-            // On successful initialize, log it.
+            // On successful initialize, log it and mark connection as authenticated.
             if req.method == "initialize" && response.error.is_none() {
+                self.authenticated.store(true, Ordering::SeqCst);
                 log::info!("MCP: client {} initialized", peer);
             }
 

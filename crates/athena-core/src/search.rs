@@ -3,6 +3,10 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// Hard limits for search parameters to prevent DoS.
+const MAX_CONTEXT_LINES: usize = 100;
+const MAX_RESULTS: usize = 5000;
+
 /// Locate the ripgrep binary, falling back to common system paths.
 pub(crate) async fn find_rg_binary() -> Result<PathBuf, SearchError> {
     let candidates = if cfg!(windows) {
@@ -85,14 +89,16 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
     }
 
     if let Some(max) = options.max_results {
+        let capped = std::cmp::min(max, MAX_RESULTS);
         args.push("--max-count".into());
-        args.push(max.to_string());
+        args.push(capped.to_string());
     }
 
     if let Some(ctx) = options.context_lines {
-        if ctx > 0 {
+        let capped = std::cmp::min(ctx, MAX_CONTEXT_LINES);
+        if capped > 0 {
             args.push("--context".into());
-            args.push(ctx.to_string());
+            args.push(capped.to_string());
         }
     }
 
@@ -300,14 +306,16 @@ pub fn search_code_sync(options: &SearchOptions) -> Result<SearchResult, SearchE
     }
 
     if let Some(max) = options.max_results {
+        let capped = std::cmp::min(max, MAX_RESULTS);
         args.push("--max-count".into());
-        args.push(max.to_string());
+        args.push(capped.to_string());
     }
 
     if let Some(ctx) = options.context_lines {
-        if ctx > 0 {
+        let capped = std::cmp::min(ctx, MAX_CONTEXT_LINES);
+        if capped > 0 {
             args.push("--context".into());
-            args.push(ctx.to_string());
+            args.push(capped.to_string());
         }
     }
 

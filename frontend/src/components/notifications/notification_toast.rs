@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::components::shared::toast::{use_toast_store, Toast, ToastItem, ToastType};
 use crate::stores::notification::{
     add_notification, use_notification_store, NotificationRecord, NotificationType,
@@ -11,6 +14,11 @@ pub fn NotificationToast() -> Element {
     let notifications = use_notification_store();
     let mut mounted = use_signal(|| false);
 
+    // Store unlisten handle so it can be cleaned up on unmount.
+    let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
+        use_hook(|| Rc::new(RefCell::new(Vec::new())));
+    let unlisteners_clone = unlisteners.clone();
+
     // Register Tauri event listeners on mount.
     use_effect(move || {
         if mounted() {
@@ -21,7 +29,7 @@ pub fn NotificationToast() -> Element {
         // notifications:new — Show toast popup.
         let mut toast_store = toasts;
         let mut notif_store = notifications;
-        let _ = tauri_bridge::listen("notifications:new", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("notifications:new", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let id = val
                     .get("id")
@@ -82,7 +90,17 @@ pub fn NotificationToast() -> Element {
                 };
                 toast_store.write().push(toast);
             }
-        });
+        }) {
+            unlisteners_clone.borrow_mut().push(u);
+        }
+    });
+
+    // Cleanup: unlisten all event listeners on component unmount.
+    let unlisteners_drop = unlisteners.clone();
+    use_drop(move || {
+        for unlisten in unlisteners_drop.borrow_mut().drain(..) {
+            unlisten();
+        }
     });
 
     rsx! {

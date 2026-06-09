@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
+use athena_fs::path_validator::PathValidator;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -44,6 +45,8 @@ pub enum ToolExecutorError {
     MissingParam(String),
     #[error("Lock poisoned")]
     LockPoisoned,
+    #[error("Path traversal blocked: {0}")]
+    PathTraversal(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -714,7 +717,7 @@ pub fn build_agent_command(agent_type: &str, task_prompt: Option<&str>) -> Strin
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+        .unwrap_or_else(|_| { log::warn!("System clock error"); std::time::Duration::default() })
         .as_millis() as u64
 }
 
@@ -1343,7 +1346,13 @@ impl ToolExecutor {
         } else {
             root.join(path)
         };
-        Ok(path)
+        let validator = PathValidator::new(&root).map_err(|e| {
+            ToolExecutorError::PathTraversal(format!("failed to initialize path validator: {}", e))
+        })?;
+        // TODO: opt-in allowlist for extra roots
+        validator.validate(&path).map_err(|e| {
+            ToolExecutorError::PathTraversal(e.to_string())
+        })
     }
 
     fn get_current_time_ms(&self) -> i64 {
@@ -1658,5 +1667,74 @@ impl ToolExecutor {
                 is_error: Some(true),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    struct MockEventSender;
+    impl ToolEventSender for MockEventSender {
+        fn agent_spawned(&self, _id: &str, _agent_type: &str, _agent_cmd: &str) {}
+        fn close_panes(&self, _pane_ids: &[String]) {}
+        fn pty_write(&self, _pane_id: &str, _data: &str) {}
+        fn has_session(&self, _pane_id: &str) -> bool { false }
+        fn ask_user(&self, _request_id: &str, _question: &str, _options: &[serde_json::Value]) -> String {
+            String::new()
+        }
+        fn plan_update(&self, _plan: &ExecutionPlan) {}
+        fn plan_evaluated(&self, _plan_id: &str, _overall_status: &str, _step_evaluations: &[serde_json::Value], _next_action: &str, _reasoning: &str) {}
+    }
+
+    fn create_executor() -> ToolExecutor {
+        ToolExecutor::new(
+            Arc::new(OutputBuffer::new()),
+            Arc::new(NotificationService::new()),
+            Arc::new(PlanManager::new()),
+            Arc::new(AgentComms::new()),
+            Arc::new(MockEventSender),
+            Arc::new(athena_store::KeyValueStore::new_empty()),
+        )
+    }
+
+    struct CurrentDirGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    #[test]
+    fn path_validation_security() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&temp_dir).unwrap();
+        let _guard = CurrentDirGuard { original: original_dir };
+
+        let executor = create_executor();
+
+        // Test absolute path escape
+        assert!(executor.validate_path("/etc/passwd").is_err(), "absolute path outside workspace should be blocked");
+
+        // Test dotdot escape
+        assert!(executor.validate_path("../../../etc/passwd").is_err(), "dotdot escape should be blocked");
+
+        // Test symlink escape
+        #[cfg(unix)]
+        {
+            let link_path = temp_dir.path().join("evil_link");
+            std::os::unix::fs::symlink("/etc/passwd", &link_path).unwrap();
+            assert!(executor.validate_path("evil_link").is_err(), "symlink escape should be blocked");
+        }
+
+        // Test in-workspace file
+        let file_path = temp_dir.path().join("hello.txt");
+        std::fs::write(&file_path, "hello world").unwrap();
+        assert!(executor.validate_path("hello.txt").is_ok(), "in-workspace file should be allowed");
     }
 }

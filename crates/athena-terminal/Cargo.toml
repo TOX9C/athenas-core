@@ -14,7 +14,7 @@ unicode-width = "0.2"
 bitflags = { version = "2.9", features = ["serde"] }
 nix = { version = "0.31", features = ["term", "process", "fs", "signal"] }
 libc = "0.2"
-tokio = { version = "1.43", features = ["sync", "rt"] }
+tokio = { version = "1.43", features = ["sync", "rt", "macros"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 
 [dev-dependencies]

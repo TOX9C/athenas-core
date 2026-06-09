@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::stores::notification::{
     add_notification, mark_notification_dismissed, set_notifications, use_notification_store,
     NotificationRecord, NotificationType,
@@ -23,6 +26,11 @@ pub fn NotificationBell() -> Element {
     let mut notifications = use_notification_store();
     let mut mounted = use_signal(|| false);
 
+    // Store unlisten handles so they can be cleaned up on unmount.
+    let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
+        use_hook(|| Rc::new(RefCell::new(Vec::new())));
+    let unlisteners_clone = unlisteners.clone();
+
     // Register Tauri event listeners on mount.
     use_effect(move || {
         if mounted() {
@@ -32,7 +40,7 @@ pub fn NotificationBell() -> Element {
 
         // notifications:new — Increment unread count, show badge.
         let mut new_store = notifications;
-        let _ = tauri_bridge::listen("notifications:new", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("notifications:new", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let id = val
                     .get("id")
@@ -70,11 +78,13 @@ pub fn NotificationBell() -> Element {
                 };
                 add_notification(&mut new_store, record);
             }
-        });
+        }) {
+            unlisteners_clone.borrow_mut().push(u);
+        }
 
         // notifications:updated — Refresh notification list.
         let mut update_store = notifications;
-        let _ = tauri_bridge::listen("notifications:updated", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("notifications:updated", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 if let Some(notifs_arr) = val.as_array() {
                     let records: Vec<NotificationRecord> = notifs_arr
@@ -111,18 +121,30 @@ pub fn NotificationBell() -> Element {
                     set_notifications(&mut update_store, records);
                 }
             }
-        });
+        }) {
+            unlisteners_clone.borrow_mut().push(u);
+        }
 
         // notifications:dismissed — Update badge count.
         let mut dismiss_store = notifications;
-        let _ = tauri_bridge::listen("notifications:dismissed", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("notifications:dismissed", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty() {
                     mark_notification_dismissed(&mut dismiss_store, id);
                 }
             }
-        });
+        }) {
+            unlisteners_clone.borrow_mut().push(u);
+        }
+    });
+
+    // Cleanup: unlisten all event listeners on component unmount.
+    let unlisteners_drop = unlisteners.clone();
+    use_drop(move || {
+        for unlisten in unlisteners_drop.borrow_mut().drain(..) {
+            unlisten();
+        }
     });
 
     let unread_count: u32 = notifications.read().iter().filter(|n| !n.read).count() as u32;

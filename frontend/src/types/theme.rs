@@ -50,5 +50,8 @@ pub enum ThemeName {
     Tide,
     Cedar,
     Dawn,
+    Aurora,
+    Erebus,
+    Eclipse,
     System,
 }

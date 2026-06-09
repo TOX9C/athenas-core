@@ -6,7 +6,7 @@
 //! WASM-safe: uses `js_sys::Date::now()` instead of `std::time::Instant`
 //! / `std::time::SystemTime`, which panic in WASM.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // WASM-safe time helpers
@@ -132,13 +132,13 @@ struct Inner {
 // ---------------------------------------------------------------------------
 
 pub struct CircuitBreaker {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<parking_lot::Mutex<Inner>>,
 }
 
 impl CircuitBreaker {
     pub fn new(config: CircuitBreakerConfig) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Inner {
+            inner: Arc::new(parking_lot::Mutex::new(Inner {
                 state: CircuitState::Closed,
                 failure_count: 0,
                 success_count: 0,
@@ -161,7 +161,7 @@ impl CircuitBreaker {
     ) -> Self {
         let cb = Self::new(config.clone());
         {
-            let mut inner = cb.inner.lock().unwrap();
+            let mut inner = cb.inner.lock();
             inner.on_state_change = Some(callback);
         }
         cb
@@ -208,7 +208,7 @@ impl CircuitBreaker {
     }
 
     pub fn can_execute(&self) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         Self::prune_failures(&mut inner);
         Self::check_state(&mut inner);
         match inner.state {
@@ -226,7 +226,7 @@ impl CircuitBreaker {
     }
 
     pub fn record_success(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         inner.success_count += 1;
         inner.last_success_at = Some(now_timestamp_ms());
         if inner.state == CircuitState::HalfOpen {
@@ -237,7 +237,7 @@ impl CircuitBreaker {
     }
 
     pub fn record_failure(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let now = now_timestamp_ms();
         inner.failure_count += 1;
         inner.consecutive_failures += 1;
@@ -262,7 +262,7 @@ impl CircuitBreaker {
         F: FnOnce() -> Result<T, E>,
     {
         if !self.can_execute() {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock();
             return Err(CircuitError::Open(CircuitOpenError {
                 circuit_state: inner.state,
                 retry_at: inner.last_state_change_at.map(|t| {
@@ -285,12 +285,12 @@ impl CircuitBreaker {
     }
 
     pub fn reset(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         Self::transition_to(&mut inner, CircuitState::Closed);
     }
 
     pub fn get_stats(&self) -> CircuitBreakerStats {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         CircuitBreakerStats {
             state: inner.state,
             failure_count: inner.failure_count,
@@ -313,7 +313,7 @@ impl CircuitBreaker {
     }
 
     pub fn get_state(&self) -> CircuitState {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         Self::check_state(&mut inner);
         inner.state
     }

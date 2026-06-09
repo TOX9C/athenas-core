@@ -43,6 +43,11 @@ pub struct TerminalSession {
     pub master_fd: RawFd,
     fd_closed: AtomicBool,
     pub shell_pid: nix::unistd::Pid,
+    /// The process group ID of the shell. Explicitly stored because it is only
+    /// equal to `shell_pid` if `setsid()` succeeded. If `setsid()` failed, the
+    /// shell remains in the parent's process group and `killpg(shell_pid)` would
+    /// kill the parent process group.
+    pub pgid: nix::unistd::Pid,
     pub shell: String,
     pub cwd: String,
     pub status: Mutex<PtyStatus>,
@@ -67,7 +72,7 @@ impl Drop for TerminalSession {
         if !self.fd_closed.swap(true, Ordering::SeqCst) {
             let _ = close(self.master_fd);
         }
-        let _ = nix::sys::signal::killpg(self.shell_pid, nix::sys::signal::Signal::SIGTERM);
+        let _ = nix::sys::signal::killpg(self.pgid, nix::sys::signal::Signal::SIGTERM);
     }
 }
 
@@ -76,6 +81,7 @@ impl TerminalSession {
         id: String,
         master_fd: RawFd,
         shell_pid: nix::unistd::Pid,
+        pgid: nix::unistd::Pid,
         shell: String,
         cwd: String,
         cols: usize,
@@ -87,6 +93,7 @@ impl TerminalSession {
             master_fd,
             fd_closed: AtomicBool::new(false),
             shell_pid,
+            pgid,
             shell,
             cwd,
             status: Mutex::new(PtyStatus::Spawning),
@@ -171,6 +178,8 @@ impl SessionManager {
             "Spawning PTY session: id={}, shell={}, cwd={}",
             id, shell, cwd
         );
+
+        // Fast-path: check under read lock.
         {
             let sessions = self.sessions.read().await;
             if let Some(existing) = sessions.get(&id).cloned() {
@@ -178,6 +187,20 @@ impl SessionManager {
                 return Ok(existing);
             }
         }
+
+        // Create a pipe for the child to report pre-exec errors.
+        // FD_CLOEXEC ensures the pipe is closed automatically on a successful exec.
+        let (err_read, err_write) = nix::unistd::pipe()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        let err_read = err_read.into_raw_fd();
+        let err_write = err_write.into_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(err_read, libc::F_GETFD, 0);
+            libc::fcntl(err_read, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            let flags = libc::fcntl(err_write, libc::F_GETFD, 0);
+            libc::fcntl(err_write, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        }
+
         let winsize = Winsize {
             ws_row: rows,
             ws_col: cols,
@@ -186,7 +209,6 @@ impl SessionManager {
         };
 
         let pty = openpty(Some(&winsize), None).map_err(|e| io::Error::other(e.to_string()))?;
-        // Consume the OwnedFds so they don't double-close when pty drops.
         let master_fd = pty.master.into_raw_fd();
         let slave_fd = pty.slave.into_raw_fd();
 
@@ -196,9 +218,21 @@ impl SessionManager {
 
         match unsafe { fork() } {
             Ok(ForkResult::Child) => {
-                // In child: set up PTY and exec shell
                 let _ = close(master_fd);
-                setsid().ok();
+                let _ = close(err_read);
+
+                // Create a new session. If this fails, the child process group
+                // may still be the parent's PGID, which would make killpg(PID)
+                // kill the parent process group. We must not silently ignore
+                // this failure.
+                if setsid().is_err() {
+                    let _ = unsafe {
+                        libc::write(err_write, [1u8].as_ptr() as *const _, 1)
+                    };
+                    let _ = close(err_write);
+                    std::process::exit(1);
+                }
+
                 // Make this PTY the controlling terminal for the new session.
                 // This is critical for interactive shells (readline line editing,
                 // job control, SIGINT on Ctrl+C, etc.).
@@ -211,24 +245,81 @@ impl SessionManager {
                 let _ = close(slave_fd);
                 let _ = nix::unistd::chdir(std::path::Path::new(cwd));
                 let _ = nix::unistd::execvp(&shell_cstr, &args);
+                // execvp only returns on failure.
+                let _ = unsafe {
+                    libc::write(err_write, [2u8].as_ptr() as *const _, 1)
+                };
+                let _ = close(err_write);
                 std::process::exit(1);
             }
             Ok(ForkResult::Parent { child }) => {
                 let _ = close(slave_fd);
+                let _ = close(err_write);
+
+                // Wait for the child to either report an error or succeed.
+                // When execvp succeeds the pipe is closed (FD_CLOEXEC),
+                // returning 0 bytes (EOF).
+                let mut err_buf = [0u8; 1];
+                let n = unsafe {
+                    libc::read(err_read, err_buf.as_mut_ptr() as *mut _, 1)
+                };
+                let _ = close(err_read);
+
+                if n > 0 {
+                    // Child reported an error before exec.
+                    let err_msg = match err_buf[0] {
+                        1 => "setsid() failed in child process",
+                        2 => "execvp() failed in child process",
+                        _ => "child process setup failed",
+                    };
+                    let _ = nix::sys::wait::waitpid(child, None);
+                    let _ = close(master_fd);
+                    return Err(io::Error::new(io::ErrorKind::Other, err_msg));
+                }
+
+                // Success: child exec'd and pipe was closed by FD_CLOEXEC.
                 unsafe {
                     let flags = libc::fcntl(master_fd, libc::F_GETFL, 0);
                     libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
                 }
+
+                // Get the PGID explicitly. setsid() makes PGID == PID, but we
+                // verify this here to avoid assuming a side-effect that may
+                // have silently failed.
+                let pgid = match nix::unistd::getpgid(Some(child)) {
+                    Ok(pgid) if pgid.as_raw() > 0 => pgid,
+                    _ => child,
+                };
+
                 let session = Arc::new(TerminalSession::new(
                     id.clone(),
                     master_fd,
                     child,
+                    pgid,
                     shell.to_string(),
                     cwd.to_string(),
                     cols as usize,
                     rows as usize,
                 ));
+
+                // P1-2 TOCTOU fix: re-check under the write lock before insert.
+                // If another thread already created a session for this id,
+                // clean up the newly-created resources and return the existing one.
                 let mut sessions = self.sessions.write().await;
+                if let Some(existing) = sessions.get(&id).cloned() {
+                    drop(sessions);
+                    if !session.fd_closed.swap(true, Ordering::SeqCst) {
+                        let _ = close(session.master_fd);
+                    }
+                    let _ =
+                        nix::sys::signal::killpg(session.pgid, nix::sys::signal::Signal::SIGTERM);
+                    let _ = nix::sys::wait::waitpid(
+                        child,
+                        Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+                    );
+                    return Ok(existing);
+                }
+
                 sessions.insert(id.clone(), session.clone());
                 Ok(session)
             }
@@ -247,8 +338,8 @@ impl SessionManager {
             if !session.fd_closed.swap(true, Ordering::SeqCst) {
                 let _ = close(session.master_fd);
             }
-            let pid = session.shell_pid;
-            let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGTERM);
+            let pgid = session.pgid;
+            let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGTERM);
         }
         Ok(())
     }
@@ -388,5 +479,60 @@ impl TerminalSession {
             return Ok(None);
         }
         self.parse_bytes(&buf[..n]).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawn_with_same_id_returns_existing() {
+        let manager = SessionManager::new();
+
+        // First spawn
+        let session1 = manager
+            .spawn("dup_id".to_string(), "/bin/sh", "/", 80, 24)
+            .await
+            .expect("first spawn should succeed");
+
+        // Second spawn with same ID – TOCTOU should detect the existing session.
+        let session2 = manager
+            .spawn("dup_id".to_string(), "/bin/sh", "/", 80, 24)
+            .await
+            .expect("second spawn should return existing");
+
+        assert!(Arc::ptr_eq(&session1, &session2));
+        assert_eq!(manager.list_sessions().await.len(), 1);
+        assert!(manager.has_session("dup_id").await);
+    }
+
+    #[tokio::test]
+    async fn spawn_concurrent_same_id_races_to_single_session() {
+        let manager = SessionManager::new();
+
+        let f1 = manager.spawn("race_id".to_string(), "/bin/sh", "/", 80, 24);
+        let f2 = manager.spawn("race_id".to_string(), "/bin/sh", "/", 80, 24);
+
+        let (r1, r2) = tokio::join!(f1, f2);
+        let s1 = r1.expect("first spawn should succeed");
+        let s2 = r2.expect("second spawn should return existing");
+
+        assert!(Arc::ptr_eq(&s1, &s2));
+        assert_eq!(manager.list_sessions().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn spawn_nonexistent_shell_fails_cleanly() {
+        let manager = SessionManager::new();
+
+        let result = manager
+            .spawn("fail_id".to_string(), "/nonexistent/shell", "/", 80, 24)
+            .await;
+
+        assert!(result.is_err(), "expected spawn to fail with invalid shell");
+        let err = result.err().expect("already checked");
+        assert!(err.to_string().contains("execvp"));
+        assert!(!manager.has_session("fail_id").await);
     }
 }

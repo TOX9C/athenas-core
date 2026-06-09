@@ -256,8 +256,12 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                         if let Some(session) = parsed.first() {
                             if let Some(id) = session.get("id").and_then(|v| v.as_str()) {
                                 if let Ok(session_json) = tauri_bridge::session_get(id).await {
-                                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&session_json) {
-                                        if let Some(messages) = val.get("messages").and_then(|v| v.as_array()) {
+                                    if let Ok(val) =
+                                        serde_json::from_str::<serde_json::Value>(&session_json)
+                                    {
+                                        if let Some(messages) =
+                                            val.get("messages").and_then(|v| v.as_array())
+                                        {
                                             let loaded: Vec<AthenaMessage> = messages
                                                 .iter()
                                                 .filter_map(|m| {
@@ -267,7 +271,8 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                                                     } else {
                                                         MessageRole::Athena
                                                     };
-                                                    let content = m.get("content")?.as_str()?.to_string();
+                                                    let content =
+                                                        m.get("content")?.as_str()?.to_string();
                                                     let id_val = m
                                                         .get("id")
                                                         .and_then(|v| v.as_str())
@@ -276,7 +281,9 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                                                     let timestamp = m
                                                         .get("timestamp")
                                                         .and_then(|v| v.as_u64())
-                                                        .unwrap_or_else(|| chrono::Utc::now().timestamp() as u64)
+                                                        .unwrap_or_else(|| {
+                                                            chrono::Utc::now().timestamp() as u64
+                                                        })
                                                         as i64;
                                                     let is_error = m
                                                         .get("isError")
@@ -295,7 +302,11 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                                                 .collect();
                                             athena.write().set_messages(loaded);
                                             athena.write().set_session_id(Some(id.to_string()));
-                                            let title = session.get("title").and_then(|v| v.as_str()).unwrap_or("New Chat").to_string();
+                                            let title = session
+                                                .get("title")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("New Chat")
+                                                .to_string();
                                             athena.write().set_session_title(title);
                                         }
                                     }
@@ -305,7 +316,9 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     }
                 }
                 Err(e) => {
-                    web_sys::console::warn_1(&format!("[AthenaPanel] Failed to load sessions: {:?}", e).into());
+                    web_sys::console::warn_1(
+                        &format!("[AthenaPanel] Failed to load sessions: {:?}", e).into(),
+                    );
                 }
             }
         });
@@ -399,7 +412,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                                 rsx! {
                                     span {
                                         key: "context-{i}",
-                                        style: "padding: 1px 6px; border-radius: 4px; background: var(--bg); border: 1px solid var(--border); font-size: 10px;"
+                                        style: "padding: 1px 6px; border-radius: 4px; background: var(--bg); border: 1px solid var(--border); font-size: 10px;",
                                         "{display}"
                                     }
                                 }

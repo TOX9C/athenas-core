@@ -1,6 +1,4 @@
-use crate::stores::athena::{
-    use_athena_store, AthenaMessage, MessageRole,
-};
+use crate::stores::athena::{use_athena_store, AthenaMessage, MessageRole};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 
@@ -46,7 +44,10 @@ async fn fetch_sessions() -> Vec<SessionListItem> {
 }
 
 /// Load a specific session into the athena store.
-async fn load_session(session_id: &str, athena_state: &mut Signal<crate::stores::athena::AthenaState>) {
+async fn load_session(
+    session_id: &str,
+    athena_state: &mut Signal<crate::stores::athena::AthenaState>,
+) {
     match tauri_bridge::session_get(session_id).await {
         Ok(json) => {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
@@ -71,10 +72,8 @@ async fn load_session(session_id: &str, athena_state: &mut Signal<crate::stores:
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or_else(|| chrono::Utc::now().timestamp() as u64)
                                 as i64;
-                            let is_error = m
-                                .get("isError")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
+                            let is_error =
+                                m.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
                             Some(AthenaMessage {
                                 id,
                                 role,
@@ -101,7 +100,9 @@ async fn load_session(session_id: &str, athena_state: &mut Signal<crate::stores:
             }
         }
         Err(e) => {
-            web_sys::console::warn_1(&format!("[SessionList] Failed to load session: {:?}", e).into());
+            web_sys::console::warn_1(
+                &format!("[SessionList] Failed to load session: {:?}", e).into(),
+            );
         }
     }
 }
@@ -109,7 +110,11 @@ async fn load_session(session_id: &str, athena_state: &mut Signal<crate::stores:
 /// Format a Unix timestamp (milliseconds) into a relative "time ago" string.
 fn format_time_ago(timestamp_ms: u64) -> String {
     let now = (js_sys::Date::now() / 1000.0) as u64;
-    let diff = if now > timestamp_ms { now - timestamp_ms } else { 0 };
+    let diff = if now > timestamp_ms {
+        now - timestamp_ms
+    } else {
+        0
+    };
     let minutes = diff / 60;
     let hours = diff / 3600;
     let days = diff / 86400;

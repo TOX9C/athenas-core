@@ -18,45 +18,45 @@ use tauri::{AppHandle, Emitter};
 /// Plan/notification events can be extended later to emit Tauri events
 /// over the app handle.
 pub struct TauriEventSender {
-    app_handle: Arc<std::sync::Mutex<Option<AppHandle>>>,
-    pending_questions: Arc<std::sync::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
+    app_handle: Arc<parking_lot::Mutex<Option<AppHandle>>>,
+    pending_questions: Arc<parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
     session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
     /// Best-effort synchronous cache of "known" session IDs so that
     /// `has_session` can answer from a sync trait method.
-    active_sessions: Arc<std::sync::Mutex<HashSet<String>>>,
+    active_sessions: Arc<parking_lot::Mutex<HashSet<String>>>,
     /// Lazily-cached tokio runtime handle so we can spawn async work from
     /// sync trait methods (e.g. when called from spawn_blocking).
-    runtime_handle: Arc<std::sync::Mutex<Option<tokio::runtime::Handle>>>,
+    runtime_handle: Arc<parking_lot::Mutex<Option<tokio::runtime::Handle>>>,
 }
 
 impl TauriEventSender {
     pub fn new(
-        app_handle: Arc<std::sync::Mutex<Option<AppHandle>>>,
-        pending_questions: Arc<std::sync::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
+        app_handle: Arc<parking_lot::Mutex<Option<AppHandle>>>,
+        pending_questions: Arc<parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
         session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
     ) -> Self {
         Self {
             app_handle,
             pending_questions,
             session_manager,
-            active_sessions: Arc::new(std::sync::Mutex::new(HashSet::new())),
-            runtime_handle: Arc::new(std::sync::Mutex::new(None)),
+            active_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            runtime_handle: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
     /// Return a clone of the cached tokio runtime handle if available,
     /// otherwise try to acquire the current handle and cache it.
     fn get_runtime_handle(&self) -> Option<tokio::runtime::Handle> {
-        if let Ok(guard) = self.runtime_handle.lock() {
+        {
+            let guard = self.runtime_handle.lock();
             if let Some(h) = guard.as_ref() {
                 return Some(h.clone());
             }
         }
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
-                if let Ok(mut guard) = self.runtime_handle.lock() {
-                    *guard = Some(handle.clone());
-                }
+                let mut guard = self.runtime_handle.lock();
+                *guard = Some(handle.clone());
                 Some(handle)
             }
             Err(e) => {
@@ -70,18 +70,10 @@ impl TauriEventSender {
 impl ToolEventSender for TauriEventSender {
     fn agent_spawned(&self, id: &str, _agent_type: &str, agent_cmd: &str) {
         // Track as active so `has_session` can answer synchronously.
-        if let Ok(mut guard) = self.active_sessions.lock() {
-            guard.insert(id.to_string());
-        }
+        self.active_sessions.lock().insert(id.to_string());
 
         let session_manager = Arc::clone(&self.session_manager);
-        let app_handle = match self.app_handle.lock() {
-            Ok(g) => g.clone(),
-            Err(e) => {
-                log::error!("app_handle lock poisoned in agent_spawned: {}", e);
-                return;
-            }
-        };
+        let app_handle = self.app_handle.lock().clone();
         let id = id.to_string();
         let agent_cmd = agent_cmd.to_string();
 
@@ -135,10 +127,9 @@ impl ToolEventSender for TauriEventSender {
 
     fn close_panes(&self, pane_ids: &[String]) {
         // Remove from active set first so `has_session` reflects the change.
-        if let Ok(mut guard) = self.active_sessions.lock() {
-            for pid in pane_ids {
-                guard.remove(pid);
-            }
+        let mut guard = self.active_sessions.lock();
+        for pid in pane_ids {
+            guard.remove(pid);
         }
 
         let session_manager = Arc::clone(&self.session_manager);
@@ -185,7 +176,8 @@ impl ToolEventSender for TauriEventSender {
 
     fn has_session(&self, pane_id: &str) -> bool {
         // Fast path: check the active sessions cache.
-        if let Ok(guard) = self.active_sessions.lock() {
+        {
+            let guard = self.active_sessions.lock();
             if guard.contains(pane_id) {
                 return true;
             }
@@ -207,23 +199,11 @@ impl ToolEventSender for TauriEventSender {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
 
         {
-            let mut map = match self.pending_questions.lock() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    log::error!("pending_questions lock poisoned in ask_user: {}", e);
-                    return format!("error: pending_questions lock poisoned");
-                }
-            };
+            let mut map = self.pending_questions.lock();
             map.insert(request_id.to_string(), tx);
         }
 
-        let handle_guard = match self.app_handle.lock() {
-            Ok(guard) => guard,
-            Err(e) => {
-                log::error!("app_handle lock poisoned in ask_user: {}", e);
-                return format!("error: app_handle lock poisoned");
-            }
-        };
+        let handle_guard = self.app_handle.lock();
         if let Some(ref handle) = *handle_guard {
             let payload = serde_json::json!({
                 "requestId": request_id,
@@ -242,14 +222,7 @@ impl ToolEventSender for TauriEventSender {
             }
         } else {
             log::error!("ask_user called but app_handle is not set");
-            let mut map = match self.pending_questions.lock() {
-                Ok(g) => g,
-                Err(e) => {
-                    log::error!("pending_questions lock poisoned in ask_user cleanup: {}", e);
-                    return format!("error: app_handle not available and lock poisoned");
-                }
-            };
-            map.remove(request_id);
+            self.pending_questions.lock().remove(request_id);
             return format!("error: app_handle not available");
         }
         drop(handle_guard);
@@ -305,12 +278,12 @@ pub struct AppState {
 
     /// Tauri app handle for emitting events to the frontend.
     /// Set once after the Tauri app is built via `set_app_handle`.
-    pub app_handle: Arc<std::sync::Mutex<Option<AppHandle>>>,
+    pub app_handle: Arc<parking_lot::Mutex<Option<AppHandle>>>,
 
     #[allow(dead_code)]
     pub browser_manager: athena_browser::BrowserManager,
     /// Labels of active child webviews managed in-browser (right sidebar).
-    pub child_webview_labels: std::sync::Mutex<std::collections::HashSet<String>>,
+    pub child_webview_labels: parking_lot::Mutex<std::collections::HashSet<String>>,
     #[allow(dead_code)]
     pub plugin_manager: athena_plugins::PluginManager,
 
@@ -345,16 +318,16 @@ pub struct AppState {
 
     /// Requires `Mutex` because `Osc633Parser::feed` takes `&mut self`.
     pub shell_integration_parser:
-        Arc<std::sync::Mutex<athena_core::shell_integration::Osc633Parser>>,
+        Arc<parking_lot::Mutex<athena_core::shell_integration::Osc633Parser>>,
 
     /// Pending user-response questions shared between TauriEventSender and
     /// the athena_user_answer command.
-    pub pending_questions: Arc<std::sync::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
+    pub pending_questions: Arc<parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
 
     /// Tool executor -- holds shared `Arc<T>` refs to the same service
     /// instances stored above, plus a `TauriEventSender` for real PTY
     /// side-effects.
-    pub tool_executor: Arc<std::sync::Mutex<athena_core::tool_executor::ToolExecutor>>,
+    pub tool_executor: Arc<parking_lot::Mutex<athena_core::tool_executor::ToolExecutor>>,
 }
 
 impl Default for AppState {
@@ -365,22 +338,20 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let store = Arc::new(match athena_store::KeyValueStore::with_name_sync("store") {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("KeyValueStore init failed, using empty fallback: {e}");
-                athena_store::KeyValueStore::with_name_sync("store")
-                    .unwrap_or_else(|_| athena_store::KeyValueStore::new_empty())
-            }
-        });
-        let session_store = Arc::new(match athena_store::SessionStore::new_sync() {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("SessionStore init failed, using empty fallback: {e}");
-                athena_store::SessionStore::new_sync()
-                    .unwrap_or_else(|_| athena_store::SessionStore::new_empty())
-            }
-        });
+        let store = Arc::new(
+            athena_store::KeyValueStore::with_name_sync("store")
+                .unwrap_or_else(|e| {
+                    log::error!("KeyValueStore init failed, using empty fallback: {e}");
+                    athena_store::KeyValueStore::new_empty()
+                }),
+        );
+        let session_store = Arc::new(
+            athena_store::SessionStore::new_sync()
+                .unwrap_or_else(|e| {
+                    log::error!("SessionStore init failed, using empty fallback: {e}");
+                    athena_store::SessionStore::new_empty()
+                }),
+        );
         let browser_manager = athena_browser::BrowserManager::new();
         let plugin_manager = athena_plugins::PluginManager::new();
 
@@ -400,16 +371,16 @@ impl AppState {
         let swarm_coordinator = Arc::new(tokio::sync::Mutex::new(
             athena_core::swarm::SwarmCoordinator::new(),
         ));
-        let shell_integration_parser = Arc::new(std::sync::Mutex::new(
+        let shell_integration_parser = Arc::new(parking_lot::Mutex::new(
             athena_core::shell_integration::Osc633Parser::new(),
         ));
 
         // -- Build the event sender ----------------------------------------
 
-        let app_handle = Arc::new(std::sync::Mutex::new(None::<AppHandle>));
+        let app_handle = Arc::new(parking_lot::Mutex::new(None::<AppHandle>));
         let pending_questions: Arc<
-            std::sync::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
-        > = Arc::new(std::sync::Mutex::new(HashMap::new()));
+            parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
+        > = Arc::new(parking_lot::Mutex::new(HashMap::new()));
 
         let event_sender: Arc<dyn ToolEventSender> = Arc::new(TauriEventSender::new(
             Arc::clone(&app_handle),
@@ -419,7 +390,7 @@ impl AppState {
 
         // -- Build ToolExecutor with the SAME Arc<T> instances ---------
 
-        let tool_executor = Arc::new(std::sync::Mutex::new(
+        let tool_executor = Arc::new(parking_lot::Mutex::new(
             athena_core::tool_executor::ToolExecutor::new(
                 Arc::clone(&output_buffer),
                 Arc::clone(&notification_service),
@@ -476,7 +447,7 @@ impl AppState {
             session_store,
             app_handle,
             browser_manager,
-            child_webview_labels: std::sync::Mutex::new(HashSet::new()),
+            child_webview_labels: parking_lot::Mutex::new(HashSet::new()),
             plugin_manager,
             output_buffer,
             plan_manager,
@@ -496,13 +467,7 @@ impl AppState {
     /// Called once after the Tauri app is built.
     pub fn set_app_handle(&self, handle: AppHandle) {
         {
-            let mut guard = match self.app_handle.lock() {
-                Ok(g) => g,
-                Err(e) => {
-                    log::error!("app_handle lock poisoned in set_app_handle: {}", e);
-                    return;
-                }
-            };
+            let mut guard = self.app_handle.lock();
             *guard = Some(handle);
         } // Drop the lock before calling wire methods that also acquire it
 
@@ -538,13 +503,7 @@ impl AppState {
 
     /// Retrieve a clone of the Tauri `AppHandle`.
     pub fn get_app_handle(&self) -> Option<AppHandle> {
-        match self.app_handle.lock() {
-            Ok(guard) => guard.clone(),
-            Err(e) => {
-                log::error!("app_handle lock poisoned in get_app_handle: {}", e);
-                None
-            }
-        }
+        self.app_handle.lock().clone()
     }
 
     /// PTY read loops are started per-session when pty_spawn is invoked.
@@ -555,16 +514,7 @@ impl AppState {
 
     /// Wire notification service events to Tauri event emissions.
     fn wire_notification_events(&self) {
-        let handle = match self.app_handle.lock() {
-            Ok(g) => g.clone(),
-            Err(e) => {
-                log::error!(
-                    "app_handle lock poisoned in wire_notification_events: {}",
-                    e
-                );
-                return;
-            }
-        };
+        let handle = self.app_handle.lock().clone();
         let handle = match handle {
             Some(h) => h,
             None => {
@@ -594,16 +544,7 @@ impl AppState {
 
     /// Wire plan manager events to Tauri event emissions.
     fn wire_plan_manager_events(&self) {
-        let handle = match self.app_handle.lock() {
-            Ok(g) => g.clone(),
-            Err(e) => {
-                log::error!(
-                    "app_handle lock poisoned in wire_plan_manager_events: {}",
-                    e
-                );
-                return;
-            }
-        };
+        let handle = self.app_handle.lock().clone();
         let handle = match handle {
             Some(h) => h,
             None => {
@@ -629,16 +570,7 @@ impl AppState {
 
     /// Wire output buffer events to Tauri event emissions.
     fn wire_output_buffer_events(&self) {
-        let handle = match self.app_handle.lock() {
-            Ok(g) => g.clone(),
-            Err(e) => {
-                log::error!(
-                    "app_handle lock poisoned in wire_output_buffer_events: {}",
-                    e
-                );
-                return;
-            }
-        };
+        let handle = self.app_handle.lock().clone();
         let handle = match handle {
             Some(h) => h,
             None => {
@@ -668,13 +600,7 @@ impl AppState {
 
     /// Wire agent comms events to Tauri event emissions.
     fn wire_agent_comms_events(&self) {
-        let handle = match self.app_handle.lock() {
-            Ok(g) => g.clone(),
-            Err(e) => {
-                log::error!("app_handle lock poisoned in wire_agent_comms_events: {}", e);
-                return;
-            }
-        };
+        let handle = self.app_handle.lock().clone();
         let handle = match handle {
             Some(h) => h,
             None => {
@@ -704,13 +630,7 @@ impl AppState {
 
     /// Wire swarm coordinator events to Tauri event emissions.
     fn wire_swarm_events(&self) {
-        let handle = match self.app_handle.lock() {
-            Ok(g) => g.clone(),
-            Err(e) => {
-                log::error!("app_handle lock poisoned in wire_swarm_events: {}", e);
-                return;
-            }
-        };
+        let handle = self.app_handle.lock().clone();
         let handle = match handle {
             Some(h) => h,
             None => {
@@ -720,9 +640,7 @@ impl AppState {
         };
         let swarm_coordinator = self.swarm_coordinator.clone();
         // Need to lock the tokio mutex to get a reference
-        let swarm = match swarm_coordinator.blocking_lock() {
-            guard => guard.clone(),
-        };
+        let swarm = swarm_coordinator.blocking_lock().clone();
         swarm.set_event_emitter(move |channel: &str, data: &serde_json::Value| {
             // Serialize to an owned String: `&Value` borrows shared across concurrent emit() calls have been observed to race in Tauri 2.
             match serde_json::to_string(data) {
@@ -744,13 +662,7 @@ impl AppState {
 
     /// Wire browser manager events to Tauri event emissions.
     fn wire_browser_events(&self) {
-        let handle = match self.app_handle.lock() {
-            Ok(g) => g.clone(),
-            Err(e) => {
-                log::error!("app_handle lock poisoned in wire_browser_events: {}", e);
-                return;
-            }
-        };
+        let handle = self.app_handle.lock().clone();
         let handle = match handle {
             Some(h) => h,
             None => {
@@ -780,13 +692,7 @@ impl AppState {
 
     /// Wire plugin manager events to Tauri event emissions.
     fn wire_plugin_events(&self) {
-        let handle = match self.app_handle.lock() {
-            Ok(g) => g.clone(),
-            Err(e) => {
-                log::error!("app_handle lock poisoned in wire_plugin_events: {}", e);
-                return;
-            }
-        };
+        let handle = self.app_handle.lock().clone();
         let handle = match handle {
             Some(h) => h,
             None => {

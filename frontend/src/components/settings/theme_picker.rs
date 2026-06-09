@@ -123,11 +123,7 @@ fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
             style: "padding: 8px 10px; border-radius: 8px; border: {border}; background: {props.bg_secondary}; cursor: pointer; text-align: center; transition: border-color 0.15s, box-shadow 0.15s;",
             onclick: move |_| {
                 ui_state.write().theme = props.theme;
-                apply_theme_to_dom(props.theme);
-                let theme_name = props.theme.name().to_string();
-                spawn(async move {
-                    let _ = crate::tauri_bridge::store_set("theme", &theme_name).await;
-                });
+                apply_theme_and_persist(props.theme);
             },
 
             div {
@@ -157,6 +153,14 @@ pub fn apply_theme_to_dom(theme: UITheme) {
     };
 
     crate::themes::apply_theme_to_dom(theme_name);
+}
+
+pub fn apply_theme_and_persist(theme: UITheme) {
+    apply_theme_to_dom(theme);
+    let theme_name = theme.name().to_string();
+    spawn(async move {
+        let _ = crate::tauri_bridge::store_set("theme", &theme_name).await;
+    });
 }
 
 fn detect_system_theme() -> &'static str {

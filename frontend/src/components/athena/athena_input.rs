@@ -29,7 +29,9 @@ async fn ensure_session_id(athena_state: &mut Signal<AthenaState>) -> String {
         Err(_) => uuid::Uuid::new_v4().to_string(),
     };
 
-    athena_state.write().set_session_id(Some(session_id.clone()));
+    athena_state
+        .write()
+        .set_session_id(Some(session_id.clone()));
     session_id
 }
 
@@ -45,10 +47,7 @@ async fn save_conversation(athena_state: &mut Signal<AthenaState>) {
 }
 
 /// Async body of the submit flow: sends the message and persists the result.
-async fn submit_message_async(
-    text: String,
-    athena_state: &mut Signal<AthenaState>,
-) {
+async fn submit_message_async(text: String, athena_state: &mut Signal<AthenaState>) {
     let _ = ensure_session_id(athena_state).await;
 
     // Set loading state
@@ -69,10 +68,21 @@ async fn submit_message_async(
             parts.push("\n[Pinned Context]".to_string());
             for item in &athena_guard.dropped_context {
                 match item {
-                    crate::stores::athena::DraggableItem::Agent { pane_id, agent_type, label } => {
-                        parts.push(format!("- Agent {}: {} (label: {})", pane_id, agent_type, label));
+                    crate::stores::athena::DraggableItem::Agent {
+                        pane_id,
+                        agent_type,
+                        label,
+                    } => {
+                        parts.push(format!(
+                            "- Agent {}: {} (label: {})",
+                            pane_id, agent_type, label
+                        ));
                     }
-                    crate::stores::athena::DraggableItem::KanbanTask { task_id, title, status } => {
+                    crate::stores::athena::DraggableItem::KanbanTask {
+                        task_id,
+                        title,
+                        status,
+                    } => {
                         parts.push(format!("- Kanban Task {}: {} ({})", task_id, title, status));
                     }
                     crate::stores::athena::DraggableItem::File { path, name } => {

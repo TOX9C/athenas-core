@@ -73,7 +73,7 @@ pub enum OutputBufferError {
 pub struct OutputBuffer {
     buffers: Arc<RwLock<HashMap<String, PaneBuffer>>>,
     event_emitter:
-        Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+        Arc<parking_lot::Mutex<Option<Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 }
 
 impl std::fmt::Debug for OutputBuffer {
@@ -104,7 +104,7 @@ impl OutputBuffer {
     pub fn new() -> Self {
         Self {
             buffers: Arc::new(RwLock::new(HashMap::new())),
-            event_emitter: Arc::new(std::sync::Mutex::new(None)),
+            event_emitter: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -113,19 +113,19 @@ impl OutputBuffer {
     where
         F: Fn(&str, &serde_json::Value) + Send + Sync + 'static,
     {
-        if let Ok(mut guard) = self.event_emitter.lock() {
-            *guard = Some(Box::new(emitter));
-        }
+        *self.event_emitter.lock() = Some(Arc::new(emitter));
     }
 
     fn emit_event(&self, channel: &str, data: &serde_json::Value) {
-        if let Ok(guard) = self.event_emitter.lock() {
-            if let Some(ref emitter) = *guard {
-                emitter(channel, data);
-                return;
-            }
+        // Clone the Arc<...> callback out of the lock so the lock is not held
+        // during the callback. This prevents potential deadlocks if the callback
+        // or downstream code attempts to acquire other locks.
+        let maybe_emitter = self.event_emitter.lock().clone();
+        if let Some(ref emitter) = maybe_emitter {
+            emitter(channel, data);
+        } else {
+            log::debug!("[output-buffer] {} -> {}", channel, data);
         }
-        log::debug!("[output-buffer] {} -> {}", channel, data);
     }
 
     fn now() -> u64 {

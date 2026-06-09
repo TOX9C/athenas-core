@@ -1,7 +1,6 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -18,10 +17,10 @@ pub enum StoreError {
 
 /// Simple key-value JSON store backed by a file in the user's data directory.
 /// Enforces immutability of data by returning new values rather than mutating in place.
-/// Thread-safe via `Mutex` on the data map.
+/// Thread-safe via `Mutex` on the data map (using parking_lot for no poisoning).
 pub struct KeyValueStore {
     path: PathBuf,
-    data: Mutex<std::collections::HashMap<String, serde_json::Value>>,
+    data: parking_lot::Mutex<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 impl KeyValueStore {
@@ -39,7 +38,7 @@ impl KeyValueStore {
         let path = data_dir.join("store.json");
         Self {
             path,
-            data: Mutex::new(std::collections::HashMap::new()),
+            data: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -58,7 +57,7 @@ impl KeyValueStore {
         };
         Ok(Self {
             path,
-            data: Mutex::new(data),
+            data: parking_lot::Mutex::new(data),
         })
     }
 
@@ -83,17 +82,14 @@ impl KeyValueStore {
         };
         Ok(Self {
             path,
-            data: Mutex::new(data),
+            data: parking_lot::Mutex::new(data),
         })
     }
 
     /// Retrieve the value for a key, returning a new object, or `None` if absent.
     /// Returns `Err` if deserialization fails for a present key.
     pub fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, StoreError> {
-        let map = self
-            .data
-            .lock()
-            .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+        let map = self.data.lock();
         match map.get(key) {
             None => Ok(None),
             Some(v) => Ok(Some(serde_json::from_value(v.clone()).map_err(|e| {
@@ -106,10 +102,7 @@ impl KeyValueStore {
     pub async fn set<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
         {
-            let mut map = self
-                .data
-                .lock()
-                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+            let mut map = self.data.lock();
             map.insert(key.to_string(), json_value);
         }
         self.persist().await
@@ -118,10 +111,7 @@ impl KeyValueStore {
     /// Delete a key and persist.
     pub async fn delete(&self, key: &str) -> Result<(), StoreError> {
         {
-            let mut map = self
-                .data
-                .lock()
-                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+            let mut map = self.data.lock();
             map.remove(key);
         }
         self.persist().await
@@ -131,10 +121,7 @@ impl KeyValueStore {
     pub fn set_sync<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
         let json = {
-            let mut map = self
-                .data
-                .lock()
-                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+            let mut map = self.data.lock();
             map.insert(key.to_string(), json_value);
             serde_json::to_string_pretty(&*map)?
         };
@@ -147,10 +134,7 @@ impl KeyValueStore {
     /// Delete a key synchronously and persist to disk (blocking I/O).
     pub fn delete_sync(&self, key: &str) -> Result<(), StoreError> {
         let json = {
-            let mut map = self
-                .data
-                .lock()
-                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+            let mut map = self.data.lock();
             map.remove(key);
             serde_json::to_string_pretty(&*map)?
         };
@@ -162,22 +146,12 @@ impl KeyValueStore {
 
     /// Check if a key exists.
     pub fn has(&self, key: &str) -> bool {
-        self.data
-            .lock()
-            .map_err(|e| {
-                eprintln!("lock poisoned in has(): {}", e);
-                e
-            })
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(key)
+        self.data.lock().contains_key(key)
     }
 
     async fn persist(&self) -> Result<(), StoreError> {
         let json = {
-            let map = self
-                .data
-                .lock()
-                .map_err(|e| StoreError::Generic(format!("lock poisoned: {}", e)))?;
+            let map = self.data.lock();
             serde_json::to_string_pretty(&*map)?
         };
         let path_clone = self.path.clone();

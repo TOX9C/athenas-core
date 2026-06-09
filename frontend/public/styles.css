@@ -6,6 +6,10 @@
 }
 :root {
   --bg: #0f0d0b;
+  --bgAtmosphere: var(--bg);
+  --themeGlowOpacity: 0;
+  --themeNoiseOpacity: 0;
+  --themeGlowColor: transparent;
   --bgSecondary: #1a1815;
   --bgTertiary: #242220;
   --bgHover: #1c1916;
@@ -47,6 +51,41 @@ html, body, #main {
   background: var(--bg);
   color: var(--text);
   font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+#main {
+  position: relative;
+  isolation: isolate;
+}
+
+#main::before,
+#main::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+#main::before {
+  background: var(--bgAtmosphere, var(--bg));
+  opacity: var(--themeGlowOpacity, 0);
+  transition: opacity 0.35s ease, background 0.35s ease;
+}
+
+#main::after {
+  background:
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.18) 1px, transparent 0),
+    radial-gradient(circle at 1px 1px, var(--themeGlowColor, transparent) 1px, transparent 0);
+  background-size: 17px 17px, 31px 31px;
+  opacity: var(--themeNoiseOpacity, 0);
+  mix-blend-mode: screen;
+  transition: opacity 0.35s ease;
+}
+
+.app-root {
+  position: relative;
+  z-index: 1;
 }
 
 body, .terminal-pane, .editor-panel, .code-content, .terminal-container {

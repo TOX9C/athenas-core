@@ -1,6 +1,7 @@
 use crate::tool_executor::{to_openai_tools, ToolExecutor, ToolInput};
 use crate::types::*;
-use std::sync::{Arc, Mutex};
+use secrecy::ExposeSecret;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // Session persistence types
@@ -44,13 +45,134 @@ Available tools:
 - fs_search: Search files in the workspace using ripgrep."#;
 
 /// Configuration for a specific LLM provider.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// The `api_key` is stored in a zero-on-drop `SecretString` to prevent
+/// accidental exposure in logs, error messages, or memory dumps.
+#[derive(Clone)]
 pub struct ProviderConfig {
     pub provider: LLMProvider,
-    pub api_key: String,
+    api_key: secrecy::SecretString,
     pub model: String,
     pub system_prompt: String,
     pub base_url: Option<String>,
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("provider", &self.provider)
+            .field("api_key", &"[REDACTED]")
+            .field("model", &self.model)
+            .field("system_prompt", &"[...]")
+            .field("base_url", &self.base_url)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ProviderConfig(provider={:?}, model={}, base_url={:?})",
+            self.provider, self.model, self.base_url
+        )
+    }
+}
+
+impl ProviderConfig {
+    /// Create a new ProviderConfig with the given API key.
+    pub fn new(provider: LLMProvider, api_key: impl Into<String>, model: String, system_prompt: String, base_url: Option<String>) -> Self {
+        Self {
+            provider,
+            api_key: secrecy::SecretString::from(api_key.into()),
+            model,
+            system_prompt,
+            base_url,
+        }
+    }
+
+    /// Get the API key as a SecretString reference.
+    pub fn api_key(&self) -> &secrecy::SecretString {
+        &self.api_key
+    }
+
+    /// Get the API key exposure (use sparingly, only for actual API calls).
+    pub fn expose_api_key(&self) -> &String {
+        use secrecy::ExposeSecret;
+        self.api_key.expose_secret()
+    }
+}
+
+impl serde::Serialize for ProviderConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct ProviderConfigSer<'a> {
+            provider: &'a LLMProvider,
+            api_key: &'a str,
+            model: &'a str,
+            system_prompt: &'a str,
+            base_url: &'a Option<String>,
+        }
+
+        let ser = ProviderConfigSer {
+            provider: &self.provider,
+            api_key: "[REDACTED]",
+            model: &self.model,
+            system_prompt: "[...]",
+            base_url: &self.base_url,
+        };
+        ser.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ProviderConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct ProviderConfigDe {
+            provider: LLMProvider,
+            api_key: String,
+            model: String,
+            system_prompt: String,
+            base_url: Option<String>,
+        }
+
+        let de = ProviderConfigDe::deserialize(deserializer)?;
+        Ok(ProviderConfig {
+            provider: de.provider,
+            api_key: secrecy::SecretString::from(de.api_key),
+            model: de.model,
+            system_prompt: de.system_prompt,
+            base_url: de.base_url,
+        })
+    }
+}
+
+/// Sanitize an error message by redacting potential API key fragments.
+///
+/// Looks for common API key prefixes (sk-, x-api, etc.) and replaces
+/// them with [REDACTED].
+fn sanitize_error_message(msg: &str) -> String {
+    let patterns = [
+        (r"sk-[a-zA-Z0-9]{20,}", "sk-[REDACTED]"),
+        (r"x-api-key: [^\s]+", "x-api-key: [REDACTED]"),
+        (r"Bearer [^\s]+", "Bearer [REDACTED]"),
+        (r"api[_-]?key[:=][^\s]+", "api_key=[REDACTED]"),
+    ];
+    let mut result = msg.to_string();
+    for (pat, repl) in &patterns {
+        if let Ok(re) = regex::Regex::new(pat) {
+            result = re.replace_all(&result, *repl).to_string();
+        }
+    }
+    result
 }
 
 /// Internal representation of a message for Anthropic's API.
@@ -179,12 +301,12 @@ impl RateLimiter {
 /// The Athena orchestrator that dispatches messages to LLM providers
 /// and executes tool calls via the `ToolExecutor`.
 pub struct AthenaOrchestrator {
-    anthropic_messages: Arc<Mutex<Vec<AnthropicMessage>>>,
-    openai_messages: Arc<Mutex<Vec<OpenAIMessage>>>,
-    current_session_id: Arc<Mutex<Option<String>>>,
-    tool_executor: Option<Arc<Mutex<ToolExecutor>>>,
+    anthropic_messages: Arc<parking_lot::Mutex<Vec<AnthropicMessage>>>,
+    openai_messages: Arc<parking_lot::Mutex<Vec<OpenAIMessage>>>,
+    current_session_id: Arc<parking_lot::Mutex<Option<String>>>,
+    tool_executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>,
     http_client: reqwest::Client,
-    provider_config: Arc<Mutex<Option<ProviderConfig>>>,
+    provider_config: Arc<parking_lot::Mutex<Option<ProviderConfig>>>,
     rate_limiter: RateLimiter,
     /// Reference to the output buffer for reading agent pane state.
     output_buffer: Option<Arc<crate::output_buffer::OutputBuffer>>,
@@ -193,7 +315,7 @@ pub struct AthenaOrchestrator {
     /// Reference to the agent comms service for reading active sessions.
     agent_comms: Option<Arc<crate::agent_comms::AgentComms>>,
     /// The name of the currently active workspace (updated at runtime).
-    workspace_name: Arc<Mutex<Option<String>>>,
+    workspace_name: Arc<parking_lot::Mutex<Option<String>>>,
     /// Optional session store for persisting conversations.
     session_store: Option<Arc<athena_store::SessionStore>>,
 }
@@ -211,20 +333,20 @@ impl AthenaOrchestrator {
     /// an error indicating no executor is configured.
     pub fn new() -> Self {
         Self {
-            anthropic_messages: Arc::new(Mutex::new(Vec::new())),
-            openai_messages: Arc::new(Mutex::new(Vec::new())),
-            current_session_id: Arc::new(Mutex::new(None)),
+            anthropic_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            openai_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            current_session_id: Arc::new(parking_lot::Mutex::new(None)),
             tool_executor: None,
             http_client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
                 .expect("Failed to build HTTP client"),
-            provider_config: Arc::new(Mutex::new(None)),
+            provider_config: Arc::new(parking_lot::Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
             output_buffer: None,
             plan_manager: None,
             agent_comms: None,
-            workspace_name: Arc::new(Mutex::new(None)),
+            workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store: None,
         }
     }
@@ -232,27 +354,27 @@ impl AthenaOrchestrator {
     /// Create an orchestrator with service references for building
     /// the app state snapshot injected before every LLM call.
     pub fn with_context(
-        executor: Arc<Mutex<ToolExecutor>>,
+        executor: Arc<parking_lot::Mutex<ToolExecutor>>,
         output_buffer: Arc<crate::output_buffer::OutputBuffer>,
         plan_manager: Arc<crate::plan_manager::PlanManager>,
         agent_comms: Arc<crate::agent_comms::AgentComms>,
         session_store: Option<Arc<athena_store::SessionStore>>,
     ) -> Self {
         Self {
-            anthropic_messages: Arc::new(Mutex::new(Vec::new())),
-            openai_messages: Arc::new(Mutex::new(Vec::new())),
-            current_session_id: Arc::new(Mutex::new(None)),
+            anthropic_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            openai_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            current_session_id: Arc::new(parking_lot::Mutex::new(None)),
             tool_executor: Some(executor),
             http_client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
                 .expect("Failed to build HTTP client"),
-            provider_config: Arc::new(Mutex::new(None)),
+            provider_config: Arc::new(parking_lot::Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000),
             output_buffer: Some(output_buffer),
             plan_manager: Some(plan_manager),
             agent_comms: Some(agent_comms),
-            workspace_name: Arc::new(Mutex::new(None)),
+            workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store,
         }
     }
@@ -262,28 +384,28 @@ impl AthenaOrchestrator {
     /// When the LLM returns `tool_use` / `tool_calls`, the executor
     /// dispatches them and the results are fed back into the conversation
     /// loop automatically.
-    pub fn new_with_executor(executor: Arc<Mutex<ToolExecutor>>) -> Self {
+    pub fn new_with_executor(executor: Arc<parking_lot::Mutex<ToolExecutor>>) -> Self {
         Self {
-            anthropic_messages: Arc::new(Mutex::new(Vec::new())),
-            openai_messages: Arc::new(Mutex::new(Vec::new())),
-            current_session_id: Arc::new(Mutex::new(None)),
+            anthropic_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            openai_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            current_session_id: Arc::new(parking_lot::Mutex::new(None)),
             tool_executor: Some(executor),
             http_client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
                 .expect("Failed to build HTTP client"),
-            provider_config: Arc::new(Mutex::new(None)),
+            provider_config: Arc::new(parking_lot::Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
             output_buffer: None,
             plan_manager: None,
             agent_comms: None,
-            workspace_name: Arc::new(Mutex::new(None)),
+            workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store: None,
         }
     }
 
     /// Replace or clear the tool executor at runtime.
-    pub fn set_tool_executor(&mut self, executor: Option<Arc<Mutex<ToolExecutor>>>) {
+    pub fn set_tool_executor(&mut self, executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>) {
         self.tool_executor = executor;
     }
 
@@ -308,56 +430,46 @@ impl AthenaOrchestrator {
             })
             .collect();
 
-        if let Ok(mut a) = self.anthropic_messages.lock() {
+        {
+            let mut a = self.anthropic_messages.lock();
             *a = anthropic;
         }
-        if let Ok(mut o) = self.openai_messages.lock() {
+        {
+            let mut o = self.openai_messages.lock();
             *o = openai;
         }
     }
 
     /// Clear all stored conversation context.
     pub fn clear_context(&self) {
-        if let Ok(mut a) = self.anthropic_messages.lock() {
-            a.clear();
-        }
-        if let Ok(mut o) = self.openai_messages.lock() {
-            o.clear();
-        }
-        if let Ok(mut id) = self.current_session_id.lock() {
-            *id = None;
-        }
+        self.anthropic_messages.lock().clear();
+        self.openai_messages.lock().clear();
+        *self.current_session_id.lock() = None;
     }
 
     /// Set the current session identifier.
     pub fn set_current_session_id(&self, id: String) {
-        if let Ok(mut s) = self.current_session_id.lock() {
-            *s = Some(id);
-        }
+        *self.current_session_id.lock() = Some(id);
     }
 
     /// Get the current session identifier, if any.
     pub fn get_current_session_id(&self) -> Option<String> {
-        self.current_session_id.lock().ok().and_then(|s| s.clone())
+        self.current_session_id.lock().clone()
     }
 
     /// Set the LLM provider configuration.
     pub fn set_provider_config(&self, config: ProviderConfig) {
-        if let Ok(mut guard) = self.provider_config.lock() {
-            *guard = Some(config);
-        }
+        *self.provider_config.lock() = Some(config);
     }
 
     /// Get the current LLM provider configuration, if set.
     pub fn get_provider_config(&self) -> Option<ProviderConfig> {
-        self.provider_config.lock().ok().and_then(|g| g.clone())
+        self.provider_config.lock().clone()
     }
 
     /// Set the active workspace name for state snapshot injection.
     pub fn set_workspace_name(&self, name: String) {
-        if let Ok(mut guard) = self.workspace_name.lock() {
-            *guard = Some(name);
-        }
+        *self.workspace_name.lock() = Some(name);
     }
 
     /// Set the session store for persisting conversations.
@@ -378,9 +490,7 @@ impl AthenaOrchestrator {
 
         // Prefer openai messages (default format) for persistence.
         let store_messages: Vec<StoreMessage> = {
-            let openai = self.openai_messages.lock().map_err(|_| {
-                OrchestratorError::Generic("Failed to lock openai messages".to_string())
-            })?;
+            let openai = self.openai_messages.lock();
 
             let mut store_messages = Vec::new();
             for msg in openai.iter() {
@@ -458,15 +568,9 @@ impl AthenaOrchestrator {
             })
             .collect();
 
-        if let Ok(mut a) = self.anthropic_messages.lock() {
-            *a = anthropic;
-        }
-        if let Ok(mut o) = self.openai_messages.lock() {
-            *o = openai;
-        }
-        if let Ok(mut id) = self.current_session_id.lock() {
-            *id = Some(session_id.to_string());
-        }
+        *self.anthropic_messages.lock() = anthropic;
+        *self.openai_messages.lock() = openai;
+        *self.current_session_id.lock() = Some(session_id.to_string());
 
         Ok(())
     }
@@ -490,8 +594,7 @@ impl AthenaOrchestrator {
         let workspace = self
             .workspace_name
             .lock()
-            .ok()
-            .and_then(|g| g.clone())
+            .clone()
             .unwrap_or_else(|| "Unknown".to_string());
         lines.push(format!("Active Workspace: {}", workspace));
         lines.push(String::new());
@@ -581,9 +684,7 @@ impl AthenaOrchestrator {
         let full_text = format!("{}\n{}", snapshot, text);
 
         let (provider, api_key, model, system_prompt, base_url) = {
-            let guard = self.provider_config.lock().map_err(|_| {
-                OrchestratorError::Generic("Failed to lock provider config".to_string())
-            })?;
+            let guard = self.provider_config.lock();
             match guard.as_ref() {
                 Some(config) => {
                     let sp = if config.system_prompt.trim().is_empty() {
@@ -593,7 +694,7 @@ impl AthenaOrchestrator {
                     };
                     (
                         config.provider.clone(),
-                        config.api_key.clone(),
+                        config.api_key().clone(),
                         config.model.clone(),
                         sp,
                         config.base_url.clone(),
@@ -605,7 +706,7 @@ impl AthenaOrchestrator {
                         .ok_or(OrchestratorError::MissingApiKey)?;
                     (
                         LLMProvider::Anthropic,
-                        api_key,
+                        secrecy::SecretString::from(api_key),
                         "claude-sonnet-4-20250514".to_string(),
                         SYSTEM_PROMPT.to_string(),
                         None,
@@ -677,12 +778,7 @@ impl AthenaOrchestrator {
 
         match &self.tool_executor {
             Some(executor_arc) => {
-                let executor = match executor_arc.lock() {
-                    Ok(guard) => guard,
-                    Err(e) => {
-                        return (format!("Tool executor lock poisoned: {}", e), true);
-                    }
-                };
+                let executor = executor_arc.lock();
                 match executor.execute_tool_call(name, &tool_input) {
                     Ok(result) => (result.text, result.is_error.unwrap_or(false)),
                     Err(e) => (format!("Tool execution error: {}", e), true),
@@ -707,7 +803,7 @@ impl AthenaOrchestrator {
     /// returns a pure text response (no tool calls).
     pub async fn send_anthropic(
         &self,
-        api_key: String,
+        api_key: secrecy::SecretString,
         model: String,
         system_prompt: String,
         text: String,
@@ -715,10 +811,7 @@ impl AthenaOrchestrator {
     ) -> Result<String, OrchestratorError> {
         // Append user message
         {
-            let mut msgs = self
-                .anthropic_messages
-                .lock()
-                .map_err(|_| OrchestratorError::Generic("Failed to lock messages".to_string()))?;
+            let mut msgs = self.anthropic_messages.lock();
             msgs.push(AnthropicMessage {
                 role: "user".to_string(),
                 content: build_anthropic_content(&text, images.as_deref()),
@@ -750,9 +843,7 @@ impl AthenaOrchestrator {
             self.rate_limiter.wait_if_needed().await;
 
             let messages = {
-                let msgs = self.anthropic_messages.lock().map_err(|_| {
-                    OrchestratorError::Generic("Failed to lock messages".to_string())
-                })?;
+                let msgs = self.anthropic_messages.lock();
                 msgs.clone()
             };
 
@@ -769,7 +860,7 @@ impl AthenaOrchestrator {
 
             let response = client
                 .post(url)
-                .header("x-api-key", &api_key)
+                .header("x-api-key", api_key.expose_secret())
                 .header("anthropic-version", "2024-10-22")
                 .header("Content-Type", "application/json")
                 .json(&body)
@@ -779,9 +870,10 @@ impl AthenaOrchestrator {
             if !response.status().is_success() {
                 let status = response.status();
                 let err_text = response.text().await.unwrap_or_default();
+                let sanitized = sanitize_error_message(&err_text);
                 return Err(OrchestratorError::Generic(format!(
                     "Anthropic API error {}: {}",
-                    status, err_text
+                    status, sanitized
                 )));
             }
 
@@ -808,9 +900,7 @@ impl AthenaOrchestrator {
 
             // Push assistant response (the full content array, including tool_use blocks)
             {
-                let mut msgs = self.anthropic_messages.lock().map_err(|_| {
-                    OrchestratorError::Generic("Failed to lock messages".to_string())
-                })?;
+                let mut msgs = self.anthropic_messages.lock();
                 msgs.push(AnthropicMessage {
                     role: "assistant".to_string(),
                     content: serde_json::json!(content),
@@ -823,9 +913,7 @@ impl AthenaOrchestrator {
 
             // Execute each tool call and append tool_result messages.
             {
-                let mut msgs = self.anthropic_messages.lock().map_err(|_| {
-                    OrchestratorError::Generic("Failed to lock messages".to_string())
-                })?;
+                let mut msgs = self.anthropic_messages.lock();
 
                 for tool_call in &tool_calls {
                     let tool_use_id = tool_call["id"].as_str().unwrap_or("unknown");
@@ -868,7 +956,7 @@ impl AthenaOrchestrator {
     /// a pure text response (no tool calls).
     pub async fn send_openai(
         &self,
-        api_key: String,
+        api_key: secrecy::SecretString,
         model: String,
         system_prompt: String,
         text: String,
@@ -885,10 +973,7 @@ impl AthenaOrchestrator {
 
         // Build or update messages with system prompt
         {
-            let mut msgs = self
-                .openai_messages
-                .lock()
-                .map_err(|_| OrchestratorError::Generic("Failed to lock messages".to_string()))?;
+            let mut msgs = self.openai_messages.lock();
             if msgs.first().is_none_or(|m| m.role != "system") {
                 let new_system = OpenAIMessage {
                     role: "system".to_string(),
@@ -918,10 +1003,7 @@ impl AthenaOrchestrator {
         // Track the index of the initial user message so that on API error we
         // can remove it (and any tool-call round-trip messages after it).
         let user_msg_index: usize = {
-            let msgs = self
-                .openai_messages
-                .lock()
-                .map_err(|_| OrchestratorError::Generic("Failed to lock messages".to_string()))?;
+            let msgs = self.openai_messages.lock();
             msgs.len() - 1
         };
 
@@ -930,9 +1012,7 @@ impl AthenaOrchestrator {
             self.rate_limiter.wait_if_needed().await;
 
             let body_messages: Vec<serde_json::Value> = {
-                let msgs = self.openai_messages.lock().map_err(|_| {
-                    OrchestratorError::Generic("Failed to lock messages".to_string())
-                })?;
+                let msgs = self.openai_messages.lock();
 
                 msgs.iter()
                     .map(|m| {
@@ -969,7 +1049,7 @@ impl AthenaOrchestrator {
 
             let response = client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Authorization", format!("Bearer {}", api_key.expose_secret()))
                 .header("Content-Type", "application/json")
                 .json(&body)
                 .send()
@@ -978,9 +1058,7 @@ impl AthenaOrchestrator {
             if !response.status().is_success() {
                 let status = response.status();
                 let err_text = response.text().await.unwrap_or_default();
-                let mut msgs = self.openai_messages.lock().map_err(|_| {
-                    OrchestratorError::Generic("Failed to lock messages".to_string())
-                })?;
+                let mut msgs = self.openai_messages.lock();
                 msgs.truncate(user_msg_index);
                 return Err(OrchestratorError::Generic(format!(
                     "OpenAI API error {}: {}",
@@ -1007,9 +1085,7 @@ impl AthenaOrchestrator {
 
             // Store assistant message, including tool_calls if present.
             {
-                let mut msgs = self.openai_messages.lock().map_err(|_| {
-                    OrchestratorError::Generic("Failed to lock messages".to_string())
-                })?;
+                let mut msgs = self.openai_messages.lock();
 
                 let tool_calls_json = if has_tool_calls {
                     tool_calls_value.cloned()
@@ -1047,9 +1123,7 @@ impl AthenaOrchestrator {
                 })?;
 
             {
-                let mut msgs = self.openai_messages.lock().map_err(|_| {
-                    OrchestratorError::Generic("Failed to lock messages".to_string())
-                })?;
+                let mut msgs = self.openai_messages.lock();
 
                 for tool_call in tool_calls_array {
                     let call_id = tool_call["id"].as_str().unwrap_or("unknown");

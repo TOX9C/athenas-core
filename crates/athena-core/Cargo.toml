@@ -16,7 +16,10 @@ regex = "1.10"
 uuid = { workspace = true }
 chrono = { workspace = true }
 log = { workspace = true }
+parking_lot = "0.12"
 athena-store = { path = "../athena-store" }
+athena-fs = { path = "../athena-fs" }
+secrecy = { version = "0.8", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"
