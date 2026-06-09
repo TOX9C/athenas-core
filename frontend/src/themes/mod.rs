@@ -18,6 +18,14 @@ pub struct ThemeColors {
     pub terminal_selection: &'static str,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ThemeExtras {
+    bg_atmosphere: &'static str,
+    glow_opacity: &'static str,
+    noise_opacity: &'static str,
+    glow_color: &'static str,
+}
+
 /// ── 1. NOIR ──
 /// Warm dark with amber/gold. Sophisticated, the new default.
 pub fn get_theme(name: &str) -> ThemeColors {
@@ -112,6 +120,60 @@ pub fn get_theme(name: &str) -> ThemeColors {
             terminal_cursor: "#c45c26",
             terminal_selection: "rgba(196, 92, 38, 0.2)",
         },
+        "erebus" => ThemeColors {
+            bg: "#000000",
+            bg_secondary: "#050505",
+            bg_tertiary: "#0c0c0c",
+            border: "#191919",
+            text: "#e6e6e6",
+            text_muted: "#9a9a9a",
+            text_dim: "#5c5c5c",
+            accent: "#ff3d00",
+            accent_hover: "#ff6a3d",
+            success: "#4ade80",
+            error: "#ff4d4d",
+            warning: "#ffb020",
+            terminal_bg: "#000000",
+            terminal_fg: "#e6e6e6",
+            terminal_cursor: "#ff3d00",
+            terminal_selection: "rgba(255, 61, 0, 0.32)",
+        },
+        "eclipse" => ThemeColors {
+            bg: "#101117",
+            bg_secondary: "#171923",
+            bg_tertiary: "#202332",
+            border: "#303447",
+            text: "#f0f2fb",
+            text_muted: "#9aa3bd",
+            text_dim: "#656d86",
+            accent: "#b8ffda",
+            accent_hover: "#d6ffe7",
+            success: "#5eead4",
+            error: "#ff6b8b",
+            warning: "#ffd166",
+            terminal_bg: "#101117",
+            terminal_fg: "#f0f2fb",
+            terminal_cursor: "#b8ffda",
+            terminal_selection: "rgba(184, 255, 218, 0.22)",
+        },
+        "aurora" => ThemeColors {
+            bg: "#08090d",
+            bg_secondary: "#11131c",
+            bg_tertiary: "#1b1f2d",
+            border: "#2c3246",
+            text: "#f4f6ff",
+            text_muted: "#9da7c0",
+            text_dim: "#687087",
+            accent: "#7dd3fc",
+            accent_hover: "#bae6fd",
+            success: "#34d399",
+            error: "#fb7185",
+            warning: "#facc15",
+            terminal_bg: "#08090d",
+            terminal_fg: "#f4f6ff",
+            terminal_cursor: "#7dd3fc",
+            terminal_selection: "rgba(125, 211, 252, 0.24)",
+        },
         _ => get_theme("noir"),
     }
 }
@@ -121,7 +183,10 @@ pub const ALL_THEMES: &[(&str, &str)] = &[
     ("obsidian", "Obsidian"),
     ("tide", "Tide"),
     ("cedar", "Cedar"),
+    ("aurora", "Aurora"),
     ("dawn", "Dawn"),
+    ("erebus", "Erebus"),
+    ("eclipse", "Eclipse"),
 ];
 
 pub const AVAILABLE_FONTS: &[&str] = &[
@@ -148,6 +213,35 @@ fn set_css_property(property: &str, value: &str) {
     }
 }
 
+fn get_theme_extras(name: &str) -> ThemeExtras {
+    match name {
+        "erebus" => ThemeExtras {
+            bg_atmosphere: "radial-gradient(circle at 12% 8%, rgba(255,61,0,0.18), transparent 28%), radial-gradient(circle at 84% 88%, rgba(255,111,36,0.10), transparent 30%), linear-gradient(135deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 12px), #000000",
+            glow_opacity: "0.88",
+            noise_opacity: "0.18",
+            glow_color: "rgba(255, 61, 0, 0.36)",
+        },
+        "eclipse" => ThemeExtras {
+            bg_atmosphere: "radial-gradient(circle at 18% 12%, rgba(184,255,218,0.12), transparent 30%), radial-gradient(circle at 82% 78%, rgba(94,234,212,0.08), transparent 34%), linear-gradient(135deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 13px), #101117",
+            glow_opacity: "0.72",
+            noise_opacity: "0.12",
+            glow_color: "rgba(184, 255, 218, 0.24)",
+        },
+        "aurora" => ThemeExtras {
+            bg_atmosphere: "radial-gradient(circle at 16% 14%, rgba(125,211,252,0.16), transparent 30%), radial-gradient(circle at 82% 72%, rgba(52,211,153,0.10), transparent 32%), linear-gradient(135deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 14px), #08090d",
+            glow_opacity: "0.76",
+            noise_opacity: "0.14",
+            glow_color: "rgba(125, 211, 252, 0.28)",
+        },
+        _ => ThemeExtras {
+            bg_atmosphere: "var(--bg)",
+            glow_opacity: "0",
+            noise_opacity: "0",
+            glow_color: "transparent",
+        },
+    }
+}
+
 fn set_data_theme(value: &str) {
     let safe_value = value.replace('\'', "\\'").replace('"', "\\\"");
     let script = format!(
@@ -161,7 +255,12 @@ fn set_data_theme(value: &str) {
 
 pub fn apply_theme_to_dom(theme_name: &str) {
     let colors = get_theme(theme_name);
+    let extras = get_theme_extras(theme_name);
     set_data_theme(theme_name);
+    set_css_property("--bgAtmosphere", extras.bg_atmosphere);
+    set_css_property("--themeGlowOpacity", extras.glow_opacity);
+    set_css_property("--themeNoiseOpacity", extras.noise_opacity);
+    set_css_property("--themeGlowColor", extras.glow_color);
     set_css_property("--bg", colors.bg);
     set_css_property("--bgSecondary", colors.bg_secondary);
     set_css_property("--bgTertiary", colors.bg_tertiary);

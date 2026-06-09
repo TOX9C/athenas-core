@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -85,7 +85,7 @@ pub struct AgentSession {
 /// Internal session holding both metadata and communication channel.
 struct SessionInternal {
     session: AgentSession,
-    sender: Sender<Vec<u8>>,
+    sender: SyncSender<Vec<u8>>,
     peer_addr: Option<SocketAddr>,
 }
 
@@ -528,7 +528,7 @@ fn handle_connection(
         .unwrap_or_default();
     log::info!("Agent comms: new connection from {}", peer);
 
-    let (tx, _rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (tx, _rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
     let reader = match stream.try_clone() {
         Ok(s) => BufReader::new(s),
         Err(e) => {
@@ -573,7 +573,7 @@ fn handle_incoming_message(
     pending_input: &Arc<Mutex<HashMap<String, SyncSender<String>>>>,
     token: &str,
     event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
-    tx: &Sender<Vec<u8>>,
+    tx: &SyncSender<Vec<u8>>,
 ) {
     match msg.method.as_str() {
         "initialize" => handle_initialize(stream, msg, sessions, token, event_emitter, tx),
@@ -607,7 +607,7 @@ fn handle_initialize(
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
     token: &str,
     event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
-    tx: &Sender<Vec<u8>>,
+    tx: &SyncSender<Vec<u8>>,
 ) {
     let incoming_token = msg
         .params
@@ -899,7 +899,7 @@ fn handle_request_input(
             map.insert(request_id.clone(), input_tx);
         }
 
-        match input_rx.recv() {
+        match input_rx.recv_timeout(std::time::Duration::from_secs(5 * 60)) {
             Ok(response) => {
                 send_to_socket(
                     stream,
@@ -921,7 +921,25 @@ fn handle_request_input(
                     }),
                 );
             }
-            Err(_) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Remove the stale request so it does not leak.
+                if let Ok(mut map) = pending_input.lock() {
+                    map.remove(&request_id);
+                }
+                send_to_socket(
+                    stream,
+                    &serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": msg.id,
+                        "error": {
+                            "code": -32000,
+                            "message": "Input request timed out",
+                        }
+                    }),
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // Sender was dropped, most likely by cancel_input_request.
                 send_to_socket(
                     stream,
                     &serde_json::json!({
@@ -1065,5 +1083,41 @@ fn cleanup_connection(
         );
 
         log::info!("Agent disconnected: agent={}", s.agent_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_input_request_signals_receiver() {
+        let comms = AgentComms::new();
+        let rx = comms.inject_input_request("req-001");
+
+        // Cancel the request — this drops the only sender.
+        let result = comms.cancel_input_request("req-001");
+        assert!(result.is_ok());
+        assert!(comms.pending_input_is_empty());
+
+        // Receiver should see Disconnected because all senders were dropped.
+        let result = rx.recv_timeout(std::time::Duration::from_millis(100));
+        assert!(matches!(
+            result,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn respond_to_input_request_unblocks_receiver() {
+        let comms = AgentComms::new();
+        let rx = comms.inject_input_request("req-002");
+
+        let result = comms.respond_to_input_request("req-002", "hello");
+        assert!(result.is_ok());
+        assert!(comms.pending_input_is_empty());
+
+        let response = rx.recv_timeout(std::time::Duration::from_millis(100));
+        assert_eq!(response.unwrap(), "hello");
     }
 }

@@ -248,6 +248,7 @@ pub fn App() -> Element {
     rsx! {
         div {
             tabindex: "0",
+            class: "app-root",
             style: "height: 100vh; width: 100vw; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); outline: none;",
 
             // Global keybindings

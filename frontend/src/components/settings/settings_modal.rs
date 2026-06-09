@@ -207,7 +207,8 @@ Tab: Athena
 
 #[component]
 fn AthenaSettings() -> Element {
-    let mut api_key = use_signal(String::new);
+    let mut api_key_set = use_signal(|| false);
+    let mut api_key_input = use_signal(String::new);
     let mut base_url = use_signal(|| "https://api.openai.com/v1".to_string());
     let mut model = use_signal(|| "gpt-4o".to_string());
     let mut is_saved = use_signal(|| false);
@@ -215,8 +216,8 @@ fn AthenaSettings() -> Element {
     // Load saved values from store on mount
     use_effect(move || {
         spawn(async move {
-            if let Ok(key) = crate::tauri_bridge::store_get("llm.api_key").await {
-                api_key.set(key);
+            if let Ok(status) = crate::tauri_bridge::store_get("llm.api_key").await {
+                api_key_set.set(status == "set");
             }
             if let Ok(url) = crate::tauri_bridge::store_get("llm.base_url").await {
                 base_url.set(url);
@@ -227,12 +228,18 @@ fn AthenaSettings() -> Element {
         });
     });
 
-    let do_save = move || {
-        let key = api_key.read().clone();
+    let mut do_save = move || {
+        let new_key = api_key_input.read().clone();
         let url = base_url.read().clone();
         let m = model.read().clone();
+
+        // Clear the input field immediately so the raw key never lingers in the signal
+        api_key_input.set(String::new());
+
         spawn(async move {
-            let _ = crate::tauri_bridge::store_set("llm.api_key", &key).await;
+            if !new_key.is_empty() {
+                let _ = crate::tauri_bridge::store_set("llm.api_key", &new_key).await;
+            }
             let _ = crate::tauri_bridge::store_set("llm.base_url", &url).await;
             let _ = crate::tauri_bridge::store_set("llm.model", &m).await;
         });
@@ -254,12 +261,20 @@ fn AthenaSettings() -> Element {
                         style: "font-size: 11px; font-weight: 600; color: var(--text);",
                         "API Key"
                     }
+                    div {
+                        style: "font-size: 11px; color: var(--textMuted); font-family: monospace;",
+                        if api_key_set() {
+                            "•••• Set"
+                        } else {
+                            "Not set"
+                        }
+                    }
                     input {
-                        value: "{api_key}",
+                        value: "{api_key_input}",
                         r#type: "password",
                         style: "width: 100%; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgSecondary); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
-                        placeholder: "sk-...",
-                        oninput: move |e| { api_key.set(e.value()); is_saved.set(false); },
+                        placeholder: "Enter new API key…",
+                        oninput: move |e| { api_key_input.set(e.value()); is_saved.set(false); },
                     }
                 }
 

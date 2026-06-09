@@ -8,10 +8,17 @@ pub enum UITheme {
     Tide,
     Cedar,
     Dawn,
+    Aurora,
+    Erebus,
+    Eclipse,
     System,
 }
 
 impl UITheme {
+    pub fn is_dark(&self) -> bool {
+        !matches!(self, UITheme::Dawn | UITheme::System)
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             UITheme::Noir => "noir",
@@ -19,6 +26,9 @@ impl UITheme {
             UITheme::Tide => "tide",
             UITheme::Cedar => "cedar",
             UITheme::Dawn => "dawn",
+            UITheme::Aurora => "aurora",
+            UITheme::Erebus => "erebus",
+            UITheme::Eclipse => "eclipse",
             UITheme::System => "system",
         }
     }
@@ -30,6 +40,9 @@ impl UITheme {
             "tide" => UITheme::Tide,
             "cedar" => UITheme::Cedar,
             "dawn" => UITheme::Dawn,
+            "aurora" => UITheme::Aurora,
+            "erebus" => UITheme::Erebus,
+            "eclipse" => UITheme::Eclipse,
             "system" => UITheme::System,
             _ => UITheme::Noir,
         }

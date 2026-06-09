@@ -204,6 +204,7 @@ impl AthenaState {
             auto_launch: DEFAULT_AUTO_LAUNCH,
             session_id: None,
             session_title: String::new(),
+            dropped_context: Vec::new(),
         }
     }
 

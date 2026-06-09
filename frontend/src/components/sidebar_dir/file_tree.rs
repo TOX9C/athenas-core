@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use super::file_tree_node::FileTreeNode;
 use crate::stores::editor::{use_editor_store, EditorFile};
 use crate::stores::workspace::use_workspace_store;
@@ -107,24 +110,42 @@ pub fn FileTree() -> Element {
 
     // Subscribe to fs:change:* events to auto-refresh the tree.
     {
-        let dir_for_listen = active_dir.clone();
-        let mut nodes_for_listen = nodes;
-        let mut loading_for_listen = loading;
-        let _ = tauri_bridge::listen("fs:change:*", move |_payload: String| {
-            if let Some(dir_path) = dir_for_listen.clone() {
-                loading_for_listen.set(true);
-                spawn(async move {
-                    match tauri_bridge::fs_list_dir(&dir_path).await {
-                        Ok(response) => {
-                            nodes_for_listen.set(parse_dir_entries(&response));
-                            loading_for_listen.set(false);
+        let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
+            use_hook(|| Rc::new(RefCell::new(Vec::new())));
+        let unlisteners_clone = unlisteners.clone();
+        let dir_for_effect = active_dir.clone();
+
+        use_effect(move || {
+            let dir_path = dir_for_effect.clone();
+            let mut nodes_for_listen = nodes;
+            let mut loading_for_listen = loading;
+
+            if let Ok(u) = tauri_bridge::listen("fs:change:*", move |_payload: String| {
+                if let Some(ref dir) = dir_path {
+                    loading_for_listen.set(true);
+                    let dir = dir.clone();
+                    spawn(async move {
+                        match tauri_bridge::fs_list_dir(&dir).await {
+                            Ok(response) => {
+                                nodes_for_listen.set(parse_dir_entries(&response));
+                                loading_for_listen.set(false);
+                            }
+                            Err(_) => {
+                                nodes_for_listen.set(Vec::new());
+                                loading_for_listen.set(false);
+                            }
                         }
-                        Err(_) => {
-                            nodes_for_listen.set(Vec::new());
-                            loading_for_listen.set(false);
-                        }
-                    }
-                });
+                    });
+                }
+            }) {
+                unlisteners_clone.borrow_mut().push(u);
+            }
+        });
+
+        let unlisteners_drop = unlisteners.clone();
+        use_drop(move || {
+            for unlisten in unlisteners_drop.borrow_mut().drain(..) {
+                unlisten();
             }
         });
     }

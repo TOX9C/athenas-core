@@ -1,5 +1,8 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsValue;
 
 use crate::tauri_bridge::store_get as kv_get;
 use crate::tauri_bridge::store_set as kv_set;
@@ -12,6 +15,9 @@ pub use crate::types::workspace::{AgentType, GridTemplate, PaneConfig, Space};
 
 /// Key used in KeyValueStore for workspace persistence.
 const WORKSPACES_KEY: &str = "workspaces";
+
+/// Monotonic generation counter for coalescing concurrent saves attempts.
+static SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Select the smallest grid template that can hold the given pane count.
 pub fn grid_for_pane_count(count: usize) -> GridTemplate {
@@ -98,10 +104,13 @@ impl WorkspaceState {
 
     pub fn set_spaces(&mut self, spaces: Vec<Space>) {
         self.spaces = spaces;
+        self.save();
     }
 
     /// Persist the current workspace state to the backend KeyValueStore.
     /// Call this after every mutation that changes workspace layout or panes.
+    /// Saves are coalesced with a generation counter so that overlapping
+    /// async writes never result in a stale state overwriting a newer one.
     pub fn save(&self) {
         let json = match serde_json::to_string(self) {
             Ok(j) => j,
@@ -112,7 +121,23 @@ impl WorkspaceState {
                 return;
             }
         };
+
+        // Acquire a generation number for this save request.
+        let my_gen = SAVE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+
         wasm_bindgen_futures::spawn_local(async move {
+            // Yield briefly so that any synchronously-spawned save()
+            // calls have a chance to increment the global counter.
+            let _ =
+                wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::UNDEFINED))
+                    .await;
+
+            // Only the latest generation should perform the write;
+            // earlier saves self-cancel to prevent stale overwrites.
+            if SAVE_GENERATION.load(Ordering::SeqCst) > my_gen {
+                return;
+            }
+
             if let Err(e) = kv_set(WORKSPACES_KEY, &json).await {
                 web_sys::console::error_1(
                     &format!("[WorkspaceState] store_set error: {:?}", e).into(),

@@ -44,32 +44,22 @@ fn validate_path_exists(path: &std::path::Path) -> Result<std::path::PathBuf, Co
 /// Validate a path for write operations (creates parent dirs if needed).
 fn validate_path(path: &std::path::Path) -> Result<std::path::PathBuf, CommandError> {
     let root = get_workspace_root()?;
-    let path = if path.is_absolute() {
+    let full_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
         root.join(path)
     };
-    if !path.starts_with(&root) {
-        return Err(CommandError::PermissionDenied(format!(
-            "Path must be within the workspace: {}",
-            root.display()
-        )));
-    }
-    if let Ok(remaining) = path.strip_prefix(&root) {
-        for comp in remaining.components() {
-            if matches!(comp, std::path::Component::ParentDir) {
-                return Err(CommandError::PermissionDenied(
-                    "Path escapes the workspace root".to_string(),
-                ));
-            }
-        }
-    }
-    if let Some(parent) = path.parent() {
+    let validator = athena_fs::path_validator::PathValidator::new(&root)
+        .map_err(|e| CommandError::Internal(format!("Failed to initialize path validator: {}", e)))?;
+    let validated = validator
+        .validate_write(&full_path)
+        .map_err(|e| CommandError::PermissionDenied(format!("Invalid write path: {}", e)))?;
+    if let Some(parent) = validated.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             CommandError::Internal(format!("Failed to create parent directories: {}", e))
         })?;
     }
-    Ok(path)
+    Ok(validated)
 }
 
 /// Build provider config from the persistent store for LLM API calls.
@@ -122,13 +112,13 @@ fn build_provider_config_from_store(
         }
     };
 
-    Some(athena_core::orchestrator::ProviderConfig {
+    Some(athena_core::orchestrator::ProviderConfig::new(
         provider,
         api_key,
         model,
-        system_prompt: String::new(),
-        base_url: Some(base_url),
-    })
+        String::new(),
+        Some(base_url),
+    ))
 }
 
 // ── Structured error type for Tauri commands ────────────────────────────────
@@ -280,7 +270,7 @@ pub async fn fs_write_file(path: String, content: String) -> Result<(), CommandE
 #[tauri::command]
 pub async fn fs_exists(path: String) -> bool {
     let path_ref = std::path::Path::new(&path);
-    validate_path(path_ref).is_ok()
+    validate_path_exists(path_ref).is_ok()
 }
 
 /// Read a file and return its contents as a base64-encoded string.
@@ -392,6 +382,28 @@ pub async fn fs_search_files(pattern: String, path: String) -> Result<String, St
 /// Get a value from the persistent key-value store.
 #[tauri::command]
 pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, CommandError> {
+    if key == "llm.api_key" {
+        // Check keyring first
+        if let Ok(entry) = keyring::Entry::new("athena", "api_key") {
+            if entry.get_password().is_ok() {
+                return Ok("set".to_string());
+            }
+        }
+        // Fallback: check store for a legacy plaintext key and migrate it
+        if let Ok(Some(value)) = state.store.get::<String>(&key) {
+            if !value.is_empty() && value != "not_set" && value != "set" {
+                // Found a raw key in the store — migrate to keyring
+                if let Ok(entry) = keyring::Entry::new("athena", "api_key") {
+                    let _ = entry.set_password(&value);
+                }
+                // Delete the plaintext key from the store so it never leaks again
+                let _ = state.store.delete_sync(&key);
+                return Ok("set".to_string());
+            }
+        }
+        return Ok("not_set".to_string());
+    }
+
     state
         .store
         .get::<String>(&key)
@@ -406,6 +418,26 @@ pub async fn store_set(
     key: String,
     value: String,
 ) -> Result<(), String> {
+    if key == "llm.api_key" {
+        if !value.is_empty() && value != "set" && value != "not_set" {
+            // Store the API key securely in the OS keyring, never in plaintext
+            let entry = keyring::Entry::new("athena", "api_key")
+                .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+            entry
+                .set_password(&value)
+                .map_err(|e| format!("Failed to store API key in keyring: {}", e))?;
+            // Remove any legacy plaintext key from the store
+            let _ = state.store.delete(&key).await;
+        } else if value.is_empty() || value == "not_set" {
+            // Clear the API key from the keyring
+            let entry = keyring::Entry::new("athena", "api_key")
+                .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+            let _ = entry.delete_credential();
+            let _ = state.store.delete(&key).await;
+        }
+        return Ok(());
+    }
+
     state
         .store
         .set(&key, &value)
@@ -416,12 +448,24 @@ pub async fn store_set(
 /// Check whether a key exists in the persistent key-value store.
 #[tauri::command]
 pub fn store_has(state: State<'_, AppState>, key: String) -> bool {
+    if key == "llm.api_key" {
+        if let Ok(entry) = keyring::Entry::new("athena", "api_key") {
+            if entry.get_password().is_ok() {
+                return true;
+            }
+        }
+    }
     state.store.has(&key)
 }
 
 /// Delete a key from the persistent key-value store.
 #[tauri::command]
 pub async fn store_delete(state: State<'_, AppState>, key: String) -> Result<(), String> {
+    if key == "llm.api_key" {
+        let entry = keyring::Entry::new("athena", "api_key")
+            .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+        let _ = entry.delete_credential();
+    }
     state.store.delete(&key).await.map_err(|e| e.to_string())
 }
 
@@ -604,13 +648,7 @@ pub async fn pty_spawn(
     match session_result {
         Ok(session) => {
             let _session_id = id.clone();
-            let app_handle = match state.app_handle.lock() {
-                Ok(g) => g.clone(),
-                Err(e) => {
-                    log::error!("app_handle lock poisoned in pty_spawn: {}", e);
-                    return Ok(());
-                }
-            };
+            let app_handle = state.app_handle.lock().clone();
 
             if let Some(handle) = app_handle {
                 let session_id_for_loop = id.clone();
@@ -668,6 +706,9 @@ pub(crate) async fn pty_read_loop(
     // Coalescing buffer for `pty:raw` PTY output. Pre-allocate to 32 KB
     // to avoid reallocation churn during active output.
     let mut coalesce_buf: Vec<u8> = Vec::with_capacity(32 * 1024);
+    // Hard cap on coalescing buffer (1 MB).  If the buffer ever exceeds
+    // this size we emit immediately to avoid unbounded memory growth.
+    const MAX_COALESCE_SIZE: usize = 1024 * 1024; // 1 MB
 
     // 8 ms flush interval — balances latency with batching efficiency.
     let mut flush_interval = tokio::time::interval(tokio::time::Duration::from_millis(8));
@@ -817,7 +858,10 @@ pub(crate) async fn pty_read_loop(
 
         // Step 3: size-threshold flush — prevents unbounded growth when
         // commands like `yes` produce continuous output.
-        if coalesce_buf.len() >= 32 * 1024 {
+        // Emergency flush at the hard 1 MB cap, normal flush at 32 KB.
+        if coalesce_buf.len() >= MAX_COALESCE_SIZE {
+            flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+        } else if coalesce_buf.len() >= 32 * 1024 {
             flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
         }
 
@@ -969,13 +1013,7 @@ pub async fn pty_spawn_agent(
     match session_result {
         Ok(session) => {
             let _session_id = id.clone();
-            let app_handle = match state.app_handle.lock() {
-                Ok(g) => g.clone(),
-                Err(e) => {
-                    log::error!("app_handle lock poisoned in pty_spawn_agent: {}", e);
-                    return Ok(());
-                }
-            };
+            let app_handle = state.app_handle.lock().clone();
 
             // Write the agent command to the PTY
             if let Err(e) = session.write(agent_cmd.as_bytes()).await {
@@ -1080,10 +1118,7 @@ pub fn athena_user_answer(
     request_id: String,
     answer: String,
 ) -> Result<bool, String> {
-    let mut map = state
-        .pending_questions
-        .lock()
-        .map_err(|e| format!("pending_questions lock poisoned: {}", e))?;
+    let mut map = state.pending_questions.lock();
     if let Some(tx) = map.remove(&request_id) {
         let _ = tx.send(answer);
         Ok(true)
@@ -1608,7 +1643,7 @@ pub async fn shell_integration_parse(
 ) -> Result<String, String> {
     let shell_integration_parser = state.shell_integration_parser.clone();
     tokio::task::spawn_blocking(move || {
-        let mut parser = shell_integration_parser.lock().map_err(|e| e.to_string())?;
+        let mut parser = shell_integration_parser.lock();
         let sequences = parser.feed(&data);
         serde_json::to_string(&sequences).map_err(|e| e.to_string())
     })
@@ -1645,7 +1680,7 @@ pub async fn tool_execute(
 ) -> Result<String, String> {
     let tool_executor = state.tool_executor.clone();
     tokio::task::spawn_blocking(move || {
-        let executor = tool_executor.lock().map_err(|e| e.to_string())?;
+        let executor = tool_executor.lock();
         let input: athena_core::tool_executor::ToolInput =
             serde_json::from_str(&arguments).map_err(|e| e.to_string())?;
         let result = executor
@@ -1714,7 +1749,8 @@ pub fn browser_show(state: State<'_, AppState>, id: String, url: String) -> Resu
         let builder = tauri::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed));
         let (pos, sz) = sidebar_bounds(&w)?;
         w.add_child(builder, pos, sz).map_err(|e| e.to_string())?;
-        if let Ok(mut labels) = state.child_webview_labels.lock() {
+        {
+            let mut labels = state.child_webview_labels.lock();
             labels.insert(label);
         }
     }
@@ -1731,7 +1767,8 @@ pub fn browser_hide(state: State<'_, AppState>, id: String) -> Result<(), String
     if let Some(webview) = handle.get_webview(&label) {
         let _ = webview.close();
     }
-    if let Ok(mut labels) = state.child_webview_labels.lock() {
+    {
+        let mut labels = state.child_webview_labels.lock();
         labels.remove(&label);
     }
 
@@ -1754,7 +1791,8 @@ pub fn browser_navigate(state: State<'_, AppState>, id: String, url: String) -> 
         let builder = tauri::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed));
         let (pos, sz) = sidebar_bounds(&w)?;
         w.add_child(builder, pos, sz).map_err(|e| e.to_string())?;
-        if let Ok(mut labels) = state.child_webview_labels.lock() {
+        {
+            let mut labels = state.child_webview_labels.lock();
             labels.insert(label);
         }
     }

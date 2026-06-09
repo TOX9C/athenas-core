@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub mod path_validator;
+use path_validator::PathValidator;
+
 /// Represents a node in the file tree.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileNode {
@@ -38,38 +41,23 @@ impl From<std::io::Error> for FsError {
     }
 }
 
-/// Ensures `path` resolves inside the user's home directory.
-///
-/// Canonicalises both the target path and the home directory, then checks
-/// that the canonical path starts with the canonical home. Returns the
-/// canonical `PathBuf` on success or `FsError::PathTraversal` otherwise.
-fn ensure_within_home(path: &Path) -> Result<PathBuf, FsError> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| FsError::PathTraversal("cannot determine home directory".to_string()))?;
-    let home = home.canonicalize()?;
-
-    // If the path itself exists, canonicalize it directly.
-    // Otherwise, canonicalize the parent and verify it is within home.
-    let canonical =
-        if path.exists() {
-            path.canonicalize()?
-        } else {
-            let parent = path
-                .parent()
-                .ok_or_else(|| FsError::PathTraversal(format!("path {:?} has no parent", path)))?;
-            let canonical_parent = parent.canonicalize()?;
-            canonical_parent.join(path.file_name().ok_or_else(|| {
-                FsError::PathTraversal(format!("path {:?} has no file name", path))
-            })?)
-        };
-
-    if !canonical.starts_with(&home) {
-        return Err(FsError::PathTraversal(format!(
-            "path {:?} is outside home directory",
-            path
-        )));
+impl From<path_validator::PathValidationError> for FsError {
+    fn from(e: path_validator::PathValidationError) -> Self {
+        FsError::PathTraversal(e.to_string())
     }
-    Ok(canonical)
+}
+
+/// Get the home directory as a PathBuf.
+fn get_home() -> Result<PathBuf, FsError> {
+    dirs::home_dir()
+        .ok_or_else(|| FsError::PathTraversal("cannot determine home directory".to_string()))
+}
+
+/// Returns a `PathValidator` rooted at the home directory.
+fn home_validator() -> Result<PathValidator, FsError> {
+    let home = get_home()?;
+    PathValidator::new(&home)
+        .map_err(|e| FsError::PathTraversal(format!("failed to create home validator: {}", e)))
 }
 
 /// Recursively reads the directory tree starting at `dir`.
@@ -79,7 +67,8 @@ fn ensure_within_home(path: &Path) -> Result<PathBuf, FsError> {
 /// - Symlinks are skipped to avoid cycles.
 /// - Results are sorted: directories first, then files, each sub-sorted by name.
 pub fn read_tree(dir: &Path, depth: usize) -> Result<Vec<FileNode>, FsError> {
-    let _canonical = ensure_within_home(dir)?;
+    let validator = home_validator()?;
+    let _canonical = validator.validate(dir)?;
 
     if depth >= MAX_DEPTH {
         return Ok(Vec::new());
@@ -158,13 +147,15 @@ pub fn read_tree(dir: &Path, depth: usize) -> Result<Vec<FileNode>, FsError> {
 
 /// Reads the full text content of a file.
 pub fn read_file_content(path: &Path) -> Result<String, FsError> {
-    let _canonical = ensure_within_home(path)?;
+    let validator = home_validator()?;
+    let _canonical = validator.validate(path)?;
     fs::read_to_string(path).map_err(FsError::from)
 }
 
 /// Writes `content` to a file atomically by writing to a temp file then renaming.
 pub fn write_file_content(path: &Path, content: &str) -> Result<(), FsError> {
-    let _canonical = ensure_within_home(path)?;
+    let validator = home_validator()?;
+    let _ = validator.validate_write(path)?;
     let temp_path = path.with_extension("athena_tmp");
     fs::write(&temp_path, content)?;
     fs::rename(&temp_path, path)?;
@@ -173,7 +164,8 @@ pub fn write_file_content(path: &Path, content: &str) -> Result<(), FsError> {
 
 /// Returns the names of all immediate sub-directories inside `dir`.
 pub fn get_directories(dir: &Path) -> Result<Vec<String>, FsError> {
-    let _canonical = ensure_within_home(dir)?;
+    let validator = home_validator()?;
+    let _canonical = validator.validate(dir)?;
 
     let mut dirs = Vec::new();
 
