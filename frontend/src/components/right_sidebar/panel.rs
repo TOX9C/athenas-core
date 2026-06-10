@@ -2,6 +2,7 @@ use super::browser_panel::RightBrowserPanel;
 use super::editor_panel::RightEditorPanel;
 use super::skills_panel::SkillsPanel;
 use crate::components::athena::athena_panel::{AthenaPanel, AthenaPanelMode};
+use crate::components::shared::icon::{IconClose, IconColumn, IconFile, IconGlobe, IconTerminal};
 use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
 use dioxus::prelude::*;
 
@@ -17,12 +18,12 @@ pub fn RightSidebar() -> Element {
             "var(--textDim)"
         };
         let border = if is_active {
-            "1px solid var(--accent)"
+            "2px solid var(--accent)"
         } else {
-            "1px solid transparent"
+            "2px solid transparent"
         };
         format!(
-            "padding: 6px 14px; border-radius: 2px; border: none; border-bottom: {border}; font-size: 11px; font-weight: 500; cursor: pointer; background: transparent; color: {fg}; transition: color 0.2s ease;"
+            "display: flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 0; border: none; border-bottom: {border}; font-family: var(--font-ui); font-size: var(--text-xs); font-weight: 500; cursor: pointer; background: transparent; color: {fg}; transition: color var(--dur-fast) var(--ease);"
         )
     };
 
@@ -37,33 +38,38 @@ pub fn RightSidebar() -> Element {
                 button {
                     style: "{tab_btn(active == RightPanel::Browser)}",
                     onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Browser),
+                    IconGlobe { size: Some(13), color: Some("currentColor".to_string()) }
                     "Browser"
                 }
 
                 button {
                     style: "{tab_btn(active == RightPanel::Assistant)}",
                     onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Assistant),
+                    IconTerminal { size: Some(13), color: Some("currentColor".to_string()) }
                     "Athena"
                 }
 
                 button {
                     style: "{tab_btn(active == RightPanel::Editor)}",
                     onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Editor),
+                    IconFile { size: Some(13), color: Some("currentColor".to_string()) }
                     "Editor"
                 }
 
                 button {
                     style: "{tab_btn(active == RightPanel::Skills)}",
                     onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Skills),
+                    IconColumn { size: Some(13), color: Some("currentColor".to_string()) }
                     "Skills"
                 }
 
                 div { style: "flex: 1;" }
 
                 button {
-                    style: "padding: 6px 8px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 13px; line-height: 1;",
+                    class: "icon-btn",
+                    title: "Close panel",
                     onclick: move |_| panel_state.write().close_right_panel(),
-                    "x"
+                    IconClose { size: Some(14), color: Some("currentColor".to_string()) }
                 }
             }
 

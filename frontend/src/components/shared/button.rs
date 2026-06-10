@@ -6,6 +6,7 @@ pub enum ButtonVariant {
     Primary,
     Secondary,
     Ghost,
+    Danger,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -23,42 +24,42 @@ pub struct ButtonProps {
     pub size: ButtonSize,
     #[props(default = false)]
     pub disabled: bool,
+    #[props(default = false)]
+    pub loading: bool,
     pub on_click: EventHandler<MouseEvent>,
     pub children: Element,
 }
 
 #[component]
 pub fn Button(props: ButtonProps) -> Element {
-    let bg = match props.variant {
-        ButtonVariant::Primary => "var(--accent)",
-        ButtonVariant::Secondary => "var(--bgTertiary)",
-        ButtonVariant::Ghost => "transparent",
+    let variant_class = match props.variant {
+        ButtonVariant::Primary => "btn-primary",
+        ButtonVariant::Secondary => "btn-secondary",
+        ButtonVariant::Ghost => "btn-ghost",
+        ButtonVariant::Danger => "btn-danger",
     };
-    let color = match props.variant {
-        ButtonVariant::Primary => "#fff",
-        ButtonVariant::Secondary => "var(--text)",
-        ButtonVariant::Ghost => "var(--textMuted)",
+    let size_class = match props.size {
+        ButtonSize::Sm => "btn-sm",
+        ButtonSize::Md => "",
     };
-    let border = match props.variant {
-        ButtonVariant::Primary => "none",
-        ButtonVariant::Secondary => "1px solid var(--border)",
-        ButtonVariant::Ghost => "1px solid transparent",
+    let is_disabled = props.disabled || props.loading;
+    let dim = if is_disabled {
+        "opacity: 0.5; pointer-events: none;"
+    } else {
+        ""
     };
-    let padding = match props.size {
-        ButtonSize::Sm => "4px 10px",
-        ButtonSize::Md => "6px 16px",
-    };
-    let font_size = match props.size {
-        ButtonSize::Sm => "10px",
-        ButtonSize::Md => "12px",
-    };
-    let opacity = if props.disabled { "0.5" } else { "1" };
 
     rsx! {
         button {
-            style: "background: {bg}; color: {color}; border: {border}; border-radius: 6px; padding: {padding}; font-size: {font_size}; font-weight: 500; cursor: pointer; opacity: {opacity}; transition: opacity 0.15s ease; display: inline-flex; align-items: center; gap: 4px;",
-            disabled: props.disabled,
+            class: "{variant_class} {size_class}",
+            style: "{dim}",
+            disabled: is_disabled,
             onclick: move |e| props.on_click.call(e),
+            if props.loading {
+                span {
+                    style: "width: 12px; height: 12px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block;",
+                }
+            }
             {props.children}
         }
     }

@@ -1,4 +1,5 @@
 use super::content_block::ContentBlockRenderer;
+use crate::components::shared::illustration::OwlMark;
 use crate::stores::athena::{AthenaMessage, MessageRole};
 use dioxus::prelude::*;
 
@@ -13,28 +14,22 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
     let is_user = msg.role == MessageRole::User;
     let is_error = msg.is_error;
 
-    let (avatar_text, avatar_bg, avatar_color, bg, align) = if is_user {
-        (
-            "U",
-            "var(--bgTertiary)",
-            "var(--accent)",
-            "var(--bgTertiary)",
-            "flex-end",
-        )
+    let (bg, align) = if is_user {
+        ("var(--bgTertiary)", "flex-end")
     } else {
-        (
-            "A",
-            "var(--bgSecondary)",
-            "var(--accent)",
-            "var(--bgSecondary)",
-            "flex-start",
-        )
+        ("var(--bgSecondary)", "flex-start")
     };
 
     let content_color = if is_error {
         "var(--error)"
     } else {
         "var(--text)"
+    };
+
+    let body_border = if is_error {
+        "var(--error)"
+    } else {
+        "var(--border)"
     };
 
     let time_str = {
@@ -48,12 +43,19 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
     rsx! {
         div {
             class: "chat-message",
-            style: "display: flex; align-items: flex-start; gap: 8px; align-self: {align}; max-width: 85%;",
+            style: "display: flex; align-items: flex-start; gap: 10px; align-self: {align}; max-width: 90%; padding: 8px 0;",
 
             // Avatar
             div {
-                style: "width: 28px; height: 28px; border-radius: 8px; background: {avatar_bg}; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: {avatar_color}; flex-shrink: 0;",
-                "{avatar_text}"
+                style: "width: 28px; height: 28px; border-radius: 50%; background: var(--bgTertiary); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; flex-shrink: 0;",
+                if is_user {
+                    span {
+                        style: "font-size: var(--text-2xs); font-weight: 700; color: var(--textMuted);",
+                        "U"
+                    }
+                } else {
+                    OwlMark { size: Some(18) }
+                }
             }
 
             // Message body
@@ -62,20 +64,20 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
 
                 // Header
                 div {
-                    style: "display: flex; align-items: center; gap: 6px; margin-bottom: 4px;",
+                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 6px;",
                     span {
-                        style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                        style: "font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--textMuted);",
                         if is_user { "You" } else { "Athena" }
                     }
                     span {
-                        style: "font-size: 9px; color: var(--textDim);",
+                        style: "font-size: var(--text-2xs); color: var(--textDim);",
                         "{time_str}"
                     }
                 }
 
                 // Content
                 div {
-                    style: "padding: 10px 14px; background: {bg}; color: {content_color}; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;",
+                    style: "padding: 12px 16px; background: {bg}; color: {content_color}; border: 1px solid {body_border}; border-radius: var(--radius-md); font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;",
 
                     "{msg.content}"
                 }
@@ -89,7 +91,7 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
                 for img in msg.images.iter() {
                     div {
                         key: "{img.id}",
-                        style: "margin-top: 6px; padding: 6px; border-radius: 6px; background: var(--bgTertiary); font-size: 10px; color: var(--textDim);",
+                        style: "margin-top: 8px; padding: 6px; background: var(--bgTertiary); font-size: 10px; color: var(--textDim);",
                         "IMG {img.name.as_deref().unwrap_or(\"image\")}"
                     }
                 }

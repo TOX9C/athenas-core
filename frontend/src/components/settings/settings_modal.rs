@@ -1,5 +1,8 @@
 use super::shortcuts_ref::ShortcutsRef;
 use super::theme_picker::ThemePicker;
+use crate::components::shared::icon::{
+    IconAmphora, IconColumn, IconHelmet, IconScroll, IconSettings, IconTerminal,
+};
 use crate::components::shared::modal::Modal;
 use crate::stores::ui::use_ui_store;
 use crate::themes::{get_theme, AVAILABLE_FONTS};
@@ -8,6 +11,20 @@ use dioxus::prelude::*;
 /* =============================================================
 SettingsContent – shared by modal overlay and full-page panel
 ============================================================= */
+
+/// Icon for a settings tab by index.
+fn tab_icon(idx: u8, color: &str) -> Element {
+    let c = color.to_string();
+    match idx {
+        0 => rsx! { IconSettings { size: Some(14), color: Some(c) } },
+        1 => rsx! { IconTerminal { size: Some(14), color: Some(c) } },
+        2 => rsx! { IconHelmet { size: Some(14), color: Some(c) } },
+        3 => rsx! { IconColumn { size: Some(14), color: Some(c) } },
+        4 => rsx! { IconScroll { size: Some(14), color: Some(c) } },
+        5 => rsx! { IconAmphora { size: Some(14), color: Some(c) } },
+        _ => rsx! { IconSettings { size: Some(14), color: Some(c) } },
+    }
+}
 
 #[component]
 pub fn SettingsContent() -> Element {
@@ -38,14 +55,15 @@ pub fn SettingsContent() -> Element {
                 for (label, idx) in tabs {
                     {
                         let is_active = active_tab() == idx;
+                        let color = if is_active { "var(--accent)" } else { "var(--textDim)" };
+                        let font_weight = if is_active { "600" } else { "400" };
                         let bg = if is_active { "var(--bgTertiary)" } else { "transparent" };
-                        let color = if is_active { "var(--text)" } else { "var(--textDim)" };
-                        let border_left = if is_active { "2px solid var(--accent)" } else { "2px solid transparent" };
                         rsx! {
                             button {
                                 key: "{label}",
-                                style: "padding: 5px 10px; border-radius: 0 6px 6px 0; border: none; border-left: {border_left}; background: {bg}; color: {color}; cursor: pointer; font-size: 12px; text-align: left; transition: background 0.15s, color 0.15s; width: 100%; margin-left: -1px;",
+                                style: "display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: none; border-radius: var(--radius-sm); background: {bg}; color: {color}; cursor: pointer; font-size: var(--text-sm); text-align: left; width: 100%; font-weight: {font_weight};",
                                 onclick: move |_| active_tab.set(idx),
+                                {tab_icon(idx, color)}
                                 "{label}"
                             }
                         }
@@ -114,7 +132,7 @@ fn GeneralSettings() -> Element {
                 /* Font Family */
                 div {
                     div {
-                        style: "font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 8px;",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text); margin-bottom: 8px;",
                         "Font Family"
                     }
                     div {
@@ -124,12 +142,13 @@ fn GeneralSettings() -> Element {
                                 let is_selected = *font == ui_state.read().font_family;
                                 let current_theme = get_theme(ui_state.read().theme.name());
                                 let bg = if is_selected { current_theme.accent } else { current_theme.bg_tertiary };
-                                let fg = if is_selected { "#ffffff" } else { "var(--textMuted)" };
+                                let fg = if is_selected { "var(--bg)" } else { "var(--textMuted)" };
+                                let border = if is_selected { "var(--accent)" } else { "var(--border)" };
                                 let font_str = font.to_string();
                                 rsx! {
                                     button {
                                         key: "{font}",
-                                        style: "padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border); background: {bg}; color: {fg}; cursor: pointer; font-size: 11px; font-family: '{font}', monospace; transition: all 0.15s;",
+                                        style: "padding: 5px 12px; border-radius: var(--radius-sm); border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; font-size: var(--text-xs); font-family: '{font}', monospace;",
                                         onclick: move |_| {
                                             let font_clone = font_str.clone();
                                             ui_state.write().font_family = font_clone;
@@ -151,7 +170,7 @@ fn GeneralSettings() -> Element {
                 /* Font Size */
                 div {
                     div {
-                        style: "font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 8px;",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text); margin-bottom: 8px;",
                         "Font Size"
                     }
                     div {
@@ -174,7 +193,7 @@ fn GeneralSettings() -> Element {
                             },
                         }
                         span {
-                            style: "font-size: 11px; color: var(--textMuted); min-width: 32px; text-align: center;",
+                            style: "font-size: var(--text-xs); color: var(--textMuted); min-width: 32px; text-align: center;",
                             "{ui_state.read().font_size}px"
                         }
                     }
@@ -182,9 +201,9 @@ fn GeneralSettings() -> Element {
 
                 /* Preview */
                 div {
-                    style: "padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bgSecondary); margin-top: 8px;",
+                    style: "padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); margin-top: 8px;",
                     div {
-                        style: "font-size: 10px; color: var(--textDim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;",
+                        style: "font-size: var(--text-2xs); color: var(--textDim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;",
                         "Preview"
                     }
                     div {
@@ -258,11 +277,11 @@ fn AthenaSettings() -> Element {
                 div {
                     style: "display: flex; flex-direction: column; gap: 6px;",
                     div {
-                        style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
                         "API Key"
                     }
                     div {
-                        style: "font-size: 11px; color: var(--textMuted); font-family: monospace;",
+                        style: "font-size: var(--text-xs); color: var(--textMuted); font-family: var(--fontFamily);",
                         if api_key_set() {
                             "•••• Set"
                         } else {
@@ -272,7 +291,8 @@ fn AthenaSettings() -> Element {
                     input {
                         value: "{api_key_input}",
                         r#type: "password",
-                        style: "width: 100%; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgSecondary); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
+                        class: "field",
+                        style: "width: 100%; box-sizing: border-box;",
                         placeholder: "Enter new API key…",
                         oninput: move |e| { api_key_input.set(e.value()); is_saved.set(false); },
                     }
@@ -282,17 +302,18 @@ fn AthenaSettings() -> Element {
                 div {
                     style: "display: flex; flex-direction: column; gap: 6px;",
                     div {
-                        style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
                         "Base URL"
                     }
                     input {
                         value: "{base_url}",
-                        style: "width: 100%; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgSecondary); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
+                        class: "field",
+                        style: "width: 100%; box-sizing: border-box;",
                         placeholder: "https://api.openai.com/v1",
                         oninput: move |e| { base_url.set(e.value()); is_saved.set(false); },
                     }
                     div {
-                        style: "font-size: 9px; color: var(--textDim);",
+                        style: "font-size: var(--text-2xs); color: var(--textDim);",
                         "e.g. https://api.openai.com/v1, https://api.groq.com/openai/v1, http://localhost:1234/v1"
                     }
                 }
@@ -301,12 +322,13 @@ fn AthenaSettings() -> Element {
                 div {
                     style: "display: flex; flex-direction: column; gap: 6px;",
                     div {
-                        style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
                         "Model"
                     }
                     input {
                         value: "{model}",
-                        style: "width: 100%; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgSecondary); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
+                        class: "field",
+                        style: "width: 100%; box-sizing: border-box;",
                         placeholder: "gpt-4o, gpt-4, llama3.1, ...",
                         oninput: move |e| { model.set(e.value()); is_saved.set(false); },
                     }
@@ -316,7 +338,7 @@ fn AthenaSettings() -> Element {
                 div {
                     style: "display: flex; align-items: center; gap: 12px; margin-top: 4px;",
                     button {
-                        style: "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 500;",
+                        class: "btn-primary",
                         onclick: move |_| {
                             do_save();
                             is_saved.set(true);
@@ -325,8 +347,8 @@ fn AthenaSettings() -> Element {
                     }
                     if is_saved() {
                         span {
-                            style: "font-size: 11px; color: var(--success);",
-                            "✓ Saved"
+                            style: "font-size: var(--text-xs); color: var(--success);",
+                            "Saved"
                         }
                     }
                 }
@@ -375,11 +397,11 @@ fn AgentsSettings() -> Element {
                 div {
                     style: "display: flex; align-items: center; justify-content: space-between;",
                     div {
-                        style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
                         "Custom Agents"
                     }
                     button {
-                        style: "padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 11px; transition: background 0.15s;",
+                        class: "btn-secondary btn-sm",
                         onclick: move |_| { show_form.set(true); new_alias.set(String::new()); new_command.set(String::new()); },
                         "+ Add Agent"
                     }
@@ -387,19 +409,22 @@ fn AgentsSettings() -> Element {
 
                 if show_form() {
                     div {
-                        style: "padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bgSecondary); display: flex; flex-direction: column; gap: 10px;",
+                        class: "card",
+                        style: "display: flex; flex-direction: column; gap: 10px;",
                         div {
-                            style: "font-size: 10px; color: var(--textDim); margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.05em;",
+                            style: "font-size: var(--text-2xs); color: var(--textDim); margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.05em;",
                             "New Agent"
                         }
                         input {
-                            style: "width: 100%; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
+                            class: "field",
+                            style: "width: 100%; box-sizing: border-box;",
                             value: "{new_alias}",
                             placeholder: "Alias (e.g., my-claude)",
                             oninput: move |e| new_alias.set(e.value()),
                         }
                         input {
-                            style: "width: 100%; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none; box-sizing: border-box;",
+                            class: "field",
+                            style: "width: 100%; box-sizing: border-box;",
                             value: "{new_command}",
                             placeholder: "Command (e.g., claude --project foo)",
                             oninput: move |e| new_command.set(e.value()),
@@ -407,15 +432,16 @@ fn AgentsSettings() -> Element {
                         div {
                             style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;",
                             button {
-                                style: "padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--textMuted); cursor: pointer; font-size: 11px; transition: background 0.15s;",
+                                class: "btn-ghost btn-sm",
                                 onclick: move |_| show_form.set(false),
                                 "Cancel"
                             }
                             button {
+                                class: "btn-primary btn-sm",
                                 style: if new_alias.read().trim().is_empty() || new_command.read().trim().is_empty() {
-                                    "padding: 4px 10px; border-radius: 6px; border: none; background: var(--bgTertiary); color: var(--textMuted); cursor: not-allowed; font-size: 11px; opacity: 0.65;"
+                                    "opacity: 0.5; cursor: not-allowed;"
                                 } else {
-                                    "padding: 4px 10px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 500;"
+                                    ""
                                 },
                                 onclick: move |_| {
                                     let alias = new_alias.read().trim().to_string();
@@ -450,7 +476,7 @@ fn AgentsSettings() -> Element {
             div {
                 style: "margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);",
                 div {
-                    style: "font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 8px;",
+                    style: "font-size: var(--text-sm); font-weight: 600; color: var(--text); margin-bottom: 8px;",
                     "Built-in Agents"
                 }
                 div {
@@ -464,13 +490,13 @@ fn AgentsSettings() -> Element {
                     ] {
                         div {
                             key: "{name}",
-                            style: "display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgSecondary);",
+                            style: "display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
                             span {
-                                style: "font-size: 11px; font-weight: 500; color: var(--text);",
+                                style: "font-size: var(--text-sm); font-weight: 500; color: var(--text);",
                                 "{name}"
                             }
                             span {
-                                style: "font-size: 10px; color: var(--textDim); font-family: monospace;",
+                                style: "font-size: var(--text-xs); color: var(--textDim); font-family: var(--fontFamily);",
                                 "{cmd}"
                             }
                         }
@@ -490,7 +516,7 @@ fn CustomAgentList() -> Element {
     if agents.is_empty() {
         return rsx! {
             div {
-                style: "padding: 24px; text-align: center; color: var(--textDim); font-size: 11px; border: 1px dashed var(--border); border-radius: 8px;",
+                style: "padding: 24px; text-align: center; color: var(--textDim); font-size: var(--text-xs); border: 1px dashed var(--border); border-radius: var(--radius-md);",
                 "No custom agents yet. Click + Add Agent to create one."
             }
         };
@@ -518,18 +544,18 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
     rsx! {
         div {
             key: "{id}",
-            style: "display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bgSecondary); transition: border-color 0.15s;",
+            style: "display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
             div {
                 style: "display: flex; align-items: center; justify-content: space-between; gap: 8px;",
                 div {
                     style: "display: flex; align-items: center; gap: 8px;",
                     span {
-                        style: "font-size: 12px; font-weight: 600; color: var(--text); background: var(--bgTertiary); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border);",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--accent); background: var(--accentSubtle); padding: 2px 8px; border-radius: var(--radius-sm);",
                         "{alias}"
                     }
                 }
                 button {
-                    style: "padding: 2px 8px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); font-size: 11px; cursor: pointer; transition: color 0.15s;",
+                    class: "btn-ghost btn-sm",
                     onclick: move |_| {
                         let mut ag = ui_state.read().custom_agents.clone();
                         ag.retain(|a| a.id != agent_id_for_delete);
@@ -545,7 +571,7 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
                 }
             }
             div {
-                style: "font-size: 10px; color: var(--textDim); font-family: monospace; background: var(--bg); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                style: "font-size: var(--text-xs); color: var(--textDim); font-family: var(--fontFamily); background: var(--bg); padding: 5px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                 "{cmd}"
             }
         }
@@ -563,15 +589,15 @@ fn AboutSettings() -> Element {
             style: "display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 40px 20px; color: var(--textDim); max-width: 560px;",
 
             div {
-                style: "font-size: 24px; font-weight: 700; color: var(--text); letter-spacing: -0.02em;",
+                style: "font-family: var(--font-display); font-size: 32px; font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
                 "Athena"
             }
             div {
-                style: "font-size: 11px; color: var(--textMuted); margin-top: 2px;",
+                style: "font-size: var(--text-xs); color: var(--textMuted); margin-top: 2px;",
                 "v0.1.0"
             }
             div {
-                style: "font-size: 10px; color: var(--textDim); margin-top: 6px;",
+                style: "font-size: var(--text-2xs); color: var(--textDim); margin-top: 6px;",
                 "AI-powered software orchestration and development environment"
             }
         }
@@ -594,11 +620,11 @@ fn SectionHeader(props: SectionHeaderProps) -> Element {
         div {
             style: "margin-bottom: 8px;",
             div {
-                style: "font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: -0.01em;",
+                style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
                 "{props.title}"
             }
             div {
-                style: "font-size: 11px; color: var(--textDim); margin-top: 2px;",
+                style: "font-size: var(--text-xs); color: var(--textDim); margin-top: 2px;",
                 "{props.desc}"
             }
         }

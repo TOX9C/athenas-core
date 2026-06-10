@@ -5,6 +5,7 @@ use crate::stores::notification::{
     add_notification, mark_notification_dismissed, set_notifications, use_notification_store,
     NotificationRecord, NotificationType,
 };
+use crate::components::shared::icon::{IconBell, IconClose};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 
@@ -155,15 +156,16 @@ pub fn NotificationBell() -> Element {
             style: "position: relative;",
 
             button {
-                style: "padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgSecondary); color: var(--textMuted); cursor: pointer; font-size: 11px; font-weight: 600; position: relative; transition: all 0.15s;",
+                class: "icon-btn",
+                style: "position: relative;",
                 "aria-label": "Notifications",
                 onclick: move |_| dropdown_open.set(!dropdown_open()),
 
-                "NOTIF"
+                IconBell { size: Some(16), color: Some("currentColor".to_string()) }
 
                 if unread_count > 0 {
                     span {
-                        style: "position: absolute; top: -4px; right: -4px; background: var(--accent); color: var(--bg); font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 9999px; min-width: 14px; text-align: center; line-height: 1.2; border: 1px solid var(--bgSecondary); ",
+                        style: "position: absolute; top: -4px; right: -4px; background: var(--accent); color: var(--bg); font-size: var(--text-2xs); font-weight: 700; padding: 1px 4px; border-radius: var(--radius-pill); min-width: 14px; text-align: center; line-height: 1.3; border: 1px solid var(--bgSecondary);",
                         "{unread_count}"
                     }
                 }
@@ -171,14 +173,15 @@ pub fn NotificationBell() -> Element {
 
             if dropdown_open() {
                 div {
-                    style: "position: absolute; top: 100%; right: 0; width: 300px; max-height: 400px; overflow-y: auto; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadowLg); z-index: 50; margin-top: 4px; ",
+                    style: "position: absolute; top: 100%; right: 0; width: 300px; max-height: 400px; overflow-y: auto; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); z-index: 50; margin-top: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);",
 
                     div {
-                        style: "padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600; color: var(--text); background: var(--bgTertiary); display: flex; align-items: center; justify-content: space-between;",
+                        style: "padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--text); background: var(--bgTertiary); display: flex; align-items: center; justify-content: space-between;",
                         "Notifications"
                         if unread_count > 0 {
                             span {
-                                style: "font-size: 9px; padding: 1px 5px; border-radius: 9999px; background: var(--error); color: #fff;",
+                                class: "badge",
+                                style: "background: var(--accentSubtle); color: var(--accent);",
                                 "{unread_count}"
                             }
                         }
@@ -187,7 +190,7 @@ pub fn NotificationBell() -> Element {
                     div {
                         if notifications.read().is_empty() {
                             div {
-                                style: "padding: 20px; text-align: center; color: var(--textDim); font-size: 10px; font-style: italic; ",
+                                style: "padding: 22px; text-align: center; color: var(--textDim); font-size: var(--text-xs);",
                                 "No notifications"
                             }
                         } else {
@@ -202,40 +205,41 @@ pub fn NotificationBell() -> Element {
                                         NotificationType::Error | NotificationType::TaskError => "var(--error)",
                                         NotificationType::Warning => "var(--warning)",
                                         NotificationType::Success | NotificationType::TaskComplete => "var(--success)",
-                                        _ => "var(--accent)",
+                                        _ => "var(--accentTeal)",
                                     };
                                     rsx! {
                                         div {
                                             key: "{id}",
                                             class: "notif-item",
-                                            style: "padding: 8px 10px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; align-items: flex-start; gap: 8px; transition: background 0.15s;",
+                                            style: "padding: 10px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; align-items: flex-start; gap: 8px;",
 
                                             // Type dot
                                             div {
-                                                style: "width: 7px; height: 7px; border-radius: 50%; background: {type_color}; flex-shrink: 0; margin-top: 3px;",
+                                                style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {type_color}; flex-shrink: 0; margin-top: 4px;",
                                             }
 
                                             // Text
                                             div {
                                                 style: "flex: 1; min-width: 0;",
                                                 div {
-                                                    style: "font-size: 11px; font-weight: {weight}; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                                                    style: "font-size: var(--text-sm); font-weight: {weight}; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
                                                     "{title}"
                                                 }
                                                 div {
-                                                    style: "font-size: 9px; color: var(--textDim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;",
+                                                    style: "font-size: var(--text-2xs); color: var(--textDim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;",
                                                     "{message}"
                                                 }
                                             }
 
                                             // Dismiss button
                                             button {
-                                                style: "flex-shrink: 0; padding: 2px 5px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 11px; line-height: 1;",
+                                                class: "icon-btn",
+                                                style: "flex-shrink: 0;",
                                                 "aria-label": "Dismiss notification",
                                                 onclick: move |_| {
                                                     mark_notification_dismissed(&mut notifications, &id);
                                                 },
-                                                "×"
+                                                IconClose { size: Some(13), color: Some("currentColor".to_string()) }
                                             }
                                         }
                                     }

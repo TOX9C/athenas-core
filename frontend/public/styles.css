@@ -1,47 +1,132 @@
-/* Athena's Core — Default theme (Noir) + base styles */
+/* ============================================================================
+   ATHENA'S CORE — Design System
+   "Obsidian & Gold / The Athenaeum"
+   A dark temple at night, lit by the lamp of wisdom.
 
+   Layers in this file:
+     1. @font-face          — Cormorant (display) · Hanken Grotesk (UI) · Monaspace Neon (mono)
+     2. :root tokens        — color · type scale · spacing · radius · elevation · motion · atmosphere
+     3. Base / reset        — html/body, scrollbars, selection, focus ring
+     4. Atmosphere          — lamp glow + grain overlay (driven by theme tokens)
+     5. Motion              — keyframes + reduced-motion guard
+     6. Syntax + utilities  — preserved semantic utility classes (token-driven)
+   ============================================================================ */
 
-*, *::before, *::after {
-  box-sizing: border-box;
-}
+/* ── 1. Fonts ─────────────────────────────────────────────────────────────── */
+@font-face { font-family:'Cormorant'; font-style:normal; font-weight:500; font-display:swap;
+  src:url('./fonts/Cormorant-500.woff2') format('woff2'); }
+@font-face { font-family:'Cormorant'; font-style:normal; font-weight:600; font-display:swap;
+  src:url('./fonts/Cormorant-600.woff2') format('woff2'); }
+
+@font-face { font-family:'Hanken Grotesk'; font-style:normal; font-weight:400; font-display:swap;
+  src:url('./fonts/HankenGrotesk-400.woff2') format('woff2'); }
+@font-face { font-family:'Hanken Grotesk'; font-style:normal; font-weight:500; font-display:swap;
+  src:url('./fonts/HankenGrotesk-500.woff2') format('woff2'); }
+@font-face { font-family:'Hanken Grotesk'; font-style:normal; font-weight:600; font-display:swap;
+  src:url('./fonts/HankenGrotesk-600.woff2') format('woff2'); }
+@font-face { font-family:'Hanken Grotesk'; font-style:normal; font-weight:700; font-display:swap;
+  src:url('./fonts/HankenGrotesk-700.woff2') format('woff2'); }
+
+@font-face { font-family:'Monaspace Neon'; font-style:normal; font-weight:400; font-display:swap;
+  src:url('./fonts/MonaspaceNeon-400.woff2') format('woff2'); }
+@font-face { font-family:'Monaspace Neon'; font-style:normal; font-weight:500; font-display:swap;
+  src:url('./fonts/MonaspaceNeon-500.woff2') format('woff2'); }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* ── 2. Tokens (defaults = "Nyx": obsidian + gold) ───────────────────────────
+   The theme engine (themes/mod.rs) overrides the color + atmosphere tokens at
+   runtime. These defaults render correctly before the WASM theme pass runs. */
 :root {
-  --bg: #0f0d0b;
-  --bgAtmosphere: var(--bg);
-  --themeGlowOpacity: 0;
-  --themeNoiseOpacity: 0;
-  --themeGlowColor: transparent;
-  --bgSecondary: #1a1815;
-  --bgTertiary: #242220;
-  --bgHover: #1c1916;
-  --border: #33302c;
-  --borderActive: rgba(229, 164, 67, 0.12);
-  --text: #e8e4df;
-  --textMuted: #a09890;
-  --textDim: #685e56;
-  --accent: #e5a443;
-  --accentHover: #f0b860;
-  --accentSubtle: rgba(229, 164, 67, 0.1);
-  --success: #22c55e;
-  --error: #ef4444;
-  --warning: #f59e0b;
-  --green: #98c379;
-  --blue: #61afef;
-  --orange: #e5c07b;
-  --red: #e06c75;
-  --purple: #c678dd;
-  --cyan: #56b6c2;
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  --shadowLg: 0 8px 24px rgba(0, 0, 0, 0.4);
-  --terminalBg: #0f0d0b;
-  --terminalFg: #e8e4df;
-  --terminalCursor: #e5a443;
-  --terminalSelection: rgba(229, 164, 67, 0.3);
-  --fontFamily: "JetBrains Mono", monospace;
-  --fontSize: 14px;
-  --scrollbar-width: 4px;
-  --scrollbar-height: 4px;
+  /* surfaces */
+  --bg: #0E0E11;
+  --bgSecondary: #16161A;
+  --bgTertiary: #1E1E23;
+  --bgHover: #26262C;
+  --border: #2A2A31;
+  --borderActive: #3A3A43;
+
+  /* text */
+  --text: #ECEAE3;
+  --textMuted: #9A968C;
+  --textDim: #6A675E;
+
+  /* signature accent — aged bronze-gold */
+  --accent: #C9A24B;
+  --accentHover: #E0BC6A;
+  --accentSubtle: rgba(201, 162, 75, 0.12);
+  --accentTeal: #4FA39E;          /* Aegean secondary (info / links) */
+  --goldLeaf: #E7CE8F;
+  --ring: rgba(201, 162, 75, 0.55);
+
+  /* semantic — tuned to the palette */
+  --success: #7BAE5A;   /* olive */
+  --error:   #C5654D;   /* terracotta */
+  --warning: #D2973C;   /* ochre */
+  --green:  #7BAE5A;
+  --blue:   #6FA6C9;
+  --orange: #D2973C;
+  --red:    #C5654D;
+  --purple: #A98BC9;
+  --cyan:   #4FA39E;
+
+  /* terminal */
+  --terminalBg: #0E0E11;
+  --terminalFg: #ECEAE3;
+  --terminalCursor: #C9A24B;
+  --terminalSelection: rgba(201, 162, 75, 0.22);
+
+  /* type families */
+  --font-display: 'Cormorant', 'Iowan Old Style', Georgia, serif;
+  --font-ui: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --fontFamily: 'Monaspace Neon', 'JetBrains Mono', ui-monospace, Menlo, monospace; /* mono (user-overridable) */
+  --font-mono: var(--fontFamily);
+
+  /* type scale */
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
+  --fontSize: 13px;          /* legacy alias used by some components */
+  --lh-tight: 1.25;
+  --lh: 1.5;
+
+  /* spacing scale (4-based) */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px;
+
+  /* radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* elevation — soft, warm-black */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.30);
+  --shadow-md: 0 6px 20px rgba(0,0,0,0.38);
+  --shadow-lg: 0 20px 60px rgba(0,0,0,0.50);
+  --inset-hairline: inset 0 0 0 1px var(--border);
+
+  /* motion */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-fast: 140ms;
+  --dur: 200ms;
+  --dur-slow: 320ms;
+
+  /* atmosphere (theme-driven; defaults give Nyx a faint gold lamp glow) */
+  --themeGlowColor: rgba(201, 162, 75, 0.10);
+  --themeGlowOpacity: 1;
+  --themeNoiseOpacity: 0.022;
+
+  --scrollbar-width: 6px;
+  --scrollbar-height: 6px;
 }
 
+/* ── 3. Base ─────────────────────────────────────────────────────────────── */
 html, body, #main {
   height: 100%;
   width: 100%;
@@ -50,95 +135,99 @@ html, body, #main {
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: var(--lh);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-#main {
-  position: relative;
-  isolation: isolate;
-}
-
-#main::before,
-#main::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-}
-
-#main::before {
-  background: var(--bgAtmosphere, var(--bg));
-  opacity: var(--themeGlowOpacity, 0);
-  transition: opacity 0.35s ease, background 0.35s ease;
-}
-
-#main::after {
-  background:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.18) 1px, transparent 0),
-    radial-gradient(circle at 1px 1px, var(--themeGlowColor, transparent) 1px, transparent 0);
-  background-size: 17px 17px, 31px 31px;
-  opacity: var(--themeNoiseOpacity, 0);
-  mix-blend-mode: screen;
-  transition: opacity 0.35s ease;
-}
-
-.app-root {
-  position: relative;
-  z-index: 1;
-}
-
-body, .terminal-pane, .editor-panel, .code-content, .terminal-container {
+/* monospace surfaces */
+.terminal-pane, .editor-panel, .code-content, .terminal-container, .mono {
   font-family: var(--fontFamily);
-  font-size: var(--fontSize);
 }
 
-::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+/* Root app surface carries the lamp glow (shows through transparent regions,
+   e.g. the welcome screen + panel gutters). */
+.app-root {
+  background:
+    radial-gradient(135% 90% at 50% -12%, var(--themeGlowColor) 0%, transparent 60%),
+    var(--bg) !important;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+::-webkit-scrollbar { width: var(--scrollbar-width); height: var(--scrollbar-height); }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bgTertiary); border-radius: var(--radius-pill); }
+::-webkit-scrollbar-thumb:hover { background: var(--textDim); }
+
+.terminal-body ::selection { background: inherit; color: inherit; }
+::selection { background: var(--accentSubtle); color: var(--text); }
+
+input, textarea, select { font-family: inherit; }
+button { cursor: pointer; border: none; background: none; font-family: inherit; color: inherit; }
+
+/* Token-driven focus ring (gold). Components opt out by setting outline:none + their own. */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
 }
 
-::-webkit-scrollbar-thumb {
-  background: var(--bgTertiary);
-  border-radius: 2px;
+h1, h2, h3, .display { font-family: var(--font-display); font-weight: 600; letter-spacing: 0.01em; }
+
+/* ── 4. Atmosphere — grain overlay on top of everything (pointer-safe) ─────── */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  pointer-events: none;
+  opacity: var(--themeNoiseOpacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--textDim);
+/* Greek-key (meander) hairline rule — opt-in decorative divider. */
+.meander-rule {
+  height: 6px;
+  border: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='6'%3E%3Cpath d='M0 5h4V1h4v4h4V1h4v4h4' fill='none' stroke='%23C9A24B' stroke-opacity='0.5' stroke-width='1'/%3E%3C/svg%3E");
+  background-repeat: repeat-x;
+  background-position: center;
+  opacity: 0.5;
 }
 
-/*
-  Terminal cells have their own fg/bg colors.
-  Override the global ::selection so terminal text selection
-  does not get forced to accent-on-bg colors.
-*/
-.terminal-body ::selection {
-  background: inherit;
-  color: inherit;
+/* ── 5. Motion ───────────────────────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes reveal-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes reveal-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-rise { from { opacity: 0; transform: translateY(12px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes toast-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+@keyframes lamp-glow {
+  0%, 100% { opacity: 0.55; filter: drop-shadow(0 0 2px var(--accentSubtle)); }
+  50%      { opacity: 1;    filter: drop-shadow(0 0 8px var(--accent)); }
+}
+@keyframes pulse-soft { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+.animate-rise { animation: reveal-rise var(--dur-slow) var(--ease) both; }
+.animate-fade { animation: reveal-fade var(--dur-slow) var(--ease) both; }
+.lamp-glow { animation: lamp-glow 2.4s ease-in-out infinite; }
+.pulse-soft { animation: pulse-soft 1.6s ease-in-out infinite; }
+
+/* staggered page-load reveal (applied to chrome regions) */
+.reveal-1 { animation: reveal-fade var(--dur-slow) var(--ease) both; }
+.reveal-2 { animation: reveal-rise var(--dur-slow) var(--ease) 60ms both; }
+.reveal-3 { animation: reveal-rise var(--dur-slow) var(--ease) 120ms both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
-::selection {
-  background: var(--accent);
-  color: var(--bg);
-}
-
-input, textarea, select {
-  font-family: inherit;
-}
-
-button {
-  cursor: pointer;
-  border: none;
-  background: none;
-  font-family: inherit;
-  color: inherit;
-}
-
-/* Syntax highlighting tokens */
+/* ── 6. Syntax highlighting ──────────────────────────────────────────────── */
 .token-keyword { color: var(--purple); }
 .token-string { color: var(--green); }
 .token-comment { color: var(--textDim); font-style: italic; }
@@ -148,20 +237,15 @@ button {
 .token-operator { color: var(--cyan); }
 .token-lifetime { color: var(--cyan); }
 
-/* Code line styling */
 .code-line {
   display: block;
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   white-space: pre;
   font-family: var(--fontFamily);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
-
-.code-line:hover {
-  background: rgba(255, 255, 255, 0.03);
-}
-
+.code-line:hover { background: rgba(255, 255, 255, 0.03); }
 .line-number {
   display: inline-block;
   width: 3em;
@@ -172,11 +256,9 @@ button {
   opacity: 0.5;
 }
 
-/* ============================================================
-   SEMANTIC UTILITY CLASS TOKENS
-   ============================================================ */
-
-/* Background Classes */
+/* ============================================================================
+   SEMANTIC UTILITY CLASSES (token-driven — names preserved for components)
+   ============================================================================ */
 .bg-base { background-color: var(--bg); }
 .bg-secondary { background-color: var(--bgSecondary); }
 .bg-tertiary { background-color: var(--bgTertiary); }
@@ -187,7 +269,6 @@ button {
 .bg-hover { background-color: var(--bgHover); }
 .bg-transparent { background-color: transparent; }
 
-/* Text Classes */
 .text-primary { color: var(--text); }
 .text-muted { color: var(--textMuted); }
 .text-dim { color: var(--textDim); }
@@ -198,171 +279,294 @@ button {
 .text-error { color: var(--error); }
 .text-warning { color: var(--warning); }
 
-/* Border Classes */
 .border-subtle { border: 1px solid var(--border); }
 .border-accent { border: 1px solid var(--accent); }
 .border-transparent { border: 1px solid transparent; }
 
-/* Font Classes */
-.font-ui { font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+.font-display { font-family: var(--font-display); }
+.font-ui { font-family: var(--font-ui); }
 .font-mono { font-family: var(--fontFamily); }
 
-/* Layout Classes */
-.panel-base {
-  background-color: var(--bg);
-  border: 1px solid var(--border);
-}
-.fill {
-  width: 100%;
-  height: 100%;
-}
-.flex-col {
-  display: flex;
-  flex-direction: column;
-}
-.flex-row {
-  display: flex;
-  flex-direction: row;
-}
-.flex-center {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.flex-between {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
+.panel-base { background-color: var(--bg); border: 1px solid var(--border); }
+.fill { width: 100%; height: 100%; }
+.flex-col { display: flex; flex-direction: column; }
+.flex-row { display: flex; flex-direction: row; }
+.flex-center { display: flex; align-items: center; justify-content: center; }
+.flex-between { display: flex; align-items: center; justify-content: space-between; }
 .flex-grow { flex-grow: 1; }
 .flex-shrink { flex-shrink: 0; }
-.gap-2 { gap: 2px; }
-.gap-4 { gap: 4px; }
-.gap-8 { gap: 8px; }
-.gap-12 { gap: 12px; }
-.gap-16 { gap: 16px; }
-.gap-24 { gap: 24px; }
 
-/* Component Semantic Classes */
+.gap-2 { gap: 2px; } .gap-4 { gap: 4px; } .gap-8 { gap: 8px; }
+.gap-12 { gap: 12px; } .gap-16 { gap: 16px; } .gap-24 { gap: 24px; }
+
 .pill {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  border-radius: 9999px;
-  font-size: 11px;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
   font-weight: 500;
   background-color: var(--bgTertiary);
   color: var(--textMuted);
   border: 1px solid var(--border);
 }
+
 .badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 6px;
-  border-radius: 4px;
-  font-size: 10px;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-2xs);
   font-weight: 600;
+  letter-spacing: 0.02em;
   background-color: var(--accentSubtle);
   color: var(--accent);
 }
 
-
-.btn-primary {
+/* Buttons — token-driven, with hover/active/focus motion */
+.btn-primary, .btn-ghost, .btn-secondary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 6px 14px;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  background-color: var(--accent);
-  color: var(--bg);
-  border: none;
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  font-weight: 600;
+  font-family: var(--font-ui);
   cursor: pointer;
-  font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  border: 1px solid transparent;
+  transition: background-color var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              transform var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
 }
-.btn-primary:hover {
-  background-color: var(--accentHover);
+.btn-primary { background-color: var(--accent); color: #1A150A; }
+.btn-primary:hover { background-color: var(--accentHover); }
+.btn-primary:active { transform: translateY(1px); }
+
+.btn-secondary { background-color: var(--bgTertiary); color: var(--text); border-color: var(--border); }
+.btn-secondary:hover { background-color: var(--bgHover); border-color: var(--borderActive); }
+.btn-secondary:active { transform: translateY(1px); }
+
+.btn-ghost { background-color: transparent; color: var(--text); border-color: var(--border); }
+.btn-ghost:hover { background-color: var(--bgHover); }
+.btn-ghost:active { transform: translateY(1px); }
+
+.btn-danger { background-color: transparent; color: var(--error); border-color: var(--border); }
+.btn-danger:hover { background-color: color-mix(in srgb, var(--error) 14%, transparent); border-color: var(--error); }
+.btn-danger:active { transform: translateY(1px); }
+
+.btn-sm { padding: 5px 11px; font-size: var(--text-sm); }
+
+/* Disabled buttons: not-allowed cursor, dimmed, no hover/active response. */
+.btn-primary:disabled, .btn-secondary:disabled, .btn-ghost:disabled,
+.btn-danger:disabled, .icon-btn:disabled, button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
-.btn-ghost {
+.btn-primary:disabled:hover { background: var(--accent); }
+.btn-secondary:disabled:hover { background: var(--bgTertiary); border-color: var(--border); }
+.btn-ghost:disabled:hover { background: transparent; }
+.btn-primary:disabled:active, .btn-secondary:disabled:active,
+.btn-ghost:disabled:active, .btn-danger:disabled:active { transform: none; }
+
+/* Icon-only button — the workhorse for chrome/toolbars. */
+.icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  background-color: transparent;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--textMuted);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.icon-btn:hover { background: var(--bgHover); color: var(--text); }
+.icon-btn:active { transform: translateY(1px); }
+.icon-btn.is-active { color: var(--accent); background: var(--accentSubtle); }
+
+/* Token-driven form field. */
+.field {
+  width: 100%;
+  padding: 8px 11px;
+  background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  cursor: pointer;
-  font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  border-radius: var(--radius-md);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+  outline: none;
 }
-.btn-ghost:hover {
-  background-color: var(--bgHover);
+.field::placeholder { color: var(--textDim); }
+.field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accentSubtle); }
+
+/* Card surface. */
+.card {
+  background: var(--bgSecondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.card.is-interactive { cursor: pointer; }
+.card.is-interactive:hover { border-color: var(--borderActive); background: var(--bgTertiary); }
+
+/* Sidebar / list rows. */
+.workspace-row { transition: background-color var(--dur-fast) var(--ease); }
+.workspace-row:hover { background: var(--bgHover); }
+
+/* Tooltip bubble (positioned by the Tooltip component). */
+.tip-bubble {
+  position: absolute;
+  z-index: 9500;
+  padding: 4px 9px;
+  background: var(--bgTertiary);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-family: var(--font-ui);
+  white-space: nowrap;
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  animation: reveal-fade var(--dur-fast) var(--ease) both;
 }
 
-/* Spacing Utilities */
-.p-4 { padding: 4px; }
-.p-8 { padding: 8px; }
-.p-12 { padding: 12px; }
-.p-16 { padding: 16px; }
-.p-24 { padding: 24px; }
+/* Modal scrim + container motion. */
+.modal-scrim { animation: scrim-in var(--dur) var(--ease) both; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.modal-card { animation: modal-rise var(--dur) var(--ease) both; box-shadow: var(--shadow-lg); }
+.toast-card { animation: toast-in var(--dur) var(--ease) both; box-shadow: var(--shadow-md); }
+
+/* Resize handle — hairline that warms to gold on hover/drag. */
+.resize-handle { background: var(--border); transition: background-color var(--dur-fast) var(--ease); }
+.resize-handle:hover, .resize-handle.is-dragging { background: var(--accent); }
+
+/* Pane dividers: a wide invisible grab area with a 1px visible line drawn via
+   ::before. The line is hairline at rest and warms to gold on hover/drag — it is
+   never wider than 1px, so the grab zone stays generous without a fat bar. */
+.pane-divider-col, .pane-divider-row { background: transparent; }
+.pane-divider-col::before {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  background: var(--border);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+.pane-divider-row::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 50%;
+  transform: translateY(-50%);
+  height: 1px;
+  background: var(--border);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+.pane-divider-col:hover::before, .pane-divider-col.is-dragging::before,
+.pane-divider-row:hover::before, .pane-divider-row.is-dragging::before {
+  background: var(--accent);
+}
+
+/* Pane focus ring — the clicked terminal gets a subtle gold outline. */
+.pane-focus-ring {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+/* Segmented control. */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  background: var(--bgTertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.segmented-item {
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--textMuted);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.segmented-item:hover { color: var(--text); }
+.segmented-item.is-active { background: var(--accent); color: var(--bg); }
+
+/* Context menu. */
+.context-menu {
+  position: fixed;
+  z-index: 9600;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--bgSecondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  animation: reveal-fade var(--dur-fast) var(--ease) both;
+}
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-base);
+  text-align: left;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.context-menu-item:hover { background: var(--bgHover); }
+.context-menu-item.is-danger { color: var(--error); }
+
+/* Spacing utilities */
+.p-4 { padding: 4px; } .p-8 { padding: 8px; } .p-12 { padding: 12px; }
+.p-16 { padding: 16px; } .p-24 { padding: 24px; }
 .px-8 { padding-left: 8px; padding-right: 8px; }
 .px-12 { padding-left: 12px; padding-right: 12px; }
 .px-16 { padding-left: 16px; padding-right: 16px; }
 .py-8 { padding-top: 8px; padding-bottom: 8px; }
 .py-12 { padding-top: 12px; padding-bottom: 12px; }
 .py-16 { padding-top: 16px; padding-bottom: 16px; }
-.m-4 { margin: 4px; }
-.m-8 { margin: 8px; }
+.m-4 { margin: 4px; } .m-8 { margin: 8px; }
 .mx-8 { margin-left: 8px; margin-right: 8px; }
 .mx-12 { margin-left: 12px; margin-right: 12px; }
 .my-8 { margin-top: 8px; margin-bottom: 8px; }
 .my-12 { margin-top: 12px; margin-bottom: 12px; }
 
-/* Cursor / Pointer */
 .pointer { cursor: pointer; }
-
-/* Overflow */
 .overflow-hidden { overflow: hidden; }
 .overflow-auto { overflow: auto; }
 .overflow-y-auto { overflow-y: auto; }
 .overflow-x-auto { overflow-x: auto; }
-
-/* Position */
 .relative { position: relative; }
 .absolute { position: absolute; }
 .sticky { position: sticky; }
 
-/* Rounded corners */
-.rounded-sm { border-radius: 4px; }
-.rounded-md { border-radius: 6px; }
-.rounded-lg { border-radius: 8px; }
-.rounded-full { border-radius: 9999px; }
+.rounded-sm { border-radius: var(--radius-sm); }
+.rounded-md { border-radius: var(--radius-md); }
+.rounded-lg { border-radius: var(--radius-lg); }
+.rounded-pill { border-radius: var(--radius-pill); }
 
-/* ────────────────────────────────────────────────────────────
-   XTERM.JS OVERRIDES
-   Fix hardcoded #000 viewport background, reduce layout
-   thrashing, and prevent canvas clipping during scroll.
-   ──────────────────────────────────────────────────────────── */
-/* Match xterm viewport background to the active theme so it
-   does not flash/hardcode pure black behind the canvas. */
-.xterm .xterm-viewport {
-  background-color: var(--bg) !important;
-}
-
-/* Isolate paint/layout work in the terminal mount so scroll
-   and resize do not thrash the parent flex chain. */
-.xterm-mount {
-  contain: layout paint;
-}
-
-/* Ensure the xterm canvas does not peek outside the pane
-   during fast resize or theme transitions. */
-.xterm-mount .xterm {
-  overflow: hidden;
-}
+/* ── XTERM.JS overrides ──────────────────────────────────────────────────── */
+.xterm .xterm-viewport { background-color: var(--bg) !important; }
+.xterm-mount { contain: layout paint; }
+.xterm-mount .xterm { overflow: hidden; }

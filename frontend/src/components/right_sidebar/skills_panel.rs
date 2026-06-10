@@ -2,6 +2,9 @@ use dioxus::prelude::*;
 use js_sys::Reflect;
 use wasm_bindgen::JsCast;
 
+use crate::components::shared::icon::{IconCopy, IconPlus};
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
+
 /// Minimal skills panel -- text area for pasting definitions, list of skill names.
 #[component]
 pub fn SkillsPanel() -> Element {
@@ -32,7 +35,8 @@ pub fn SkillsPanel() -> Element {
                 style: "padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 6px;",
 
                 input {
-                    style: "flex: 1; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11px; outline: none;",
+                    class: "field",
+                    style: "flex: 1;",
                     value: "{input_text}",
                     oninput: move |e| input_text.set(e.value()),
                     onkeydown: move |e: KeyboardEvent| {
@@ -49,9 +53,10 @@ pub fn SkillsPanel() -> Element {
                 }
 
                 button {
-                    style: "padding: 4px 10px; border-radius: 6px; border: none; background: var(--accent); color: var(--bg); font-size: 11px; font-weight: 500; cursor: pointer;",
+                    class: "icon-btn",
+                    title: "Add skill",
                     onclick: add_skill_name,
-                    "+"
+                    IconPlus { size: Some(14), color: Some("currentColor".to_string()) }
                 }
             }
 
@@ -60,9 +65,10 @@ pub fn SkillsPanel() -> Element {
                 style: "flex: 1; overflow-y: auto; padding: 8px 12px;",
 
                 if skills().is_empty() {
-                    div {
-                        style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--textDim); font-size: 12px;",
-                        "No skills defined yet"
+                    EmptyState {
+                        kind: EmptyArt::Generic,
+                        title: "No skills".to_string(),
+                        hint: Some("Add skills to guide Athena.".to_string()),
                     }
                 } else {
                     for (i, skill) in skills().iter().enumerate() {
@@ -79,7 +85,8 @@ pub fn SkillsPanel() -> Element {
                                 let skill_name = skill.clone();
                                 rsx! {
                                     button {
-                                        style: "padding: 2px 6px; border-radius: 4px; border: none; background: var(--bgTertiary); color: var(--textDim); cursor: pointer; font-size: 9px;",
+                                        class: "icon-btn",
+                                        title: "Copy skill name",
                                         onclick: move |_| {
                                             let window = web_sys::window().unwrap();
                                             if let Ok(nav) = Reflect::get(&window, &wasm_bindgen::JsValue::from_str("navigator")) {
@@ -92,7 +99,7 @@ pub fn SkillsPanel() -> Element {
                                                 }
                                             }
                                         },
-                                        "Copy"
+                                        IconCopy { size: Some(13), color: Some("currentColor".to_string()) }
                                     }
                                 }
                             }

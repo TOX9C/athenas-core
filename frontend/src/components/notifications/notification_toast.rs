@@ -106,7 +106,7 @@ pub fn NotificationToast() -> Element {
     rsx! {
         div {
             class: "notification-toast-container",
-            style: "position: fixed; bottom: 16px; right: 16px; z-index: 100; display: flex; flex-direction: column; gap: 10px; pointer-events: none; ",
+            style: "position: fixed; bottom: 18px; right: 18px; z-index: 100; display: flex; flex-direction: column; gap: 12px; pointer-events: none;",
 
             for toast in toasts.read().toasts.iter() {
                 ToastItem { key: "{toast.id}", toast: toast.clone() }

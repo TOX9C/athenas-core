@@ -1,4 +1,6 @@
+use crate::components::shared::icon::IconPlay;
 use crate::components::shared::modal::Modal;
+use crate::components::shared::segmented::Segmented;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -18,13 +20,14 @@ pub fn SwarmModal(props: SwarmModalProps) -> Element {
             width: 440,
 
             div {
-                style: "display: flex; flex-direction: column; gap: 12px;",
+                style: "display: flex; flex-direction: column; gap: 16px;",
 
                 label {
-                    style: "font-size: 11px; color: var(--text);",
+                    style: "display: flex; flex-direction: column; gap: 6px; font-size: var(--text-xs); color: var(--textMuted);",
                     "Goal"
                     textarea {
-                        style: "width: 100%; padding: 8px 12px; margin-top: 4px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none; resize: vertical; min-height: 80px; box-sizing: border-box;",
+                        class: "field",
+                        style: "min-height: 84px; resize: vertical;",
                         value: "{goal}",
                         oninput: move |e| goal.set(e.value()),
                         placeholder: "What should the swarm accomplish?"
@@ -32,43 +35,31 @@ pub fn SwarmModal(props: SwarmModalProps) -> Element {
                 }
 
                 label {
-                    style: "font-size: 11px; color: var(--text);",
+                    style: "display: flex; flex-direction: column; gap: 6px; font-size: var(--text-xs); color: var(--textMuted);",
                     "Team Size: {team_size()}"
-                    div {
-                        style: "display: flex; gap: 6px; margin-top: 4px;",
-
-                        for size in [2u8, 3, 4, 5] {
-                            {
-                                let is_sel = team_size() == size;
-                                let bg = if is_sel { "var(--accent)" } else { "var(--bgTertiary)" };
-                                let color = if is_sel { "#0b0e13" } else { "var(--text)" };
-                                rsx! {
-                                    button {
-                                        key: "{size}",
-                                        style: "padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border); background: {bg}; color: {color}; cursor: pointer; font-size: 11px;",
-                                        onclick: move |_| team_size.set(size),
-                                        "{size}"
-                                    }
-                                }
-                            }
-                        }
+                    Segmented {
+                        options: vec!["2".to_string(), "3".to_string(), "4".to_string(), "5".to_string()],
+                        selected: (team_size() as usize).saturating_sub(2),
+                        on_select: move |i: usize| team_size.set((i as u8) + 2),
                     }
                 }
 
                 div {
-                    style: "display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;",
+                    style: "display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;",
 
                     button {
-                        style: "padding: 6px 16px; border-radius: 6px; border: none; background: var(--bgTertiary); color: var(--text); cursor: pointer; font-size: 11px;",
+                        class: "btn-ghost",
                         onclick: move |_| props.on_close.call(()),
                         "Cancel"
                     }
                     button {
-                        style: "padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 11px; font-weight: 600;",
+                        class: "btn-primary",
+                        style: "display: inline-flex; align-items: center; gap: 6px;",
                         onclick: move |_| {
                             // TODO: launch swarm via Tauri IPC
                             props.on_close.call(());
                         },
+                        IconPlay { size: Some(14), color: Some("currentColor".to_string()) }
                         "Launch"
                     }
                 }

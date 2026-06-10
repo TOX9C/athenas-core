@@ -1,3 +1,5 @@
+use crate::components::shared::icon::IconClose;
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::editor::use_editor_store;
 use dioxus::prelude::*;
 
@@ -34,9 +36,10 @@ pub fn RightEditorPanel() -> Element {
             style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); color: var(--text); overflow: hidden;",
 
             if editor_state.read().open_files.is_empty() {
-                div {
-                    style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--textDim); font-size: 12px;",
-                    "No files open"
+                EmptyState {
+                    kind: EmptyArt::Files,
+                    title: "No files open".to_string(),
+                    hint: Some("Open a file to view and edit it here.".to_string()),
                 }
             } else {
                 // Tab bar
@@ -55,7 +58,7 @@ pub fn RightEditorPanel() -> Element {
                             },
                             "{entry.filename}"
                             button {
-                                style: "padding: 0 2px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 10px; line-height: 1; transition: color 0.15s ease;",
+                                class: "icon-btn",
                                 onclick: {
                                     let p = entry.path.clone();
                                     move |e| {
@@ -63,7 +66,7 @@ pub fn RightEditorPanel() -> Element {
                                         editor_state.write().close_file(&p);
                                     }
                                 },
-                                "×"
+                                IconClose { size: Some(12), color: Some("currentColor".to_string()) }
                             }
                         }
                     }
@@ -84,7 +87,7 @@ pub fn RightEditorPanel() -> Element {
                                     "{file.path}"
                                 }
                                 span {
-                                    style: "font-size: 9px; padding: 2px 6px; border-radius: 3px; background: var(--bgTertiary); color: var(--textDim);",
+                                    class: "badge",
                                     "{file.language}"
                                 }
                             }
@@ -98,9 +101,10 @@ pub fn RightEditorPanel() -> Element {
                             }
                         }
                     } else {
-                        div {
-                            style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--textDim); font-size: 12px;",
-                            "Select a file"
+                        EmptyState {
+                            kind: EmptyArt::Files,
+                            title: "Select a file".to_string(),
+                            hint: Some("Choose a tab to view its contents.".to_string()),
                         }
                     }
                 }

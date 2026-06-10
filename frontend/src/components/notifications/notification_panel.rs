@@ -1,6 +1,8 @@
 use crate::stores::notification::{
     mark_notification_dismissed, use_notification_store, NotificationType,
 };
+use crate::components::shared::icon::IconClose;
+use crate::components::shared::illustration::{EmptyState, EmptyArt};
 use dioxus::prelude::*;
 
 #[component]
@@ -35,35 +37,40 @@ pub fn NotificationPanel() -> Element {
 
             // Header
             div {
-                style: "padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); display: flex; align-items: center; justify-content: space-between;",
+                style: "padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); display: flex; align-items: center; gap: 8px;",
                 span {
-                    style: "font-size: 13px; font-weight: 600; color: var(--text);",
+                    style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
                     "Alerts"
                 }
                 if unread_count > 0 {
                     span {
-                        style: "font-size: 9px; padding: 1px 5px; border-radius: 9999px; background: var(--error); color: #fff;",
+                        class: "badge",
+                        style: "background: var(--accentSubtle); color: var(--accent);",
                         "{unread_count}"
                     }
                 }
             }
 
-            // Filter tabs
+            // Filter tabs — segmented
             div {
-                style: "display: flex; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--border);",
+                style: "display: flex; padding: 8px 12px; border-bottom: 1px solid var(--border);",
 
-                for tab in ["all", "unread", "alerts", "tasks"] {
-                    {
-                        let is_active = active_tab() == tab;
-                        let bg = if is_active { "var(--accent)" } else { "transparent" };
-                        let color = if is_active { "#0b0e13" } else { "var(--textDim)" };
-                        let tab_owned = tab.to_string();
-                        rsx! {
-                            button {
-                                key: "{tab}",
-                                style: "padding: 3px 8px; border-radius: 4px; border: none; background: {bg}; color: {color}; cursor: pointer; font-size: 10px; font-weight: 500; text-transform: capitalize;",
-                                onclick: move |_| active_tab.set(tab_owned.clone()),
-                                "{tab}"
+                div {
+                    class: "segmented",
+                    style: "display: inline-flex;",
+
+                    for tab in ["all", "unread", "alerts", "tasks"] {
+                        {
+                            let is_active = active_tab() == tab;
+                            let tab_owned = tab.to_string();
+                            rsx! {
+                                button {
+                                    key: "{tab}",
+                                    class: if is_active { "is-active" } else { "" },
+                                    style: "text-transform: capitalize;",
+                                    onclick: move |_| active_tab.set(tab_owned.clone()),
+                                    "{tab}"
+                                }
                             }
                         }
                     }
@@ -72,12 +79,13 @@ pub fn NotificationPanel() -> Element {
 
             // Content
             div {
-                style: "flex: 1; overflow-y: auto; padding: 8px;",
+                style: "flex: 1; overflow-y: auto;",
 
                 if filtered.is_empty() {
-                    div {
-                        style: "text-align: center; padding: 32px; color: var(--textDim); font-size: 11px;",
-                        "No notifications"
+                    EmptyState {
+                        kind: EmptyArt::Notifications,
+                        title: "All clear".to_string(),
+                        hint: Some("No notifications right now.".to_string()),
                     }
                 } else {
                     for n in filtered.iter() {
@@ -86,7 +94,7 @@ pub fn NotificationPanel() -> Element {
                                 NotificationType::Error | NotificationType::TaskError => "var(--error)",
                                 NotificationType::Warning => "var(--warning)",
                                 NotificationType::Success | NotificationType::TaskComplete => "var(--success)",
-                                _ => "var(--accent)",
+                                _ => "var(--accentTeal)",
                             };
                             let n_id = n.id.clone();
                             let n_title = n.title.clone();
@@ -97,11 +105,11 @@ pub fn NotificationPanel() -> Element {
                             rsx! {
                                 div {
                                     key: "{n_id}",
-                                    style: "padding: 8px; border-bottom: 1px solid var(--border); opacity: {opacity}; display: flex; align-items: flex-start; gap: 8px;",
+                                    style: "padding: 10px 12px; border-bottom: 1px solid var(--border); opacity: {opacity}; display: flex; align-items: flex-start; gap: 8px;",
 
                                     // Type dot
                                     div {
-                                        style: "width: 7px; height: 7px; border-radius: 50%; background: {type_color}; flex-shrink: 0; margin-top: 3px;",
+                                        style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {type_color}; flex-shrink: 0; margin-top: 4px;",
                                     }
 
                                     // Text content
@@ -110,24 +118,25 @@ pub fn NotificationPanel() -> Element {
                                         div {
                                             style: "display: flex; align-items: center; gap: 4px;",
                                             span {
-                                                style: "font-size: 11px; font-weight: {weight}; color: var(--text);",
+                                                style: "font-size: var(--text-sm); font-weight: {weight}; color: var(--text);",
                                                 "{n_title}"
                                             }
                                         }
                                         p {
-                                            style: "font-size: 9px; margin-top: 2px; color: var(--textDim);",
+                                            style: "font-size: var(--text-2xs); margin-top: 3px; color: var(--textDim);",
                                             "{n_msg}"
                                         }
                                     }
 
                                     // Dismiss button
                                     button {
-                                        style: "flex-shrink: 0; padding: 2px 5px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 11px; line-height: 1;",
+                                        class: "icon-btn",
+                                        style: "flex-shrink: 0;",
                                         onclick: move |e: Event<MouseData>| {
                                             e.stop_propagation();
                                             mark_notification_dismissed(&mut notifications, &n_id);
                                         },
-                                        "×"
+                                        IconClose { size: Some(13), color: Some("currentColor".to_string()) }
                                     }
                                 }
                             }
@@ -138,9 +147,9 @@ pub fn NotificationPanel() -> Element {
 
             // Actions
             div {
-                style: "display: flex; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--border);",
+                style: "display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border);",
                 button {
-                    style: "padding: 4px 8px; border-radius: 4px; border: none; background: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 10px;",
+                    class: "btn-ghost btn-sm",
                     onclick: move |_| {
                         for n in notifications.write().iter_mut() {
                             n.read = true;
@@ -149,7 +158,7 @@ pub fn NotificationPanel() -> Element {
                     "Mark all read"
                 }
                 button {
-                    style: "padding: 4px 8px; border-radius: 4px; border: none; background: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 10px;",
+                    class: "btn-ghost btn-sm",
                     onclick: move |_| {
                         notifications.write().clear();
                     },

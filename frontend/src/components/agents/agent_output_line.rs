@@ -44,20 +44,25 @@ pub fn AgentOutputLine(props: AgentOutputLineProps) -> Element {
     } else {
         "var(--textMuted)"
     };
+    let row_bg = if is_err {
+        "background: color-mix(in srgb, var(--error) 7%, transparent);"
+    } else {
+        ""
+    };
 
     rsx! {
         div {
-            style: "display: flex; align-items: flex-start; gap: 8px; padding: 0 8px; font-family: monospace; font-size: 11px; line-height: 1.6; color: {color};",
+            style: "display: flex; align-items: flex-start; gap: 8px; padding: 0 8px; font-family: var(--fontFamily); font-size: var(--text-xs); line-height: 1.6; color: {color}; {row_bg}",
 
             if props.show_line_numbers {
                 span {
-                    style: "flex-shrink: 0; text-align: right; width: 36px; color: var(--textDim); opacity: 0.5; user-select: none;",
+                    style: "flex-shrink: 0; text-align: right; width: 36px; color: var(--textDim); opacity: 0.5; user-select: none; font-family: var(--fontFamily);",
                     "{props.line.line_num}"
                 }
             }
 
             span {
-                style: "flex-shrink: 0; user-select: none; color: var(--textDim); opacity: 0.4;",
+                style: "flex-shrink: 0; user-select: none; color: var(--textDim); font-size: var(--text-2xs); opacity: 0.6;",
                 "{format_time(props.line.timestamp)}"
             }
 

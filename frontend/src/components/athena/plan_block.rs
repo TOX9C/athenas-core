@@ -1,3 +1,4 @@
+use crate::components::shared::icon::{IconCheck, IconChevronDown, IconChevronRight, IconClose};
 use crate::stores::athena::{PlanBlock, PlanStepStatus};
 use dioxus::prelude::*;
 
@@ -30,11 +31,11 @@ pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
         crate::stores::athena::PlanStatus::Failed => "var(--error)",
     };
 
-    let chevron_rotation = if collapsed() { 0 } else { 90 };
+    let is_collapsed = collapsed();
 
     rsx! {
         div {
-            style: "margin-top: 8px; padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bgTertiary);",
+            style: "margin-top: 8px; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bgTertiary);",
 
             // Header
             div {
@@ -42,17 +43,22 @@ pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
                 onclick: move |_| collapsed.set(!collapsed()),
 
                 span {
-                    style: "font-size: 10px; transition: transform 0.15s; transform: rotate({chevron_rotation}deg);",
-                    "\u{25b6}"
+                    style: "display: inline-flex; align-items: center; color: var(--textMuted);",
+                    if is_collapsed {
+                        IconChevronRight { size: Some(14), color: Some("currentColor".to_string()) }
+                    } else {
+                        IconChevronDown { size: Some(14), color: Some("currentColor".to_string()) }
+                    }
                 }
 
                 span {
-                    style: "font-size: 12px; font-weight: 600; color: var(--text); flex: 1;",
+                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex: 1;",
                     "Plan: {plan.goal}"
                 }
 
                 span {
-                    style: "font-size: 9px; padding: 2px 6px; border-radius: 4px; background: {status_color}22; color: {status_color};",
+                    class: "pill",
+                    style: "background: {status_color}22; color: {status_color}; border-color: {status_color}44;",
                     "{completed_count}/{total_count}"
                 }
             }
@@ -71,29 +77,38 @@ pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
                     style: "margin-top: 8px; display: flex; flex-direction: column; gap: 4px;",
                     for step in plan.steps.iter() {
                         {
-                            let (step_label, _step_color, dot_style) = match step.status {
-                                PlanStepStatus::Pending => ("", "var(--textDim)", "width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--textDim); background: transparent;"),
-                                PlanStepStatus::InProgress => ("", "var(--accent)", "width: 8px; height: 8px; border-radius: 50%; background: var(--accent);"),
-                                PlanStepStatus::Completed => ("\u{2713}", "var(--success)", "width: 8px; height: 8px; border-radius: 50%; background: var(--success);"),
-                                PlanStepStatus::Failed => ("\u{2717}", "var(--error)", "width: 8px; height: 8px; border-radius: 50%; background: var(--error);"),
-                            };
+                            let step_status = step.status.clone();
                             let show_agent_type = !step.agent_type.is_empty();
                             rsx! {
                                 div {
                                     key: "{step.id}",
-                                    style: "display: flex; align-items: center; gap: 6px; padding: 4px 0;",
+                                    style: "display: flex; align-items: center; gap: 8px; padding: 4px 0;",
 
-                                    div {
-                                        style: "{dot_style} flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 7px; font-weight: 700; color: #0b0e13;",
-                                        "{step_label}"
+                                    span {
+                                        style: "flex-shrink: 0; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center;",
+                                        match step_status {
+                                            PlanStepStatus::Completed => rsx! {
+                                                IconCheck { size: Some(13), color: Some("var(--success)".to_string()) }
+                                            },
+                                            PlanStepStatus::Failed => rsx! {
+                                                IconClose { size: Some(13), color: Some("var(--error)".to_string()) }
+                                            },
+                                            PlanStepStatus::InProgress => rsx! {
+                                                span { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent);" }
+                                            },
+                                            PlanStepStatus::Pending => rsx! {
+                                                span { style: "width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--textDim); background: transparent;" }
+                                            },
+                                        }
                                     }
                                     span {
-                                        style: "font-size: 11px; color: var(--text); flex: 1;",
+                                        style: "font-size: 12px; color: var(--text); flex: 1;",
                                         "{step.title}"
                                     }
                                     if show_agent_type {
                                         span {
-                                            style: "font-size: 8px; padding: 1px 4px; border-radius: 3px; background: var(--bgSecondary); color: var(--textDim);",
+                                            class: "badge",
+                                            style: "color: var(--textMuted);",
                                             "{step.agent_type}"
                                         }
                                     }

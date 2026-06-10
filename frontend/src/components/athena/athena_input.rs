@@ -1,3 +1,4 @@
+use crate::components::shared::icon::IconSend;
 use crate::stores::athena::{use_athena_store, AthenaMessage, AthenaState, MessageRole};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
@@ -185,35 +186,16 @@ pub fn AthenaInput() -> Element {
 
     rsx! {
         div {
-            style: "border-top: 1px solid var(--border); padding: 8px 12px; background: var(--bgSecondary); flex-shrink: 0;",
-
-            // Image attachments placeholder
-            div {
-                style: "display: flex; align-items: center; gap: 4px; margin-bottom: 4px;",
-
-                button {
-                    style: "padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 10px; font-weight: 600;",
-                    onclick: move |_| show_file_picker.set(!show_file_picker()),
-                    "IMG"
-                    " Attach"
-                }
-
-                if show_file_picker() {
-                    span {
-                        style: "font-size: 9px; color: var(--textDim);",
-                        "TODO: file picker for image attachments"
-                    }
-                }
-            }
+            style: "border-top: 1px solid var(--border); padding: 10px 14px; background: var(--bgSecondary); flex-shrink: 0;",
 
             // Input area
             div {
                 style: "display: flex; gap: 8px; align-items: flex-end;",
 
                 textarea {
-                    style: "flex: 1; min-height: 36px; max-height: 120px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; font-family: inherit; resize: vertical; outline: none;",
+                    class: "field",
+                    style: "flex: 1; min-height: 40px; max-height: 120px; resize: vertical;",
                     value: "{input_text}",
-                    oninput: move |e| input_text.set(e.value()),
                     onkeydown: move |e: KeyboardEvent| {
                         if e.key() == Key::Enter && !e.modifiers().contains(Modifiers::SHIFT) {
                             e.prevent_default();
@@ -250,12 +232,16 @@ pub fn AthenaInput() -> Element {
                 }
 
                 button {
-                    style: "padding: 8px 16px; border-radius: 8px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 12px; font-weight: 600; white-space: nowrap;",
+                    class: "btn-primary",
+                    style: "padding: 0 16px; height: 40px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;",
+                    style: if is_loading { "opacity: 0.5;" } else { "" },
+                    title: "Send (Enter)",
                     onclick: move |_| {
                         let text = input_text.read().clone();
                         submit_message(&text, &mut athena_state, &mut input_text, &mut input_history, &mut history_idx);
                     },
                     disabled: is_loading,
+                    IconSend { size: Some(16), color: Some("currentColor".to_string()) }
                     "Send"
                 }
             }

@@ -1,7 +1,7 @@
 use crate::components::plugin::agent_status_list::AgentStatusList;
 use crate::components::plugin::plugin_dashboard::PluginDashboard;
 use crate::components::shared::icon::{
-    IconAgents, IconChevronLeft, IconFiles, IconGrid, IconPlugins,
+    IconAgents, IconChevronLeft, IconFiles, IconGrid, IconPlugins, IconPlus,
 };
 use crate::components::sidebar_dir::file_explorer::FileExplorer;
 use crate::components::sidebar_dir::workspace_list::WorkspaceList;
@@ -19,18 +19,11 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     let section = ui_state.read().sidebar_section;
     let sidebar_width = ui_state.read().sidebar_width;
 
-    let (section_title, _section_label) = match section {
-        SidebarSection::Spaces => ("Spaces", "SP"),
-        SidebarSection::Files => ("Files", "FL"),
-        SidebarSection::Agents => ("Agents", "AG"),
-        SidebarSection::Plugins => ("Plugins", "PL"),
-    };
-
-    let section_accent = match section {
-        SidebarSection::Spaces => "var(--accent)",
-        SidebarSection::Files => "var(--warning)",
-        SidebarSection::Agents => "var(--success)",
-        SidebarSection::Plugins => "var(--info)",
+    let section_title = match section {
+        SidebarSection::Spaces => "Spaces",
+        SidebarSection::Files => "Files",
+        SidebarSection::Agents => "Agents",
+        SidebarSection::Plugins => "Plugins",
     };
 
     rsx! {
@@ -44,49 +37,48 @@ pub fn Sidebar(props: SidebarProps) -> Element {
             div {
                 style: "display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--border);",
 
-                div {
-                    style: "display: flex; align-items: center; gap: 6px;",
+                span {
+                    style: "display: flex; align-items: center; gap: 7px; font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; letter-spacing: 0.01em; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
 
-                    // Section icon — colored dot
-                    div {
-                        style: "width: 6px; height: 6px; border-radius: 50%; background: {section_accent};",
-                    }
+                    {match section {
+                        SidebarSection::Spaces => rsx! { IconGrid { size: Some(15), color: Some("var(--accent)".to_string()) } },
+                        SidebarSection::Files => rsx! { IconFiles { size: Some(15), color: Some("var(--accent)".to_string()) } },
+                        SidebarSection::Agents => rsx! { IconAgents { size: Some(15), color: Some("var(--accent)".to_string()) } },
+                        SidebarSection::Plugins => rsx! { IconPlugins { size: Some(15), color: Some("var(--accent)".to_string()) } },
+                    }}
 
-                    span {
-                        style: "font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--textMuted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
-                        "{section_title}"
-                    }
+                    "{section_title}"
                 }
 
                 div {
-                    style: "display: flex; align-items: center; gap: 2px;",
+                    style: "display: flex; align-items: center; gap: 4px;",
 
                     if matches!(section, SidebarSection::Spaces) {
                         button {
-                            style: "padding: 2px 6px; border-radius: 4px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; font-size: 14px; font-weight: 500;",
+                            class: "icon-btn",
                             title: "New workspace",
                             "aria-label": "New workspace",
                             onclick: move |_| {
                                 web_sys::console::log_1(&"[Sidebar] Header + clicked".into());
                                 props.on_new_space.call(());
                             },
-                            "+"
+                            IconPlus { size: Some(15), color: Some("currentColor".to_string()) }
                         }
                     }
 
                     button {
-                        style: "padding: 2px 6px; border-radius: 4px; border: none; background: transparent; color: var(--textMuted); cursor: pointer;",
+                        class: "icon-btn",
                         title: "Collapse sidebar",
                         "aria-label": "Collapse sidebar",
                         onclick: move |_| ui_state.write().sidebar_visible = false,
-                        IconChevronLeft { size: Some(14), color: Some("var(--textMuted)".to_string()) }
+                        IconChevronLeft { size: Some(14), color: Some("currentColor".to_string()) }
                     }
                 }
             }
 
             // Content area
             div {
-                style: "flex: 1; overflow-y: auto; padding: 2px 0;",
+                style: "flex: 1; overflow-y: auto; padding: 8px 0;",
 
                 match section {
                     SidebarSection::Spaces => rsx! {
@@ -107,15 +99,16 @@ pub fn Sidebar(props: SidebarProps) -> Element {
             // Bottom action bar (spaces section only)
             if matches!(section, SidebarSection::Spaces) {
                 div {
-                    style: "border-top: 1px solid var(--border); padding: 6px 8px;",
+                    style: "border-top: 1px solid var(--border); padding: 10px 12px;",
 
                     button {
-                        style: "width: 100%; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 6px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; font-size: 11px; font-weight: 500; transition: background 0.1s;",
+                        class: "btn-secondary btn-sm",
+                        style: "width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;",
                         onclick: move |_| {
                             web_sys::console::log_1(&"[Sidebar] Bottom New Workspace clicked".into());
                             props.on_new_space.call(());
                         },
-                        span { style: "font-size: 14px; font-weight: 500;", "+" }
+                        IconPlus { size: Some(14), color: Some("currentColor".to_string()) }
                         "New Workspace"
                     }
                 }
@@ -123,7 +116,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 
             // Section tab bar
             div {
-                style: "display: flex; align-items: center; justify-content: space-around; padding: 4px 4px; border-top: 1px solid var(--border); background: var(--bg); flex-shrink: 0;",
+                style: "display: flex; align-items: center; justify-content: space-around; padding: 8px 8px; border-top: 1px solid var(--border); background: var(--bg); flex-shrink: 0;",
 
                 for (sec, label) in [
                     (SidebarSection::Spaces, "SP"),
@@ -133,8 +126,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                 ] {
                     {
                         let is_active = section == sec;
-                        let bg = if is_active { "var(--bgTertiary)" } else { "transparent" };
-                        let color = if is_active { "var(--text)" } else { "var(--textDim)" };
+                        let color = if is_active { "var(--accent)" } else { "var(--textDim)" };
                         let title = match sec {
                             SidebarSection::Spaces => "Spaces",
                             SidebarSection::Files => "Files",
@@ -144,15 +136,15 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         rsx! {
                             button {
                                 key: "{label}",
-                                style: "padding: 4px 10px; border-radius: 4px; border: none; background: {bg}; color: {color}; cursor: pointer; transition: background 0.15s;",
+                                class: if is_active { "icon-btn is-active" } else { "icon-btn" },
                                 title: "{title}",
                                 "aria-label": "{title}",
                                 onclick: move |_| ui_state.write().sidebar_section = sec,
                                 {match sec {
-                                    SidebarSection::Spaces => rsx! { IconGrid { size: Some(14), color: Some(color.to_string()) } },
-                                    SidebarSection::Files => rsx! { IconFiles { size: Some(14), color: Some(color.to_string()) } },
-                                    SidebarSection::Agents => rsx! { IconAgents { size: Some(14), color: Some(color.to_string()) } },
-                                    SidebarSection::Plugins => rsx! { IconPlugins { size: Some(14), color: Some(color.to_string()) } },
+                                    SidebarSection::Spaces => rsx! { IconGrid { size: Some(15), color: Some(color.to_string()) } },
+                                    SidebarSection::Files => rsx! { IconFiles { size: Some(15), color: Some(color.to_string()) } },
+                                    SidebarSection::Agents => rsx! { IconAgents { size: Some(15), color: Some(color.to_string()) } },
+                                    SidebarSection::Plugins => rsx! { IconPlugins { size: Some(15), color: Some(color.to_string()) } },
                                 }}
                             }
                         }

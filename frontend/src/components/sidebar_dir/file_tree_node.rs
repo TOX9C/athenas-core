@@ -1,4 +1,5 @@
 use super::file_tree::FileNode;
+use crate::components::shared::icon::{IconChevronRight, IconFolder};
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -12,15 +13,12 @@ pub struct FileTreeNodeProps {
 #[component]
 pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
     let mut expanded = use_signal(|| props.node.is_expanded);
+    let mut hovered = use_signal(|| false);
     let indent = (props.depth * 16) as i32;
     let chevron_rotation: i32 = if expanded() { 90 } else { 0 };
 
     let (icon_text, icon_color) = if props.node.is_dir {
-        if expanded() {
-            (">", "var(--accent)")
-        } else {
-            ("+", "var(--textDim)")
-        }
+        ("", "var(--accent)")
     } else {
         match props.node.name.rsplit('.').next() {
             Some("rs") => ("rs", "#dea584"),
@@ -43,9 +41,11 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
             class: "file-tree-node",
 
             div {
-                style: "display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px {indent}px; cursor: pointer; border-radius: 4px; transition: background 0.1s; font-size: 11px; color: var(--textMuted);",
+                style: "display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px {indent}px; cursor: pointer; border-radius: var(--radius-sm); transition: background var(--dur-fast) var(--ease); font-size: var(--text-sm); color: var(--textMuted);",
+                background: if hovered() { "var(--bgHover)" } else { "transparent" },
 
-                onmouseover: move |_e| {},
+                onmouseenter: move |_| hovered.set(true),
+                onmouseleave: move |_| hovered.set(false),
 
                 onclick: move |_| {
                     if node_for_click.is_dir {
@@ -57,8 +57,8 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
 
                 if props.node.is_dir {
                     span {
-                        style: "font-size: 8px; width: 10px; text-align: center; transition: transform 0.15s; transform: rotate({chevron_rotation}deg);",
-                        "\u{25b6}"
+                        style: "display: inline-flex; width: 10px; transition: transform var(--dur-fast) var(--ease); transform: rotate({chevron_rotation}deg);",
+                        IconChevronRight { size: Some(11), color: Some("var(--textDim)".to_string()) }
                     }
                 } else {
                     span { style: "width: 10px;" }
@@ -66,12 +66,12 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
 
                 if props.node.is_dir {
                     span {
-                        style: "font-size: 11px; font-weight: 700; color: {icon_color}; min-width: 12px; text-align: center;",
-                        "{icon_text}"
+                        style: "display: inline-flex; align-items: center;",
+                        IconFolder { size: Some(14), color: Some("var(--accent)".to_string()) }
                     }
                 } else {
                     span {
-                        style: "font-size: 8px; font-weight: 700; color: {icon_color}; background: {icon_color}18; padding: 1px 3px; border-radius: 3px; line-height: 1;",
+                        style: "font-size: var(--text-2xs); font-weight: 700; color: {icon_color}; background: {icon_color}18; padding: 1px 3px; border-radius: var(--radius-sm); line-height: 1;",
                         "{icon_text}"
                     }
                 }

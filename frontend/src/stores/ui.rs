@@ -1,88 +1,7 @@
 use dioxus::prelude::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum UITheme {
-    #[default]
-    Onyx,
-    Sage,
-    Volcanic,
-    Tidal,
-    Obsidian,
-    Grove,
-    Midnight,
-    Ember,
-    Ivory,
-    Sand,
-    Ash,
-    Rose,
-    Cloud,
-    Lavender,
-    Mint,
-    Coral,
-    System,
-}
-
-impl UITheme {
-    pub fn is_dark(&self) -> bool {
-        !matches!(
-            self,
-            UITheme::Ivory
-                | UITheme::Sand
-                | UITheme::Ash
-                | UITheme::Rose
-                | UITheme::Cloud
-                | UITheme::Lavender
-                | UITheme::Mint
-                | UITheme::Coral
-                | UITheme::System
-        )
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            UITheme::Onyx => "onyx",
-            UITheme::Sage => "sage",
-            UITheme::Volcanic => "volcanic",
-            UITheme::Tidal => "tidal",
-            UITheme::Obsidian => "obsidian",
-            UITheme::Grove => "grove",
-            UITheme::Midnight => "midnight",
-            UITheme::Ember => "ember",
-            UITheme::Ivory => "ivory",
-            UITheme::Sand => "sand",
-            UITheme::Ash => "ash",
-            UITheme::Rose => "rose",
-            UITheme::Cloud => "cloud",
-            UITheme::Lavender => "lavender",
-            UITheme::Mint => "mint",
-            UITheme::Coral => "coral",
-            UITheme::System => "system",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Self {
-        match name {
-            "onyx" => UITheme::Onyx,
-            "sage" => UITheme::Sage,
-            "volcanic" => UITheme::Volcanic,
-            "tidal" => UITheme::Tidal,
-            "obsidian" => UITheme::Obsidian,
-            "grove" => UITheme::Grove,
-            "midnight" => UITheme::Midnight,
-            "ember" => UITheme::Ember,
-            "ivory" => UITheme::Ivory,
-            "sand" => UITheme::Sand,
-            "ash" => UITheme::Ash,
-            "rose" => UITheme::Rose,
-            "cloud" => UITheme::Cloud,
-            "lavender" => UITheme::Lavender,
-            "mint" => UITheme::Mint,
-            "coral" => UITheme::Coral,
-            "system" => UITheme::System,
-            _ => UITheme::Onyx,
-        }
-    }
-}
+// Re-export UITheme from types module (single source of truth)
+pub use crate::types::theme::UITheme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Panel {
@@ -144,7 +63,7 @@ impl Default for UIState {
             fullscreen_pane_id: None,
             right_sidebar_open: false,
             right_sidebar_tab: String::from("details"),
-            font_family: String::from("JetBrains Mono"),
+            font_family: String::from("Monaspace Neon"),
             font_size: 14,
             custom_agents: Vec::new(),
         }

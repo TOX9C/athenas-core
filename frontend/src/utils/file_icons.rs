@@ -7,38 +7,38 @@ use std::collections::HashMap;
 
 static ICON_MAP: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     let mut m = HashMap::new();
-    m.insert("ts", "🔷");
-    m.insert("tsx", "⚛️");
-    m.insert("js", "🟡");
-    m.insert("jsx", "⚛️");
-    m.insert("json", "📋");
-    m.insert("md", "📝");
-    m.insert("css", "🎨");
-    m.insert("scss", "🎨");
-    m.insert("html", "🌐");
-    m.insert("svg", "🖼️");
-    m.insert("png", "🖼️");
-    m.insert("jpg", "🖼️");
-    m.insert("jpeg", "🖼️");
-    m.insert("gif", "🖼️");
-    m.insert("webp", "🖼️");
-    m.insert("yml", "⚙️");
-    m.insert("yaml", "⚙️");
-    m.insert("toml", "⚙️");
-    m.insert("sh", "🐚");
-    m.insert("bash", "🐚");
-    m.insert("zsh", "🐚");
-    m.insert("py", "🐍");
-    m.insert("go", "🔵");
-    m.insert("rs", "🦀");
-    m.insert("rb", "💎");
-    m.insert("lock", "🔒");
-    m.insert("gitignore", "👁️");
+    m.insert("ts", "TS");
+    m.insert("tsx", "TSX");
+    m.insert("js", "JS");
+    m.insert("jsx", "JSX");
+    m.insert("json", "JSON");
+    m.insert("md", "MD");
+    m.insert("css", "CSS");
+    m.insert("scss", "SCSS");
+    m.insert("html", "HTML");
+    m.insert("svg", "SVG");
+    m.insert("png", "PNG");
+    m.insert("jpg", "JPG");
+    m.insert("jpeg", "JPG");
+    m.insert("gif", "GIF");
+    m.insert("webp", "WEBP");
+    m.insert("yml", "YML");
+    m.insert("yaml", "YML");
+    m.insert("toml", "TOML");
+    m.insert("sh", "SH");
+    m.insert("bash", "SH");
+    m.insert("zsh", "SH");
+    m.insert("py", "PY");
+    m.insert("go", "GO");
+    m.insert("rs", "RS");
+    m.insert("rb", "RB");
+    m.insert("lock", "LCK");
+    m.insert("gitignore", "GIT");
     m
 });
 
-/// Get the emoji icon for a file based on its extension.
+/// Get a short text abbreviation for a file based on its extension.
 pub fn get_file_icon(filename: &str) -> &'static str {
     let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
-    ICON_MAP.get(ext.as_str()).copied().unwrap_or("📄")
+    ICON_MAP.get(ext.as_str()).copied().unwrap_or("")
 }
