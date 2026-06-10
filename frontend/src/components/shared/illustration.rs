@@ -55,19 +55,24 @@ pub fn EmptyState(
 ) -> Element {
     rsx! {
         div {
-            class: "animate-rise",
-            style: "flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 32px; text-align: center;",
-            div { style: "opacity: 0.9;", {art_for(kind)} }
-            div { style: "display: flex; flex-direction: column; gap: 6px; align-items: center;",
-                div {
-                    style: "font-family: var(--font-display); font-size: 22px; font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
-                    "{title}"
+            // Outer container: flex centering, clips overflow; NO animation here.
+            style: "flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden;",
+            // Inner wrapper: the actual entrance animation (avoids transform on the flex-stretching element that triggers parent scrollbar flash).
+            div {
+                class: "animate-rise",
+                style: "display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 32px; text-align: center;",
+                div { style: "opacity: 0.9;", {art_for(kind)} }
+                div { style: "display: flex; flex-direction: column; gap: 6px; align-items: center;",
+                    div {
+                        style: "font-family: var(--font-display); font-size: 22px; font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
+                        "{title}"
+                    }
+                    if let Some(h) = hint {
+                        div { style: "font-size: 13px; color: var(--textMuted); max-width: 320px; line-height: 1.5;", "{h}" }
+                    }
                 }
-                if let Some(h) = hint {
-                    div { style: "font-size: 13px; color: var(--textMuted); max-width: 320px; line-height: 1.5;", "{h}" }
-                }
+                {children}
             }
-            {children}
         }
     }
 }

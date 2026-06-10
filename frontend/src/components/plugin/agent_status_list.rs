@@ -12,7 +12,7 @@ pub fn AgentStatusList() -> Element {
     rsx! {
         div {
             class: "agent-status-list",
-            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto;",
+            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto; overflow-x: hidden;",
 
             if statuses.is_empty() {
                 EmptyState {

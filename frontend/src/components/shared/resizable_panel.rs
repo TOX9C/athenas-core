@@ -16,7 +16,7 @@ pub fn ResizablePanel(props: ResizablePanelProps) -> Element {
     }
 }
 
-/// A themed drag handle (hairline that warms to gold on hover/drag). The parent
+/// A themed drag handle (1px hairline, no hover glow). The parent
 /// supplies the mousedown handler and owns the drag math + global capture overlay.
 #[derive(Props, Clone, PartialEq)]
 pub struct ResizeHandleProps {

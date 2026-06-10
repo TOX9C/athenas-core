@@ -23,7 +23,7 @@ pub fn SwarmActivityFeed(props: SwarmActivityFeedProps) -> Element {
             }
 
             div {
-                style: "flex: 1; overflow-y: auto; padding: 2px 0; display: flex; flex-direction: column;",
+                style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 2px 0; display: flex; flex-direction: column;",
 
                 if props.activities.is_empty() {
                     EmptyState {

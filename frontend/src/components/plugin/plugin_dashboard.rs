@@ -21,7 +21,7 @@ pub fn PluginDashboard() -> Element {
     rsx! {
         div {
             class: "plugin-dashboard",
-            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto;",
+            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto; overflow-x: hidden;",
 
             EmptyState {
                 kind: EmptyArt::Plugins,
