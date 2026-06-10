@@ -79,7 +79,7 @@ pub fn NotificationPanel() -> Element {
 
             // Content
             div {
-                style: "flex: 1; overflow-y: auto;",
+                style: "flex: 1; overflow-y: auto; overflow-x: hidden;",
 
                 if filtered.is_empty() {
                     EmptyState {

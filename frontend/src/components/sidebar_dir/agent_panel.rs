@@ -30,7 +30,7 @@ pub fn AgentPanel() -> Element {
                 }
             } else {
                 div {
-                    style: "flex: 1; overflow-y: auto; padding: 4px 0;",
+                    style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 0;",
 
                     for (pane_id, status) in statuses.iter() {
                         {

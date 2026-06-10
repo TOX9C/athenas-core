@@ -445,13 +445,11 @@ body::after {
 .modal-card { animation: modal-rise var(--dur) var(--ease) both; box-shadow: var(--shadow-lg); }
 .toast-card { animation: toast-in var(--dur) var(--ease) both; box-shadow: var(--shadow-md); }
 
-/* Resize handle — hairline that warms to gold on hover/drag. */
-.resize-handle { background: var(--border); transition: background-color var(--dur-fast) var(--ease); }
-.resize-handle:hover, .resize-handle.is-dragging { background: var(--accent); }
+/* Resize handle — hairline at rest with no hover effect. */
+.resize-handle { background: var(--border); }
 
 /* Pane dividers: a wide invisible grab area with a 1px visible line drawn via
-   ::before. The line is hairline at rest and warms to gold on hover/drag — it is
-   never wider than 1px, so the grab zone stays generous without a fat bar. */
+   ::before. The line is hairline at rest with no hover effect. */
 .pane-divider-col, .pane-divider-row { background: transparent; }
 .pane-divider-col::before {
   content: "";
@@ -460,7 +458,6 @@ body::after {
   transform: translateX(-50%);
   width: 1px;
   background: var(--border);
-  transition: background-color var(--dur-fast) var(--ease);
 }
 .pane-divider-row::before {
   content: "";
@@ -469,11 +466,6 @@ body::after {
   transform: translateY(-50%);
   height: 1px;
   background: var(--border);
-  transition: background-color var(--dur-fast) var(--ease);
-}
-.pane-divider-col:hover::before, .pane-divider-col.is-dragging::before,
-.pane-divider-row:hover::before, .pane-divider-row.is-dragging::before {
-  background: var(--accent);
 }
 
 /* Pane focus ring — the clicked terminal gets a subtle gold outline. */

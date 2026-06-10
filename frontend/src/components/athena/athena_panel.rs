@@ -1,12 +1,11 @@
 use super::athena_input::AthenaInput;
 use super::chat_message::AthenaChatMessage;
-use super::session_list::SessionList;
 use super::thinking::AthenaThinkingIndicator;
 use crate::stores::athena::{
     use_athena_store, AskUserOption, AthenaMessage, MessageRole, PlanStatus, PlanStepStatus,
     StepEvaluation,
 };
-use crate::components::shared::icon::{IconClose, IconMenu};
+use crate::components::shared::icon::IconClose;
 use crate::components::shared::illustration::OwlMark;
 use crate::tauri_bridge;
 use dioxus::prelude::*;
@@ -32,7 +31,6 @@ pub struct AthenaPanelProps {
 #[component]
 pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
     let mut athena_state = use_athena_store();
-    let mut show_sessions = use_signal(|| false);
     let mut mounted = use_signal(|| false);
     let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
         use_hook(|| Rc::new(RefCell::new(Vec::new())));
@@ -352,14 +350,6 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
             class: "athena-panel",
             style: wrapper_style,
 
-            // Session list sidebar (toggle)
-            if show_sessions() {
-                div {
-                    style: "width: 180px; min-width: 180px; border-right: 1px solid var(--border); background: var(--bgSecondary); display: flex; flex-direction: column;",
-                    SessionList {}
-                }
-            }
-
             // Main chat area
             div {
                 style: "flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;",
@@ -367,17 +357,6 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                 // Header
                 div {
                     style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
-
-                    button {
-                        class: "icon-btn",
-                        title: if show_sessions() { "Hide sessions" } else { "Show sessions" },
-                        onclick: move |_| show_sessions.set(!show_sessions()),
-                        if show_sessions() {
-                            IconClose { size: Some(16), color: Some("currentColor".to_string()) }
-                        } else {
-                            IconMenu { size: Some(16), color: Some("currentColor".to_string()) }
-                        }
-                    }
 
                     span {
                         style: "font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex: 1;",
@@ -395,14 +374,6 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                             style: "font-size: var(--text-2xs); color: var(--accent); letter-spacing: 0.04em; text-transform: lowercase;",
                             "streaming..."
                         }
-                    }
-
-                    button {
-                        class: "icon-btn",
-                        style: "margin-left: 4px;",
-                        title: "Close panel (Cmd+J)",
-                        onclick: move |_| athena_state.write().is_open = false,
-                        IconClose { size: Some(16), color: Some("currentColor".to_string()) }
                     }
                 }
 
