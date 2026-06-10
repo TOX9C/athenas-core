@@ -18,8 +18,9 @@ use components::right_sidebar::panel::RightSidebar;
 use components::settings::settings_modal::SettingsModal;
 use components::settings::SettingsPanel;
 use components::shared::icon::{
-    IconAgents, IconFiles, IconGrid, IconPlugins, IconSettings, IconSwarm, IconTerminal, IconZap,
+    IconAgents, IconFiles, IconGrid, IconPlugins, IconPlus, IconSettings, IconSwarm, IconTerminal,
 };
+use components::shared::illustration::OwlMark;
 use components::shared::toast::{provide_toast_store, ToastContainer};
 use components::sidebar::Sidebar;
 use components::swarm::swarm_board::SwarmBoard;
@@ -218,7 +219,7 @@ pub fn App() -> Element {
     let is_mac = platform().to_lowercase().contains("mac");
     let sidebar_open = ui_state.read().sidebar_visible;
     let active_panel = ui_state.read().panel;
-    let theme_str = ui_state.read().theme.name().to_string();
+    let theme_label = ui_state.read().theme.label().to_string();
     let right_sidebar_open = ui_state.read().right_sidebar_open;
     let main_flex_basis = if right_sidebar_open { "60%" } else { "100%" };
 
@@ -386,19 +387,12 @@ pub fn App() -> Element {
 
             // Title bar
             div {
-                class: "titlebar",
+                class: "titlebar reveal-1",
                 style: "height: 38px; -webkit-app-region: drag; display: flex; align-items: center; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
 
                 // Mac spacer for traffic lights
                 if is_mac {
-                    div { style: "width: 72px; flex-shrink: 0;" }
-                }
-
-                // Non-Mac: ATHENA brand
-                if !is_mac {
-                    div { style: "display: flex; align-items: center; gap: 4px; padding: 0 12px; flex-shrink: 0; -webkit-app-region: no-drag;",
-                        span { style: "font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: var(--accent);", "ATHENA" }
-                    }
+                    div { style: "width: 80px; flex-shrink: 0;" }
                 }
 
                 // Workspace tabs (centered, flex-1)
@@ -407,11 +401,11 @@ pub fn App() -> Element {
                 }
 
                 // Right toolbar buttons
-                div { style: "display: flex; align-items: center; gap: 4px; padding-right: 8px; flex-shrink: 0; -webkit-app-region: no-drag;",
+                div { style: "display: flex; align-items: center; gap: 4px; padding-right: 14px; flex-shrink: 0; -webkit-app-region: no-drag;",
 
                     // Panel switcher (only when a workspace is active)
                     if active_space.is_some() {
-                        div { style: "display: flex; align-items: center; gap: 2px; margin-right: 4px;",
+                        div { style: "display: flex; align-items: center; margin-right: 4px;",
                             for (panel, label) in [
                                 (Panel::Workspace, "workspace"),
                                 (Panel::Kanban, "kanban"),
@@ -419,12 +413,12 @@ pub fn App() -> Element {
                             ] {
                                 {
                                     let is_active = active_panel == panel;
-                                    let bg = if is_active { "var(--bgTertiary)" } else { "transparent" };
-                                    let color = if is_active { "var(--text)" } else { "var(--textDim)" };
+                                    let color = if is_active { "var(--accent)" } else { "var(--textDim)" };
+                                    let weight = if is_active { "600" } else { "400" };
                                     rsx! {
                                         button {
                                             key: "{label}",
-                                            style: "padding: 2px 8px; border-radius: 4px; border: none; background: {bg}; color: {color}; cursor: pointer; font-size: 10px; font-weight: 500; transition: background 0.1s;",
+                                            style: "height: 28px; padding: 0 10px; border: none; background: transparent; color: {color}; cursor: pointer; font-size: 10px; font-weight: {weight};",
                                             onclick: move |_| ui_state.write().panel = panel,
                                             "{label}"
                                         }
@@ -437,7 +431,7 @@ pub fn App() -> Element {
                     // Add Shell pane
                     if active_space.is_some() {
                         button {
-                            style: "padding: 6px; border-radius: 6px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.1s;",
+                            class: "icon-btn",
                             title: "Add Shell (Cmd+Shift+A)",
                             onclick: move |_| {
                                 let active_id = {
@@ -460,14 +454,14 @@ pub fn App() -> Element {
                                     workspace_mut.write().add_pane_to_space(&sid, pane);
                                 }
                             },
-                            "+"
+                            IconPlus { size: Some(16), color: Some("currentColor".to_string()) }
                         }
                     }
 
                     // Athena toggle
                     button {
+                        class: "icon-btn",
                         "data-athena-toggle": "",
-                        style: "padding: 6px; border-radius: 6px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.1s; pointer-events: auto;",
                         title: "Athena (Cmd+J)",
                         onclick: move |_| {
                             let sidebar_open = ui_state.read().right_sidebar_open;
@@ -479,15 +473,15 @@ pub fn App() -> Element {
                                 ui_state.write().right_sidebar_open = false;
                             }
                         },
-                        IconTerminal { size: Some(16), color: Some("var(--textMuted)".to_string()) }
+                        IconTerminal { size: Some(16), color: Some("currentColor".to_string()) }
                     }
 
                     // Swarm launch
                     button {
-                        style: "padding: 6px; border-radius: 6px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.1s;",
+                        class: "icon-btn",
                         title: "Launch Swarm",
                         onclick: move |_| { ui_state.write().show_swarm_modal = true; },
-                        IconSwarm { size: Some(16), color: Some("var(--textMuted)".to_string()) }
+                        IconSwarm { size: Some(16), color: Some("currentColor".to_string()) }
                     }
 
                     // Notification bell
@@ -495,10 +489,10 @@ pub fn App() -> Element {
 
                     // Settings
                     button {
-                        style: "padding: 6px; border-radius: 6px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.1s;",
+                        class: "icon-btn",
                         title: "Settings (Cmd+,)",
                         onclick: move |_| { ui_state.write().show_settings_modal = true; },
-                        IconSettings { size: Some(16), color: Some("var(--textMuted)".to_string()) }
+                        IconSettings { size: Some(16), color: Some("currentColor".to_string()) }
                     }
                 }
 
@@ -506,12 +500,12 @@ pub fn App() -> Element {
                 if !is_mac {
                     div { style: "display: flex; align-items: center; flex-shrink: 0; -webkit-app-region: no-drag;",
                         button {
-                            style: "height: 38px; width: 46px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--textMuted); cursor: pointer; transition: background 0.1s;",
+                            style: "height: 38px; width: 46px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--textMuted); cursor: pointer;",
                             onclick: move |_| { spawn(async move { let _ = crate::tauri_bridge::window_minimize().await; }); },
                             "\u{2013}"
                         }
                         button {
-                            style: "height: 38px; width: 46px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--textMuted); cursor: pointer; transition: background 0.1s;",
+                            style: "height: 38px; width: 46px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--textMuted); cursor: pointer;",
                             onclick: move |_| {
                                 let maximized = is_maximized();
                                 is_maximized.set(!maximized);
@@ -520,7 +514,7 @@ pub fn App() -> Element {
                             if is_maximized() { "\u{29C9}" } else { "\u{25A1}" }
                         }
                         button {
-                            style: "height: 38px; width: 46px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--textMuted); cursor: pointer; transition: background 0.1s;",
+                            style: "height: 38px; width: 46px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--textMuted); cursor: pointer;",
                             onmouseover: move |e| { let _ = e; },
                             onclick: move |_| { spawn(async move { let _ = crate::tauri_bridge::window_close().await; }); },
                             "\u{00D7}"
@@ -531,6 +525,7 @@ pub fn App() -> Element {
 
             // Main content area
             div {
+                class: "reveal-2",
                 style: "display: flex; flex-direction: row; flex: 1; overflow: hidden; min-height: 0; position: relative;",
 
                 // Left sidebar or sidebar rail
@@ -542,7 +537,7 @@ pub fn App() -> Element {
                         style: "width: 28px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 8px; border-right: 1px solid var(--border); background: var(--bgSecondary);",
 
                         button {
-                            style: "padding: 4px; border-radius: 4px; border: none; background: transparent; color: var(--textMuted); cursor: pointer;",
+                            style: "padding: 4px;  border: none; background: transparent; color: var(--textMuted); cursor: pointer;",
                             title: "Expand sidebar",
                             onclick: move |_| { ui_state.write().sidebar_visible = true; },
                             "\u{203A}"
@@ -558,7 +553,7 @@ pub fn App() -> Element {
                                 rsx! {
                                     button {
                                         key: "{label}",
-                                        style: "padding: 4px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer;",
+                                        style: "padding: 4px;  border: none; background: transparent; color: var(--textDim); cursor: pointer;",
                                         title: match sec {
                                             SidebarSection::Spaces => "Spaces",
                                             SidebarSection::Files => "Files",
@@ -595,33 +590,35 @@ pub fn App() -> Element {
 
                             // Active panel or empty state
                             if active_space.is_none() {
-                                // EmptyState — centered prompt to create a workspace
+                                // Branded welcome — the lamp glow on .app-root shows through here.
                                 div {
-                                    style: "flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; color: var(--textDim);",
+                                    class: "animate-rise",
+                                    style: "flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;",
 
                                     div {
-                                        style: "display: flex; flex-direction: column; align-items: center; gap: 8px;",
+                                        style: "display: flex; flex-direction: column; align-items: center; gap: 14px;",
 
-                                        IconZap { size: Some(48), color: Some("var(--accent)".to_string()) }
+                                        div { class: "lamp-glow", OwlMark { size: Some(64) } }
 
-                                        h2 {
-                                            style: "font-size: 18px; font-weight: 600; margin: 0; color: var(--textMuted);",
-                                            "Athena's Core"
-                                        }
-
-                                        p {
-                                            style: "font-size: 14px; margin: 0;",
-                                            "Create a workspace to get started"
+                                        div { style: "display: flex; flex-direction: column; align-items: center; gap: 6px;",
+                                            h2 {
+                                                style: "font-family: var(--font-display); font-size: 34px; font-weight: 600; margin: 0; color: var(--text); letter-spacing: 0.02em;",
+                                                "Athena\u{2019}s Core"
+                                            }
+                                            p {
+                                                style: "font-size: 14px; margin: 0; color: var(--textMuted);",
+                                                "Summon a workspace to begin the work."
+                                            }
                                         }
                                     }
 
                                     button {
-                                        style: "display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 6px; border: none; background: var(--accent); color: var(--text); cursor: pointer; font-size: 14px; font-weight: 500; transition: background 0.15s;",
+                                        class: "btn-primary",
                                         onclick: move |_| {
                                             web_sys::console::log_1(&"[EmptyState] New Workspace clicked".into());
                                             ui_state.write().show_new_space_modal = true;
                                         },
-                                        span { style: "font-size: 16px; font-weight: 500;", "+" }
+                                        IconPlus { size: Some(15), color: Some("currentColor".to_string()) }
                                         "New Workspace"
                                     }
                                 }
@@ -690,8 +687,8 @@ pub fn App() -> Element {
                         // Right sidebar (browser/assistant/editor)
                         if ui_state.read().right_sidebar_open {
                             div {
-                                class: "resize-handle-col",
-                                style: "width: 1px; flex-shrink: 0; cursor: col-resize; background: var(--border); position: relative; align-self: stretch;",
+                                class: if rsb_is_dragging() { "resize-handle-col resize-handle is-dragging" } else { "resize-handle-col resize-handle" },
+                                style: "width: 1px; flex-shrink: 0; cursor: col-resize; position: relative; align-self: stretch;",
                                 onmouseover: move |e| { let _ = e; },
                                 onmousedown: move |e: MouseEvent| {
                                     e.prevent_default();
@@ -738,15 +735,19 @@ pub fn App() -> Element {
 
             // Status bar
             div {
-                style: "flex-shrink: 0; display: flex; align-items: center; padding: 0 12px; border-top: 1px solid var(--border); height: 22px; background: var(--bgSecondary); color: var(--textDim); font-size: 11px;",
+                style: "flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-top: 1px solid var(--border); height: 24px; background: var(--bgSecondary); color: var(--textDim); font-size: var(--text-xs);",
 
-                span { "{status_workspace_name}" }
-                span { style: "margin: 0 8px;", "|" }
+                span { style: "color: var(--textMuted);", "{status_workspace_name}" }
+                span { style: "color: var(--textDim); opacity: 0.5;", "\u{00B7}" }
                 span { "{status_pane_count}" }
-                span { style: "margin: 0 8px;", "|" }
+                span { style: "color: var(--textDim); opacity: 0.5;", "\u{00B7}" }
                 span { "{status_panel_str}" }
                 div { style: "flex: 1;" }
-                span { "{theme_str}" }
+                span {
+                    style: "display: inline-flex; align-items: center; gap: 5px; color: var(--accent); font-weight: 600;",
+                    span { style: "width: 5px; height: 5px; border-radius: 50%; background: var(--accent);" }
+                    "{theme_label}"
+                }
             }
 
             CommandPalette {}

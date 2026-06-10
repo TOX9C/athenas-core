@@ -1,3 +1,5 @@
+use crate::components::shared::icon::{IconPlus, IconRefresh};
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::athena::{use_athena_store, AthenaMessage, MessageRole};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
@@ -159,18 +161,19 @@ pub fn SessionList() -> Element {
             div {
                 style: "padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;",
                 span {
-                    style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: 0.01em; color: var(--text);",
                     "Sessions"
                 }
                 button {
-                    style: "padding: 4px 8px; border-radius: 4px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-size: 12px;",
+                    class: "icon-btn",
+                    title: "New chat",
                     onclick: move |_| {
                         let new_id = uuid::Uuid::new_v4().to_string();
                         athena_state.write().clear_messages();
                         athena_state.write().set_session_id(Some(new_id));
                         athena_state.write().set_session_title("New Chat");
                     },
-                    "+"
+                    IconPlus { size: Some(16), color: Some("currentColor".to_string()) }
                 }
             }
 
@@ -178,7 +181,8 @@ pub fn SessionList() -> Element {
             div {
                 style: "padding: 6px 10px; display: flex; gap: 4px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
                 button {
-                    style: "padding: 2px 6px; border-radius: 4px; border: none; background: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 10px;",
+                    class: "icon-btn",
+                    title: "Refresh sessions",
                     onclick: move |_| {
                         loading.set(true);
                         spawn(async move {
@@ -187,7 +191,7 @@ pub fn SessionList() -> Element {
                             loading.set(false);
                         });
                     },
-                    "Refresh"
+                    IconRefresh { size: Some(15), color: Some("currentColor".to_string()) }
                 }
             }
 
@@ -201,9 +205,10 @@ pub fn SessionList() -> Element {
                         "Loading sessions..."
                     }
                 } else if session_data.is_empty() {
-                    div {
-                        style: "padding: 16px; text-align: center; color: var(--textDim); font-size: 10px;",
-                        "No sessions yet"
+                    EmptyState {
+                        kind: EmptyArt::Sessions,
+                        title: "No sessions".to_string(),
+                        hint: Some("Past conversations will appear here.".to_string()),
                     }
                 } else {
                     for session in session_data.iter() {
@@ -211,7 +216,12 @@ pub fn SessionList() -> Element {
                             let sid = session.id.clone();
                             let sid_for_click = sid.clone();
                             let is_active = current_session_id.as_deref() == Some(&sid);
-                            let bg = if is_active { "var(--bgTertiary)" } else { "transparent" };
+                            let title_color = if is_active { "var(--accent)" } else { "var(--text)" };
+                            let row_style = if is_active {
+                                "padding: 10px 12px 10px 9px; border-bottom: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--bgHover); cursor: pointer; transition: background var(--dur-fast) var(--ease);"
+                            } else {
+                                "padding: 10px 12px 10px 12px; border-bottom: 1px solid var(--border); border-left: 3px solid transparent; cursor: pointer; transition: background var(--dur-fast) var(--ease);"
+                            };
                             let title = session.title.clone();
                             let msg_count = session.message_count;
                             let updated = format_time_ago(session.updated_at);
@@ -230,7 +240,8 @@ pub fn SessionList() -> Element {
                             rsx! {
                                 div {
                                     key: "{session.id}",
-                                    style: "padding: 8px 10px; border-bottom: 1px solid var(--border); cursor: pointer; background: {bg};",
+                                    class: "session-row",
+                                    style: row_style,
                                     onclick: move |_| {
                                         let sid = sid_for_click.clone();
                                         let mut athena = athena_state_click;
@@ -239,17 +250,17 @@ pub fn SessionList() -> Element {
                                         });
                                     },
                                     div {
-                                        style: "font-size: 11px; font-weight: 500; color: var(--text);",
+                                        style: "font-size: var(--text-xs); font-weight: 500; color: {title_color};",
                                         "{title}"
                                     }
                                     div {
                                         style: "display: flex; justify-content: space-between; align-items: center; margin-top: 2px;",
                                         div {
-                                            style: "font-size: 9px; color: var(--textDim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px;",
+                                            style: "font-size: var(--text-xs); color: var(--textDim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px;",
                                             "{preview}"
                                         }
                                         div {
-                                            style: "font-size: 9px; color: var(--textDim); white-space: nowrap; margin-left: 4px;",
+                                            style: "font-size: var(--text-2xs); color: var(--textDim); white-space: nowrap; margin-left: 4px;",
                                             "{msg_count} msg - {updated}"
                                         }
                                     }

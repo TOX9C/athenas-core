@@ -1,6 +1,8 @@
 use super::agent_output_line::AgentOutputLine;
 use super::agent_selector::AgentSelector;
 use crate::stores::agent_output::{use_agent_output_store, OutputLine as StoreLine};
+use crate::components::shared::icon::{IconChevronDown, IconTrash};
+use crate::components::shared::illustration::{EmptyState, EmptyArt};
 use dioxus::prelude::*;
 
 /// Convert a store OutputLine to the component-level OutputLine.
@@ -41,7 +43,7 @@ pub fn AgentOutputPanel() -> Element {
                 style: "display: flex; flex-direction: column; height: 100%;",
 
                 div {
-                    style: "padding: 6px 8px; border-bottom: 1px solid var(--border);",
+                    style: "padding: 8px 10px; border-bottom: 1px solid var(--border);",
                     AgentSelector {
                         on_select: move |id: String| {
                             agent_output.write().select_agent(Some(id));
@@ -49,9 +51,10 @@ pub fn AgentOutputPanel() -> Element {
                     }
                 }
 
-                div {
-                    style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--textDim);",
-                    span { style: "font-size: 10px;", "Select an agent to view output" }
+                EmptyState {
+                    kind: EmptyArt::Agents,
+                    title: "No agent".to_string(),
+                    hint: Some("Select an agent to view its output.".to_string()),
                 }
             }
         };
@@ -69,7 +72,7 @@ pub fn AgentOutputPanel() -> Element {
 
             // Toolbar
             div {
-                style: "display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
+                style: "display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
 
                 div {
                     style: "flex: 1; min-width: 0;",
@@ -82,7 +85,7 @@ pub fn AgentOutputPanel() -> Element {
 
                 // Clear button
                 button {
-                    style: "padding: 4px 6px; border-radius: 4px; border: none; background: transparent; cursor: pointer; font-size: 9px; font-weight: 600; color: var(--textDim); letter-spacing: 0.04em;",
+                    class: "icon-btn",
                     title: "Clear output",
                     onclick: move |_| {
                         let pid = agent_output.read().selected_pane_id.clone();
@@ -90,16 +93,16 @@ pub fn AgentOutputPanel() -> Element {
                             agent_output.write().clear_buffer(id);
                         }
                     },
-                    "DEL"
+                    IconTrash { size: Some(15), color: Some("var(--error)".to_string()) }
                 }
 
                 // Scroll-to-bottom button (when auto-scroll is off)
                 if !auto_scroll {
                     button {
-                        style: "padding: 4px 6px; border-radius: 4px; border: none; background: transparent; cursor: pointer; font-size: 9px; font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                        class: "icon-btn is-active",
                         title: "Scroll to bottom",
                         onclick: move |_| agent_output.write().set_auto_scroll(true),
-                        "BOT"
+                        IconChevronDown { size: Some(15), color: Some("currentColor".to_string()) }
                     }
                 }
             }
@@ -109,9 +112,10 @@ pub fn AgentOutputPanel() -> Element {
                 style: "flex: 1; overflow-y: auto; overflow-x: hidden; background: var(--bg);",
 
                 if lines.is_empty() {
-                    div {
-                        style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--textDim);",
-                        span { style: "font-size: 10px;", "No output captured yet" }
+                    EmptyState {
+                        kind: EmptyArt::Generic,
+                        title: "No output".to_string(),
+                        hint: Some("Agent output will stream here.".to_string()),
                     }
                 } else {
                     for line in lines.iter() {
@@ -126,7 +130,7 @@ pub fn AgentOutputPanel() -> Element {
 
             // Footer
             div {
-                style: "display: flex; align-items: center; justify-content: space-between; padding: 2px 8px; border-top: 1px solid var(--border); background: var(--bgSecondary); font-size: 9px; color: var(--textDim); flex-shrink: 0;",
+                style: "display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; border-top: 1px solid var(--border); background: var(--bgSecondary); font-size: var(--text-2xs); color: var(--textDim); font-family: var(--fontFamily); flex-shrink: 0;",
                 span { "{line_count} lines" }
                 span { "{pane_id_display}" }
             }

@@ -1,5 +1,6 @@
 use crate::stores::agent_output::use_agent_output_store;
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatus};
+use crate::components::shared::icon::IconHelmet;
 use dioxus::prelude::*;
 
 /// Status info for an agent pane.
@@ -20,17 +21,17 @@ pub struct ProgressInfo {
     pub label: Option<String>,
 }
 
-/// Get the status label and color for a given status string.
-fn status_label(status: &str) -> (&'static str, &'static str) {
+/// Get the (short, readable) status labels and color for a given status string.
+fn status_label(status: &str) -> (&'static str, &'static str, &'static str) {
     match status {
-        "thinking" | "working" => ("RUN", "var(--accent)"),
-        "waiting_for_input" => ("WAIT", "var(--warning)"),
-        "completed" => ("OK", "var(--success)"),
-        "error" => ("ERR", "var(--error)"),
-        "cancelled" => ("CX", "var(--textDim)"),
-        "disconnected" => ("OFF", "var(--textDim)"),
-        "idle" => ("IDLE", "var(--textDim)"),
-        _ => ("???", "var(--textDim)"),
+        "thinking" | "working" => ("RUN", "Running", "var(--accent)"),
+        "waiting_for_input" => ("WAIT", "Waiting", "var(--warning)"),
+        "completed" => ("OK", "Done", "var(--success)"),
+        "error" => ("ERR", "Error", "var(--error)"),
+        "cancelled" => ("CX", "Cancelled", "var(--textDim)"),
+        "disconnected" => ("OFF", "Offline", "var(--textDim)"),
+        "idle" => ("IDLE", "Idle", "var(--textDim)"),
+        _ => ("???", "Unknown", "var(--textDim)"),
     }
 }
 
@@ -116,50 +117,48 @@ pub fn AgentStatusBar(props: AgentStatusBarProps) -> Element {
         .map(|(_, lines)| lines.len())
         .unwrap_or(0);
 
-    let (label, color) = status_label(&current_status.status);
+    let (label, word, color) = status_label(&current_status.status);
     let agent_color = get_agent_color(&current_status.agent_type);
     let is_spinning = matches!(current_status.status.as_str(), "thinking" | "working");
+    let dot_class = if is_spinning { "pulse-soft" } else { "" };
     let display_id: String = props.pane_id.chars().take(10).collect();
     let msg_preview: String = current_status.message.chars().take(40).collect();
     let ago = time_ago(current_status.last_updated_at);
-    let spin_animation = if is_spinning {
-        "animation: spin 1s linear infinite;"
-    } else {
-        ""
-    };
 
     rsx! {
         div {
-            style: "display: flex; align-items: center; gap: 6px; padding: 2px 8px; border-top: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
+            style: "display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-top: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0; overflow-x: hidden;",
 
-            // Agent type label
+            // Agent helmet glyph
             span {
-                style: "font-size: 9px; font-weight: 700; color: {agent_color}; letter-spacing: 0.04em;",
-                "AG"
+                style: "display: inline-flex; align-items: center; color: {agent_color}; flex-shrink: 0;",
+                IconHelmet { size: Some(14), color: Some("currentColor".to_string()) }
             }
 
-            // Status dot + label
+            // Status chip — dot + readable word
             span {
-                style: "display: inline-flex; align-items: center; gap: 3px;",
+                style: "display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: var(--radius-pill); background: var(--bgTertiary); flex-shrink: 0;",
                 div {
-                    style: "width: 6px; height: 6px; border-radius: 50%; background: {color}; flex-shrink: 0; {spin_animation}",
+                    class: "{dot_class}",
+                    style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {color}; flex-shrink: 0;",
                 }
                 span {
-                    style: "font-size: 8px; font-weight: 600; color: {color}; letter-spacing: 0.04em;",
-                    "{label}"
+                    style: "font-size: var(--text-2xs); font-weight: 600; color: {color}; letter-spacing: 0.02em;",
+                    title: "{label}",
+                    "{word}"
                 }
             }
 
             // Pane id
             span {
-                style: "font-size: 9px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--textMuted);",
+                style: "font-size: var(--text-2xs); font-family: var(--fontFamily); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--textMuted); flex-shrink: 0;",
                 "{display_id}"
             }
 
             // Message preview
             if !current_status.message.is_empty() {
                 span {
-                    style: "font-size: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; color: var(--textDim);",
+                    style: "font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; color: var(--textDim);",
                     "{msg_preview}"
                 }
             }
@@ -167,14 +166,14 @@ pub fn AgentStatusBar(props: AgentStatusBarProps) -> Element {
             // Line count
             if line_count > 0 {
                 span {
-                    style: "font-size: 8px; flex-shrink: 0; color: var(--textDim);",
+                    style: "font-size: var(--text-2xs); flex-shrink: 0; color: var(--textDim);",
                     "{line_count} lines"
                 }
             }
 
             // Time ago
             span {
-                style: "font-size: 8px; flex-shrink: 0; color: var(--textDim);",
+                style: "font-size: var(--text-2xs); flex-shrink: 0; color: var(--textDim);",
                 "{ago}"
             }
         }

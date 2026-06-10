@@ -5,6 +5,8 @@ use crate::stores::terminal::{use_terminal_store, TerminalCell, TerminalColor};
 use crate::stores::workspace::{use_workspace_store, AgentType, Space};
 use crate::tauri_bridge::pty_kill;
 use crate::utils::agent_commands::{get_agent_color, get_agent_label};
+use crate::components::shared::icon::{IconClose, IconFullscreen};
+use crate::components::shared::illustration::{EmptyState, EmptyArt};
 
 #[cfg(feature = "xterm")]
 use crate::components::workspace::xterm_mount::XtermMount;
@@ -82,9 +84,10 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
 
     if pane_count == 0 {
         return rsx! {
-            div {
-                style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--textDim); font-size: 14px;",
-                "No panes in this workspace."
+            EmptyState {
+                kind: EmptyArt::Workspace,
+                title: "Empty workspace".to_string(),
+                hint: Some("Add a shell or agent to begin.".to_string()),
             }
         };
     }
@@ -108,7 +111,8 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     let drag = use_signal(|| None::<DragInfo>);
     let terminal_store = use_terminal_store();
     let active_pane_id = terminal_store.read().active_session_id.clone();
-    // Note: active pane selection is stored in TerminalStore (single source of truth)
+    // Note: active pane selection is stored in TerminalStore (single source of truth).
+    // The clicked pane gets a subtle gold focus ring (see `.pane-focus-ring`).
 
     use_effect(move || {
         let target_width_shape: Vec<usize> = (0..actual_row_count)
@@ -162,14 +166,20 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                             1.0
                                         }
                                     };
-                                    let has_right_separator = rel_idx + 1 < row_panes.len();
-                                    let has_bottom_separator = row_idx + 1 < actual_row_count;
+                                    let has_right = rel_idx + 1 < row_panes.len();
+                                    let has_bottom = row_idx + 1 < actual_row_count;
                                     let is_active = active_pane_id.as_deref() == Some(pane.id.as_str());
 
-                                    let wrapper_style = format!(
-                                        "position: relative; flex: {}; min-height: 0; min-width: 0; padding: 0; display: flex; flex-direction: column;",
+                                    let mut wrapper_style = format!(
+                                        "position: relative; flex: {}; min-height: 0; min-width: 0; padding: 0; display: flex; flex-direction: column; box-sizing: border-box;",
                                         flex_weight
                                     );
+                                    if has_right {
+                                        wrapper_style.push_str(" border-right: 1px solid color-mix(in srgb, var(--border, #888) 58%, transparent);");
+                                    }
+                                    if has_bottom {
+                                        wrapper_style.push_str(" border-bottom: 1px solid color-mix(in srgb, var(--border, #888) 58%, transparent);");
+                                    }
 
                                     rsx! {
                                         div {
@@ -177,21 +187,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                             style: "{wrapper_style}",
 
                                             if is_active {
-                                                div {
-                                                    style: "position: absolute; inset: 0; pointer-events: none; z-index: 4; box-sizing: border-box; border: 2px solid var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, white 22%, var(--accent) 78%), 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent), 0 0 8px color-mix(in srgb, var(--accent) 20%, transparent);",
-                                                }
-                                            }
-
-                                            if has_right_separator {
-                                                div {
-                                                    style: "position: absolute; right: 0; top: 0; bottom: 0; width: 1px; background-color: color-mix(in srgb, var(--border, #888) 58%, transparent); pointer-events: none; z-index: 3;",
-                                                }
-                                            }
-
-                                            if has_bottom_separator {
-                                                div {
-                                                    style: "position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background-color: color-mix(in srgb, var(--border, #888) 58%, transparent); pointer-events: none; z-index: 3;",
-                                                }
+                                                div { class: "pane-focus-ring" }
                                             }
 
                                             PaneItem {
@@ -273,34 +269,37 @@ fn PaneItem(props: PaneItemProps) -> Element {
 
     rsx! {
         div {
-            style: "flex: 1; width: 100%; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); border: none; border-radius: 0; overflow: hidden; box-sizing: border-box;",
+            style: "flex: 1; width: 100%; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; box-sizing: border-box;",
             onpointerdown: move |_| {
                 terminal_store.write().set_active(props.pane_id.clone());
             },
 
+            // Pill header — distinct, refined, sits inside the pane
             div {
-                style: "padding: 10px 10px 5px 10px; margin-top: 4px; background: var(--bg); border-bottom: none; flex-shrink: 0; position: relative; z-index: 1;",
+                style: "flex-shrink: 0; padding: 6px 8px 0 8px;",
+
                 div {
-                    style: "display: flex; align-items: center; gap: 10px; width: calc(100% - 16px); margin: 0 auto; min-height: 32px; padding: 8px 14px; border-radius: 999px; background: color-mix(in srgb, var(--bgSecondary) 60%, transparent); border: none;",
+                    style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 999px; flex-shrink: 0;",
+
                     span {
-                        style: "display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 999px; padding: 2px;",
+                        style: "display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; color: var(--accent); padding: 0;",
                         dangerous_inner_html: "<svg viewBox='0 0 24 24' fill='currentColor' width='14' height='14'><circle cx='12' cy='12' r='3'/><circle cx='12' cy='3' r='3'/><circle cx='12' cy='21' r='3'/></svg>",
                     }
                     span {
-                        style: "font-size: 12px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0.01em;",
+                        style: "font-family: var(--font-ui); font-size: var(--text-xs); font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                         "{agent_label}"
                     }
                     div {
-                        style: "display: inline-flex; align-items: center; gap: 8px; margin-left: auto;",
+                        style: "display: flex; align-items: center; gap: 4px; margin-left: auto;",
                         button {
+                            class: "icon-btn",
                             title: "Fullscreen",
-                            style: "display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 999px; background: transparent; border: none; color: var(--textDim); cursor: pointer; font-size: 12px; line-height: 1; flex-shrink: 0; padding: 0;",
-                            dangerous_inner_html: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' width='12' height='12'><path d='M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3'/></svg>",
+                            IconFullscreen { size: Some(12), color: Some("currentColor".to_string()) }
                         }
 
                         button {
+                            class: "icon-btn",
                             title: "Close pane",
-                            style: "display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 999px; background: transparent; border: none; color: var(--textDim); cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; padding: 0;",
                             onclick: move |e| {
                                 e.stop_propagation();
                                 {
@@ -322,14 +321,15 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                     }
                                 });
                             },
-                            "×"
+                            IconClose { size: Some(14), color: Some("currentColor".to_string()) }
                         }
                     }
                 }
             }
 
+            // Shell body — flat, no padding, fills edge-to-edge below the pill header
             div {
-                style: "flex: 1; min-width: 0; min-height: 0; padding: 0 0 4px 4px; background: var(--bg);",
+                style: "flex: 1; min-width: 0; min-height: 0; padding: 0; background: var(--bg); overflow: hidden;",
                 if props.is_shell {
                     { render_shell_pane(props.pane_id.clone(), props.cwd.clone(), props.agent_type.clone(), props.resume_id.clone(), props.custom_cmd.clone()) }
                 } else {
@@ -347,7 +347,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
 #[component]
 fn TerminalPaneBody(pane_id: String) -> Element {
     let store = use_terminal_store();
-    let grid = {
+    let Bud = {
         let s = store.read();
         s.sessions
             .get(&pane_id)
@@ -357,13 +357,13 @@ fn TerminalPaneBody(pane_id: String) -> Element {
 
     rsx! {
         div {
-            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); border-radius: 0; overflow: hidden; padding: 0;",
+            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); overflow: hidden; padding: 0;",
             div {
                 style: "font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 11px; line-height: 1.4; color: var(--text); white-space: pre-wrap; overflow-wrap: break-word;",
-                if grid.is_empty() {
+                if Bud.is_empty() {
                     "Waiting for output..."
                 } else {
-                    for (row_idx, row) in grid.iter().enumerate() {
+                    for (row_idx, row) in Bud.iter().enumerate() {
                         div {
                             key: "row-{row_idx}",
                             style: "display: flex;",
@@ -448,13 +448,19 @@ fn ColDivider(props: ColDividerProps) -> Element {
         }));
     };
 
+    let is_dragging = matches!(
+        &*drag.read(),
+        Some(d) if d.kind == DragKind::Col && d.scope_index == Some(row_index) && d.index == index
+    );
+
     rsx! {
         div {
             style: "position: relative; width: 0; min-width: 0; flex-shrink: 0; overflow: visible; z-index: 2;",
             div {
+                class: if is_dragging { "pane-divider-col is-dragging" } else { "pane-divider-col" },
                 onmousedown: onmousedown,
                 title: "Resize panes",
-                style: "position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; background: transparent;",
+                style: "position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize;",
             }
         }
     }
@@ -502,13 +508,19 @@ fn RowDivider(props: RowDividerProps) -> Element {
         }));
     };
 
+    let is_dragging = matches!(
+        &*drag.read(),
+        Some(d) if d.kind == DragKind::Row && d.index == index
+    );
+
     rsx! {
         div {
             style: "position: relative; height: 0; min-height: 0; flex-shrink: 0; overflow: visible; z-index: 2;",
             div {
+                class: if is_dragging { "pane-divider-row is-dragging" } else { "pane-divider-row" },
                 onmousedown: onmousedown,
                 title: "Resize panes",
-                style: "position: absolute; top: -4px; left: 0; right: 0; height: 8px; cursor: row-resize; background: transparent;",
+                style: "position: absolute; top: -4px; left: 0; right: 0; height: 8px; cursor: row-resize;",
             }
         }
     }

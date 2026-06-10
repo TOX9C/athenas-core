@@ -37,13 +37,14 @@ pub fn GridTemplateSelector(props: GridTemplateSelectorProps) -> Element {
                         GridTemplate::X4x4 => (4, 4),
                     };
                     let label = format!("{}x{}", cols, rows);
-                    let border = if is_selected { "2px solid var(--accent)" } else { "1px solid var(--border)" };
-                    let bg = if is_selected { "var(--accent)" } else { "var(--bgTertiary)" };
-                    let color = if is_selected { "#fff" } else { "var(--textDim)" };
+                    let border = if is_selected { "1px solid var(--accent)" } else { "1px solid var(--border)" };
+                    let bg = if is_selected { "var(--accentSubtle)" } else { "var(--bgTertiary)" };
+                    let color = if is_selected { "var(--text)" } else { "var(--textDim)" };
+                    let cell_color = if is_selected { "var(--accent)" } else { "var(--textMuted)" };
                     rsx! {
                         button {
                             key: "{label}",
-                            style: "width: 48px; height: 48px; border-radius: 6px; border: {border}; background: {bg}; color: {color}; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 10px; font-weight: 600;",
+                            style: "width: 48px; height: 48px; border-radius: var(--radius-sm); border: {border}; background: {bg}; color: {color}; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: var(--text-2xs); font-weight: 600;",
                             onclick: move |_| props.on_select.call(tmpl_val),
 
                             // Mini grid preview
@@ -52,7 +53,7 @@ pub fn GridTemplateSelector(props: GridTemplateSelectorProps) -> Element {
                                 for _i in 0..(cols * rows) {
                                     div {
                                         key: "{_i}",
-                                        style: "background: {color}; border-radius: 1px; opacity: 0.5;",
+                                        style: "background: {cell_color}; border-radius: 1px; opacity: 0.8;",
                                     }
                                 }
                             }

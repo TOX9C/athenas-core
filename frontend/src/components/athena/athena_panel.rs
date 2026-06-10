@@ -6,6 +6,8 @@ use crate::stores::athena::{
     use_athena_store, AskUserOption, AthenaMessage, MessageRole, PlanStatus, PlanStepStatus,
     StepEvaluation,
 };
+use crate::components::shared::icon::{IconClose, IconMenu};
+use crate::components::shared::illustration::OwlMark;
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 use std::cell::RefCell;
@@ -341,7 +343,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
     };
 
     let wrapper_style = match mode {
-        AthenaPanelMode::Overlay => "position: absolute; bottom: 0; left: 0; right: 0; height: 35vh; display: flex; flex-direction: row; background: var(--bg); color: var(--text); border-top: 1px solid var(--border); z-index: 100; box-shadow: 0 -4px 16px rgba(0,0,0,0.4);",
+        AthenaPanelMode::Overlay => "position: absolute; bottom: 0; left: 0; right: 0; height: 35vh; display: flex; flex-direction: row; background: var(--bg); color: var(--text); border-top: 1px solid var(--border); z-index: 100;",
         AthenaPanelMode::Compact => "flex: 1; display: flex; flex-direction: row; min-width: 0; min-height: 0; background: var(--bg); color: var(--text); overflow: hidden;",
     };
 
@@ -367,33 +369,40 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
 
                     button {
-                        style: "padding: 4px 8px; border-radius: 4px; border: none; background: var(--bgTertiary); color: var(--textMuted); cursor: pointer; font-size: 11px;",
+                        class: "icon-btn",
+                        title: if show_sessions() { "Hide sessions" } else { "Show sessions" },
                         onclick: move |_| show_sessions.set(!show_sessions()),
-                        if show_sessions() { "\u{00d7}" } else { "\u{2630}" }
+                        if show_sessions() {
+                            IconClose { size: Some(16), color: Some("currentColor".to_string()) }
+                        } else {
+                            IconMenu { size: Some(16), color: Some("currentColor".to_string()) }
+                        }
                     }
 
                     span {
-                        style: "font-size: 13px; font-weight: 600; color: var(--text); flex: 1;",
+                        style: "font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex: 1;",
                         "Athena"
                     }
 
                     span {
-                        style: "font-size: 10px; padding: 2px 8px; border-radius: 9999px; background: var(--bgTertiary); color: var(--accent);",
+                        class: "badge",
+                        style: "color: var(--accent);",
                         "{model_label}"
                     }
 
                     if state.is_streaming {
                         span {
-                            style: "font-size: 9px; color: var(--accent);",
+                            style: "font-size: var(--text-2xs); color: var(--accent); letter-spacing: 0.04em; text-transform: lowercase;",
                             "streaming..."
                         }
                     }
 
                     button {
-                        style: "padding: 4px 8px; border-radius: 4px; border: none; background: transparent; color: var(--textMuted); cursor: pointer; font-size: 13px; margin-left: 4px;",
+                        class: "icon-btn",
+                        style: "margin-left: 4px;",
                         title: "Close panel (Cmd+J)",
                         onclick: move |_| athena_state.write().is_open = false,
-                        "\u{2715}"
+                        IconClose { size: Some(16), color: Some("currentColor".to_string()) }
                     }
                 }
 
@@ -419,12 +428,14 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                             }
                         }
                         button {
-                            style: "margin-left: 4px; padding: 0 4px; background: none; border: none; color: var(--textMuted); cursor: pointer; font-size: 10px;",
+                            class: "icon-btn",
+                            style: "margin-left: 4px;",
+                            title: "Clear context",
                             onclick: move |_| {
                                 let mut athena = athena_state.write();
                                 athena.dropped_context.clear();
                             },
-                            "\u{2715}"
+                            IconClose { size: Some(14), color: Some("currentColor".to_string()) }
                         }
                     }
                 }
@@ -437,12 +448,12 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                         div {
                             style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--textDim);",
                             div {
-                                style: "text-align: center;",
+                                style: "text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px;",
                                 span {
-                                    style: "font-size: 24px; font-weight: 700; opacity: 0.25; display: block; color: var(--accent);",
-                                    "A"
+                                    style: "opacity: 0.55; display: block;",
+                                    OwlMark { size: Some(40) }
                                 }
-                                span { style: "font-size: 12px; margin-top: 8px; display: block;", "Ask Athena anything..." }
+                                span { style: "font-family: var(--font-display); font-size: 15px;", "Ask Athena anything..." }
                             }
                         }
                     } else {

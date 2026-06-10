@@ -1,3 +1,4 @@
+use crate::components::shared::illustration::OwlMark;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -35,22 +36,20 @@ pub fn AthenaThinkingIndicator(props: ThinkingProps) -> Element {
     rsx! {
         div {
             class: "thinking-indicator",
-            style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bgSecondary); border-radius: 8px; border: 1px solid var(--border);",
+            style: "display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bgSecondary); border-radius: var(--radius-md); border: 1px solid var(--border);",
 
-            // AI indicator with pulse animation
-            div {
-                style: "width: 20px; height: 20px; border-radius: 6px; background: #38bdf822; display: flex; align-items: center; justify-content: center; animation: pulse 1.5s ease-in-out infinite;",
-                span {
-                    style: "font-size: 11px; font-weight: 700; color: #38bdf8;",
-                    "A"
-                }
+            // Brand owl with a pulsing gold lamp-glow
+            span {
+                class: "lamp-glow",
+                style: "display: inline-flex; align-items: center; justify-content: center;",
+                OwlMark { size: Some(14) }
             }
 
             div {
-                style: "display: flex; flex-direction: column; gap: 2px;",
+                style: "display: flex; flex-direction: column; gap: 3px;",
 
                 span {
-                    style: "font-size: 11px; font-weight: 500; color: var(--accent);",
+                    style: "font-size: var(--text-xs); font-weight: 500; letter-spacing: 0.02em; color: var(--textMuted);",
                     "{status_label}{dot_str}"
                 }
 

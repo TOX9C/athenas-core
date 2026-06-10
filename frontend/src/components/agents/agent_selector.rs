@@ -1,4 +1,5 @@
 use crate::stores::agent_output::use_agent_output_store;
+use crate::components::shared::icon::IconChevronDown;
 use dioxus::prelude::*;
 
 /// Get a color for an agent type.
@@ -41,8 +42,8 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
     if agents.is_empty() {
         return rsx! {
             div {
-                style: "display: flex; align-items: center; gap: 6px; padding: 2px 8px; font-size: 10px; color: var(--textDim);",
-                span { style: "width: 5px; height: 5px; border-radius: 50%; opacity: 0.3; background: var(--textDim);" }
+                style: "display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: var(--text-xs); color: var(--textDim);",
+                span { style: "width: 6px; height: 6px; border-radius: var(--radius-pill); opacity: 0.4; background: var(--textDim);" }
                 "No agents with output"
             }
         };
@@ -56,39 +57,36 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
     let selected_display: String = selected
         .as_ref()
         .map(|a| a.pane_id.chars().take(12).collect())
-        .unwrap_or_else(|| "Select agent...".to_string());
+        .unwrap_or_else(|| "Select agent…".to_string());
     let selected_color: String = selected
         .as_ref()
         .map(|a| get_agent_color(&a.agent_type).to_string())
         .unwrap_or_else(|| "var(--textDim)".to_string());
 
-    let chevron_rotation: i32 = if open() { 180 } else { 0 };
+    let _chevron_rotation: i32 = if open() { 180 } else { 0 };
 
     rsx! {
         div { style: "position: relative;",
 
             button {
-                style: "display: flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 4px; border: none; background: transparent; cursor: pointer; width: 100%;",
+                style: "display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: var(--radius-sm); border: none; background: transparent; cursor: pointer; width: 100%;",
                 onclick: move |_| open.set(!open()),
 
                 span {
-                    style: "width: 6px; height: 6px; border-radius: 50%; background: {selected_color};",
+                    style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {selected_color}; flex-shrink: 0;",
                 }
 
                 span {
-                    style: "font-size: 11px; font-weight: 500; flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);",
+                    style: "font-size: var(--text-sm); font-weight: 500; flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);",
                     "{selected_display}"
                 }
 
-                span {
-                    style: "font-size: 9px; color: var(--textDim); transition: transform 0.15s; transform: rotate({chevron_rotation}deg);",
-                    "\u{25be}"
-                }
+                IconChevronDown { size: Some(13), color: Some("var(--textDim)".to_string()) }
             }
 
             if open() {
                 div {
-                    style: "position: absolute; top: 100%; left: 0; right: 0; z-index: 50; border: 1px solid var(--border); border-radius: 6px; background: var(--bgSecondary); max-height: 240px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.3);",
+                    style: "position: absolute; top: 100%; left: 0; right: 0; z-index: 50; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); max-height: 240px; overflow-y: auto; margin-top: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);",
 
                     for agent in agents.iter() {
                         {
@@ -104,7 +102,8 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                             rsx! {
                                 button {
                                     key: "{agent.pane_id}",
-                                    style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; width: 100%; text-align: left; border: none; background: {item_bg}; cursor: pointer;",
+                                    class: "agent-selector-row",
+                                    style: "display: flex; align-items: center; gap: 8px; padding: 7px 12px; width: 100%; text-align: left; border: none; background: {item_bg}; cursor: pointer;",
                                     onclick: move |_| {
                                         props.on_select.call(pane_id_for_event.clone());
                                         agent_output.write().select_agent(Some(pane_id_for_select.clone()));
@@ -112,21 +111,22 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                                     },
 
                                     span {
-                                        style: "width: 6px; height: 6px; border-radius: 50%; background: {color};",
+                                        style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {color}; flex-shrink: 0;",
                                     }
 
                                     span {
-                                        style: "font-size: 11px; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);",
+                                        style: "font-size: var(--text-2xs); font-family: var(--fontFamily); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--textDim);",
                                         "{display_id}"
                                     }
 
                                     span {
-                                        style: "font-size: 9px; padding: 1px 4px; border-radius: 3px; background: {color_bg}; color: {color};",
+                                        class: "badge",
+                                        style: "background: {color_bg}; color: {color};",
                                         "{label}"
                                     }
 
                                     span {
-                                        style: "font-size: 8px; color: var(--textDim);",
+                                        style: "font-size: var(--text-2xs); color: var(--textDim);",
                                         "{lc} lines"
                                     }
                                 }

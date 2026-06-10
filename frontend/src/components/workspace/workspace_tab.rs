@@ -1,3 +1,4 @@
+use crate::components::shared::icon::IconClose;
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
 use crate::stores::workspace::Space;
 use dioxus::prelude::*;
@@ -14,16 +15,15 @@ pub struct WorkspaceTabProps {
 pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
     let agent_status = use_agent_status_store();
     let bg = if props.is_active {
-        "var(--bg)"
+        "var(--bgTertiary)"
     } else {
         "transparent"
     };
-    let border_bottom = if props.is_active {
-        "2px solid var(--accent)"
+    let text_color = if props.is_active {
+        "var(--text)"
     } else {
-        "2px solid transparent"
+        "var(--textDim)"
     };
-    let grid_label = format!("{:?}", props.space.grid);
 
     // Compute aggregate agent status for this space's panes.
     let mut any_error = false;
@@ -63,17 +63,17 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
     }
 
     let status_dot_color = if any_error {
-        "#e06c75"
+        "var(--error)"
     } else if any_working {
-        "#e5c07b"
+        "var(--warning)"
     } else {
-        "#98c379"
+        "var(--success)"
     };
 
     rsx! {
         div {
             class: "workspace-tab",
-            style: "display: flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 6px 6px 0 0; cursor: pointer; background: {bg}; border-bottom: {border_bottom}; transition: background 0.15s; flex-shrink: 0;",
+            style: "display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; background: {bg}; flex-shrink: 0; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);",
             onclick: move |_| props.on_select.call(()),
 
             // Status dot (green/orange/red based on aggregate agent status)
@@ -82,39 +82,38 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
             }
 
             span {
-                style: "font-size: 11px; color: var(--text); max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                style: "font-size: var(--text-xs); color: {text_color}; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                 "{props.space.name}"
             }
 
             // Agent count badges
             if idle_count > 0 {
                 span {
-                    style: "display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; border-radius: 8px; font-size: 9px; font-weight: 600; background: rgba(255,255,255,0.15); color: var(--text);",
+                    class: "badge",
+                    style: "min-width: 16px; height: 16px; padding: 0 4px; color: var(--textDim);",
                     "{idle_count}"
                 }
             }
 
             if running_count > 0 {
                 span {
-                    style: "display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; border-radius: 8px; font-size: 9px; font-weight: 600; background: rgba(224,108,117,0.25); color: #e06c75;",
+                    class: "badge",
+                    style: "min-width: 16px; height: 16px; padding: 0 4px; color: var(--warning); border-color: var(--warning);",
                     "{running_count}"
                 }
             }
 
-            // Grid label
-            span {
-                style: "font-size: 8px; padding: 1px 3px; border-radius: 3px; background: var(--bgTertiary); color: var(--textDim);",
-                "{grid_label}"
-            }
-
             // Close button
             button {
-                style: "padding: 1px 3px; border-radius: 3px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 10px; opacity: 0.5;",
+                class: "icon-btn",
+                style: "width: 20px; height: 20px;",
+                title: "Close workspace",
+                "aria-label": "Close workspace",
                 onclick: move |e| {
                     e.stop_propagation();
                     props.on_close.call(());
                 },
-                "\u{00d7}"
+                IconClose { size: Some(12), color: Some("currentColor".to_string()) }
             }
         }
     }

@@ -1,3 +1,5 @@
+use crate::components::shared::icon::IconAgents;
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
 use dioxus::prelude::*;
 
@@ -12,17 +14,19 @@ pub fn AgentPanel() -> Element {
             style: "display: flex; flex-direction: column; height: 100%;",
 
             div {
-                style: "padding: 8px; border-bottom: 1px solid var(--border);",
+                style: "padding: 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px;",
+                IconAgents { size: Some(15), color: Some("var(--accent)".to_string()) }
                 span {
-                    style: "font-size: 10px; font-weight: 600; color: var(--text);",
+                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
                     "Agents"
                 }
             }
 
             if statuses.is_empty() {
-                div {
-                    style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--textDim); font-size: 10px;",
-                    "No agents active"
+                EmptyState {
+                    kind: EmptyArt::Agents,
+                    title: "No agents".to_string(),
+                    hint: Some("Active agents will appear here.".to_string()),
                 }
             } else {
                 div {
@@ -31,14 +35,14 @@ pub fn AgentPanel() -> Element {
                     for (pane_id, status) in statuses.iter() {
                         {
                             let dot_color = match &status.status {
-                                AgentRunStatus::Thinking => "#e5c07b",
-                                AgentRunStatus::Working => "#e5c07b",
-                                AgentRunStatus::WaitingForInput => "#61afef",
-                                AgentRunStatus::Completed => "#98c379",
-                                AgentRunStatus::Error => "#e06c75",
-                                AgentRunStatus::Cancelled => "#abb2bf",
-                                AgentRunStatus::Disconnected => "#abb2bf",
-                                AgentRunStatus::Idle => "#98c379",
+                                AgentRunStatus::Thinking => "var(--warning)",
+                                AgentRunStatus::Working => "var(--warning)",
+                                AgentRunStatus::WaitingForInput => "var(--accentTeal)",
+                                AgentRunStatus::Completed => "var(--success)",
+                                AgentRunStatus::Error => "var(--error)",
+                                AgentRunStatus::Cancelled => "var(--textDim)",
+                                AgentRunStatus::Disconnected => "var(--textDim)",
+                                AgentRunStatus::Idle => "var(--success)",
                             };
                             let status_label = match &status.status {
                                 AgentRunStatus::Idle => "idle",
@@ -67,7 +71,7 @@ pub fn AgentPanel() -> Element {
                                     }
 
                                     span {
-                                        style: "color: var(--textDim); font-size: 9px; flex-shrink: 0;",
+                                        style: "color: var(--textDim); font-size: var(--text-xs); flex-shrink: 0;",
                                         "{status_label}{progress_text}"
                                     }
                                 }

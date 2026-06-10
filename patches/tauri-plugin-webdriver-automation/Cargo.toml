@@ -1,0 +1,66 @@
+[package]
+edition = "2021"
+rust-version = "1.77"
+name = "tauri-plugin-webdriver-automation"
+version = "0.1.3"
+authors = ["Generous Corp"]
+build = "build.rs"
+links = "tauri-plugin-webdriver-automation"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Tauri plugin that enables WebDriver-based e2e testing on macOS"
+homepage = "https://github.com/danielraffel/tauri-webdriver"
+readme = "README.md"
+keywords = [
+    "tauri",
+    "webdriver",
+    "testing",
+    "automation",
+    "e2e",
+]
+categories = [
+    "development-tools::testing",
+    "gui",
+]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/danielraffel/tauri-webdriver"
+
+[lib]
+name = "tauri_plugin_webdriver_automation"
+path = "src/lib.rs"
+
+[dependencies.axum]
+version = "0.8"
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1"
+
+[dependencies.tauri]
+version = "2"
+features = [
+    "wry",
+    "dynamic-acl",
+]
+default-features = false
+
+[dependencies.tokio]
+version = "1"
+features = ["full"]
+
+[dependencies.tracing]
+version = "0.1"
+
+[dependencies.uuid]
+version = "1"
+features = ["v4"]
+
+[build-dependencies.tauri-plugin]
+version = "2"
+features = ["build"]

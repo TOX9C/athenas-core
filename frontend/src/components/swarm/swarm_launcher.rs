@@ -1,3 +1,4 @@
+use crate::components::shared::icon::IconPlay;
 use dioxus::prelude::*;
 
 #[component]
@@ -7,10 +8,12 @@ pub fn SwarmLauncher() -> Element {
             style: "display: flex; align-items: center; justify-content: center; padding: 12px;",
 
             button {
-                style: "padding: 8px 16px; border-radius: 8px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 12px; font-weight: 600;",
+                class: "btn-primary",
+                style: "display: inline-flex; align-items: center; gap: 6px;",
                 onclick: move |_| {
                     // TODO: open SwarmModal
                 },
+                IconPlay { size: Some(14), color: Some("currentColor".to_string()) }
                 "Launch Swarm"
             }
         }

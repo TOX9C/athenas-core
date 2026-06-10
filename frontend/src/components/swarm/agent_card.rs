@@ -19,6 +19,12 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
         _ => "var(--textDim)",
     };
 
+    let is_active = matches!(
+        props.agent.status,
+        crate::stores::swarm::SwarmAgentStatus::Thinking
+            | crate::stores::swarm::SwarmAgentStatus::Writing
+    );
+
     let status_label = match &props.agent.status {
         crate::stores::swarm::SwarmAgentStatus::Thinking => "thinking",
         crate::stores::swarm::SwarmAgentStatus::Writing => "writing",
@@ -33,26 +39,27 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
 
     rsx! {
         div {
-            class: "agent-card",
-            style: "padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bgSecondary); display: flex; flex-direction: column; gap: 8px; transition: border-color 0.15s ease, box-shadow 0.15s ease;",
+            class: "agent-card card",
+            style: "display: flex; flex-direction: column; gap: 10px;",
 
             // Header
             div {
-                style: "display: flex; align-items: center; gap: 6px;",
+                style: "display: flex; align-items: center; gap: 8px;",
 
                 // Status dot (CSS circle, no emoji)
                 div {
+                    class: if is_active { "pulse-soft" } else { "" },
                     style: "width: 8px; height: 8px; border-radius: 50%; background: {status_color}; flex-shrink: 0;",
                 }
 
                 span {
-                    style: "font-size: 12px; font-weight: 600; color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                    style: "font-size: var(--text-2xs); font-family: var(--fontFamily); color: var(--textDim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                     "{props.agent.id}"
                 }
 
                 // Status pill
                 div {
-                    style: "font-size: 9px; font-weight: 600; padding: 1px 7px; border-radius: 10px; background: var(--bgTertiary); color: {status_color}; text-transform: capitalize; white-space: nowrap;",
+                    style: "font-size: var(--text-2xs); font-weight: 600; padding: 2px 8px; border-radius: var(--radius-pill); background: color-mix(in srgb, {status_color} 14%, transparent); color: {status_color}; text-transform: capitalize; white-space: nowrap;",
                     "{status_label}"
                 }
             }
@@ -60,7 +67,7 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
             // Status message
             if !props.agent.last_action.is_empty() {
                 div {
-                    style: "font-size: 10px; color: var(--textDim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4;",
+                    style: "font-size: var(--text-xs); color: var(--textMuted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4;",
                     "{props.agent.last_action}"
                 }
             }
@@ -74,7 +81,8 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
             // Nudge button for stalled agents
             if matches!(props.agent.status, crate::stores::swarm::SwarmAgentStatus::Stalled | crate::stores::swarm::SwarmAgentStatus::Blocked) {
                 button {
-                    style: "align-self: flex-start; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--warning); background: transparent; color: var(--warning); cursor: pointer; font-size: 9px; transition: background 0.15s ease, color 0.15s ease;",
+                    class: "btn-secondary btn-sm",
+                    style: "align-self: flex-start;",
                     onclick: move |_| {
                         // TODO: nudge agent via Tauri IPC
                     },

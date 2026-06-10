@@ -1,3 +1,4 @@
+use crate::components::shared::icon::{IconEdit, IconTrash};
 use crate::stores::task::KanbanTask;
 use dioxus::prelude::*;
 
@@ -10,62 +11,51 @@ pub struct KanbanCardProps {
 pub fn KanbanCard(props: KanbanCardProps) -> Element {
     let mut is_editing = use_signal(|| false);
 
-    let status_color = match &props.task.assigned_agent {
+    let accent_color = match &props.task.assigned_agent {
         Some(_) => "var(--accent)",
         None => "var(--textDim)",
     };
 
     rsx! {
         div {
-            class: "kanban-card",
-            style: "padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgElevated); cursor: grab; transition: border-color 0.15s ease, box-shadow 0.15s ease;",
-            onmouseenter: move |_| {},
-            onmouseleave: move |_| {},
+            class: "kanban-card card is-interactive",
+            style: "border-left: 3px solid {accent_color}; cursor: grab;",
 
             div {
                 style: "display: flex; align-items: center; gap: 6px;",
 
-                div {
-                    style: "width: 6px; height: 6px; border-radius: 50%; background: {status_color}; flex-shrink: 0;",
-                }
-
                 span {
-                    style: "font-size: 11px; font-weight: 500; color: var(--text); flex: 1;",
+                    style: "font-size: var(--text-xs); font-weight: 500; color: var(--text); flex: 1;",
                     "{props.task.title}"
                 }
 
                 // Actions
                 button {
-                    style: "padding: 2px 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 10px; border-radius: 3px; transition: background 0.15s ease, color 0.15s ease;",
+                    class: "icon-btn",
+                    title: "Edit",
                     onmouseenter: move |_| {},
                     onmouseleave: move |_| {},
                     onclick: move |_| is_editing.set(!is_editing()),
-                    "Edit"
+                    IconEdit { size: Some(14), color: Some("currentColor".to_string()) }
                 }
                 button {
-                    style: "padding: 2px 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 10px; border-radius: 3px; transition: background 0.15s ease, color 0.15s ease;",
+                    class: "icon-btn",
+                    title: "Delete",
                     onmouseenter: move |_| {},
                     onmouseleave: move |_| {},
                     onclick: move |_| {
                         // TODO: delete task via store
                     },
-                    "Delete"
+                    IconTrash { size: Some(14), color: Some("var(--error)".to_string()) }
                 }
             }
 
             if let Some(ref desc) = props.task.description {
                 if !desc.is_empty() {
                     div {
-                        style: "font-size: 10px; color: var(--textDim); margin-top: 4px; line-height: 1.4;",
+                        style: "font-size: var(--text-xs); color: var(--textMuted); margin-top: 6px; line-height: 1.4;",
                         "{desc}"
                     }
-                }
-            }
-
-            if is_editing() {
-                div {
-                    style: "margin-top: 6px; font-size: 9px; color: var(--accent);",
-                    "TODO: edit modal"
                 }
             }
         }

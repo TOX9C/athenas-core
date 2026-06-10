@@ -1,3 +1,4 @@
+use crate::components::shared::icon::{IconCheck, IconSend};
 use crate::stores::athena::AskUserBlock;
 use dioxus::prelude::*;
 
@@ -13,22 +14,23 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
 
     rsx! {
         div {
-            style: "margin-top: 8px; padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bgTertiary);",
+            style: "margin-top: 8px; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bgTertiary);",
 
             // Question
             div {
-                style: "font-size: 12px; color: var(--text); margin-bottom: 8px;",
-                "\u{2753} {ask.question}"
+                style: "font-size: 13px; color: var(--text); margin-bottom: 10px; line-height: 1.5;",
+                "{ask.question}"
             }
 
             // Options
             if !ask.options.is_empty() {
                 div {
-                    style: "display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;",
+                    style: "display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px;",
                     for option in ask.options.iter() {
                         button {
                             key: "{option.label}",
-                            style: "padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgSecondary); color: var(--text); cursor: pointer; font-size: 11px; text-align: left;",
+                            class: "btn-secondary btn-sm",
+                            style: "text-align: left; justify-content: flex-start;",
                             onclick: move |_| {
                                 // TODO: respond via Tauri IPC
                             },
@@ -42,24 +44,28 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
             div {
                 style: "display: flex; gap: 6px;",
                 input {
-                    style: "flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11px; outline: none;",
+                    class: "field",
+                    style: "flex: 1;",
                     value: "{custom_text}",
                     oninput: move |e| custom_text.set(e.value()),
                     placeholder: "Type your response..."
                 }
                 button {
-                    style: "padding: 6px 12px; border-radius: 6px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 11px; font-weight: 600;",
+                    class: "btn-primary btn-sm",
+                    style: "display: inline-flex; align-items: center; gap: 6px;",
                     onclick: move |_| {
                         // TODO: respond via Tauri IPC
                     },
+                    IconSend { size: Some(14), color: Some("currentColor".to_string()) }
                     "Send"
                 }
             }
 
             if ask.answered {
                 div {
-                    style: "margin-top: 6px; font-size: 10px; color: var(--success);",
-                    "\u{2713} Answered: {ask.selected_answer.as_deref().unwrap_or(\"-\")}"
+                    style: "margin-top: 8px; display: flex; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--success);",
+                    IconCheck { size: Some(14), color: Some("var(--success)".to_string()) }
+                    span { "Answered: {ask.selected_answer.as_deref().unwrap_or(\"-\")}" }
                 }
             }
         }

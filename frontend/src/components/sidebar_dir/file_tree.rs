@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::file_tree_node::FileTreeNode;
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::editor::{use_editor_store, EditorFile};
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
@@ -190,18 +191,18 @@ pub fn FileTree() -> Element {
             if let Some(dir) = active_dir_display {
                 if loading() {
                     div {
-                        style: "padding: 8px 16px; color: var(--textDim); font-size: 10px;",
+                        style: "padding: 8px 16px; color: var(--textDim); font-size: var(--text-sm);",
                         div {
-                            style: "font-size: 9px; margin-bottom: 4px; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                            style: "font-size: var(--text-2xs); margin-bottom: 4px; color: var(--textMuted); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                             "{dir}"
                         }
-                        "Loading file tree..."
+                        "Loading file tree…"
                     }
                 } else if nodes().is_empty() {
                     div {
-                        style: "padding: 8px 16px; color: var(--textDim); font-size: 10px;",
+                        style: "padding: 8px 16px; color: var(--textDim); font-size: var(--text-sm);",
                         div {
-                            style: "font-size: 9px; margin-bottom: 4px; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                            style: "font-size: var(--text-2xs); margin-bottom: 4px; color: var(--textMuted); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                             "{dir}"
                         }
                         "Empty directory"
@@ -217,9 +218,10 @@ pub fn FileTree() -> Element {
                     }
                 }
             } else {
-                div {
-                    style: "padding: 16px; text-align: center; color: var(--textDim); font-size: 10px;",
-                    "Open a workspace to browse files"
+                EmptyState {
+                    kind: EmptyArt::Files,
+                    title: "No workspace".to_string(),
+                    hint: Some("Open a workspace to browse files.".to_string()),
                 }
             }
         }

@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use wasm_bindgen::prelude::*;
 
+use crate::components::shared::icon::{IconArrowLeft, IconArrowRight, IconGlobe, IconRefresh};
 use crate::tauri_bridge;
 
 const BROWSER_ID: &str = "sidebar-browser";
@@ -37,8 +38,6 @@ pub fn RightBrowserPanel() -> Element {
         (":5174", "http://localhost:5174"),
     ];
 
-    let nav_btn = "padding: 4px 8px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 12px; transition: color 0.15s ease; display: flex; align-items: center; justify-content: center; min-width: 32px;";
-
     rsx! {
         div {
             style: "display: flex; flex-direction: column; height: 100%; min-height: 0;",
@@ -49,7 +48,7 @@ pub fn RightBrowserPanel() -> Element {
 
                 // Back
                 button {
-                    style: nav_btn,
+                    class: "icon-btn",
                     title: "Back",
                     onclick: move |_| {
                         let mut url_clone = url.clone();
@@ -62,12 +61,12 @@ pub fn RightBrowserPanel() -> Element {
                             }
                         });
                     },
-                    span { style: "font-size: 16px;", "\u{2190}" }
+                    IconArrowLeft { size: Some(16), color: Some("currentColor".to_string()) }
                 }
 
                 // Forward
                 button {
-                    style: nav_btn,
+                    class: "icon-btn",
                     title: "Forward",
                     onclick: move |_| {
                         let mut url_clone = url.clone();
@@ -80,24 +79,25 @@ pub fn RightBrowserPanel() -> Element {
                             }
                         });
                     },
-                    span { style: "font-size: 16px;", "\u{2192}" }
+                    IconArrowRight { size: Some(16), color: Some("currentColor".to_string()) }
                 }
 
                 // Reload
                 button {
-                    style: nav_btn,
+                    class: "icon-btn",
                     title: "Reload",
                     onclick: move |_| {
                         wasm_bindgen_futures::spawn_local(async move {
                             let _ = tauri_bridge::browser_reload(BROWSER_ID).await;
                         });
                     },
-                    span { style: "font-size: 16px;", "\u{21bb}" }
+                    IconRefresh { size: Some(16), color: Some("currentColor".to_string()) }
                 }
 
                 // URL bar
                 input {
-                    style: "flex: 1; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none; font-family: var(--fontFamily); transition: border-color 0.2s ease; min-width: 0;",
+                    class: "field",
+                    style: "flex: 1; min-width: 0;",
                     value: "{url_input}",
                     oninput: move |e| url_input.set(e.value()),
                     onkeydown: move |e: KeyboardEvent| {
@@ -141,9 +141,13 @@ pub fn RightBrowserPanel() -> Element {
             // The real web content is drawn natively at the right sidebar position
             // by the backend child webview, so this div is just a visual spacer.
             div {
-                style: "flex: 1; background: var(--bgTertiary); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--textDim); padding: 24px; text-align: center; min-height: 0;",                span { style: "font-size: 48px; opacity: 0.3;", "\u{1F30D}" }
+                style: "flex: 1; background: var(--bgTertiary); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--textDim); padding: 24px; text-align: center; min-height: 0;",
+                span {
+                    style: "opacity: 0.4;",
+                    IconGlobe { size: Some(40), color: Some("var(--textDim)".to_string()) }
+                }
                 div {
-                    style: "font-size: 14px; font-weight: 500;",
+                    style: "font-family: var(--font-display); font-size: 18px; font-weight: 600; color: var(--text);",
                     "Native Browser Active"
                 }
                 div {
@@ -160,14 +164,15 @@ pub fn RightBrowserPanel() -> Element {
                 div {
                     style: "display: flex; align-items: center; gap: 6px;",
                     div {
-                        style: "font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--textDim); white-space: nowrap; min-width: 70px;",
+                        style: "font-family: var(--font-display); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: var(--textDim); white-space: nowrap; min-width: 70px;",
                         "Quick Access"
                     }
                     div {
                         style: "display: flex; flex-wrap: wrap; gap: 4px; flex: 1;",
                         for (name, url_str) in quick_urls.iter().cloned() {
                             button {
-                                style: "padding: 3px 8px; border-radius: 3px; border: 1px solid var(--border); background: var(--bg); color: var(--textDim); font-size: 10px; cursor: pointer; transition: all 0.15s ease; white-space: nowrap;",
+                                class: "card is-interactive",
+                                style: "padding: 3px 8px; font-size: 10px; cursor: pointer; white-space: nowrap;",
                                 onclick: move |_| {
                                     let target = url_str.to_string();
                                     let mut url_clone = url.clone();
@@ -194,14 +199,15 @@ pub fn RightBrowserPanel() -> Element {
                 div {
                     style: "display: flex; align-items: center; gap: 6px;",
                     div {
-                        style: "font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--textDim); white-space: nowrap; min-width: 70px;",
+                        style: "font-family: var(--font-display); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: var(--textDim); white-space: nowrap; min-width: 70px;",
                         "Localhost"
                     }
                     div {
                         style: "display: flex; flex-wrap: wrap; gap: 4px; flex: 1;",
                         for (label, url_str) in localhost_urls.iter().cloned() {
                             button {
-                                style: "padding: 3px 8px; border-radius: 3px; border: 1px solid var(--border); background: var(--bg); color: var(--textDim); font-size: 10px; cursor: pointer; transition: all 0.15s ease; white-space: nowrap;",
+                                class: "card is-interactive",
+                                style: "padding: 3px 8px; font-size: 10px; cursor: pointer; white-space: nowrap;",
                                 onclick: move |_| {
                                     let target = url_str.to_string();
                                     let mut url_clone = url.clone();

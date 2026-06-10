@@ -32,18 +32,21 @@ pub fn WorkspacePanel() -> Element {
 
                 if state.spaces.is_empty() {
                     div {
-                        style: "flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--textDim);",
+                        class: "animate-rise",
+                        style: "flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center;",
+                        crate::components::shared::illustration::OwlMark { size: Some(48) }
                         div {
                             div {
-                                style: "width: 40px; height: 40px; border-radius: 8px; background: var(--bgTertiary); display: flex; align-items: center; justify-content: center; margin: 0 auto; opacity: 0.4;",
-                                span { style: "font-size: 16px; font-weight: 700; color: var(--textMuted);", "W" }
+                                style: "font-family: var(--font-display); font-size: 22px; font-weight: 600; color: var(--text);",
+                                "No workspace"
                             }
-                            span { style: "font-size: 12px; margin-top: 8px; display: block;", "Create a workspace to get started" }
-                            button {
-                                style: "margin-top: 12px; padding: 8px 16px; border-radius: 6px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 11px;",
-                                // TODO: open NewSpaceModal
-                                "+ New Space"
-                            }
+                            span { style: "font-size: 13px; margin-top: 4px; display: block; color: var(--textMuted);", "Create a workspace to get started." }
+                        }
+                        button {
+                            class: "btn-primary",
+                            // TODO: open NewSpaceModal
+                            crate::components::shared::icon::IconPlus { size: Some(15), color: Some("currentColor".to_string()) }
+                            "New Space"
                         }
                     }
                 } else {

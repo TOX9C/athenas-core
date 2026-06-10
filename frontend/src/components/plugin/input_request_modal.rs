@@ -1,3 +1,4 @@
+use crate::components::shared::icon::IconSend;
 use crate::components::shared::modal::Modal;
 use crate::stores::athena::use_athena_store;
 use crate::stores::notification::{use_notification_store, NotificationType};
@@ -37,34 +38,35 @@ pub fn InputRequestModal() -> Element {
 
                 // Agent info
                 div {
-                    style: "display: flex; align-items: center; gap: 6px;",
+                    style: "display: flex; align-items: center; gap: 8px;",
                     div {
-                        style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent);",
+                        style: "width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--accent);",
                     }
                     span {
-                        style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
                         "Agent"
                     }
                     span {
-                        style: "font-size: 9px; padding: 1px 5px; border-radius: 9999px; background: #f9731622; color: #f97316;",
+                        style: "font-size: var(--text-2xs); padding: 2px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning);",
                         "Needs Input"
                     }
                 }
 
                 // Prompt
                 div {
-                    style: "padding: 10px; border-radius: 8px; background: var(--bgTertiary); border: 1px solid var(--border);",
+                    style: "padding: 12px; border-radius: var(--radius-md); background: var(--bgTertiary); border: 1px solid var(--border);",
                     p {
-                        style: "font-size: 12px; color: var(--text); margin: 0; line-height: 1.5;",
+                        style: "font-size: var(--text-sm); color: var(--text); margin: 0; line-height: 1.5;",
                         "{prompt_text}"
                     }
                 }
 
                 // Free text input
                 div {
-                    style: "display: flex; gap: 6px;",
+                    style: "display: flex; gap: 8px;",
                     input {
-                        style: "flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bgTertiary); color: var(--text); font-size: 11px; outline: none;",
+                        class: "field",
+                        style: "flex: 1;",
                         value: "{free_text}",
                         oninput: move |e| free_text.set(e.value()),
                         onkeydown: move |e: KeyboardEvent| {
@@ -91,7 +93,8 @@ pub fn InputRequestModal() -> Element {
                         placeholder: "Type a response..."
                     }
                     button {
-                        style: "padding: 6px 12px; border-radius: 6px; border: none; background: var(--accent); color: #0b0e13; cursor: pointer; font-size: 11px; font-weight: 600;",
+                        class: "btn-primary",
+                        style: "display: flex; align-items: center; gap: 6px;",
                         onclick: move |_| {
                             if !free_text().trim().is_empty() {
                                 let text = free_text();
@@ -101,6 +104,7 @@ pub fn InputRequestModal() -> Element {
                                 });
                             }
                         },
+                        IconSend { size: Some(14), color: Some("currentColor".to_string()) }
                         "Send"
                     }
                 }

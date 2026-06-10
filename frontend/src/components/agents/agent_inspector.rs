@@ -4,6 +4,8 @@ use super::agent_status_bar::AgentPaneStatus;
 use crate::stores::agent_output::use_agent_output_store;
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatus};
 use crate::stores::notification::{use_notification_store, NotificationRecord, NotificationType};
+use crate::components::shared::icon::{IconBell, IconClose, IconHelmet, IconSearch, IconTerminal};
+use crate::components::shared::illustration::{EmptyState, EmptyArt};
 use dioxus::prelude::*;
 
 /// Inspector tab types.
@@ -122,26 +124,26 @@ pub fn AgentInspector() -> Element {
         return rsx! {};
     }
 
-    // Tab definitions: (tab enum, short text icon, label)
+    // Tab definitions: (tab enum, label)
     let tabs = [
-        (InspectorTab::Output, "OUT", "Output"),
-        (InspectorTab::Status, "STS", "Status"),
-        (InspectorTab::Notifications, "ALT", "Alerts"),
+        (InspectorTab::Output, "Output"),
+        (InspectorTab::Status, "Status"),
+        (InspectorTab::Notifications, "Alerts"),
     ];
 
-    let notif_empty_msg = if selected_pane_id.is_some() {
-        "No notifications for this agent"
+    let (notif_empty_title, notif_empty_hint) = if selected_pane_id.is_some() {
+        ("All clear", "No notifications for this agent.")
     } else {
-        "Select an agent"
+        ("No agent", "Select an agent to view its alerts.")
     };
 
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; border-left: 1px solid var(--border); width: 360px; background: var(--bgSecondary); flex-shrink: 0; position: absolute; right: 0; top: 0; bottom: 0; z-index: 90; box-shadow: -4px 0 16px rgba(0,0,0,0.3);",
+            style: "display: flex; flex-direction: column; border-left: 1px solid var(--border); width: 360px; background: var(--bgSecondary); flex-shrink: 0; position: absolute; right: 0; top: 0; bottom: 0; z-index: 90;",
 
             // Header
             div {
-                style: "display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
+                style: "display: flex; align-items: center; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
 
                 AgentSelector {
                     on_select: move |id: String| {
@@ -152,32 +154,40 @@ pub fn AgentInspector() -> Element {
                 div { style: "flex: 1;" }
 
                 button {
-                    style: "padding: 4px; border-radius: 4px; border: none; background: transparent; cursor: pointer;",
+                    class: "icon-btn",
                     title: "Close inspector",
                     onclick: move |_| agent_output.write().set_inspector_open(false),
-                    span { style: "font-size: 12px; color: var(--textDim);", "\u{2715}" }
+                    IconClose { size: Some(15), color: Some("currentColor".to_string()) }
                 }
             }
 
-            // Tab bar
+            // Tab bar — segmented
             div {
-                style: "display: flex; align-items: center; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
+                style: "display: flex; align-items: center; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
 
-                for (tab_id, icon, label) in tabs {
-                    {
-                        let is_active = tab() == tab_id;
-                        let tab_bg = if is_active { "var(--bgTertiary)" } else { "transparent" };
-                        let tab_color = if is_active { "var(--text)" } else { "var(--textDim)" };
-                        rsx! {
-                            button {
-                                key: "{label}",
-                                style: "display: flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px; border: none; font-size: 10px; font-weight: 500; cursor: pointer; background: {tab_bg}; color: {tab_color};",
-                                onclick: move |_| tab.set(tab_id),
-                                span {
-                                    style: "font-size: 8px; font-weight: 700; letter-spacing: 0.04em; opacity: 0.7;",
-                                    "{icon}"
+                div {
+                    class: "segmented",
+                    style: "display: inline-flex;",
+
+                    for (tab_id, label) in tabs {
+                        {
+                            let is_active = tab() == tab_id;
+                            rsx! {
+                                button {
+                                    key: "{label}",
+                                    class: if is_active { "is-active" } else { "" },
+                                    title: "{label}",
+                                    onclick: move |_| tab.set(tab_id),
+                                    span {
+                                        style: "display: inline-flex; align-items: center; gap: 5px;",
+                                        {match tab_id {
+                                            InspectorTab::Output => rsx! { IconTerminal { size: Some(13), color: Some("currentColor".to_string()) } },
+                                            InspectorTab::Status => rsx! { IconHelmet { size: Some(13), color: Some("currentColor".to_string()) } },
+                                            InspectorTab::Notifications => rsx! { IconBell { size: Some(13), color: Some("currentColor".to_string()) } },
+                                        }}
+                                        "{label}"
+                                    }
                                 }
-                                "{label}"
                             }
                         }
                     }
@@ -197,10 +207,11 @@ pub fn AgentInspector() -> Element {
                         if let Some(st) = pane_status {
                             rsx! {
                                 div {
-                                    style: "padding: 12px; overflow-y: auto; height: 100%;",
+                                    style: "padding: 14px; overflow-y: auto; height: 100%; overflow-x: hidden;",
 
                                     div {
-                                        style: "display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bgTertiary);",
+                                        class: "card",
+                                        style: "display: flex; flex-direction: column; gap: 10px;",
 
                                         StatusRow { label: "Pane".to_string(), value: st.pane_id.clone() }
                                         StatusRow { label: "Status".to_string(), value: st.status.clone(), dot_color: status_dot_color(&st.status).to_string() }
@@ -212,29 +223,29 @@ pub fn AgentInspector() -> Element {
                                         if let Some(progress) = &st.progress {
                                             div {
                                                 div {
-                                                    style: "font-size: 9px; margin-bottom: 4px; color: var(--textDim);",
+                                                    style: "font-size: var(--text-2xs); margin-bottom: 5px; color: var(--textDim); text-transform: uppercase; letter-spacing: 0.06em;",
                                                     "Progress"
                                                 }
                                                 div {
                                                     style: "display: flex; align-items: center; gap: 8px;",
 
                                                     div {
-                                                        style: "flex: 1; height: 4px; border-radius: 9999px; overflow: hidden; background: var(--bgTertiary);",
+                                                        style: "flex: 1; height: 4px; overflow: hidden; background: var(--bg); border-radius: var(--radius-pill);",
 
                                                         div {
-                                                            style: "height: 100%; border-radius: 9999px; background: var(--accent); width: {((progress.current * 100) / progress.total.max(1))}%;",
+                                                            style: "height: 100%; background: var(--accent); border-radius: var(--radius-pill); width: {((progress.current * 100) / progress.total.max(1))}%;",
                                                         }
                                                     }
 
                                                     span {
-                                                        style: "font-size: 9px; color: var(--textDim);",
+                                                        style: "font-size: var(--text-2xs); color: var(--textDim); font-family: var(--fontFamily);",
                                                         "{progress.current}/{progress.total}"
                                                     }
                                                 }
 
                                                 if let Some(label) = &progress.label {
                                                     span {
-                                                        style: "font-size: 8px; display: block; margin-top: 2px; color: var(--textDim);",
+                                                        style: "font-size: var(--text-2xs); display: block; margin-top: 3px; color: var(--textDim);",
                                                         "{label}"
                                                     }
                                                 }
@@ -245,9 +256,10 @@ pub fn AgentInspector() -> Element {
                             }
                         } else {
                             rsx! {
-                                div {
-                                    style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--textDim);",
-                                    span { style: "font-size: 10px;", "Select an agent to view status" }
+                                EmptyState {
+                                    kind: EmptyArt::Agents,
+                                    title: "No agent".to_string(),
+                                    hint: Some("Select an agent to inspect.".to_string()),
                                 }
                             }
                         }
@@ -256,22 +268,20 @@ pub fn AgentInspector() -> Element {
 
                 if tab() == InspectorTab::Notifications {
                     div {
-                        style: "display: flex; flex-direction: column; height: 100%;",
+                        style: "display: flex; flex-direction: column; height: 100%; overflow-x: hidden;",
 
                         // Search
                         div {
-                            style: "padding: 4px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
+                            style: "padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
 
                             div {
-                                style: "display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 4px; background: var(--bgTertiary);",
+                                class: "field",
+                                style: "display: flex; align-items: center; gap: 6px;",
 
-                                span {
-                                    style: "font-size: 8px; font-weight: 700; color: var(--textDim); letter-spacing: 0.04em;",
-                                    "SRCH"
-                                }
+                                IconSearch { size: Some(13), color: Some("var(--textDim)".to_string()) }
 
                                 input {
-                                    style: "flex: 1; background: transparent; border: none; outline: none; font-size: 10px; color: var(--text);",
+                                    style: "flex: 1; background: transparent; border: none; outline: none; font-size: var(--text-xs); color: var(--text);",
                                     value: "{search_query}",
                                     oninput: move |e| search_query.set(e.value()),
                                     placeholder: "Filter notifications...",
@@ -281,12 +291,13 @@ pub fn AgentInspector() -> Element {
 
                         // Notification list
                         div {
-                            style: "flex: 1; overflow-y: auto;",
+                            style: "flex: 1; overflow-y: auto; overflow-x: hidden;",
 
                             if filtered_notifications.is_empty() {
-                                div {
-                                    style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--textDim);",
-                                    span { style: "font-size: 10px;", "{notif_empty_msg}" }
+                                EmptyState {
+                                    kind: EmptyArt::Notifications,
+                                    title: notif_empty_title.to_string(),
+                                    hint: Some(notif_empty_hint.to_string()),
                                 }
                             } else {
                                 for n in filtered_notifications.iter() {
@@ -295,9 +306,9 @@ pub fn AgentInspector() -> Element {
                                             "error" | "task_error" => "var(--error)",
                                             "warning" => "var(--warning)",
                                             "success" | "task_complete" => "var(--success)",
-                                            _ => "var(--accent)",
+                                            _ => "var(--accentTeal)",
                                         };
-                                        let type_bg = format!("{}22", type_color);
+                                        let type_bg = format!("{}1a", type_color);
                                         let n_id = n.id.clone();
                                         let n_title = n.title.clone();
                                         let n_type = n.notif_type.clone();
@@ -305,26 +316,31 @@ pub fn AgentInspector() -> Element {
                                         rsx! {
                                             div {
                                                 key: "{n_id}",
-                                                style: "padding: 8px 12px; border-bottom: 1px solid var(--border);",
+                                                style: "padding: 10px 12px; border-bottom: 1px solid var(--border); overflow-x: hidden;",
 
                                                 div {
-                                                    style: "display: flex; align-items: center; gap: 4px;",
+                                                    style: "display: flex; align-items: center; gap: 6px; overflow-x: hidden;",
 
                                                     span {
-                                                        style: "font-size: 10px; font-weight: 500; color: var(--text);",
+                                                        style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {type_color}; flex-shrink: 0;",
+                                                    }
+
+                                                    span {
+                                                        style: "font-size: var(--text-xs); font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;",
                                                         "{n_title}"
                                                     }
 
                                                     if !n_type.is_empty() {
                                                         span {
-                                                            style: "font-size: 8px; padding: 1px 4px; border-radius: 3px; background: {type_bg}; color: {type_color};",
+                                                            class: "badge",
+                                                            style: "background: {type_bg}; color: {type_color}; flex-shrink: 0;",
                                                             "{n_type}"
                                                         }
                                                     }
                                                 }
 
                                                 p {
-                                                    style: "font-size: 9px; margin-top: 2px; color: var(--textDim);",
+                                                    style: "font-size: var(--text-2xs); margin-top: 3px; color: var(--textDim); overflow: hidden; text-overflow: ellipsis; padding-left: 13px;",
                                                     "{n_msg}"
                                                 }
                                             }
@@ -353,18 +369,18 @@ struct StatusRowProps {
 fn StatusRow(props: StatusRowProps) -> Element {
     rsx! {
         div {
-            style: "display: flex; align-items: baseline; gap: 8px;",
+            style: "display: flex; align-items: baseline; gap: 8px; overflow-x: hidden;",
 
             span {
-                style: "font-size: 9px; flex-shrink: 0; width: 64px; color: var(--textDim);",
+                style: "font-size: var(--text-2xs); flex-shrink: 0; width: 64px; color: var(--textDim); text-transform: uppercase; letter-spacing: 0.06em;",
                 "{props.label}"
             }
 
             span {
-                style: "font-size: 11px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);",
+                style: "font-size: var(--text-xs); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); flex: 1; min-width: 0;",
                 if !props.dot_color.is_empty() {
                     span {
-                        style: "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: {props.dot_color}; margin-right: 6px; vertical-align: middle;",
+                        style: "display: inline-block; width: 7px; height: 7px; border-radius: var(--radius-pill); background: {props.dot_color}; margin-right: 6px; vertical-align: middle;",
                     }
                 }
                 "{props.value}"

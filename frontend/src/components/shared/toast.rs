@@ -1,3 +1,4 @@
+use super::icon::{IconBell, IconCheck, IconClose, IconOwl};
 use dioxus::prelude::*;
 
 /// Toast notification type.
@@ -39,7 +40,6 @@ impl ToastState {
 }
 
 pub fn use_toast_store() -> Signal<ToastState> {
-    // TODO: wire to proper global context
     use_context::<Signal<ToastState>>()
 }
 
@@ -84,30 +84,43 @@ pub fn ToastItem(props: ToastItemProps) -> Element {
     let local_toast = use_signal(|| props.toast.clone());
     let mut toast_store = use_toast_store();
 
-    let (icon, border_color) = match local_toast.read().toast_type {
-        ToastType::Info => ("i", "var(--accent)"),
-        ToastType::Success => ("✓", "var(--success)"),
-        ToastType::Warning => ("!", "var(--warning)"),
-        ToastType::Error => ("X", "var(--error)"),
-        ToastType::NeedsInput => ("?", "var(--warning)"),
-        ToastType::TaskComplete => ("✓", "var(--success)"),
+    let ttype = local_toast.read().toast_type.clone();
+    let color = match ttype {
+        ToastType::Info => "var(--accent)",
+        ToastType::Success | ToastType::TaskComplete => "var(--success)",
+        ToastType::Warning | ToastType::NeedsInput => "var(--warning)",
+        ToastType::Error => "var(--error)",
+    };
+    let icon = match ttype {
+        ToastType::Success | ToastType::TaskComplete => {
+            rsx! { IconCheck { size: Some(13), color: Some(color.to_string()) } }
+        }
+        ToastType::Error => rsx! { IconClose { size: Some(13), color: Some(color.to_string()) } },
+        ToastType::Warning | ToastType::NeedsInput => {
+            rsx! { IconBell { size: Some(13), color: Some(color.to_string()) } }
+        }
+        ToastType::Info => rsx! { IconOwl { size: Some(13), color: Some(color.to_string()) } },
     };
 
     rsx! {
         div {
-            style: "display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px; border-radius: 8px; background: var(--bgSecondary); color: var(--text); min-width: 280px; max-width: 400px; pointer-events: auto; border: 1px solid var(--border); box-shadow: var(--shadowLg); border-left: 3px solid {border_color};",
-            span { style: "font-size: 13px; font-weight: 700; flex-shrink: 0; color: {border_color}; width: 20px; text-align: center;", "{icon}" }
+            class: "toast-card",
+            style: "display: flex; align-items: flex-start; gap: 11px; padding: 12px 14px; background: var(--bgSecondary); color: var(--text); min-width: 280px; max-width: 400px; pointer-events: auto; border: 1px solid var(--border); border-left: 3px solid {color}; border-radius: var(--radius-md);",
+            span {
+                style: "flex-shrink: 0; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-pill); background: color-mix(in srgb, {color} 16%, transparent);",
+                {icon}
+            }
             div {
                 style: "flex: 1; min-width: 0;",
-                div { style: "font-size: 11px; font-weight: 600; color: var(--text);", "{local_toast.read().title}" }
-                div { style: "font-size: 10px; color: var(--textMuted); margin-top: 2px;", "{local_toast.read().message}" }
+                div { style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);", "{local_toast.read().title}" }
+                div { style: "font-size: var(--text-xs); color: var(--textMuted); margin-top: 2px; line-height: 1.45;", "{local_toast.read().message}" }
             }
             button {
-                style: "flex-shrink: 0; padding: 2px 6px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 14px; line-height: 1; margin-top: -2px;",
-                onclick: move |_| {
-                    toast_store.write().remove(&toast_id);
-                },
-                "×"
+                class: "icon-btn",
+                style: "width: 22px; height: 22px; flex-shrink: 0;",
+                "aria-label": "Dismiss",
+                onclick: move |_| { toast_store.write().remove(&toast_id); },
+                IconClose { size: Some(13), color: Some("currentColor".to_string()) }
             }
         }
     }

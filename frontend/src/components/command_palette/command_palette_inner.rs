@@ -1,3 +1,4 @@
+use crate::components::shared::icon::{IconChevronRight, IconSearch};
 use crate::stores::command::{use_command_store, Command, CommandCategory};
 use dioxus::prelude::*;
 
@@ -184,28 +185,25 @@ pub fn CommandPalette() -> Element {
 
             // Backdrop
             div {
-                style: "position: absolute; inset: 0; backdrop-filter: blur(6px); background: rgba(0,0,0,0.5);",
+                style: "position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 70%, transparent);",
                 onclick: move |_| command_state.write().close(),
             }
 
             // Palette container
             div {
-                style: "position: relative; z-index: 1; width: 520px; max-height: 400px; display: flex; flex-direction: column; border-radius: var(--radius-lg, 12px); box-shadow: 0 25px 50px rgba(0,0,0,0.4); overflow: hidden; background: var(--bgSecondary); border: 1px solid var(--border);",
+                style: "position: relative; z-index: 1; width: 520px; max-height: 400px; display: flex; flex-direction: column; overflow: hidden; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: 0 24px 60px rgba(0,0,0,0.45);",
                 role: "dialog",
                 "aria-modal": "true",
                 "aria-label": "Command palette",
 
                 // Search input
                 div {
-                    style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border);",
+                    style: "display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border);",
 
-                    span {
-                        style: "font-size: 10px; font-weight: 700; color: var(--textDim); flex-shrink: 0; letter-spacing: 0.5px;",
-                        "FIND"
-                    }
+                    IconSearch { size: Some(15), color: Some("var(--textDim)".to_string()) }
 
                     input {
-                        style: "flex: 1; background: transparent; border: none; outline: none; font-size: 13px; color: var(--text); caret-color: #00c2b5;",
+                        style: "flex: 1; background: transparent; border: none; outline: none; font-size: 14px; color: var(--text); caret-color: var(--accentTeal);",
                         role: "searchbox",
                         "aria-label": "Search commands",
                         value: "{query}",
@@ -299,13 +297,13 @@ pub fn CommandPalette() -> Element {
 
                         if !query.trim().is_empty() && flat_count > 0 {
                             span {
-                                style: "font-size: 10px; padding: 1px 6px; border-radius: 3px; background: var(--bgTertiary); color: var(--textDim);",
+                                class: "badge",
                                 "{flat_count}"
                             }
                         }
 
                         kbd {
-                            style: "font-size: 9px; padding: 1px 4px; border-radius: 3px; background: var(--bgTertiary); color: var(--textDim);",
+                            style: "font-size: var(--text-2xs); padding: 2px 6px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); color: var(--textDim); font-family: var(--fontFamily);",
                             "esc"
                         }
                     }
@@ -317,10 +315,10 @@ pub fn CommandPalette() -> Element {
 
                     if flat_count == 0 {
                         div {
-                            style: "display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px; color: var(--textDim);",
-                            span { style: "font-size: 20px; opacity: 0.3;", "#" }
+                            style: "display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 36px; color: var(--textDim);",
+                            IconSearch { size: Some(28), color: Some("var(--textDim)".to_string()) }
                             span {
-                                style: "font-size: 12px;",
+                                style: "font-size: var(--text-sm); color: var(--textMuted);",
                                 "{empty_msg}"
                             }
                         }
@@ -334,7 +332,7 @@ pub fn CommandPalette() -> Element {
                                 items.push(rsx! {
                                     div {
                                         key: "group-{group_label}",
-                                        style: "padding: 2px 8px; font-size: 9px; font-weight: 600; color: var(--textDim); text-transform: uppercase;",
+                                        style: "padding: 8px 14px 4px 14px; font-family: var(--font-display); font-size: var(--text-2xs); font-weight: 600; color: var(--textMuted); text-transform: uppercase; letter-spacing: 0.14em;",
                                         "{group_label}"
                                     }
                                 });
@@ -342,32 +340,31 @@ pub fn CommandPalette() -> Element {
                                     let idx = running_idx;
                                     running_idx += 1;
                                     let is_selected = idx == selected_idx();
-                                    let display_icon = "\u{203a}".to_string();
                                     let shortcut_str = cmd.shortcut.as_ref().map(|s| format_shortcut(s));
-                                    let cmd_bg = if is_selected { "var(--bgTertiary)" } else { "transparent" };
-                                    let badge_bg = if is_selected { "var(--accent)" } else { "var(--bgTertiary)" };
-                                    let badge_color = if is_selected { "var(--bgPrimary)" } else { "var(--accent)" };
+                                    let cmd_bg = if is_selected { "var(--accentSubtle)" } else { "transparent" };
+                                    let bar = if is_selected { "var(--accent)" } else { "transparent" };
+                                    let icon_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
                                     let cmd_id = cmd.id.clone();
                                     let cmd_label = cmd.label.clone();
                                     items.push(rsx! {
                                         button {
                                             key: "{cmd_id}",
-                                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; width: 100%; text-align: left; border: none; background: {cmd_bg}; cursor: pointer; font-size: 12px; color: var(--text);",
+                                            style: "display: flex; align-items: center; gap: 10px; padding: 7px 14px; width: 100%; text-align: left; border: none; border-left: 2px solid {bar}; background: {cmd_bg}; cursor: pointer; font-size: var(--text-sm); color: var(--text);",
                                             onmouseenter: move |_| selected_idx.set(idx),
 
                                             span {
-                                                style: "font-size: 14px; color: var(--textDim); width: 16px; text-align: center;",
-                                                "{display_icon}"
+                                                style: "display: inline-flex; align-items: center; justify-content: center; width: 16px;",
+                                                IconChevronRight { size: Some(13), color: Some(icon_color.to_string()) }
                                             }
 
                                             span {
-                                                style: "flex: 1; font-size: 12px;",
+                                                style: "flex: 1; font-size: var(--text-sm);",
                                                 "{cmd_label}"
                                             }
 
                                             if let Some(ref sc) = shortcut_str {
                                                 kbd {
-                                                    style: "font-size: 10px; padding: 2px 8px; border-radius: 9999px; background: {badge_bg}; color: {badge_color}; font-family: inherit; display: inline-flex; align-items: center; justify-content: center; min-width: 24px;",
+                                                    style: "font-size: var(--text-2xs); padding: 2px 7px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); color: var(--accent); font-family: var(--fontFamily); display: inline-flex; align-items: center; justify-content: center; min-width: 24px;",
                                                     "{sc}"
                                                 }
                                             }
@@ -382,20 +379,20 @@ pub fn CommandPalette() -> Element {
 
                 // Footer
                 div {
-                    style: "display: flex; align-items: center; gap: 12px; padding: 6px 12px; border-top: 1px solid var(--border); font-size: 10px; color: var(--textDim);",
+                    style: "display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--border); font-size: var(--text-2xs); color: var(--textDim);",
 
                     span {
-                        kbd { style: "font-size: 9px; padding: 1px 3px; border-radius: 2px; background: var(--bgTertiary);", "\u{2191}\u{2193}" }
+                        kbd { style: "font-size: var(--text-2xs); padding: 2px 5px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); font-family: var(--fontFamily);", "\u{2191}\u{2193}" }
                         " navigate"
                     }
 
                     span {
-                        kbd { style: "font-size: 9px; padding: 1px 3px; border-radius: 2px; background: var(--bgTertiary);", "\u{21b5}" }
+                        kbd { style: "font-size: var(--text-2xs); padding: 2px 5px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); font-family: var(--fontFamily);", "\u{21b5}" }
                         " execute"
                     }
 
                     span {
-                        kbd { style: "font-size: 9px; padding: 1px 3px; border-radius: 2px; background: var(--bgTertiary);", "esc" }
+                        kbd { style: "font-size: var(--text-2xs); padding: 2px 5px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); font-family: var(--fontFamily);", "esc" }
                         " close"
                     }
 

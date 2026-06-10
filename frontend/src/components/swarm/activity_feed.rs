@@ -1,4 +1,5 @@
 use super::swarm_board::ActivityEntry;
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -14,20 +15,21 @@ pub fn SwarmActivityFeed(props: SwarmActivityFeedProps) -> Element {
             style: "display: flex; flex-direction: column; height: 100%;",
 
             div {
-                style: "padding: 8px 10px; border-bottom: 1px solid var(--border);",
+                style: "padding: 12px 14px; border-bottom: 1px solid var(--border);",
                 span {
-                    style: "font-size: 11px; font-weight: 600; color: var(--text);",
+                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; letter-spacing: 0.01em; color: var(--text);",
                     "Activity"
                 }
             }
 
             div {
-                style: "flex: 1; overflow-y: auto; padding: 4px 0;",
+                style: "flex: 1; overflow-y: auto; padding: 2px 0; display: flex; flex-direction: column;",
 
                 if props.activities.is_empty() {
-                    div {
-                        style: "padding: 16px; text-align: center; color: var(--textDim); font-size: 10px;",
-                        "No activity yet"
+                    EmptyState {
+                        kind: EmptyArt::Swarm,
+                        title: "No activity yet".to_string(),
+                        hint: Some("Agent messages will appear here.".to_string()),
                     }
                 } else {
                     for entry in props.activities.iter() {
@@ -37,24 +39,27 @@ pub fn SwarmActivityFeed(props: SwarmActivityFeedProps) -> Element {
                                 "builder" => "#22c55e",
                                 "scout" => "#f59e0b",
                                 "reviewer" => "#06b6d4",
-                                _ => "var(--textDim)",
+                                _ => "var(--accentTeal)",
                             };
                             rsx! {
                                 div {
                                     key: "{entry.id}",
-                                    style: "padding: 6px 10px; border-bottom: 1px solid var(--border);",
-
-                                    div {
-                                        style: "display: flex; align-items: center; gap: 4px;",
-                                        span {
-                                            style: "font-size: 9px; font-weight: 600; color: {role_color};",
-                                            "{entry.agent_name}"
-                                        }
-                                    }
+                                    style: "display: flex; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--border);",
 
                                     span {
-                                        style: "font-size: 10px; color: var(--textMuted);",
-                                        "{entry.action}"
+                                        style: "width: 6px; height: 6px; margin-top: 5px; border-radius: 50%; background: {role_color}; flex-shrink: 0;",
+                                    }
+
+                                    div {
+                                        style: "display: flex; flex-direction: column; gap: 2px; min-width: 0;",
+                                        span {
+                                            style: "font-size: var(--text-2xs); font-weight: 600; color: {role_color};",
+                                            "{entry.agent_name}"
+                                        }
+                                        span {
+                                            style: "font-size: var(--text-xs); color: var(--textMuted); line-height: 1.4; word-break: break-word;",
+                                            "{entry.action}"
+                                        }
                                     }
                                 }
                             }

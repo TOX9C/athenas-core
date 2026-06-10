@@ -4,73 +4,60 @@ use dioxus::prelude::*;
 
 #[component]
 pub fn ThemePicker() -> Element {
-    let ui_state = use_ui_store();
-
     let dark_themes: Vec<_> = ALL_THEMES
         .iter()
-        .filter(|(id, _)| !is_light_bg(get_theme(id).bg))
+        .filter(|(id, _)| !is_light_bg(&get_theme(id).bg))
         .copied()
         .collect();
 
     let light_themes: Vec<_> = ALL_THEMES
         .iter()
-        .filter(|(id, _)| is_light_bg(get_theme(id).bg))
+        .filter(|(id, _)| is_light_bg(&get_theme(id).bg))
         .copied()
         .collect();
 
     rsx! {
-        div { style: "display: flex; flex-direction: column; gap: 16px;",
+        div {
+            style: "display: flex; flex-direction: column; gap: 24px;",
+            ThemeGroup { title: "Dark", themes: dark_themes }
+            ThemeGroup { title: "Light", themes: light_themes }
+        }
+    }
+}
 
+#[derive(Props, Clone, PartialEq)]
+struct ThemeGroupProps {
+    title: String,
+    themes: Vec<(&'static str, &'static str)>,
+}
+
+#[component]
+fn ThemeGroup(props: ThemeGroupProps) -> Element {
+    let ui_state = use_ui_store();
+
+    rsx! {
+        div {
             div {
-                div {
-                    style: "font-size: 11px; font-weight: 600; color: var(--textMuted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em;",
-                    "Dark Themes"
-                }
-                div { style: "display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;",
-                    for (id, label) in dark_themes {
-                        {
-                            let theme_enum = UITheme::from_name(id);
-                            let is_selected = theme_enum == ui_state.read().theme;
-                            let colors = get_theme(id);
-                            rsx! {
-                                ThemeSwatch {
-                                    key: "{id}",
-                                    id: id.to_string(),
-                                    label: label.to_string(),
-                                    bg: colors.bg.to_string(),
-                                    accent: colors.accent.to_string(),
-                                    bg_secondary: colors.bg_secondary.to_string(),
-                                    is_selected,
-                                    theme: theme_enum,
-                                }
-                            }
-                        }
-                    }
-                }
+                style: "font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--textMuted); margin-bottom: 12px; padding-left: 2px; letter-spacing: 0.02em;",
+                "{props.title}"
             }
-
             div {
-                div {
-                    style: "font-size: 11px; font-weight: 600; color: var(--textMuted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em;",
-                    "Light Themes"
-                }
-                div { style: "display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;",
-                    for (id, label) in light_themes {
-                        {
-                            let theme_enum = UITheme::from_name(id);
-                            let is_selected = theme_enum == ui_state.read().theme;
-                            let colors = get_theme(id);
-                            rsx! {
-                                ThemeSwatch {
-                                    key: "{id}",
-                                    id: id.to_string(),
-                                    label: label.to_string(),
-                                    bg: colors.bg.to_string(),
-                                    accent: colors.accent.to_string(),
-                                    bg_secondary: colors.bg_secondary.to_string(),
-                                    is_selected,
-                                    theme: theme_enum,
-                                }
+                style: "display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;",
+                for (id, label) in &props.themes {
+                    {
+                        let theme_enum = UITheme::from_name(id);
+                        let is_selected = theme_enum == ui_state.read().theme;
+                        let colors = get_theme(id);
+                        rsx! {
+                            ThemeSwatch {
+                                key: "{id}",
+                                id: id.to_string(),
+                                label: label.to_string(),
+                                bg: colors.bg.clone(),
+                                accent: colors.accent.clone(),
+                                bg_secondary: colors.bg_secondary.clone(),
+                                is_selected,
+                                theme: theme_enum,
                             }
                         }
                     }
@@ -111,35 +98,46 @@ struct ThemeSwatchProps {
 #[component]
 fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
     let mut ui_state = use_ui_store();
-    let border = if props.is_selected {
-        "2px solid #ffffff"
+    let ring = if props.is_selected {
+        "border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);"
     } else {
-        "2px solid transparent"
+        "border-color: var(--border);"
     };
-    let bg_box_shadow = "inset 0 0 0 1px rgba(0,0,0,0.4), 0 1px 3px rgba(0,0,0,0.2)";
 
     rsx! {
         button {
-            style: "padding: 8px 10px; border-radius: 8px; border: {border}; background: {props.bg_secondary}; cursor: pointer; text-align: center; transition: border-color 0.15s, box-shadow 0.15s;",
+            style: "padding: 0; border: 1px solid; {ring} border-radius: var(--radius-md); background: transparent; cursor: pointer; text-align: left; overflow: hidden; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);",
+            onmouseenter: move |_| {},
             onclick: move |_| {
                 ui_state.write().theme = props.theme;
                 apply_theme_and_persist(props.theme);
             },
 
+            // Mini app-chrome preview
             div {
-                style: "width: 36px; height: 36px; border-radius: 6px; background: {props.bg}; margin: 0 auto 6px; border: 1px solid rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: {bg_box_shadow}; transition: border-color 0.15s;",
-                if props.is_selected {
-                    span {
-                        style: "font-size: 18px; color: #ffffff; text-shadow: 0 1px 3px rgba(0,0,0,0.6); font-weight: 700; margin-top: -2px;",
-                        "\u{2713}"
+                style: "height: 48px; background: {props.bg}; position: relative; display: flex; flex-direction: column;",
+                // titlebar strip
+                div { style: "height: 10px; background: {props.bg_secondary}; display: flex; align-items: center; gap: 3px; padding: 0 5px;",
+                    div { style: "width: 14px; height: 3px; border-radius: 2px; background: {props.accent};" }
+                }
+                // body: sidebar + accent bar
+                div { style: "flex: 1; display: flex;",
+                    div { style: "width: 16px; background: {props.bg_secondary};" }
+                    div { style: "flex: 1; padding: 6px;",
+                        div { style: "width: 60%; height: 4px; border-radius: 2px; background: {props.accent}; margin-bottom: 4px;" }
+                        div { style: "width: 40%; height: 3px; border-radius: 2px; background: {props.bg_secondary};" }
                     }
-                } else {
-                    div { style: "width: 6px; height: 6px; border-radius: 50%; background: {props.accent}; opacity: 0.8;" }
                 }
             }
-            span {
-                style: "font-size: 10px; color: var(--text); display: block;",
-                "{props.label}"
+            div {
+                style: "padding: 6px 8px; background: var(--bgSecondary); display: flex; align-items: center; justify-content: space-between;",
+                span {
+                    style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--text);",
+                    "{props.label}"
+                }
+                if props.is_selected {
+                    span { style: "font-size: 9px; color: var(--accent); font-weight: 600;", "ACTIVE" }
+                }
             }
         }
     }
@@ -172,10 +170,10 @@ fn detect_system_theme() -> &'static str {
         if let Ok(val) = result {
             if let Some(s) = val.as_string() {
                 if s == "light" {
-                    return "onyx";
+                    return "pentelic";
                 }
             }
         }
     }
-    "onyx"
+    "nyx"
 }

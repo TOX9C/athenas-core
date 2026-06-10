@@ -1,3 +1,4 @@
+use crate::components::shared::icon::{IconChevronDown, IconChevronRight};
 use crate::stores::athena::EvaluationBlock;
 use dioxus::prelude::*;
 
@@ -18,12 +19,12 @@ pub fn EvaluationBlockView(props: EvaluationBlockViewProps) -> Element {
         _ => "var(--textDim)",
     };
 
-    let chevron_rotation = if collapsed() { 0 } else { 90 };
+    let is_collapsed = collapsed();
     let has_next_action = !eval_data.next_action.is_empty();
 
     rsx! {
         div {
-            style: "margin-top: 8px; padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bgTertiary);",
+            style: "margin-top: 8px; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bgTertiary);",
 
             // Header
             div {
@@ -31,17 +32,22 @@ pub fn EvaluationBlockView(props: EvaluationBlockViewProps) -> Element {
                 onclick: move |_| collapsed.set(!collapsed()),
 
                 span {
-                    style: "font-size: 10px; transition: transform 0.15s; transform: rotate({chevron_rotation}deg);",
-                    "\u{25b6}"
+                    style: "display: inline-flex; align-items: center; color: var(--textMuted);",
+                    if is_collapsed {
+                        IconChevronRight { size: Some(14), color: Some("currentColor".to_string()) }
+                    } else {
+                        IconChevronDown { size: Some(14), color: Some("currentColor".to_string()) }
+                    }
                 }
 
                 span {
-                    style: "font-size: 12px; font-weight: 600; color: var(--text); flex: 1;",
+                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex: 1;",
                     "Evaluation"
                 }
 
                 span {
-                    style: "font-size: 9px; padding: 2px 6px; border-radius: 4px; background: {status_color}22; color: {status_color};",
+                    class: "pill",
+                    style: "background: {status_color}22; color: {status_color}; border-color: {status_color}44;",
                     "{eval_data.overall_status}"
                 }
             }
@@ -55,18 +61,19 @@ pub fn EvaluationBlockView(props: EvaluationBlockViewProps) -> Element {
                             let step_color = match step.status.as_str() {
                                 "completed" | "success" => "var(--success)".to_string(),
                                 "failed" | "error" => "var(--error)".to_string(),
+                                "warning" | "partial" => "var(--warning)".to_string(),
                                 _ => "var(--textDim)".to_string(),
                             };
                             rsx! {
                                 div {
                                     key: "{step.step_id}",
-                                    style: "display: flex; align-items: center; gap: 6px; padding: 4px 0;",
+                                    style: "display: flex; align-items: center; gap: 8px; padding: 4px 0;",
 
                                     span {
-                                        style: "width: 6px; height: 6px; border-radius: 50%; background: {step_color}; flex-shrink: 0;",
+                                        style: "width: 7px; height: 7px; border-radius: 50%; background: {step_color}; flex-shrink: 0;",
                                     }
                                     span {
-                                        style: "font-size: 11px; color: var(--text); flex: 1;",
+                                        style: "font-size: 12px; color: var(--text); flex: 1;",
                                         "{step.summary}"
                                     }
                                 }

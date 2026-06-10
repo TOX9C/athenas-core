@@ -1,4 +1,5 @@
 use super::workspace_tab::WorkspaceTab;
+use crate::components::shared::icon::IconPlus;
 use crate::stores::workspace::{use_workspace_store, Space};
 use dioxus::prelude::*;
 
@@ -43,10 +44,12 @@ pub fn WorkspaceTabs(props: WorkspaceTabsProps) -> Element {
 
             // Add space button
             button {
-                style: "padding: 2px 8px; border-radius: 4px; border: none; background: transparent; color: var(--textDim); cursor: pointer; font-size: 14px; margin-left: 4px; transition: color 0.1s;",
+                class: "icon-btn",
+                style: "margin-left: 4px;",
                 title: "New Workspace (Cmd+T)",
+                "aria-label": "New Workspace",
                 onclick: move |_| props.on_new_space.call(()),
-                "+"
+                IconPlus { size: Some(15), color: Some("currentColor".to_string()) }
             }
         }
     }

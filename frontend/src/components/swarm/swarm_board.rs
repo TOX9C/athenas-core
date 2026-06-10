@@ -1,5 +1,7 @@
 use super::activity_feed::SwarmActivityFeed;
 use super::agent_card::AgentCard;
+use crate::components::shared::icon::IconSwarm;
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::swarm::{
     use_swarm_store, MailboxMessage, SwarmAgentStatus, SwarmOverallStatus, SwarmTaskStatus,
 };
@@ -295,22 +297,26 @@ pub fn SwarmBoard() -> Element {
 
             // Agent cards grid
             div {
-                style: "flex: 1; padding: 12px; overflow-y: auto;",
+                style: "flex: 1; padding: 16px; overflow-y: auto;",
 
                 div {
-                    style: "font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text); display: flex; align-items: center; gap: 6px;",
-                    div { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;" }
-                    "Swarm"
+                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 14px;",
+                    IconSwarm { size: Some(18), color: Some("var(--accent)".to_string()) }
+                    span {
+                        style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; letter-spacing: 0.01em; color: var(--text);",
+                        "Swarm"
+                    }
                 }
 
                 if agents.is_empty() {
-                    div {
-                        style: "text-align: center; padding: 32px; color: var(--textDim); font-size: 11px;",
-                        "No swarm agents. Launch a swarm to get started."
+                    EmptyState {
+                        kind: EmptyArt::Swarm,
+                        title: "No swarm".to_string(),
+                        hint: Some("Launch a swarm to coordinate agents.".to_string()),
                     }
                 } else {
                     div {
-                        style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px;",
+                        style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px;",
                         for agent in agents.iter() {
                             AgentCard { key: "{agent.id}", agent: agent.clone() }
                         }
@@ -320,7 +326,7 @@ pub fn SwarmBoard() -> Element {
 
             // Activity feed sidebar
             div {
-                style: "width: 260px; border-left: 1px solid var(--border); background: var(--bgSecondary);",
+                style: "width: 280px; border-left: 1px solid var(--border); background: var(--bgSecondary);",
                 SwarmActivityFeed { activities: activities }
             }
         }
