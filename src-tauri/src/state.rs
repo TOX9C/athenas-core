@@ -32,7 +32,9 @@ pub struct TauriEventSender {
 impl TauriEventSender {
     pub fn new(
         app_handle: Arc<parking_lot::Mutex<Option<AppHandle>>>,
-        pending_questions: Arc<parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
+        pending_questions: Arc<
+            parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
+        >,
         session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
     ) -> Self {
         Self {
@@ -86,8 +88,7 @@ impl ToolEventSender for TauriEventSender {
         };
 
         handle.spawn(async move {
-            let default_shell =
-                std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let default_shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
             let cwd = std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "/".to_string());
@@ -107,12 +108,8 @@ impl ToolEventSender for TauriEventSender {
                         let session_id_for_loop = id.clone();
                         let handle = handle.clone();
                         tokio::spawn(async move {
-                            crate::commands::pty_read_loop(
-                                handle,
-                                session_id_for_loop,
-                                session,
-                            )
-                            .await;
+                            crate::commands::pty_read_loop(handle, session_id_for_loop, session)
+                                .await;
                         });
                     }
 
@@ -322,7 +319,8 @@ pub struct AppState {
 
     /// Pending user-response questions shared between TauriEventSender and
     /// the athena_user_answer command.
-    pub pending_questions: Arc<parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
+    pub pending_questions:
+        Arc<parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
 
     /// Tool executor -- holds shared `Arc<T>` refs to the same service
     /// instances stored above, plus a `TauriEventSender` for real PTY
@@ -339,19 +337,15 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         let store = Arc::new(
-            athena_store::KeyValueStore::with_name_sync("store")
-                .unwrap_or_else(|e| {
-                    log::error!("KeyValueStore init failed, using empty fallback: {e}");
-                    athena_store::KeyValueStore::new_empty()
-                }),
+            athena_store::KeyValueStore::with_name_sync("store").unwrap_or_else(|e| {
+                log::error!("KeyValueStore init failed, using empty fallback: {e}");
+                athena_store::KeyValueStore::new_empty()
+            }),
         );
-        let session_store = Arc::new(
-            athena_store::SessionStore::new_sync()
-                .unwrap_or_else(|e| {
-                    log::error!("SessionStore init failed, using empty fallback: {e}");
-                    athena_store::SessionStore::new_empty()
-                }),
-        );
+        let session_store = Arc::new(athena_store::SessionStore::new_sync().unwrap_or_else(|e| {
+            log::error!("SessionStore init failed, using empty fallback: {e}");
+            athena_store::SessionStore::new_empty()
+        }));
         let browser_manager = athena_browser::BrowserManager::new();
         let plugin_manager = athena_plugins::PluginManager::new();
 
@@ -427,7 +421,9 @@ impl AppState {
                             for space in spaces {
                                 if let Some(id) = space.get("id").and_then(|v| v.as_str()) {
                                     if active_id == id {
-                                        if let Some(name) = space.get("name").and_then(|v| v.as_str()) {
+                                        if let Some(name) =
+                                            space.get("name").and_then(|v| v.as_str())
+                                        {
                                             orch.set_workspace_name(name.to_string());
                                         }
                                         break;

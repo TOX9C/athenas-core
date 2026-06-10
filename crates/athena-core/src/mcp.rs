@@ -459,11 +459,7 @@ impl McpServer {
                     .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let args = req
-                    .params
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_default();
+                let args = req.params.get("arguments").cloned().unwrap_or_default();
 
                 // Map MCP tool name to ToolExecutor tool name
                 let executor_name = map_mcp_to_executor_name(name);
@@ -1050,20 +1046,21 @@ impl ConnectionHandler {
 
             // Per-connection auth gate: every non-initialize method requires
             // a successful initialize first.
-            let response = if !self.authenticated.load(Ordering::SeqCst) && req.method != "initialize" {
-                JsonRpcResponse {
-                    jsonrpc: "2.0".into(),
-                    id: req.id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32600,
-                        message: "Unauthenticated: initialize required".into(),
-                        data: None,
-                    }),
-                }
-            } else {
-                self.handle_request(&req).await
-            };
+            let response =
+                if !self.authenticated.load(Ordering::SeqCst) && req.method != "initialize" {
+                    JsonRpcResponse {
+                        jsonrpc: "2.0".into(),
+                        id: req.id.clone(),
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32600,
+                            message: "Unauthenticated: initialize required".into(),
+                            data: None,
+                        }),
+                    }
+                } else {
+                    self.handle_request(&req).await
+                };
 
             // Only send a response for requests (notifications have no id)
             if response.id.is_some() {
@@ -1126,9 +1123,18 @@ fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::
     let mut ti = crate::tool_executor::ToolInput::default();
 
     // Kanban
-    ti.title = map.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
-    ti.description = map.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-    ti.status = map.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
+    ti.title = map
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    ti.description = map
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    ti.status = map
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     if let Some(v) = map.get("taskId").or_else(|| map.get("task_id")) {
         ti.task_id = v.as_str().map(|s| s.to_string());
     }
@@ -1140,7 +1146,11 @@ fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::
     if let Some(v) = map.get("agentType").or_else(|| map.get("agent_type")) {
         ti.agent_type = v.as_str().map(|s| s.to_string());
     }
-    if let Some(n) = map.get("agentCount").or_else(|| map.get("agent_count")).and_then(|v| v.as_u64()) {
+    if let Some(n) = map
+        .get("agentCount")
+        .or_else(|| map.get("agent_count"))
+        .and_then(|v| v.as_u64())
+    {
         ti.agent_count = Some(n as u32);
     }
     if let Some(v) = map.get("taskPrompt").or_else(|| map.get("task_prompt")) {
@@ -1157,7 +1167,11 @@ fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::
     }
     if let Some(arr) = map.get("paneIds").or_else(|| map.get("pane_ids")) {
         if let Some(arr) = arr.as_array() {
-            ti.pane_ids = Some(arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
+            ti.pane_ids = Some(
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect(),
+            );
         }
     }
 
@@ -1171,7 +1185,11 @@ fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::
     if let Some(n) = map.get("limit").and_then(|v| v.as_u64()) {
         ti.limit = Some(n as usize);
     }
-    if let Some(n) = map.get("sinceLine").or_else(|| map.get("since_line")).and_then(|v| v.as_u64()) {
+    if let Some(n) = map
+        .get("sinceLine")
+        .or_else(|| map.get("since_line"))
+        .and_then(|v| v.as_u64())
+    {
         ti.since_line = Some(n as u32);
     }
 
@@ -1191,10 +1209,16 @@ fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::
     if let Some(v) = map.get("prompt").and_then(|v| v.as_str()) {
         ti.prompt = Some(v.to_string());
     }
-    if let Some(v) = map.get("overallStatus").or_else(|| map.get("overall_status")) {
+    if let Some(v) = map
+        .get("overallStatus")
+        .or_else(|| map.get("overall_status"))
+    {
         ti.overall_status = v.as_str().map(|s| s.to_string());
     }
-    if let Some(arr) = map.get("stepEvaluations").or_else(|| map.get("step_evaluations")) {
+    if let Some(arr) = map
+        .get("stepEvaluations")
+        .or_else(|| map.get("step_evaluations"))
+    {
         if let Some(arr) = arr.as_array() {
             ti.step_evaluations = Some(arr.clone());
         }
@@ -1215,7 +1239,10 @@ fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::
     if let Some(v) = map.get("message").and_then(|v| v.as_str()) {
         ti.message = Some(v.to_string());
     }
-    if let Some(v) = map.get("targetAgentId").or_else(|| map.get("target_agent_id")) {
+    if let Some(v) = map
+        .get("targetAgentId")
+        .or_else(|| map.get("target_agent_id"))
+    {
         ti.target_agent_id = v.as_str().map(|s| s.to_string());
     }
     if let Some(v) = map.get("messageType").or_else(|| map.get("message_type")) {

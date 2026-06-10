@@ -47,10 +47,7 @@ impl PathValidator {
     /// the sandbox or does not exist.
     pub fn validate(&self, path: &Path) -> Result<PathBuf, PathValidationError> {
         let canonical = path.canonicalize().map_err(|e| {
-            PathValidationError::PathTraversal(format!(
-                "cannot canonicalize {:?}: {}",
-                path, e
-            ))
+            PathValidationError::PathTraversal(format!("cannot canonicalize {:?}: {}", path, e))
         })?;
         self.validate_canonical(&canonical)
     }
@@ -63,10 +60,7 @@ impl PathValidator {
         // final component afterwards.
         let canonical = if path.exists() {
             path.canonicalize().map_err(|e| {
-                PathValidationError::PathTraversal(format!(
-                    "cannot canonicalize {:?}: {}",
-                    path, e
-                ))
+                PathValidationError::PathTraversal(format!("cannot canonicalize {:?}: {}", path, e))
             })?
         } else {
             let parent = path.parent().ok_or_else(|| {
@@ -128,7 +122,12 @@ mod tests {
     fn test_path_traversal_with_dotdot() {
         let temp = std::env::temp_dir();
         let validator = PathValidator::new(&temp).expect("temp dir should exist");
-        let evil = temp.join("foo").join("..").join("..").join("etc").join("passwd");
+        let evil = temp
+            .join("foo")
+            .join("..")
+            .join("..")
+            .join("etc")
+            .join("passwd");
         let result = validator.validate(&evil);
         assert!(result.is_err());
     }

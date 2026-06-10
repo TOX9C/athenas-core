@@ -172,10 +172,10 @@ fn detect_system_theme() -> &'static str {
         if let Ok(val) = result {
             if let Some(s) = val.as_string() {
                 if s == "light" {
-                    return "dawn";
+                    return "onyx";
                 }
             }
         }
     }
-    "noir"
+    "onyx"
 }

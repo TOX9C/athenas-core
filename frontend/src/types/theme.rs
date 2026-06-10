@@ -45,13 +45,21 @@ pub struct ThemeDefinition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, Display)]
 #[strum(serialize_all = "kebab-case")]
 pub enum ThemeName {
-    Noir,
+    Onyx,
+    Sage,
+    Volcanic,
+    Tidal,
     Obsidian,
-    Tide,
-    Cedar,
-    Dawn,
-    Aurora,
-    Erebus,
-    Eclipse,
+    Grove,
+    Midnight,
+    Ember,
+    Ivory,
+    Sand,
+    Ash,
+    Rose,
+    Cloud,
+    Lavender,
+    Mint,
+    Coral,
     System,
 }

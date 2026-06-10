@@ -49,8 +49,9 @@ fn validate_path(path: &std::path::Path) -> Result<std::path::PathBuf, CommandEr
     } else {
         root.join(path)
     };
-    let validator = athena_fs::path_validator::PathValidator::new(&root)
-        .map_err(|e| CommandError::Internal(format!("Failed to initialize path validator: {}", e)))?;
+    let validator = athena_fs::path_validator::PathValidator::new(&root).map_err(|e| {
+        CommandError::Internal(format!("Failed to initialize path validator: {}", e))
+    })?;
     let validated = validator
         .validate_write(&full_path)
         .map_err(|e| CommandError::PermissionDenied(format!("Invalid write path: {}", e)))?;
@@ -1726,14 +1727,25 @@ fn main_window(state: &AppState) -> Result<tauri::Window, String> {
 }
 
 /// Calculate default position and size for the right sidebar browser child webview.
-fn sidebar_bounds(window: &tauri::Window) -> Result<(tauri_runtime::dpi::LogicalPosition<f64>, tauri_runtime::dpi::LogicalSize<f64>), String> {
+fn sidebar_bounds(
+    window: &tauri::Window,
+) -> Result<
+    (
+        tauri_runtime::dpi::LogicalPosition<f64>,
+        tauri_runtime::dpi::LogicalSize<f64>,
+    ),
+    String,
+> {
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let sidebar_w = 420u32;
     let x = size.width.saturating_sub(sidebar_w).saturating_sub(15) as f64;
     let y = 120.0f64; // below header/toolbar
     let w = sidebar_w as f64;
     let h = (size.height.saturating_sub(120).saturating_sub(60)) as f64;
-    Ok((tauri_runtime::dpi::LogicalPosition::new(x, y), tauri_runtime::dpi::LogicalSize::new(w, h)))
+    Ok((
+        tauri_runtime::dpi::LogicalPosition::new(x, y),
+        tauri_runtime::dpi::LogicalSize::new(w, h),
+    ))
 }
 
 /// Open (show) a browser panel — creates the child webview if not already present.
@@ -1755,7 +1767,10 @@ pub fn browser_show(state: State<'_, AppState>, id: String, url: String) -> Resu
         }
     }
 
-    state.browser_manager.open_browser(&id, &normalized).map_err(|e| e.to_string())
+    state
+        .browser_manager
+        .open_browser(&id, &normalized)
+        .map_err(|e| e.to_string())
 }
 
 /// Hide (close) a browser panel — destroys the child webview.
@@ -1772,7 +1787,10 @@ pub fn browser_hide(state: State<'_, AppState>, id: String) -> Result<(), String
         labels.remove(&label);
     }
 
-    state.browser_manager.close_browser(&id).map_err(|e| e.to_string())
+    state
+        .browser_manager
+        .close_browser(&id)
+        .map_err(|e| e.to_string())
 }
 
 /// Navigate a browser panel to a new URL.
@@ -1797,13 +1815,19 @@ pub fn browser_navigate(state: State<'_, AppState>, id: String, url: String) -> 
         }
     }
 
-    state.browser_manager.navigate(&id, &normalized).map_err(|e| e.to_string())
+    state
+        .browser_manager
+        .navigate(&id, &normalized)
+        .map_err(|e| e.to_string())
 }
 
 /// Navigate back in browser history.
 #[tauri::command]
 pub fn browser_back(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    let url = state.browser_manager.go_back(&id).map_err(|e| e.to_string())?;
+    let url = state
+        .browser_manager
+        .go_back(&id)
+        .map_err(|e| e.to_string())?;
     let label = child_label(&id);
     let handle = state.get_app_handle().ok_or("AppHandle not available")?;
 
@@ -1818,7 +1842,10 @@ pub fn browser_back(state: State<'_, AppState>, id: String) -> Result<String, St
 /// Navigate forward in browser history.
 #[tauri::command]
 pub fn browser_forward(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    let url = state.browser_manager.go_forward(&id).map_err(|e| e.to_string())?;
+    let url = state
+        .browser_manager
+        .go_forward(&id)
+        .map_err(|e| e.to_string())?;
     let label = child_label(&id);
     let handle = state.get_app_handle().ok_or("AppHandle not available")?;
 
@@ -1847,7 +1874,10 @@ pub fn browser_reload(state: State<'_, AppState>, id: String) -> Result<(), Stri
 #[tauri::command]
 pub fn browser_open_external(state: State<'_, AppState>, url: String) -> Result<(), String> {
     let handle = state.get_app_handle().ok_or("AppHandle not available")?;
-    let label = format!("browser-external-{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
+    let label = format!(
+        "browser-external-{}",
+        uuid::Uuid::new_v4().to_string()[..8].to_string()
+    );
 
     let parsed = tauri::Url::parse(&url).map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
 

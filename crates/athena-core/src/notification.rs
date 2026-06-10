@@ -156,7 +156,10 @@ impl NotificationService {
     fn now() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|_| { log::warn!("System clock error"); std::time::Duration::default() })
+            .unwrap_or_else(|_| {
+                log::warn!("System clock error");
+                std::time::Duration::default()
+            })
             .as_millis() as u64
     }
 

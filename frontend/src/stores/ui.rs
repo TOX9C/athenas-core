@@ -3,48 +3,83 @@ use dioxus::prelude::*;
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum UITheme {
     #[default]
-    Noir,
+    Onyx,
+    Sage,
+    Volcanic,
+    Tidal,
     Obsidian,
-    Tide,
-    Cedar,
-    Dawn,
-    Aurora,
-    Erebus,
-    Eclipse,
+    Grove,
+    Midnight,
+    Ember,
+    Ivory,
+    Sand,
+    Ash,
+    Rose,
+    Cloud,
+    Lavender,
+    Mint,
+    Coral,
     System,
 }
 
 impl UITheme {
     pub fn is_dark(&self) -> bool {
-        !matches!(self, UITheme::Dawn | UITheme::System)
+        !matches!(
+            self,
+            UITheme::Ivory
+                | UITheme::Sand
+                | UITheme::Ash
+                | UITheme::Rose
+                | UITheme::Cloud
+                | UITheme::Lavender
+                | UITheme::Mint
+                | UITheme::Coral
+                | UITheme::System
+        )
     }
 
     pub fn name(&self) -> &'static str {
         match self {
-            UITheme::Noir => "noir",
+            UITheme::Onyx => "onyx",
+            UITheme::Sage => "sage",
+            UITheme::Volcanic => "volcanic",
+            UITheme::Tidal => "tidal",
             UITheme::Obsidian => "obsidian",
-            UITheme::Tide => "tide",
-            UITheme::Cedar => "cedar",
-            UITheme::Dawn => "dawn",
-            UITheme::Aurora => "aurora",
-            UITheme::Erebus => "erebus",
-            UITheme::Eclipse => "eclipse",
+            UITheme::Grove => "grove",
+            UITheme::Midnight => "midnight",
+            UITheme::Ember => "ember",
+            UITheme::Ivory => "ivory",
+            UITheme::Sand => "sand",
+            UITheme::Ash => "ash",
+            UITheme::Rose => "rose",
+            UITheme::Cloud => "cloud",
+            UITheme::Lavender => "lavender",
+            UITheme::Mint => "mint",
+            UITheme::Coral => "coral",
             UITheme::System => "system",
         }
     }
 
     pub fn from_name(name: &str) -> Self {
         match name {
-            "noir" => UITheme::Noir,
+            "onyx" => UITheme::Onyx,
+            "sage" => UITheme::Sage,
+            "volcanic" => UITheme::Volcanic,
+            "tidal" => UITheme::Tidal,
             "obsidian" => UITheme::Obsidian,
-            "tide" => UITheme::Tide,
-            "cedar" => UITheme::Cedar,
-            "dawn" => UITheme::Dawn,
-            "aurora" => UITheme::Aurora,
-            "erebus" => UITheme::Erebus,
-            "eclipse" => UITheme::Eclipse,
+            "grove" => UITheme::Grove,
+            "midnight" => UITheme::Midnight,
+            "ember" => UITheme::Ember,
+            "ivory" => UITheme::Ivory,
+            "sand" => UITheme::Sand,
+            "ash" => UITheme::Ash,
+            "rose" => UITheme::Rose,
+            "cloud" => UITheme::Cloud,
+            "lavender" => UITheme::Lavender,
+            "mint" => UITheme::Mint,
+            "coral" => UITheme::Coral,
             "system" => UITheme::System,
-            _ => UITheme::Noir,
+            _ => UITheme::Onyx,
         }
     }
 }

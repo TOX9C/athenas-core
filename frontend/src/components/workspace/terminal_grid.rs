@@ -268,8 +268,8 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let pane_id_for_close = props.pane_id.clone();
     let space_id_for_close = props.space_id.clone();
     let agent_label = get_agent_label(&props.agent_type);
-    let agent_color = get_agent_color(&props.agent_type);
-    let display_id: String = props.pane_id.chars().take(10).collect();
+    let _agent_color = get_agent_color(&props.agent_type);
+    let _display_id: String = props.pane_id.chars().take(10).collect();
 
     rsx! {
         div {
@@ -279,58 +279,57 @@ fn PaneItem(props: PaneItemProps) -> Element {
             },
 
             div {
-                style: "padding: 8px 10px 5px 10px; background: var(--bg); border-bottom: none; flex-shrink: 0; position: relative; z-index: 1;",
+                style: "padding: 10px 10px 5px 10px; margin-top: 4px; background: var(--bg); border-bottom: none; flex-shrink: 0; position: relative; z-index: 1;",
                 div {
-                    class: "pane-pill",
-                    style: "display: flex; align-items: center; justify-content: space-between; gap: 8px;",
-
-                    div {
-                        style: "display: flex; align-items: center; gap: 8px; min-width: 0; transition: all 0.3s cubic-bezier(.25,.8,.25,1);",
-                        span {
-                            style: "font-size: 12px; line-height: 1; color: {agent_color}; flex-shrink: 0; transition: text-shadow 0.3s ease;",
-                            "∴"
-                        }
-                        span {
-                            style: "font-size: 11px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.3s ease;",
-                            "{agent_label}"
-                        }
-                        span {
-                            class: "pane-pill-id",
-                            "{display_id}"
-                        }
+                    style: "display: flex; align-items: center; gap: 10px; width: calc(100% - 16px); margin: 0 auto; min-height: 32px; padding: 8px 14px; border-radius: 999px; background: color-mix(in srgb, var(--bgSecondary) 60%, transparent); border: none;",
+                    span {
+                        style: "display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 999px; padding: 2px;",
+                        dangerous_inner_html: "<svg viewBox='0 0 24 24' fill='currentColor' width='14' height='14'><circle cx='12' cy='12' r='3'/><circle cx='12' cy='3' r='3'/><circle cx='12' cy='21' r='3'/></svg>",
                     }
+                    span {
+                        style: "font-size: 12px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0.01em;",
+                        "{agent_label}"
+                    }
+                    div {
+                        style: "display: inline-flex; align-items: center; gap: 8px; margin-left: auto;",
+                        button {
+                            title: "Fullscreen",
+                            style: "display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 999px; background: transparent; border: none; color: var(--textDim); cursor: pointer; font-size: 12px; line-height: 1; flex-shrink: 0; padding: 0;",
+                            dangerous_inner_html: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' width='12' height='12'><path d='M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3'/></svg>",
+                        }
 
-                    button {
-                        class: "pane-pill-close",
-                        title: "Close pane",
-                        onclick: move |e| {
-                            e.stop_propagation();
-                            {
-                                let mut ws = workspace.write();
-                                ws.remove_pane_from_space(&space_id_for_close, &pane_id_for_close);
-                            }
-                            {
-                                let mut term = terminal_store.write();
-                                term.sessions.remove(&pane_id_for_close);
-                                if term.active_session_id.as_deref() == Some(&pane_id_for_close) {
-                                    term.active_session_id = term.sessions.keys().next().cloned();
+                        button {
+                            title: "Close pane",
+                            style: "display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 999px; background: transparent; border: none; color: var(--textDim); cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; padding: 0;",
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                {
+                                    let mut ws = workspace.write();
+                                    ws.remove_pane_from_space(&space_id_for_close, &pane_id_for_close);
                                 }
-                                term.generation = term.generation.wrapping_add(1);
-                            }
-                            spawn({
-                                let pane_id = pane_id_for_close.clone();
-                                async move {
-                                    let _ = pty_kill(&pane_id).await;
+                                {
+                                    let mut term = terminal_store.write();
+                                    term.sessions.remove(&pane_id_for_close);
+                                    if term.active_session_id.as_deref() == Some(&pane_id_for_close) {
+                                        term.active_session_id = term.sessions.keys().next().cloned();
+                                    }
+                                    term.generation = term.generation.wrapping_add(1);
                                 }
-                            });
-                        },
-                        "×"
+                                spawn({
+                                    let pane_id = pane_id_for_close.clone();
+                                    async move {
+                                        let _ = pty_kill(&pane_id).await;
+                                    }
+                                });
+                            },
+                            "×"
+                        }
                     }
                 }
             }
 
             div {
-                style: "flex: 1; min-width: 0; min-height: 0; padding: 0; background: var(--bg);",
+                style: "flex: 1; min-width: 0; min-height: 0; padding: 0 0 4px 4px; background: var(--bg);",
                 if props.is_shell {
                     { render_shell_pane(props.pane_id.clone(), props.cwd.clone(), props.agent_type.clone(), props.resume_id.clone(), props.custom_cmd.clone()) }
                 } else {
