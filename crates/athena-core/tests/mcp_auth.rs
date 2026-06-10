@@ -47,7 +47,10 @@ async fn mcp_requires_initialize_before_tool_call() {
     writer.write_all(line.as_bytes()).await.unwrap();
 
     let response = read_response(&mut reader).await;
-    assert!(response.result.is_none(), "tools/call without init should fail");
+    assert!(
+        response.result.is_none(),
+        "tools/call without init should fail"
+    );
     let err = response.error.expect("Expected error response");
     assert_eq!(err.code, -32600, "Expected error -32600 (invalid request)");
     assert!(err.message.contains("Unauthenticated"));
@@ -63,8 +66,14 @@ async fn mcp_requires_initialize_before_tool_call() {
     writer.write_all(line.as_bytes()).await.unwrap();
 
     let init_response = read_response(&mut reader).await;
-    assert!(init_response.error.is_none(), "Valid initialize should succeed");
-    assert!(init_response.result.is_some(), "initialize should return a result");
+    assert!(
+        init_response.error.is_none(),
+        "Valid initialize should succeed"
+    );
+    assert!(
+        init_response.result.is_some(),
+        "initialize should return a result"
+    );
 
     // --- tools/call after init on connection 1 should succeed ---
     let req2 = JsonRpcRequest {
@@ -80,7 +89,11 @@ async fn mcp_requires_initialize_before_tool_call() {
     writer.write_all(line.as_bytes()).await.unwrap();
 
     let resp2 = read_response(&mut reader).await;
-    assert!(resp2.error.is_none(), "tools/call after init should succeed: {:?}", resp2.error);
+    assert!(
+        resp2.error.is_none(),
+        "tools/call after init should succeed: {:?}",
+        resp2.error
+    );
 
     // --- Connection 2: should NOT inherit auth from connection 1 ---
     let stream2 = tokio::net::TcpStream::connect(("127.0.0.1", port))
@@ -100,8 +113,13 @@ async fn mcp_requires_initialize_before_tool_call() {
     writer2.write_all(line.as_bytes()).await.unwrap();
 
     let list_response = read_response(&mut reader2).await;
-    assert!(list_response.result.is_none(), "tools/list without init on new connection should fail");
-    let err = list_response.error.expect("Expected error on new connection");
+    assert!(
+        list_response.result.is_none(),
+        "tools/list without init on new connection should fail"
+    );
+    let err = list_response
+        .error
+        .expect("Expected error on new connection");
     assert_eq!(err.code, -32600, "Expected error -32600 on new connection");
     assert!(err.message.contains("Unauthenticated"));
 

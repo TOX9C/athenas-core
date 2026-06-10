@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // Session persistence types
-use athena_store::SessionMessage as StoreMessage;
 use athena_store::MessageRole as StoreMessageRole;
+use athena_store::SessionMessage as StoreMessage;
 
 /// System prompt defining Athena as a workspace-aware orchestrator.
 /// This prompt is injected into every LLM conversation unless the user
@@ -81,7 +81,13 @@ impl std::fmt::Display for ProviderConfig {
 
 impl ProviderConfig {
     /// Create a new ProviderConfig with the given API key.
-    pub fn new(provider: LLMProvider, api_key: impl Into<String>, model: String, system_prompt: String, base_url: Option<String>) -> Self {
+    pub fn new(
+        provider: LLMProvider,
+        api_key: impl Into<String>,
+        model: String,
+        system_prompt: String,
+        base_url: Option<String>,
+    ) -> Self {
         Self {
             provider,
             api_key: secrecy::SecretString::from(api_key.into()),
@@ -539,7 +545,9 @@ impl AthenaOrchestrator {
             .get_session(session_id)
             .await
             .map_err(|e| OrchestratorError::Generic(e.to_string()))?
-            .ok_or_else(|| OrchestratorError::Generic(format!("Session '{}' not found", session_id)))?;
+            .ok_or_else(|| {
+                OrchestratorError::Generic(format!("Session '{}' not found", session_id))
+            })?;
 
         let anthropic: Vec<AnthropicMessage> = session
             .messages
@@ -607,9 +615,10 @@ impl AthenaOrchestrator {
             if !panes.is_empty() {
                 has_agents = true;
                 for pane in &panes {
-                    let activity = chrono::DateTime::from_timestamp_millis(pane.last_activity_at as i64)
-                        .map(|dt| dt.to_rfc3339())
-                        .unwrap_or_else(|| "unknown".to_string());
+                    let activity =
+                        chrono::DateTime::from_timestamp_millis(pane.last_activity_at as i64)
+                            .map(|dt| dt.to_rfc3339())
+                            .unwrap_or_else(|| "unknown".to_string());
                     lines.push(format!(
                         "  {} | type={} | lines={} | last_activity={}",
                         pane.pane_id, pane.agent_type, pane.line_count, activity
@@ -664,7 +673,10 @@ impl AthenaOrchestrator {
 
         // Kanban tasks (backend persistence is now available via kanban_list_tasks)
         lines.push("--- Kanban Tasks ---".to_string());
-        lines.push("  (tasks are persisted to the backend; use kanban_list_tasks to query them)".to_string());
+        lines.push(
+            "  (tasks are persisted to the backend; use kanban_list_tasks to query them)"
+                .to_string(),
+        );
         lines.push(String::new());
 
         lines.push("=====================================".to_string());
@@ -1049,7 +1061,10 @@ impl AthenaOrchestrator {
 
             let response = client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key.expose_secret()))
+                .header(
+                    "Authorization",
+                    format!("Bearer {}", api_key.expose_secret()),
+                )
                 .header("Content-Type", "application/json")
                 .json(&body)
                 .send()

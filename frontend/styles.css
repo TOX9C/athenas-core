@@ -5,33 +5,33 @@
   box-sizing: border-box;
 }
 :root {
---bg: #0b0e13;
---bgSecondary: #141820;
---bgTertiary: #1e232e;
---bgHover: #1c2128;
---border: #2a303e;
+--bg: #0D0D0E;
+--bgSecondary: #161718;
+--bgTertiary: #202123;
+--bgHover: #25272A;
+--border: #2A2C2F;
 --borderActive: rgba(255, 255, 255, 0.12);
---text: #e0e4ee;
---textMuted: #8890a4;
---textDim: #525a6e;
---accent: #00c2b5;
---accentHover: #00e0d5;
---accentSubtle: rgba(0, 194, 181, 0.1);
---success: #22c55e;
---error: #ef4444;
+--text: #F0F0F2;
+--textMuted: #9CA3AF;
+--textDim: #5E646E;
+--accent: #60A5FA;
+--accentHover: #93C5FD;
+--accentSubtle: rgba(96, 165, 250, 0.1);
+--success: #34D399;
+--error: #F87171;
 --warning: #f59e0b;
---green: #98c379;
---blue: #61afef;
---orange: #e5c07b;
---red: #e06c75;
---purple: #c678dd;
---cyan: #56b6c2;
+--green: #34D399;
+--blue: #60A5FA;
+--orange: #FBBF24;
+--red: #F87171;
+--purple: #A78BFA;
+--cyan: #2DD4BF;
 --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 --shadowLg: 0 8px 24px rgba(0, 0, 0, 0.4);
---terminalBg: #0b0e13;
---terminalFg: #e0e4ee;
---terminalCursor: #00c2b5;
---terminalSelection: rgba(0, 194, 181, 0.3);
+--terminalBg: #0D0D0E;
+--terminalFg: #F0F0F2;
+--terminalCursor: #60A5FA;
+--terminalSelection: rgba(96, 165, 250, 0.25);
 --fontFamily: "JetBrains Mono", monospace;
 --fontSize: 14px;
 }
@@ -226,41 +226,6 @@ color: inherit;
   color: var(--accent);
 }
 
-.pane-pill {
-  transition: background 0.15s ease, box-shadow 0.15s ease;
-}
-
-.pane-pill-status-dot {
-  display: inline-block;
-}
-
-.pane-pill-status-dot--pulse::after {
-  content: "";
-  position: absolute;
-  inset: -3px;
-  border-radius: 999px;
-  background: var(--pill-status-color);
-  opacity: 0.5;
-  animation: pane-pill-pulse 1.5s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
-  pointer-events: none;
-  will-change: transform, opacity;
-}
-
-@keyframes pane-pill-pulse {
-  0%   { transform: scale(0.7); opacity: 0.55; }
-  80%  { opacity: 0; }
-  100% { transform: scale(2.1); opacity: 0; }
-}
-
-.pane-pill-close:hover {
-  background: color-mix(in srgb, var(--border) 80%, transparent);
-  color: var(--text);
-}
-
-.pane-pill-close:active {
-  background: color-mix(in srgb, var(--border) 110%, transparent);
-  transform: scale(0.92);
-}
 .btn-primary {
   display: inline-flex;
   align-items: center;

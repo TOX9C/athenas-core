@@ -190,8 +190,8 @@ impl SessionManager {
 
         // Create a pipe for the child to report pre-exec errors.
         // FD_CLOEXEC ensures the pipe is closed automatically on a successful exec.
-        let (err_read, err_write) = nix::unistd::pipe()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        let (err_read, err_write) =
+            nix::unistd::pipe().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         let err_read = err_read.into_raw_fd();
         let err_write = err_write.into_raw_fd();
         unsafe {
@@ -226,9 +226,7 @@ impl SessionManager {
                 // kill the parent process group. We must not silently ignore
                 // this failure.
                 if setsid().is_err() {
-                    let _ = unsafe {
-                        libc::write(err_write, [1u8].as_ptr() as *const _, 1)
-                    };
+                    let _ = unsafe { libc::write(err_write, [1u8].as_ptr() as *const _, 1) };
                     let _ = close(err_write);
                     std::process::exit(1);
                 }
@@ -246,9 +244,7 @@ impl SessionManager {
                 let _ = nix::unistd::chdir(std::path::Path::new(cwd));
                 let _ = nix::unistd::execvp(&shell_cstr, &args);
                 // execvp only returns on failure.
-                let _ = unsafe {
-                    libc::write(err_write, [2u8].as_ptr() as *const _, 1)
-                };
+                let _ = unsafe { libc::write(err_write, [2u8].as_ptr() as *const _, 1) };
                 let _ = close(err_write);
                 std::process::exit(1);
             }
@@ -260,9 +256,7 @@ impl SessionManager {
                 // When execvp succeeds the pipe is closed (FD_CLOEXEC),
                 // returning 0 bytes (EOF).
                 let mut err_buf = [0u8; 1];
-                let n = unsafe {
-                    libc::read(err_read, err_buf.as_mut_ptr() as *mut _, 1)
-                };
+                let n = unsafe { libc::read(err_read, err_buf.as_mut_ptr() as *mut _, 1) };
                 let _ = close(err_read);
 
                 if n > 0 {
@@ -313,10 +307,8 @@ impl SessionManager {
                     }
                     let _ =
                         nix::sys::signal::killpg(session.pgid, nix::sys::signal::Signal::SIGTERM);
-                    let _ = nix::sys::wait::waitpid(
-                        child,
-                        Some(nix::sys::wait::WaitPidFlag::WNOHANG),
-                    );
+                    let _ =
+                        nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG));
                     return Ok(existing);
                 }
 
