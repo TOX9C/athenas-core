@@ -1,9 +1,18 @@
 use crate::types::{ChatSession, ImageRef, SessionListItem, SessionMessage};
 use base64::Engine as _;
 use serde_json;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
+
+/// Compute a lowercase hex SHA-256 content hash for an image's raw bytes.
+/// Used as a content-addressable identifier for dedup.
+fn content_hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
 
 #[derive(Error, Debug)]
 pub enum SessionStoreError {
@@ -87,21 +96,32 @@ impl SessionStore {
     }
 
     /// Save an image (base64 string) to disk and return its reference.
+    ///
+    /// Content-addressable: the image is stored at `<sha256>.bin` keyed by the
+    /// SHA-256 of the raw bytes. Saving the same image twice returns the same
+    /// `image_id` and writes to disk only once. The first base64 decode still
+    /// happens, but later loads of the same image skip the on-disk write.
     pub async fn save_image(
         &self,
         base64_str: &str,
         media_type: &str,
         name: Option<String>,
     ) -> Result<ImageRef, SessionStoreError> {
-        let image_id = Uuid::new_v4().to_string();
         let buffer = base64::engine::general_purpose::STANDARD
             .decode(base64_str)
             .map_err(|e| SessionStoreError::InvalidData(e.to_string()))?;
+        let image_id = content_hash(&buffer);
         let path = self.image_path(&image_id);
         let path_clone = path.clone();
-        tokio::task::spawn_blocking(move || std::fs::write(&path_clone, buffer))
-            .await
-            .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+        // Only write if the file doesn't already exist — dedup at the FS level.
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            if !path_clone.exists() {
+                std::fs::write(&path_clone, &buffer)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
         Ok(ImageRef {
             image_id,
             media_type: media_type.to_string(),
@@ -110,6 +130,11 @@ impl SessionStore {
     }
 
     /// Load an image from disk and return its base64 encoding.
+    ///
+    /// The on-disk path is `<image_id>.bin`. New images use a 64-char SHA-256
+    /// hash as their `image_id` (content-addressable). Sessions written before
+    /// the hash change used UUIDs — those still resolve correctly because the
+    /// `image_path` helper builds `<id>.bin` for any string.
     pub async fn load_image(&self, image_id: &str) -> Result<Option<String>, SessionStoreError> {
         let path = self.image_path(image_id);
         if !path.exists() {
@@ -362,5 +387,100 @@ impl SessionStore {
             }
         }
         Ok(removed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+
+    /// Build a SessionStore rooted in a fresh temp directory. Each test gets
+    /// an isolated images directory, so file counts are deterministic.
+    fn temp_store() -> (SessionStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = dir.path().join("sessions");
+        let images_dir = dir.path().join("images");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::create_dir_all(&images_dir).unwrap();
+        // Child module can construct via private fields, avoiding the
+        // shared-state of new_empty()/new_sync().
+        let store = SessionStore {
+            sessions_dir,
+            images_dir,
+        };
+        (store, dir)
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn count_files_in_store(store: &SessionStore) -> usize {
+        let dir = store
+            .image_path("__probe__")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        std::fs::read_dir(&dir)
+            .map(|it| it.flatten().count())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn save_image_dedupes_identical_content() {
+        let (store, _dir) = temp_store();
+        let bytes = b"fake-png-bytes-for-dedup-test";
+        let input = b64(bytes);
+
+        let ref1 = store
+            .save_image(&input, "image/png", Some("a".into()))
+            .await
+            .expect("save 1");
+        assert_eq!(count_files_in_store(&store), 1, "first save creates file");
+
+        let ref2 = store
+            .save_image(&input, "image/png", Some("a".into()))
+            .await
+            .expect("save 2");
+        assert_eq!(
+            count_files_in_store(&store),
+            1,
+            "second save must NOT create a new file"
+        );
+        assert_eq!(
+            ref1.image_id, ref2.image_id,
+            "identical content yields identical id"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_image_returns_correct_data() {
+        let (store, _dir) = temp_store();
+        let bytes = b"hello-image-bytes";
+        let input = b64(bytes);
+
+        let img_ref = store
+            .save_image(&input, "image/png", Some("hi".into()))
+            .await
+            .expect("save");
+        let loaded = store
+            .load_image(&img_ref.image_id)
+            .await
+            .expect("load")
+            .expect("present");
+        assert_eq!(loaded, input, "loaded base64 must round-trip");
+    }
+
+    #[tokio::test]
+    async fn different_images_get_different_ids() {
+        let (store, _dir) = temp_store();
+        let a = b64(b"alpha-image");
+        let b = b64(b"beta-image");
+
+        let ref_a = store.save_image(&a, "image/png", None).await.unwrap();
+        let ref_b = store.save_image(&b, "image/png", None).await.unwrap();
+        assert_ne!(ref_a.image_id, ref_b.image_id);
+        assert_eq!(count_files_in_store(&store), 2);
     }
 }
