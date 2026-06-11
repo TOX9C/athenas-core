@@ -8,12 +8,12 @@ A next-generation desktop IDE for AI-assisted software development. Athena's Cor
 
 <p align="center">
   <a href="docs/athenas-core-ad.mp4">
-    <img src="docs/athenas-core-ad.gif" alt="Athena's Core - Product Advertisement" width="800" />
+    <img src="docs/athenas-core-ad.gif" alt="Athena's Core — Product Showcase" width="900" />
   </a>
 </p>
 
 <p align="center">
-  <i>Preview above is an animated GIF. <a href="docs/athenas-core-ad.mp4">Click here to download the full 1080p MP4 (11 MB)</a>.</i>
+  <i>75-second product showcase: workspace, AI chat, swarm, kanban, editor, and command palette.<br><a href="docs/athenas-core-ad.mp4">Download the full 1080p MP4 (5 MB)</a></i>
 </p>
 
 ---

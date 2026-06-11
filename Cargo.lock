@@ -185,7 +185,6 @@ name = "athena-browser"
 version = "0.1.0"
 dependencies = [
  "log",
- "parking_lot",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -255,7 +254,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "log",
- "parking_lot",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
