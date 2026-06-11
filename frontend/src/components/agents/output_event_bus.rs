@@ -174,7 +174,8 @@ pub fn OutputEventBus() -> Element {
                         message,
                         source: "agent".to_string(),
                         read: false,
-                        timestamp: chrono::Utc::now().timestamp(),
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                        count: 1,
                     };
                     add_notification(&mut notifications, notif);
                 }
