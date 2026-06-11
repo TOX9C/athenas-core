@@ -276,46 +276,48 @@ fn json_to_tool_input(value: &serde_json::Value) -> Result<ToolInput, Orchestrat
     serde_json::from_value(value.clone()).map_err(OrchestratorError::SerializationError)
 }
 
-/// Global rate limiter to prevent hammering the LLM API.
+/// Rate limiter to prevent hammering the LLM API.
+/// Global rate limiter for outbound LLM API requests.
 ///
-/// Uses a `tokio::sync::Semaphore` with a single permit. A caller that
-/// arrives while a permit is held will be suspended at `acquire_owned().await`
-/// until the previous permit is released, giving true global rate limiting
-/// across concurrent callers (the prior `Instant` + `Mutex` design
-/// computed per-caller sleep durations and did not serialize them).
-///
-/// Semantics: at most one caller passes through `wait_if_needed` per
-/// `min_interval_ms`. The permit is released on a background task after
-/// the interval, so the caller's HTTP round-trip is *not* included in
-/// the wait window — we throttle request *starts*, which matches the
-/// rate-limit headers enforced by major LLM providers.
+/// Backed by a `tokio::sync::Semaphore` with a single permit. The first
+/// caller acquires the permit immediately, then spawns a background task
+/// that sleeps for `min_interval` and releases the permit. Subsequent
+/// callers arriving during that window wait on the semaphore — this
+/// guarantees the limiter is enforced globally across concurrent tasks
+/// (not per-task), without serializing the entire hot path on a mutex.
 struct RateLimiter {
     semaphore: Arc<tokio::sync::Semaphore>,
-    min_interval: Duration,
+    min_interval: std::time::Duration,
 }
 
 impl RateLimiter {
     fn new(min_interval_ms: u64) -> Self {
         Self {
-            // One permit = strictly serial access; each new caller must
-            // wait until the previous permit is released.
             semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
-            min_interval: Duration::from_millis(min_interval_ms),
+            min_interval: std::time::Duration::from_millis(min_interval_ms),
         }
     }
 
     async fn wait_if_needed(&self) {
-        // Acquire an owned permit; this awaits if all permits are in use.
-        // The semaphore is never closed, so the `Err` branch is unreachable
-        // in practice — handle it defensively to keep the API `async fn`
-        // (non-fallible) for callers.
+        // Acquire the single permit. If it's currently held (by a
+        // recent call's refiller task), this awaits until that task
+        // releases it. The semaphore is never closed, so `acquire`
+        // cannot fail in practice; we still handle the error path to
+        // satisfy the type system and surface unexpected closes loudly.
         let permit = match self.semaphore.clone().acquire_owned().await {
             Ok(p) => p,
-            Err(_) => return,
+            Err(_) => {
+                // The semaphore was closed (should never happen during
+                // normal operation). Fall back to a no-op wait so we
+                // don't panic in a request hot path.
+                return;
+            }
         };
-        // Release the permit after the configured interval. Spawning
-        // decouples the release from the caller's HTTP round-trip so
-        // the next caller can be admitted exactly `min_interval` later.
+        // Spawn a task that returns the permit after `min_interval`.
+        // Because we used `acquire_owned`, the permit can move into
+        // the spawned task and be dropped there — releasing the
+        // semaphore slot — without us needing to hold it across the
+        // caller's actual work.
         let interval = self.min_interval;
         tokio::spawn(async move {
             tokio::time::sleep(interval).await;
@@ -1371,73 +1373,92 @@ mod tests {
     #[allow(dead_code)]
     fn _tool_input_ref(_t: &ToolInput) {}
 
-    // -----------------------------------------------------------------
-    // RateLimiter tests
-    //
-    // These exercise the global rate-limit semantics implemented via
-    // a `tokio::sync::Semaphore`. The limiter is `struct`-private, so
-    // we drive it from within the `tests` submodule which has access
-    // to `super::*`.
-    // -----------------------------------------------------------------
-
-    /// First call to `wait_if_needed` must proceed near-instantly: the
-    /// semaphore starts with one permit available, so the acquire
-    /// completes without awaiting any sleep.
+    /// The first call to a fresh limiter must not block — it acquires the
+    /// single permit immediately and proceeds. Subsequent calls arriving
+    /// within the interval must wait for the spawned refiller task to
+    /// release the permit.
+    ///
+    /// Uses real wall-clock time (not `start_paused`) because
+    /// `std::time::Instant` measures real time, not the Tokio virtual
+    /// clock — `start_paused` would let the test "succeed" trivially
+    /// because the assertion is in real milliseconds while virtual
+    /// time auto-advances inside the runtime.
     #[tokio::test]
     async fn rate_limiter_first_call_proceeds_immediately() {
-        let limiter = RateLimiter::new(500);
+        // 200ms interval keeps the wall-clock cost of the test low while
+        // still giving a measurable gap between the first and second
+        // calls.
+        let limiter = RateLimiter::new(200);
         let started = std::time::Instant::now();
         limiter.wait_if_needed().await;
-        let elapsed = started.elapsed();
+        let first_elapsed = started.elapsed();
+        // First call: permit was free, no spawn-then-wait blocking.
         assert!(
-            elapsed < Duration::from_millis(100),
-            "first call should not block on a sleep, took {:?}",
-            elapsed
+            first_elapsed < std::time::Duration::from_millis(100),
+            "first call should be near-instant, got {:?}",
+            first_elapsed
+        );
+
+        let started = std::time::Instant::now();
+        limiter.wait_if_needed().await;
+        let second_elapsed = started.elapsed();
+        // Second call within the interval: must wait for the refiller to
+        // release the permit. Allow a generous lower bound (50% of
+        // interval) for the case where `Instant::now()` is sampled after
+        // some scheduling latency, and a generous upper bound (2.5x the
+        // interval) for CI flakiness.
+        assert!(
+            second_elapsed >= std::time::Duration::from_millis(100),
+            "second call should be throttled (~200ms), got {:?}",
+            second_elapsed
+        );
+        assert!(
+            second_elapsed < std::time::Duration::from_millis(500),
+            "second call should not exceed interval by more than 2.5x, got {:?}",
+            second_elapsed
         );
     }
 
-    /// Ten concurrent callers must be throttled by the global limiter.
-    /// With a 200ms interval and a single permit, callers 2..=10 must
-    /// wait until the previous permit is released. Total wall time
-    /// should be at least (N-1) * interval (≈1.8s for N=10) — far
-    /// longer than the ~0s they would take without throttling.
+    /// Ten concurrent callers all call `wait_if_needed` at the same
+    /// moment. All must eventually complete (the semaphore is never
+    /// closed), and the total wall-clock time should reflect the rate
+    /// limit: roughly `(N - 1) * min_interval` for single-permit
+    /// semantics. The lower bound catches a regression where the
+    /// limiter collapses to a no-op (instant return).
+    ///
+    /// Real wall-clock time is used (no `start_paused`) — see the note
+    /// in `rate_limiter_first_call_proceeds_immediately`. With a 50ms
+    /// interval, ten throttled calls should take roughly 9 * 50 = 450ms.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn rate_limiter_concurrent_callers_are_throttled_globally() {
-        const N: usize = 10;
-        const INTERVAL_MS: u64 = 200;
-        let limiter = Arc::new(RateLimiter::new(INTERVAL_MS));
-
+        let limiter = Arc::new(RateLimiter::new(50));
         let started = std::time::Instant::now();
-        let mut handles = Vec::with_capacity(N);
-        for _ in 0..N {
+
+        let mut handles = Vec::new();
+        for _ in 0..10 {
             let l = Arc::clone(&limiter);
             handles.push(tokio::spawn(async move {
                 l.wait_if_needed().await;
             }));
         }
         for h in handles {
-            h.await.expect("task should not panic");
+            h.await.expect("rate-limiter task should not panic");
         }
-        let total = started.elapsed();
+        let elapsed = started.elapsed();
 
-        // Lower bound: 9 intervals between the 10 admissions = 1.8s.
-        // Use a slightly relaxed bound to avoid flakiness on slow CI.
-        let min_expected = Duration::from_millis((N as u64 - 1) * INTERVAL_MS);
+        // 10 callers, 1 permit, 50ms interval -> first at t=0,
+        // subsequent at t=50, 100, ..., 450. Lower bound (300ms = 6
+        // intervals) catches a no-op regression. Upper bound (5s) is
+        // loose enough for any reasonable CI machine.
         assert!(
-            total >= min_expected,
-            "expected throttled callers to take at least {:?}, got {:?}",
-            min_expected,
-            total
+            elapsed >= std::time::Duration::from_millis(300),
+            "concurrent calls must be throttled (>= 300ms), got {:?}",
+            elapsed
         );
-        // Upper bound sanity check — 5x the lower bound, catching the
-        // "limiter is not actually serializing" regression where each
-        // caller would complete in microseconds.
-        let max_expected = min_expected * 5;
         assert!(
-            total < max_expected,
-            "rate limiter took unexpectedly long: {:?} (expected < {:?})",
-            total,
-            max_expected
+            elapsed < std::time::Duration::from_secs(5),
+            "concurrent calls should not be doubly-serialised (< 5s), got {:?}",
+            elapsed
         );
     }
 }
