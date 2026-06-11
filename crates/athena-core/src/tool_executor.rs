@@ -1785,9 +1785,10 @@ mod tests {
     /// Verifies that `fs_search` (sync) drives the async `search_code` via
     /// `Handle::current().block_on`. The tool is always invoked from an
     /// async context in production (Tauri command handlers wrap it in
-    /// `tokio::task::spawn_blocking` and the MCP server is fully async),
-    /// so we run the test inside a Tokio runtime to provide one.
-    #[tokio::test]
+    /// `tokio::task::spawn_blocking` and the MCP server is fully async).
+    /// We mirror that by calling from inside `spawn_blocking`, which
+    /// schedules the call on a dedicated thread where `block_on` is safe.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_fs_search_uses_async_search_code() {
         let tmp = tempfile::tempdir().unwrap();
         let original_dir = std::env::current_dir().unwrap();
@@ -1806,7 +1807,12 @@ mod tests {
             ..Default::default()
         };
 
-        let result = executor.fs_search(&args);
+        // Mirror production: Tauri command handlers wrap `fs_search` in
+        // `tokio::task::spawn_blocking`. Doing the same here keeps
+        // `Handle::current().block_on` off the runtime-driving thread.
+        let result = tokio::task::spawn_blocking(move || executor.fs_search(&args))
+            .await
+            .expect("spawn_blocking join");
         match result {
             Ok(call) => {
                 // ripgrep not installed on the host would surface as an
