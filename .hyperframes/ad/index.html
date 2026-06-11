@@ -1,0 +1,877 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Athena's Core - Product Ad</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cormorant:ital,wght@0,700;1,700&family=Hanken+Grotesk:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js" crossorigin="anonymous"></script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #07050f;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      #root {
+        width: 100%;
+        height: 100%;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .grain-overlay {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 1000;
+        opacity: 0.06;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+        background-size: 256px 256px;
+      }
+
+      .clip {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+
+      .scene-content {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        box-sizing: border-box;
+        position: relative;
+      }
+
+      /* ===== SCENE 1: THE NAME ===== */
+      .scene-1-bg {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at 50% 50%, rgba(201, 162, 75, 0.08) 0%, transparent 60%);
+        z-index: 0;
+      }
+
+      .s1-title {
+        font-family: 'Cormorant', Georgia, serif;
+        font-size: 140px;
+        font-weight: 700;
+        color: #f5f0e1;
+        text-align: center;
+        line-height: 0.9;
+        letter-spacing: -0.03em;
+        text-shadow: 0 0 80px rgba(201, 162, 75, 0.3);
+        z-index: 2;
+        padding: 0 60px;
+      }
+
+      .s1-rule {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, 0);
+        width: 400px;
+        height: 1px;
+        background: #c9a24b;
+        opacity: 0.3;
+        z-index: 2;
+      }
+
+      .s1-label {
+        position: absolute;
+        bottom: 200px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 14px;
+        font-weight: 400;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: #8e8a96;
+        z-index: 2;
+        white-space: nowrap;
+      }
+
+      /* ===== SCENE 2: TERMINAL ===== */
+      .scene-2-bg {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at 30% 40%, rgba(201, 162, 75, 0.06) 0%, transparent 50%), #0e0c14;
+        z-index: 0;
+      }
+
+      .s2-window {
+        width: 880px;
+        height: 540px;
+        background: #1a1624;
+        border: 1px solid rgba(201, 162, 75, 0.12);
+        padding: 40px;
+        box-sizing: border-box;
+        z-index: 2;
+        position: relative;
+      }
+
+      .s2-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 32px;
+      }
+
+      .s2-header-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #c9a24b;
+        opacity: 0.5;
+      }
+
+      .s2-header-title {
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 14px;
+        color: #8e8a96;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+      }
+
+      .s2-prompt {
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 24px;
+        color: #c9a24b;
+        margin-bottom: 24px;
+      }
+
+      .s2-output {
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 22px;
+        color: #e8e4d5;
+        line-height: 1.8;
+        opacity: 0.85;
+      }
+
+      .s2-output .dim {
+        color: #8e8a96;
+      }
+
+      .s2-cursor {
+        display: inline-block;
+        width: 10px;
+        height: 24px;
+        background: #c9a24b;
+        vertical-align: middle;
+        margin-left: 4px;
+      }
+
+      .s2-label {
+        position: absolute;
+        bottom: 80px;
+        left: 80px;
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 14px;
+        letter-spacing: 0.25em;
+        text-transform: uppercase;
+        color: #8e8a96;
+        z-index: 5;
+      }
+
+      /* ===== SCENE 3: AI CHAT ===== */
+      .scene-3-bg {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at 70% 30%, rgba(201, 162, 75, 0.06) 0%, transparent 50%), #0e0c14;
+        z-index: 0;
+      }
+
+      .s3-chat {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        max-width: 900px;
+        width: 100%;
+        padding: 0 60px;
+      }
+
+      .s3-bubble {
+        padding: 24px 32px;
+        max-width: 80%;
+        font-family: 'Hanken Grotesk', sans-serif;
+        font-size: 26px;
+        line-height: 1.5;
+      }
+
+      .s3-bubble-user {
+        align-self: flex-start;
+        background: #1a1624;
+        color: #e8e4d5;
+        border-left: 3px solid #6e6a74;
+      }
+
+      .s3-bubble-ai {
+        align-self: flex-end;
+        background: rgba(201, 162, 75, 0.08);
+        color: #f5f0e1;
+        border-left: 3px solid #c9a24b;
+      }
+
+      .s3-label {
+        position: absolute;
+        top: 80px;
+        left: 80px;
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 14px;
+        letter-spacing: 0.25em;
+        text-transform: uppercase;
+        color: #8e8a96;
+        z-index: 5;
+      }
+
+      /* ===== SCENE 4: SWARM ===== */
+      .scene-4-bg {
+        position: absolute;
+        inset: 0;
+        background: rgba(7, 5, 15, 0.95);
+        z-index: 0;
+      }
+
+      .s4-hub {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 160px;
+        height: 160px;
+        border: 1px solid rgba(201, 162, 75, 0.2);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2;
+      }
+
+      .s4-hub-glow {
+        position: absolute;
+        inset: -20px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(201, 162, 75, 0.15) 0%, transparent 70%);
+        z-index: 1;
+      }
+
+      .s4-hub-icon {
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 48px;
+        color: #c9a24b;
+      }
+
+      .s4-card {
+        position: absolute;
+        width: 240px;
+        padding: 28px;
+        background: #1a1624;
+        border: 1px solid rgba(201, 162, 75, 0.1);
+        z-index: 3;
+      }
+
+      .s4-card-title {
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 20px;
+        font-weight: 700;
+        color: #c9a24b;
+        margin-bottom: 8px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .s4-card-desc {
+        font-family: 'Hanken Grotesk', sans-serif;
+        font-size: 18px;
+        color: #e8e4d5;
+        opacity: 0.8;
+      }
+
+      .s4-label {
+        position: absolute;
+        top: 80px;
+        left: 80px;
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 14px;
+        letter-spacing: 0.25em;
+        text-transform: uppercase;
+        color: #8e8a96;
+        z-index: 5;
+      }
+
+      .s4-count {
+        position: absolute;
+        bottom: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        text-align: center;
+        z-index: 5;
+      }
+
+      .s4-count-num {
+        font-family: 'Cormorant', Georgia, serif;
+        font-size: 72px;
+        font-weight: 700;
+        color: #c9a24b;
+        line-height: 1;
+      }
+
+      .s4-count-label {
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 14px;
+        color: #8e8a96;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        margin-top: 8px;
+      }
+
+      /* ===== SCENE 5: FEATURE MONTAGE ===== */
+      .scene-5-bg {
+        position: absolute;
+        inset: 0;
+        background: #0e0c14;
+        z-index: 0;
+      }
+
+      .s5-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 24px;
+        width: 90%;
+        max-width: 1200px;
+      }
+
+      .s5-tile {
+        aspect-ratio: 16 / 9;
+        background: #1a1624;
+        border: 1px solid rgba(201, 162, 75, 0.1);
+        padding: 24px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .s5-tile-label {
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 12px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: #8e8a96;
+      }
+
+      .s5-tile-preview {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 14px;
+        color: #e8e4d5;
+        opacity: 0.6;
+        overflow: hidden;
+      }
+
+      .s5-label {
+        position: absolute;
+        top: 40px;
+        left: 40px;
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 14px;
+        letter-spacing: 0.25em;
+        text-transform: uppercase;
+        color: #8e8a96;
+        z-index: 5;
+      }
+
+      /* ===== SCENE 6: CTA ===== */
+      .scene-6-bg {
+        position: absolute;
+        inset: 0;
+        background: #07050f;
+        z-index: 0;
+      }
+
+      .scene-6-bg::before {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 600px;
+        height: 600px;
+        background: radial-gradient(circle, rgba(201, 162, 75, 0.1) 0%, transparent 60%);
+        z-index: 1;
+      }
+
+      .s6-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 40px;
+        z-index: 2;
+      }
+
+      .s6-title {
+        font-family: 'Cormorant', Georgia, serif;
+        font-style: italic;
+        font-size: 96px;
+        font-weight: 700;
+        color: #f5f0e1;
+        text-align: center;
+        line-height: 1.1;
+        max-width: 800px;
+      }
+
+      .s6-cta {
+        padding: 20px 48px;
+        border: 1px solid #c9a24b;
+        background: transparent;
+        color: #c9a24b;
+        font-family: 'Hanken Grotesk', sans-serif;
+        font-size: 22px;
+        font-weight: 500;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+
+      .s6-url {
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 16px;
+        color: #8e8a96;
+        margin-top: 16px;
+      }
+
+      .s6-badge {
+        position: absolute;
+        bottom: 60px;
+        right: 60px;
+        font-family: 'Space Mono', 'SF Mono', monospace;
+        font-size: 13px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: #8e8a96;
+        z-index: 5;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="root" data-width="1920" data-height="1080" data-start="0" data-duration="35">
+      <!-- Grain Overlay (Global, not a clip) -->
+      <div class="grain-overlay"></div>
+
+      <!-- ===== SCENE 1: THE NAME (0-4s) ===== -->
+      <div id="scene-1" class="clip" data-start="0" data-duration="4" data-track-index="1">
+        <div class="scene-content">
+          <div class="scene-1-bg"></div>
+          <div class="s1-rule" id="s1-rule"></div>
+          <div class="s1-title" id="s1-title">ATHENA'S CORE</div>
+          <div class="s1-label" id="s1-label">Obsidian // Gold</div>
+        </div>
+      </div>
+
+      <!-- ===== SCENE 2: TERMINAL (4-9s) ===== -->
+      <div id="scene-2" class="clip" data-start="4" data-duration="5" data-track-index="2">
+        <div class="scene-content">
+          <div class="scene-2-bg"></div>
+          <div class="s2-window" id="s2-window">
+            <div class="s2-header">
+              <div class="s2-header-dot"></div>
+              <div class="s2-header-title">Terminal</div>
+            </div>
+            <div class="s2-prompt" id="s2-prompt">
+              $ athena --deploy
+              <span class="s2-cursor" id="s2-cursor"></span>
+            </div>
+            <div class="s2-output" id="s2-output">
+              <div>Compiling athena-core...</div>
+              <div>Running 14 tool handlers</div>
+              <div class="dim">MCP Server active on :4545</div>
+            </div>
+          </div>
+          <div class="s2-label" id="s2-label">Terminal // PTY Power</div>
+        </div>
+      </div>
+
+      <!-- ===== SCENE 3: AI CHAT (9-14s) ===== -->
+      <div id="scene-3" class="clip" data-start="9" data-duration="5" data-track-index="3">
+        <div class="scene-content">
+          <div class="scene-3-bg"></div>
+          <div class="s3-chat" id="s3-chat">
+            <div class="s3-bubble s3-bubble-user" id="s3-bubble-user">
+              Refactor the auth module
+            </div>
+            <div class="s3-bubble s3-bubble-ai" id="s3-bubble-ai">
+              Done. Extracted auth logic, added middleware, pushed to main.
+            </div>
+          </div>
+          <div class="s3-label" id="s3-label">Athena // AI Co-Pilot</div>
+        </div>
+      </div>
+
+      <!-- ===== SCENE 4: SWARM (14-20s) ===== -->
+      <div id="scene-4" class="clip" data-start="14" data-duration="6" data-track-index="4">
+        <div class="scene-content">
+          <div class="scene-4-bg"></div>
+          <div class="s4-hub" id="s4-hub">
+            <div class="s4-hub-glow"></div>
+            <div class="s4-hub-icon">&#9679;</div>
+          </div>
+          <div class="s4-card" id="s4-card-1" style="top: 160px; left: 160px;">
+            <div class="s4-card-title">Code</div>
+            <div class="s4-card-desc">Refactors files</div>
+          </div>
+          <div class="s4-card" id="s4-card-2" style="top: 160px; right: 160px;">
+            <div class="s4-card-title">Architect</div>
+            <div class="s4-card-desc">Designs systems</div>
+          </div>
+          <div class="s4-card" id="s4-card-3" style="bottom: 160px; left: 160px;">
+            <div class="s4-card-title">DevOps</div>
+            <div class="s4-card-desc">Deploys stacks</div>
+          </div>
+          <div class="s4-card" id="s4-card-4" style="bottom: 160px; right: 160px;">
+            <div class="s4-card-title">Tester</div>
+            <div class="s4-card-desc">Verifies logic</div>
+          </div>
+          <div class="s4-label" id="s4-label">Swarm // Multi-Agent Mind</div>
+          <div class="s4-count" id="s4-count">
+            <div class="s4-count-num" id="s4-count-num">0</div>
+            <div class="s4-count-label">Active Agents</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== SCENE 5: FEATURE MONTAGE (20-26s) ===== -->
+      <div id="scene-5" class="clip" data-start="20" data-duration="6" data-track-index="5">
+        <div class="scene-content">
+          <div class="scene-5-bg"></div>
+          <div class="s5-grid" id="s5-grid">
+            <div class="s5-tile" id="s5-tile-1">
+              <div class="s5-tile-label">Terminal</div>
+              <div class="s5-tile-preview">ttyS0 reactive</div>
+            </div>
+            <div class="s5-tile" id="s5-tile-2">
+              <div class="s5-tile-label">AI Chat</div>
+              <div class="s5-tile-preview">claude/sonnet</div>
+            </div>
+            <div class="s5-tile" id="s5-tile-3">
+              <div class="s5-tile-label">Kanban</div>
+              <div class="s5-tile-preview">14 tasks open</div>
+            </div>
+            <div class="s5-tile" id="s5-tile-4">
+              <div class="s5-tile-label">Swarm</div>
+              <div class="s5-tile-preview">4 agents live</div>
+            </div>
+            <div class="s5-tile" id="s5-tile-5">
+              <div class="s5-tile-label">Editor</div>
+              <div class="s5-tile-preview">lib.rs active</div>
+            </div>
+            <div class="s5-tile" id="s5-tile-6">
+              <div class="s5-tile-label">Browser</div>
+              <div class="s5-tile-preview">localhost:3000</div>
+            </div>
+          </div>
+          <div class="s5-label" id="s5-label">75+ Features // One Workspace</div>
+        </div>
+      </div>
+
+      <!-- ===== SCENE 6: CTA (26-35s) ===== -->
+      <div id="scene-6" class="clip" data-start="26" data-duration="9" data-track-index="6">
+        <div class="scene-content">
+          <div class="scene-6-bg"></div>
+          <div class="s6-content" id="s6-content">
+            <div class="s6-title" id="s6-title">Redefine your workflow.</div>
+            <div class="s6-cta" id="s6-cta">Get Athena's Core</div>
+            <div class="s6-url" id="s6-url">github.com/athenas-core</div>
+          </div>
+          <div class="s6-badge" id="s6-badge">Obsidian & Gold</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      const beat = 35;
+
+      // ===== GRAIN OVERLAY AMBIENT =====
+      tl.fromTo(
+        ".grain-overlay",
+        { opacity: 0.04 },
+        { opacity: 0.08, duration: 3, yoyo: true, repeat: 11, ease: "sine.inOut" },
+        0
+      );
+
+      // ============================================
+      // SCENE 1: THE NAME (0-4s)
+      // ============================================
+      // Radial glow entrance
+      tl.fromTo(
+        ".scene-1-bg",
+        { opacity: 0.5, scale: 0.85 },
+        { opacity: 1, scale: 1, duration: 2, ease: "power3.out" },
+        0.3
+      );
+
+      // Title slam
+      tl.fromTo(
+        "#s1-title",
+        { y: 50, opacity: 0, scale: 1.05 },
+        { y: 0, opacity: 1, scale: 1, duration: 0.8, ease: "expo.out" },
+        0.5
+      );
+
+      // Hairline draws out from center
+      tl.fromTo(
+        "#s1-rule",
+        { scaleX: 0 },
+        { scaleX: 1, duration: 0.6, ease: "power2.inOut" },
+        0.8
+      );
+
+      // Label fade in
+      tl.fromTo(
+        "#s1-label",
+        { y: 20, opacity: 0 },
+        { y: 0, opacity: 0.6, duration: 0.6, ease: "sine.inOut" },
+        1.2
+      );
+
+      // Ambient glow breathing at the end
+      tl.to(
+        ".scene-1-bg",
+        { scale: 1.02, yoyo: true, repeat: 3, duration: 1.5, ease: "sine.inOut" },
+        2.3
+      );
+
+      // ============================================
+      // SCENE 2: TERMINAL (4-9s)
+      // ============================================
+      // Window slides up
+      tl.fromTo(
+        "#s2-window",
+        { y: 60, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.6, ease: "power3.out" },
+        4.2
+      );
+
+      // Prompt types in
+      tl.fromTo(
+        "#s2-prompt",
+        { opacity: 0, x: -15 },
+        { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" },
+        4.8
+      );
+
+      // Cursor blink (single sequence)
+      tl.fromTo(
+        "#s2-cursor",
+        { opacity: 1 },
+        { opacity: 0, yoyo: true, repeat: 9, duration: 0.2, ease: "steps(1)" },
+        5.0
+      );
+
+      // Output fades in after prompt
+      tl.fromTo(
+        "#s2-output",
+        { opacity: 0, y: 10 },
+        { opacity: 0.85, y: 0, duration: 0.5, ease: "power2.out" },
+        5.5
+      );
+
+      // Label fade in
+      tl.fromTo(
+        "#s2-label",
+        { y: 20, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.4, ease: "power2.out" },
+        5.8
+      );
+
+      // ============================================
+      // SCENE 3: AI CHAT (9-14s)
+      // ============================================
+      // User bubble slides in from left
+      tl.fromTo(
+        "#s3-bubble-user",
+        { x: -100, opacity: 0 },
+        { x: 0, opacity: 1, duration: 0.5, ease: "expo.out" },
+        9.3
+      );
+
+      // AI bubble slides in from right
+      tl.fromTo(
+        "#s3-bubble-ai",
+        { x: 100, opacity: 0 },
+        { x: 0, opacity: 1, duration: 0.5, ease: "expo.out" },
+        10.2
+      );
+
+      // Label fade in top-left
+      tl.fromTo(
+        "#s3-label",
+        { y: -20, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.4, ease: "power3.out" },
+        9.5
+      );
+
+      // ============================================
+      // SCENE 4: SWARM (14-20s)
+      // ============================================
+      // Hub pulses into existence
+      tl.fromTo(
+        "#s4-hub",
+        { scale: 0, opacity: 0 },
+        { scale: 1, opacity: 1, duration: 0.4, ease: "power2.out" },
+        14.3
+      );
+
+      // Cards converge from edges
+      tl.fromTo(
+        "#s4-card-1",
+        { x: -300, opacity: 0 },
+        { x: 0, opacity: 1, duration: 0.6, ease: "power3.out" },
+        14.6
+      );
+
+      tl.fromTo(
+        "#s4-card-2",
+        { x: 300, opacity: 0 },
+        { x: 0, opacity: 1, duration: 0.6, ease: "power3.out" },
+        14.75
+      );
+
+      tl.fromTo(
+        "#s4-card-3",
+        { y: 300, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.6, ease: "power3.out" },
+        14.9
+      );
+
+      tl.fromTo(
+        "#s4-card-4",
+        { y: -300, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.6, ease: "power3.out" },
+        15.05
+      );
+
+      // Label fade in
+      tl.fromTo(
+        "#s4-label",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.3, ease: "power2.out" },
+        14.4
+      );
+
+      // Count up animation
+      tl.fromTo(
+        "#s4-count-num",
+        { opacity: 0, scale: 0.5 },
+        { opacity: 1, scale: 1, duration: 1.8, ease: "power2.out" },
+        15.5
+      );
+
+      // Count text tween (runs alongside previous, not after)
+      tl.to(
+        "#s4-count-num",
+        { textContent: "1984", duration: 2, snap: { textContent: 1 }, ease: "power2.out" },
+        15.5
+      );
+
+      // ============================================
+      // SCENE 5: FEATURE MONTAGE (20-26s)
+      // ============================================
+      // All tiles pop in with stagger
+      tl.fromTo(
+        ".s5-tile",
+        { scale: 0.8, opacity: 0 },
+        {
+          scale: 1,
+          opacity: 1,
+          duration: 0.3,
+          stagger: 0.1,
+          ease: "power2.out",
+        },
+        20.2
+      );
+
+      // Label
+      tl.fromTo(
+        "#s5-label",
+        { y: -15, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.3, ease: "power2.out" },
+        20.1
+      );
+
+      // Staggered flash effect on each tile
+      for (let i = 1; i <= 6; i++) {
+        tl.to(
+          `#s5-tile-${i}`,
+          {
+            borderColor: "rgba(201, 162, 75, 0.4)",
+            duration: 0.2,
+            yoyo: true,
+            repeat: 1,
+            ease: "power2.inOut",
+          },
+          21.5 + (i - 1) * 0.3
+        );
+      }
+
+      // ============================================
+      // SCENE 6: CTA (26-35s)
+      // ============================================
+      // Title fades in with slide
+      tl.fromTo(
+        "#s6-title",
+        { y: 40, opacity: 0 },
+        { y: 0, opacity: 1, duration: 1.0, ease: "power3.out" },
+        26.3
+      );
+
+      // CTA draws in
+      tl.fromTo(
+        "#s6-cta",
+        { scale: 0.8, opacity: 0 },
+        { scale: 1, opacity: 1, duration: 0.5, ease: "power2.out" },
+        27.0
+      );
+
+      // URL fades in
+      tl.fromTo(
+        "#s6-url",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.3, ease: "power2.out" },
+        27.3
+      );
+
+      // Badge fades in
+      tl.fromTo(
+        "#s6-badge",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.4, ease: "power2.out" },
+        28.0
+      );
+
+      // Register timeline
+      window.__timelines["root"] = tl;
+    </script>
+  </body>
+</html>

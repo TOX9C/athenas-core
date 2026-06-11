@@ -1,117 +1,174 @@
 # Athena's Core
 
-A cross-platform desktop IDE for AI-assisted development, rebuilt in Rust with Tauri 2 and Dioxus.
+<img src="src-tauri/icons/icon.png" alt="Athena's Core" width="128" height="128" />
+
+A next-generation desktop IDE for AI-assisted software development. Athena's Core unifies a multi-pane terminal, AI chat assistant, task management, and multi-agent orchestration into a single cross-platform native application.
+
+## Preview
+
+<video src="docs/athenas-core-ad.mp4"
+       alt="Athena's Core - Advertisement"
+       style="width: 100%; max-width: 800px;"
+       controls muted playsinline></video>
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Getting Started](#getting-started)
+- [Architecture](#architecture)
+- [Screenshots](#screenshots)
+- [License](#license)
+
+---
 
 ## Overview
 
-Athena's Core is a next-generation development environment that combines a terminal, AI chat assistant, task management (Kanban), multi-agent orchestration (Swarm), and a plugin system into a single desktop application.
+Athena's Core is a powerful developer workspace that combines multiple tools into a single unified desktop experience. It features a multi-pane terminal grid with full ANSI support, an integrated AI chat assistant that can reason across your workspace, a Kanban task board for project management, a multi-agent swarm system for autonomous task execution, an embedded browser panel, and a plugin system for extensibility.
 
-This workspace contains the **Rust/Tauri migration** — a complete rewrite of the original Electron/Node.js application. The migration delivers:
+Built with Rust and Tauri 2, Athena's Core delivers native performance with a modern web-tech frontend, offering a compact ~15MB binary footprint and significantly lower memory usage compared to traditional Electron-based applications.
 
-- **~10x smaller binary** (~15MB vs ~150MB Electron)
-- **~50% less memory** at idle
-- **Native performance** for PTY, file I/O, and LLM orchestration
-- **Full feature parity** with the Electron app
-- **Same data directory** — zero-config migration for existing users
+---
 
-## Architecture
+## Features
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   Tauri App Shell                    │
-├──────────────────────┬──────────────────────────────┤
-│  Frontend (Dioxus)   │   Backend (Tauri/Rust)       │
-│                      │                              │
-│  ┌────────────────┐  │   ┌──────────────────────┐   │
-│  │  App Component  │  │   │  src-tauri (binary)  │   │
-│  │  + 78 commands  │◄─┼──►│  + 78 Tauri commands │   │
-│  │  + 15 stores    │  │   │  + AppState          │   │
-│  └────────────────┘  │   └──────────┬───────────┘   │
-│                      │              │               │
-│  ┌────────────────┐  │   ┌──────────▼───────────┐   │
-│  │  xterm.js       │  │   │  Workspace Crates     │   │
-│  │  Terminal Pane  │◄─┼──►│  athena-terminal      │   │
-│  └────────────────┘  │   │  athena-core          │   │
-│                      │   │  athena-store         │   │
-│  ┌────────────────┐  │   │  athena-fs            │   │
-│  │  Athena Chat    │◄─┼──►│  athena-browser       │   │
-│  └────────────────┘  │   │  athena-plugins       │   │
-│                      │   └──────────────────────┘   │
-│  ┌────────────────┐  │                              │
-│  │  Kanban/Swarm   │  │   ┌──────────────────────┐   │
-│  │  Plugins/Editor │  │   │  External Services    │   │
-│  └────────────────┘  │   │  MCP Server :4545      │   │
-│                      │   │  Agent Comms :4546     │   │
-│                      │   │  LLM APIs (HTTP)       │   │
-└──────────────────────┴───┴──────────────────────┘
-```
+### Integrated AI Chat Assistant
 
-### Crate Structure
+Athena is your workspace-aware AI assistant, powered by multiple LLM providers. It understands your entire workspace, sees active agents, monitors execution plans, and can interact with your codebase.
 
-| Crate | Purpose |
-|-------|---------|
-| `src-tauri` | Tauri binary — app entry point, 78 IPC commands, graceful shutdown |
-| `athena-frontend` | Dioxus web frontend — 85+ components, 15 stores, xterm.js integration |
-| `athena-core` | LLM orchestrator, MCP server, agent comms, search, notifications, plans, swarm |
-| `athena-terminal` | PTY session manager — spawn, write, resize, kill, output capture |
-| `athena-store` | Persistent key-value store, session management, image storage |
-| `athena-fs` | File system utilities and watchers |
-| `athena-browser` | Browser manager for embedded webviews |
-| `athena-plugins` | Plugin system — manifest, event bus, session management |
+- **Multi-provider support**: Connect to Anthropic Claude, OpenAI, NVIDIA NIM, or local models via LM Studio
+- **Workspace context**: Every conversation includes a live snapshot of your workspace, agents, and active plans
+- **Image support**: Attach screenshots or diagrams directly into chat messages
+- **Tool calling**: Athena can spawn agents, run commands, search your codebase, and manage tasks automatically
+- **Session persistence**: Chat history is saved and restored across app restarts
 
-## Prerequisites
+### Multi-Pane Terminal Grid
 
-- **Rust 1.82+** — install via [rustup](https://rustup.rs/)
-- **Node.js 18+** — for Dioxus frontend build (`dx` CLI)
-- **Tauri CLI** — `cargo install tauri-cli`
-- **Dioxus CLI** — `cargo install --git https://github.com/DioxusLabs/dioxus dioxus-cli`
-- **Platform dependencies:**
-  - **macOS:** Xcode Command Line Tools
-  - **Linux:** `webkit2gtk-4.1`, `build-essential`, `curl`, `wget`, `libssl-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`
-  - **Windows:** WebView2 (included in Windows 10/11), Visual Studio Build Tools
+A flexible terminal workspace with full ANSI/VT100 emulation, powered by a custom Rust terminal emulator.
 
-## Quick Start
+- **Multiple pane layouts**: Automatic grid layouts from 1x1 up to 4x4 as you add terminals agents
+- **Shell integration**: Smart shell tracking for zsh, bash, and fish via OSC 633 sequences
+- **Command tracking**: Automatically detects prompts, commands, execution, and exit codes
+- **ANSI support**: Full 256-color and true-color (24-bit RGB) support
+- **xterm.js frontend**: Familiar terminal experience with proper key handling and autoresize
+- **Output capture**: Every pane's output is buffered and searchable
+
+### Kanban Task Board
+
+Keep track of your development tasks with a built-in Kanban board.
+
+- **Four columns**: To Do, In Progress, In Review, and Complete
+- **Task management**: Create, update, and delete tasks with descriptions and agent assignments
+- **Per-workspace**: Each workspace has its own independent task board
+- **Agent integration**: Tasks can be assigned to specific AI agents
+
+### Swarm Multi-Agent Coordination
+
+Launch and coordinate teams of AI agents to work on complex tasks autonomously.
+
+- **Agent roles**: Coordinator, Builder, Scout, and Reviewer roles with distinct responsibilities
+- **Mailbox system**: Agents communicate with each other through a shared message bus
+- **Real-time monitoring**: Watch agent status, activity, and messages in real time
+- **State persistence**: Swarm configuration and messages persist on disk
+- **Auto-detection**: Automatically detects stalled agents after inactivity
+
+### Plugin System
+
+Extend Athena's Core with custom plugins that integrate seamlessly with the workspace.
+
+- **Manifest-based**: Plugins defined by simple JSON manifests
+- **Capability scoping**: Plugins request only the capabilities they need
+- **Session management**: Per-agent plugin sessions with lifecycle tracking
+- **Event bus**: Subscribe to and emit workspace events
+- **Security validation**: Automatic validation of plugin manifests against security rules
+
+### Browser Panel
+
+Browse the web without leaving your workspace.
+
+- **Embedded webview**: Full web browsing capability within a resizable sidebar panel
+- **Navigation controls**: Back, forward, reload with full history tracking
+- **External links**: Open links in your native browser with one click
+- **Safe URL handling**: Dangerous schemes and empty URLs are automatically rejected
+
+### Notification System
+
+Stay informed of everything happening in your workspace.
+
+- **Seven notification types**: Info, Warning, Error, Success, Needs Input, Task Complete, and Task Error
+- **Actionable**: Many notifications include action buttons for quick responses
+- **Persistent history**: Up to 500 notifications stored in memory
+- **Unread tracking**: Badge counts and filtered views to focus on what matters
+- **Real-time**: Notifications appear instantly as events occur
+
+### Command Palette
+
+Quick access to all app commands with fuzzy search.
+
+- **Keyboard shortcut**: `Cmd+K` or `Cmd+P` for instant access
+- **Fuzzy matching**: Find commands even with partial or imprecise input
+- **Recent commands**: Your most-used commands surface automatically
+- **Keyboard navigation**: Arrow keys and Enter for fast selection
+
+### Theme System
+
+A rich visual experience with extensive customization.
+
+- **16 built-in themes**: Curated dark and light themes inspired by modern IDEs and cultural aesthetics
+- **System auto-detect**: Automatically selects a theme matching your OS preference
+- **Live font preview**: Change fonts with instant visual feedback
+- **Font size control**: Fine-tune terminal and editor font sizes
+- **CSS custom properties**: Full control over the color system
+
+### Workspaces
+
+Organize your work into isolated workspaces.
+
+- **Multiple spaces**: Create and switch between different project environments
+- **Workspace tabs**: Quick visual switching between active spaces
+- **Per-workspace state**: Each workspace maintains its own agent panes, tasks, and settings
+- **Project directory**: Associate each workspace with a specific folder on disk
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- **Rust 1.82+** - Install via [rustup](https://rustup.rs/)
+- **Node.js 18+** - For the Dioxus frontend build tools
+- **Tauri CLI** - `cargo install tauri-cli`
+- **Dioxus CLI** - `cargo install --git https://github.com/DioxusLabs/dioxus dioxus-cli`
+- **Platform dependencies**:
+  - **macOS**: Xcode Command Line Tools
+  - **Linux**: `webkit2gtk-4.1`, `build-essential`, `curl`, `wget`, `libssl-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`
+  - **Windows**: WebView2 (included in Windows 10/11), Visual Studio Build Tools
+
+### Quick Start
 
 ```bash
-# Clone and enter the migration workspace
-cd rust-migration
+# Clone the repository
+git clone <repo-url>
+cd athenas-core
 
-# Check compilation
-cargo check --workspace
+# Build the frontend assets (release mode)
+bash frontend/build-dist.sh
 
-# Development (two-step build)
-./dev.sh
-# Or manually:
-dx build --package athena-frontend
-cp -r target/dx/athena-frontend/debug/web/public/* frontend/dist/
+# Run the application in development mode
+cargo run --manifest-path src-tauri/Cargo.toml
+
+# Or use the Tauri CLI for hot-reload
 cargo tauri dev
+```
 
-# Production build
+### Production Build
+
+```bash
+# Full release build
+bash frontend/build-dist.sh
 cargo tauri build
-```
-
-## Development Workflow
-
-### Frontend Development
-
-The Dioxus frontend compiles to WASM and is served as static files to Tauri's WebView:
-
-```bash
-# Build frontend only
-dx build --package athena-frontend
-
-# Copy to dist (where Tauri expects it)
-cp -r target/dx/athena-frontend/debug/web/public/* frontend/dist/
-```
-
-### Backend Development
-
-```bash
-# Watch-mode compilation
-cargo watch -x "check --workspace"
-
-# Run Tauri dev (hot-reload for Rust)
-cargo tauri dev
 ```
 
 ### Running Tests
@@ -120,81 +177,89 @@ cargo tauri dev
 # All workspace tests
 cargo test --workspace
 
-# Single crate
-cargo test -p athena-core
-
 # With output
 cargo test --workspace -- --nocapture
 ```
 
-### Code Quality
+---
 
-```bash
-# Format
-cargo fmt
+## Architecture
 
-# Lint
-cargo clippy --all-targets --all-features -- -D warnings
-
-# Type check
-cargo check --workspace
+```
++-------------------------------------------------------+
+|                    Tauri App Shell                       |
++--------------------------+-----------------------------|
+|  Frontend (Dioxus)       |   Backend (Tauri/Rust)       |
+|                          |                              |
+|  +------------------+    |   +--------------------+     |
+|  |  App Component   |    |   |  Tauri Commands    |     |
+|  |  - Workspace     |    |   |  - Window/FS       |     |
+|  |  - Kanban        |    |   |  - Store/Session   |     |
+|  |  - Swarm         |    |   |  - PTY/Athena     |     |
+|  |  - xterm.js      |    |   |  - Search/Notify   |     |
+|  +------------------+    |   +---------+------------     |
+|           ^              |             |                  |
+|           +--------------+             |                  |
+|                          |   +--------v------------     |
+|                          |   |  Workspace Crates  |     |
+|                          |   |  athena-core        |     |
+|                          |   |  athena-terminal    |     |
+|                          |   |  athena-store       |     |
+|                          |   |  athena-fs          |     |
+|                          |   |  athena-browser     |     |
+|                          |   |  athena-plugins     |     |
+|                          |   +---------------------     |
++--------------------------+-----------------------------|
 ```
 
-## Testing
+### Crate Structure
 
-The project uses Rust's built-in test framework. Tests are organized by crate:
+| Crate | Purpose |
+|-------|---------|
+| `src-tauri` | Tauri binary, 95 IPC commands, app shell |
+| `athena-frontend` | Dioxus web frontend, 85+ components, 15 stores |
+| `athena-core` | LLM orchestrator, MCP server, agent comms, search |
+| `athena-terminal` | PTY session manager with ANSI/VT100 emulator |
+| `athena-store` | Persistent key-value and session store |
+| `athena-fs` | Filesystem utilities with path traversal protection |
+| `athena-browser` | Browser manager for embedded webviews |
+| `athena-plugins` | Plugin system with manifest validation |
 
-- **`athena-core`** — orchestrator message formatting, MCP request parsing, agent comms session lifecycle, search result formatting
-- **`athena-terminal`** — PTY spawn/write/resize/kill, concurrent sessions, history trimming
-- **`athena-store`** — CRUD operations, persistence, orphan cleanup
+---
 
-Run the full suite:
+## Screenshots
 
-```bash
-cargo test --workspace
-```
+> Screenshots of the application in action will be added here in the future.
+>
+> The application features:
+> - A macOS-style overlay titlebar with workspace tabs
+> - Collapsible left sidebar with Spaces, Files, Agents, and Plugins
+> - Center panel with terminal grid or Kanban/Swarm views
+> - Resizable right sidebar with Browser, AI Chat, Editor, and Skills panels
+> - Status bar showing workspace info and active theme
+> - 16 built-in color themes with CSS custom property system
+>
+> Place your screenshots in `docs/screenshots/` and reference them above.
 
-## Migration Status
+---
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 0. Critical Bugs | Compiles, MCP works, agents can connect | ✅ Complete |
-| 1. Backend Completeness | All events wired, no stubs, no blocking I/O | ✅ Complete |
-| 2. Frontend Integration | Right sidebar, file tree, themes, shortcuts | In Progress |
-| 3. Stub Components | Editor syntax highlighting, browser iframe | TODO |
-| 4. Testing & Polish | 80%+ tests, security, data migration | TODO |
-| 5. Build & Release | CI/CD, code signing, auto-update | TODO |
+### Keyboard Shortcuts
 
-### What Works
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+K` / `Cmd+P` | Show command palette |
+| `Cmd+J` / `Cmd+\` | Toggle right sidebar |
+| `Cmd+B` | Toggle left sidebar |
+| `Cmd+T` | New workspace |
+| `Cmd+Shift+A` | Add shell pane |
+| `Cmd+Shift+S` | Launch swarm |
+| `Cmd+1` / `Cmd+2` / `Cmd+3` / `Cmd+4` | Switch panels |
+| `Cmd+,` | Open settings |
+| `Cmd+W` | Close active pane |
+| `Escape` | Close modals / dismiss popups |
 
-- Terminal with xterm.js (PTY, data streaming, resize, ANSI colors)
-- Athena AI chat panel (multi-provider: Anthropic, OpenAI, NVIDIA NIM, LM Studio)
-- MCP server on port 4545 (14 tool handlers)
-- Agent communications on port 4546 (initialize, notify, status, input request, heartbeat)
-- Kanban board with MCP task management
-- Swarm multi-agent coordination
-- Plugin system with event bus
-- Notification system (bell, panel, toast)
-- Command palette
-- Settings with theme picker
-- File tree and workspace tabs
-- 78 Tauri commands registered
-- 15 Zustand-equivalent stores
-- Graceful shutdown (PTY kill, MCP shutdown, agent comms)
-
-### Known Gaps
-
-- Editor panel needs syntax highlighting
-- Browser panel needs iframe embedding
-- Theme CSS variable switching needs completion
-- Additional keyboard shortcuts (Cmd+W, Cmd+P, Cmd+E, Cmd+\)
-- File tree auto-refresh on FS events
-- Terminal ready/exit event UI updates
-
-## Contributing
-
-See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for development guidelines.
+---
 
 ## License
 
-Proprietary — All rights reserved.
+Proprietary - All rights reserved.
