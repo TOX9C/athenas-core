@@ -85,6 +85,28 @@ pub fn ToastItem(props: ToastItemProps) -> Element {
     let mut toast_store = use_toast_store();
 
     let ttype = local_toast.read().toast_type.clone();
+
+    // Auto-remove toast after duration_ms. Cancelled on unmount via use_drop
+    // to avoid stale writes to the store if the component is removed early.
+    let duration = local_toast.read().duration_ms;
+    let dismiss_id = toast_id.clone();
+    let mut dismiss = use_future(move || {
+        let id = dismiss_id.clone();
+        let mut store = toast_store;
+        async move {
+            if duration > 0 {
+                gloo::timers::future::TimeoutFuture::new(duration as u32).await;
+            } else {
+                gloo::timers::future::TimeoutFuture::new(1).await;
+            }
+            // Idempotent: retain() is a no-op if id is already gone.
+            store.write().remove(&id);
+        }
+    });
+    use_drop(move || {
+        dismiss.cancel();
+    });
+
     let color = match ttype {
         ToastType::Info => "var(--accent)",
         ToastType::Success | ToastType::TaskComplete => "var(--success)",

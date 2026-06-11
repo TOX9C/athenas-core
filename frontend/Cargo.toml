@@ -27,7 +27,7 @@ chrono = { version = "0.4", features = ["serde", "wasmbind"] }
 regex = "1.10"
 strum = { version = "0.26", features = ["derive"] }
 strum_macros = "0.26"
-gloo = { version = "0.11", features = ["futures"] }
+gloo = { version = "0.11", features = ["futures", "timers"] }
 uuid = { version = "1", default-features = false, features = ["v4", "js"] }
 parking_lot = "0.12"
 
