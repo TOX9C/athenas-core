@@ -6,7 +6,7 @@ A next-generation desktop IDE for AI-assisted software development. Athena's Cor
 
 ## Preview
 
-[![Athena's Core - Product Advertisement](docs/athenas-core-ad.mp4)](docs/athenas-core-ad.mp4)
+[![Athena's Core - Product Advertisement](docs/athenas-core-ad-poster.jpg)](docs/athenas-core-ad.mp4)
 
 > *Click to watch the 35-second product showcase: terminal, AI chat, and multi-agent swarm in action.*
 
