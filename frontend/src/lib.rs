@@ -72,6 +72,10 @@ pub fn App() -> Element {
     let mut panel_state = use_panel_manager_store();
     let mut terminal_store = use_terminal_store();
 
+    // Track mounted spaces. The set is reconciled against the current
+    // workspace state on every render so it stays bounded — entries for
+    // spaces that no longer exist are dropped, preventing unbounded growth
+    // across long sessions that create and destroy many workspaces.
     let mut mounted_spaces = use_signal(std::collections::HashSet::<String>::new);
     let mut platform = use_signal(|| {
         crate::utils::platform_utils::is_mac()
@@ -168,7 +172,8 @@ pub fn App() -> Element {
         // Mark effect as run-once by not capturing any reactive dependencies
     }
 
-    // Track mounted spaces
+    // Track mounted spaces — pruned each render to current space IDs so
+    // removed spaces do not leak in the set indefinitely.
     let active_space_id = workspace.read().active_space_id.clone();
     if let Some(id) = &active_space_id {
         if !mounted_spaces.read().contains(id) {
@@ -177,6 +182,10 @@ pub fn App() -> Element {
     }
 
     let spaces = workspace.read().spaces.clone();
+    let current_space_ids: std::collections::HashSet<String> =
+        spaces.iter().map(|s| s.id.clone()).collect();
+    mounted_spaces.write().retain(|id| current_space_ids.contains(id));
+
     let active_space: Option<Space> = spaces
         .iter()
         .find(|s| Some(&s.id) == active_space_id.as_ref())
