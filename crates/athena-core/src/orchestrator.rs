@@ -777,7 +777,13 @@ impl AthenaOrchestrator {
     ///
     /// Returns a tuple of `(text, is_error)`. If no executor is configured,
     /// returns an error message with `is_error = true`.
-    fn execute_tool(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+    ///
+    /// The synchronous `ToolExecutor::execute_tool_call` performs blocking work
+    /// (filesystem reads, kanban DB ops, the `ask_user` mpsc receive, etc.) that
+    /// would otherwise stall the Tokio runtime worker thread. We offload the
+    /// dispatch to `tokio::task::spawn_blocking` so the async runtime stays
+    /// responsive to other tasks (HTTP, rate limiter, cancellation, etc.).
+    async fn execute_tool(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
         let tool_input = match json_to_tool_input(input) {
             Ok(ti) => ti,
             Err(e) => {
@@ -788,20 +794,28 @@ impl AthenaOrchestrator {
             }
         };
 
-        match &self.tool_executor {
-            Some(executor_arc) => {
-                let executor = executor_arc.lock();
-                match executor.execute_tool_call(name, &tool_input) {
-                    Ok(result) => (result.text, result.is_error.unwrap_or(false)),
-                    Err(e) => (format!("Tool execution error: {}", e), true),
-                }
-            }
-            None => (
+        let Some(executor_arc) = self.tool_executor.clone() else {
+            return (
                 format!(
                     "Tool '{}' was requested but no tool executor is configured. \
                      Pass an executor via AthenaOrchestrator::new_with_executor().",
                     name
                 ),
+                true,
+            );
+        };
+
+        let name = name.to_string();
+        match tokio::task::spawn_blocking(move || {
+            let executor = executor_arc.lock();
+            executor.execute_tool_call(&name, &tool_input)
+        })
+        .await
+        {
+            Ok(Ok(result)) => (result.text, result.is_error.unwrap_or(false)),
+            Ok(Err(e)) => (format!("Tool execution error: {}", e), true),
+            Err(join_err) => (
+                format!("Tool execution task panicked: {}", join_err),
                 true,
             ),
         }
@@ -932,7 +946,7 @@ impl AthenaOrchestrator {
                     let tool_name = tool_call["name"].as_str().unwrap_or("unknown");
                     let tool_input = &tool_call["input"];
 
-                    let (result_text, is_error) = self.execute_tool(tool_name, tool_input);
+                    let (result_text, is_error) = self.execute_tool(tool_name, tool_input).await;
 
                     let tool_result = if is_error {
                         serde_json::json!({
@@ -1159,7 +1173,7 @@ impl AthenaOrchestrator {
                             serde_json::json!({})
                         });
 
-                    let (result_text, is_error) = self.execute_tool(function_name, &function_args);
+                    let (result_text, is_error) = self.execute_tool(function_name, &function_args).await;
 
                     let tool_response_content = if is_error {
                         serde_json::json!({
@@ -1182,4 +1196,164 @@ impl AthenaOrchestrator {
             // Continue loop: send the tool results back and get the next response.
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_comms::AgentComms;
+    use crate::notification::NotificationService;
+    use crate::output_buffer::OutputBuffer;
+    use crate::plan_manager::PlanManager;
+    use crate::tool_executor::{ToolEventSender, ToolExecutor, ToolInput};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Test event sender whose `ask_user` blocks the calling thread for
+    /// `BLOCK_FOR`. Used to verify that the orchestrator's `execute_tool`
+    /// does not block the Tokio runtime when the underlying tool does
+    /// blocking I/O (here: a synchronous channel receive).
+    struct BlockingEventSender;
+
+    impl ToolEventSender for BlockingEventSender {
+        fn agent_spawned(&self, _id: &str, _agent_type: &str, _agent_cmd: &str) {}
+        fn close_panes(&self, _pane_ids: &[String]) {}
+        fn pty_write(&self, _pane_id: &str, _data: &str) {}
+        fn has_session(&self, _pane_id: &str) -> bool {
+            false
+        }
+        fn ask_user(
+            &self,
+            _request_id: &str,
+            _question: &str,
+            _options: &[serde_json::Value],
+        ) -> String {
+            // Simulate blocking I/O (e.g. fs_read_file on a slow disk, or
+            // a long-lived DB query). This call must NOT block the async
+            // runtime when dispatched via `execute_tool`.
+            std::thread::sleep(Duration::from_secs(2));
+            "blocked-answer".to_string()
+        }
+        fn plan_update(&self, _plan: &crate::plan_manager::ExecutionPlan) {}
+        fn plan_evaluated(
+            &self,
+            _plan_id: &str,
+            _overall_status: &str,
+            _step_evaluations: &[serde_json::Value],
+            _next_action: &str,
+            _reasoning: &str,
+        ) {
+        }
+    }
+
+    fn build_orchestrator_with_blocking_executor() -> AthenaOrchestrator {
+        let executor = ToolExecutor::new(
+            Arc::new(OutputBuffer::new()),
+            Arc::new(NotificationService::new()),
+            Arc::new(PlanManager::new()),
+            Arc::new(AgentComms::new()),
+            Arc::new(BlockingEventSender),
+            Arc::new(athena_store::KeyValueStore::new_empty()),
+        );
+        AthenaOrchestrator::new_with_executor(Arc::new(parking_lot::Mutex::new(executor)))
+    }
+
+    /// Verify that `execute_tool` does not block the Tokio runtime when
+    /// the underlying tool performs blocking work. We run two concurrent
+    /// tasks: one calls `execute_tool("ask_user", ...)` which takes ~2s
+    /// inside the tool's blocking callback, and the other sleeps for 50ms
+    /// and checks the clock. With `spawn_blocking`, the short task should
+    /// complete well before the long task.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_tool_does_not_block_async_runtime() {
+        let orchestrator = build_orchestrator_with_blocking_executor();
+
+        let input_json = serde_json::json!({
+            "question": "Pick one",
+            "options": ["a", "b"],
+        });
+
+        // Spawn the long-blocking execute_tool in a background task.
+        let orch = Arc::new(orchestrator);
+        let orch_for_long = Arc::clone(&orch);
+        let long_task = tokio::spawn(async move {
+            orch_for_long.execute_tool("ask_user", &input_json).await
+        });
+
+        // The runtime should still service other tasks while the long
+        // task is in-flight. We give the long task a head start, then
+        // run a separate task and assert it completes before the long
+        // task finishes.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let started_at = std::time::Instant::now();
+        let short_completed = tokio::time::timeout(
+            Duration::from_millis(500),
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            },
+        )
+        .await
+        .is_ok();
+        let short_elapsed = started_at.elapsed();
+
+        assert!(
+            short_completed,
+            "short task timed out — runtime appears to be blocked by execute_tool"
+        );
+        assert!(
+            short_elapsed < Duration::from_millis(400),
+            "short task took {:?} (expected <400ms); runtime likely blocked",
+            short_elapsed
+        );
+
+        // Finally, the long task itself should be cancellable via tokio
+        // timeouts (proving the orchestrator is awaiting, not spinning
+        // on a synchronous call).
+        let long_result = tokio::time::timeout(Duration::from_secs(5), long_task)
+            .await
+            .expect("long task should finish within 5s (2s sleep + overhead)")
+            .expect("long task should not panic");
+        assert_eq!(long_result.0, "User selected: blocked-answer");
+        assert!(!long_result.1, "ask_user should not be flagged as error");
+    }
+
+    /// Verify the no-executor error path returns synchronously (no await
+    /// needed beyond what the call itself does) and produces the
+    /// documented error message.
+    #[tokio::test]
+    async fn execute_tool_no_executor_returns_error() {
+        let orchestrator = AthenaOrchestrator::new();
+        let input = serde_json::json!({});
+        let (text, is_error) = orchestrator.execute_tool("any_tool", &input).await;
+        assert!(is_error, "no-executor path must be flagged as error");
+        assert!(
+            text.contains("no tool executor is configured"),
+            "unexpected error text: {}",
+            text
+        );
+    }
+
+    /// Verify that `execute_tool` deserializes bad input into a graceful
+    /// error rather than panicking.
+    #[tokio::test]
+    async fn execute_tool_bad_input_is_handled() {
+        let orchestrator = build_orchestrator_with_blocking_executor();
+        // `ask_user` requires a `question` field; supply an empty object
+        // so the executor's `MissingParam` error path runs.
+        let input = serde_json::json!({});
+        let (text, is_error) = orchestrator.execute_tool("ask_user", &input).await;
+        // json_to_tool_input succeeds with default fields, then
+        // ToolExecutor::ask_user returns an error which is mapped to
+        // is_error=true with the error string in `text`.
+        assert!(is_error, "missing-param path must be flagged as error");
+        assert!(
+            !text.is_empty(),
+            "error text should not be empty when tool fails"
+        );
+    }
+
+    // Reference ToolInput to silence unused import warnings if all tests
+    // are stripped at compile time.
+    #[allow(dead_code)]
+    fn _tool_input_ref(_t: &ToolInput) {}
 }

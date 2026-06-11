@@ -1649,7 +1649,19 @@ impl ToolExecutor {
             context_lines: Some(2),
         };
 
-        match crate::search::search_code_sync(&options) {
+        // Drive the async `search_code` on the current Tokio runtime.
+        // `fs_search` is sync because `execute_tool_call` dispatches it
+        // without an `await` in the Tauri command handler (`spawn_blocking`
+        // closure) and the orchestrator lock-guard chain. We must keep the
+        // signature sync to avoid cascading `async`/`Send` changes, so we
+        // bridge via `Handle::current().block_on`. The runtime is always
+        // available in practice (Tauri main + MCP server are both async),
+        // and this replaces a `std::process::Command` that would block
+        // the worker thread.
+        let search_result = tokio::runtime::Handle::current()
+            .block_on(crate::search::search_code(&options));
+
+        match search_result {
             Ok(result) => {
                 let json = match serde_json::to_string(&result) {
                     Ok(j) => j,
@@ -1768,5 +1780,56 @@ mod tests {
             executor.validate_path("hello.txt").is_ok(),
             "in-workspace file should be allowed"
         );
+    }
+
+    /// Verifies that `fs_search` (sync) drives the async `search_code` via
+    /// `Handle::current().block_on`. The tool is always invoked from an
+    /// async context in production (Tauri command handlers wrap it in
+    /// `tokio::task::spawn_blocking` and the MCP server is fully async),
+    /// so we run the test inside a Tokio runtime to provide one.
+    #[tokio::test]
+    async fn test_fs_search_uses_async_search_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let _guard = CurrentDirGuard {
+            original: original_dir,
+        };
+
+        // Write a file inside the workspace (current_dir)
+        std::fs::write(tmp.path().join("target.txt"), "needle in haystack\n").unwrap();
+
+        let executor = create_executor();
+        let args = ToolInput {
+            pattern: Some("needle".to_string()),
+            path: Some("target.txt".to_string()),
+            ..Default::default()
+        };
+
+        let result = executor.fs_search(&args);
+        match result {
+            Ok(call) => {
+                // ripgrep not installed on the host would surface as an
+                // error payload, not a panic.
+                if call.is_error.unwrap_or(false) {
+                    let msg = call.text;
+                    if msg.contains("ripgrep") || msg.contains("rg") {
+                        eprintln!("ripgrep unavailable — skipping assertion: {msg}");
+                    } else {
+                        panic!("fs_search returned unexpected error: {msg}");
+                    }
+                } else {
+                    let parsed: serde_json::Value = serde_json::from_str(&call.text)
+                        .expect("fs_search result should be JSON");
+                    let total = parsed["stats"]["total_matches"].as_u64().unwrap_or(0);
+                    assert!(
+                        total >= 1,
+                        "expected at least one match, got {}",
+                        total
+                    );
+                }
+            }
+            Err(e) => panic!("fs_search should not propagate Err to callers: {e}"),
+        }
     }
 }
