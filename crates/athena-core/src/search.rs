@@ -72,6 +72,8 @@ pub enum SearchError {
 /// Spawns the `rg` binary with JSON output mode, parses the results,
 /// and returns a structured `SearchResult`.
 pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, SearchError> {
+    let mut options = options.clone();
+    options.validate();
     let rg_bin = find_rg_binary().await?;
 
     let mut args: Vec<String> = vec![
@@ -304,6 +306,8 @@ pub fn find_rg_binary_sync() -> Result<PathBuf, SearchError> {
     note = "Spawns a blocking std::process::Command; use the async `search_code` instead"
 )]
 pub fn search_code_sync(options: &SearchOptions) -> Result<SearchResult, SearchError> {
+    let mut options = options.clone();
+    options.validate();
     #[allow(deprecated)]
     let rg_bin = find_rg_binary_sync()?;
 
@@ -475,12 +479,20 @@ pub fn search_code_sync(options: &SearchOptions) -> Result<SearchResult, SearchE
 }
 
 /// List files matching a pattern in a directory.
+///
+/// `max_results` is capped at [`SearchOptions::MAX_RESULTS`] (5000) to
+/// bound memory usage and prevent DoS via multi-million file paths.
 pub async fn search_files(
     directory: &str,
     pattern: &str,
     glob: Option<&str>,
     max_results: Option<usize>,
 ) -> Result<Vec<String>, SearchError> {
+    // Cap caller-supplied `max_results` to the same upper bound used for
+    // `search_code`. Without this, an attacker could pass `usize::MAX` and
+    // force the process to buffer an arbitrarily large result set.
+    let max_results = max_results.map(|m| m.min(SearchOptions::MAX_RESULTS));
+
     let rg_bin = find_rg_binary().await?;
 
     let mut args: Vec<String> = vec!["--files".into(), "--color=never".into()];
@@ -491,8 +503,18 @@ pub async fn search_files(
     }
 
     if !pattern.is_empty() {
+        // Pattern is embedded inside a `--glob` value (`*{}*`), not passed
+        // as a positional arg, so a leading dash can't be misinterpreted
+        // as a flag. We still defang defensively to keep behavior
+        // consistent with `search_code` for callers that share the same
+        // pattern field.
+        let safe_pattern = if pattern.starts_with('-') {
+            format!("\\{}", pattern)
+        } else {
+            pattern.to_string()
+        };
         args.push("--glob".into());
-        args.push(format!("*{}*", pattern));
+        args.push(format!("*{}*", safe_pattern));
     }
 
     args.push(directory.to_string());
@@ -522,4 +544,72 @@ pub async fn search_files(
         .collect();
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts() -> SearchOptions {
+        SearchOptions {
+            pattern: "TODO".into(),
+            path: ".".into(),
+            glob: None,
+            case_sensitive: false,
+            max_results: None,
+            context_lines: None,
+        }
+    }
+
+    #[test]
+    fn validate_caps_context_lines() {
+        let mut o = opts();
+        o.context_lines = Some(usize::MAX);
+        o.validate();
+        assert_eq!(o.context_lines, Some(SearchOptions::MAX_CONTEXT_LINES));
+    }
+
+    #[test]
+    fn validate_caps_max_results() {
+        let mut o = opts();
+        o.max_results = Some(usize::MAX);
+        o.validate();
+        assert_eq!(o.max_results, Some(SearchOptions::MAX_RESULTS));
+    }
+
+    #[test]
+    fn validate_strips_leading_dash() {
+        let mut o = opts();
+        o.pattern = "--help".into();
+        o.validate();
+        // Pattern must no longer start with a raw dash that would parse
+        // as a flag if the `--` end-of-options separator were ever dropped.
+        assert!(
+            !o.pattern.starts_with('-'),
+            "pattern still starts with dash: {}",
+            o.pattern
+        );
+        assert!(o.pattern.starts_with('\\'));
+    }
+
+    #[test]
+    fn validate_preserves_safe_values() {
+        let mut o = opts();
+        o.pattern = "fn main".into();
+        o.context_lines = Some(5);
+        o.max_results = Some(100);
+        o.validate();
+        assert_eq!(o.pattern, "fn main");
+        assert_eq!(o.context_lines, Some(5));
+        assert_eq!(o.max_results, Some(100));
+    }
+
+    #[test]
+    fn validate_leaves_none_options_untouched() {
+        let mut o = opts();
+        o.validate();
+        assert_eq!(o.context_lines, None);
+        assert_eq!(o.max_results, None);
+        assert_eq!(o.pattern, "TODO");
+    }
 }

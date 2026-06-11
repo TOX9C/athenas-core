@@ -15,6 +15,11 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Maximum size in bytes for a plugin manifest file. Manifests larger than
+/// this are skipped during discovery to prevent a malicious or accidental
+/// oversized file from exhausting memory.
+pub const MAX_MANIFEST_BYTES: u64 = 1_048_576;
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -669,6 +674,20 @@ impl PluginManager {
 
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+
+            // Reject oversized manifests before reading to bound memory usage.
+            let metadata = match fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if metadata.len() > MAX_MANIFEST_BYTES {
+                log::warn!(
+                    "Skipping oversized plugin manifest ({} bytes): {}",
+                    metadata.len(),
+                    path.display()
+                );
                 continue;
             }
 
@@ -1970,6 +1989,63 @@ mod tests {
         let err_count = results.iter().filter(|r| r.is_err()).count();
         assert_eq!(ok_count, 1);
         assert_eq!(err_count, 1);
+
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn discover_plugins_skips_oversized_manifests() {
+        let temp_dir = std::env::temp_dir().join("athena_plugins_test_oversized");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Write a JSON file larger than MAX_MANIFEST_BYTES (1 MiB). The
+        // padding is wrapped inside a JSON string field so the file is
+        // syntactically valid JSON, but its size exceeds the limit and the
+        // size check (which happens before parsing) should skip it.
+        let padding_len = (MAX_MANIFEST_BYTES as usize) + 1024;
+        let padding: String = std::iter::repeat('a').take(padding_len).collect();
+        let oversized = serde_json::json!({
+            "id": "huge",
+            "name": "Huge",
+            "version": "0.1.0",
+            "description": padding,
+            "author": "Test",
+            "permissions": [],
+            "capabilities": [],
+            "tools": []
+        });
+        std::fs::write(
+            temp_dir.join("huge.json"),
+            serde_json::to_string(&oversized).unwrap(),
+        )
+        .unwrap();
+
+        // Also write a small valid manifest to confirm normal parsing still works.
+        let small = serde_json::json!({
+            "id": "small",
+            "name": "Small",
+            "version": "0.1.0",
+            "description": "tiny",
+            "author": "Test",
+            "permissions": [],
+            "capabilities": [],
+            "tools": []
+        });
+        std::fs::write(
+            temp_dir.join("small.json"),
+            serde_json::to_string(&small).unwrap(),
+        )
+        .unwrap();
+
+        let mgr = PluginManager::new();
+        let results = mgr.discover_plugins(&temp_dir).unwrap();
+
+        // Only the small manifest should be returned; the oversized one is
+        // skipped silently (no entry in results) — the discovery loop
+        // `continue`s before pushing a result.
+        assert_eq!(results.len(), 1);
+        let manifest = results[0].as_ref().expect("small.json parses");
+        assert_eq!(manifest.id, "small");
 
         std::fs::remove_dir_all(&temp_dir).unwrap();
     }

@@ -199,3 +199,169 @@ async fn test_is_dirty_false_for_fresh_store() {
     let store = KeyValueStore::with_name_sync(&name).unwrap();
     assert!(!store.is_dirty());
 }
+
+// --- In-memory fallback tests (Task 3.5) ---
+
+#[test]
+fn test_new_empty_is_in_memory_and_has_no_path() {
+    let store = KeyValueStore::new_empty();
+    assert!(store.is_in_memory(), "new_empty must report in-memory mode");
+    assert!(store.path().is_none(), "new_empty must have no on-disk path");
+    assert!(!store.is_dirty(), "fresh in-memory store is not dirty");
+}
+
+#[tokio::test]
+async fn test_new_empty_does_not_persist_to_disk() {
+    // Snapshot the fallback temp dir state *before* — `new_empty` must not
+    // create a new file in it (and we want to prove no `store.json` appears).
+    let fallback_dir = std::env::temp_dir().join("athena-core-fallback");
+    let store = KeyValueStore::new_empty();
+    let _ = std::fs::remove_dir_all(&fallback_dir); // clean slate
+
+    store.set("k", &"v".to_string()).await.unwrap();
+    assert!(store.is_dirty());
+    // flush_if_dirty on an in-memory store must be a no-op, not an error.
+    store.flush_if_dirty().await.unwrap();
+    assert!(!store.is_dirty(), "flush_if_dirty should clear dirty bit");
+    // No file should have been created in the temp fallback dir.
+    assert!(
+        !fallback_dir.exists(),
+        "new_empty must not write to the temp fallback dir"
+    );
+
+    // set_sync must succeed (in-memory only) and also not touch disk.
+    store.set_sync("k2", &"v2".to_string()).unwrap();
+    assert!(
+        !fallback_dir.exists(),
+        "set_sync on an in-memory store must not create a temp fallback dir"
+    );
+
+    // In-memory read-after-write should still work.
+    let v1: Option<String> = store.get("k").unwrap();
+    assert_eq!(v1, Some("v".to_string()));
+    let v2: Option<String> = store.get("k2").unwrap();
+    assert_eq!(v2, Some("v2".to_string()));
+}
+
+#[tokio::test]
+async fn test_new_empty_drop_does_not_write() {
+    // Repeatable: create, mutate, drop — must not produce a file.
+    let fallback_dir = std::env::temp_dir().join("athena-core-fallback");
+    let _ = std::fs::remove_dir_all(&fallback_dir);
+
+    {
+        let store = KeyValueStore::new_empty();
+        store.set("drop_key", &"drop_value".to_string()).await.unwrap();
+        assert!(store.is_dirty());
+        // Intentionally NO explicit flush — Drop must not write to disk.
+    }
+
+    assert!(
+        !fallback_dir.exists(),
+        "Drop of an in-memory store must not create a temp fallback dir"
+    );
+}
+
+#[test]
+fn test_persistent_store_is_not_in_memory() {
+    let name = unique_name();
+    let store = KeyValueStore::with_name_sync(&name).unwrap();
+    assert!(
+        !store.is_in_memory(),
+        "stores opened with a real path must report non-fallback"
+    );
+    assert!(store.path().is_some(), "real store must have an on-disk path");
+}
+
+#[tokio::test]
+async fn test_new_empty_delete_sync_is_noop() {
+    let store = KeyValueStore::new_empty();
+    store.set("k", &"v".to_string()).await.unwrap();
+    // delete_sync on an in-memory store should succeed without touching disk.
+    store.delete_sync("k").unwrap();
+    let v: Option<String> = store.get("k").unwrap();
+    assert_eq!(v, None, "in-memory delete_sync removes the in-memory key");
+}
+
+// --- In-memory fallback tests (Task 3.5) ---
+
+#[test]
+fn test_new_empty_is_in_memory_and_has_no_path() {
+    let store = KeyValueStore::new_empty();
+    assert!(store.is_in_memory(), "new_empty must report in-memory mode");
+    assert!(store.path().is_none(), "new_empty must have no on-disk path");
+    assert!(!store.is_dirty(), "fresh in-memory store is not dirty");
+}
+
+#[tokio::test]
+async fn test_new_empty_does_not_persist_to_disk() {
+    // Snapshot the fallback temp dir state *before* — `new_empty` must not
+    // create a new file in it (and we want to prove no `store.json` appears).
+    let fallback_dir = std::env::temp_dir().join("athena-core-fallback");
+    let store = KeyValueStore::new_empty();
+    let _ = std::fs::remove_dir_all(&fallback_dir); // clean slate
+
+    store.set("k", &"v".to_string()).await.unwrap();
+    assert!(store.is_dirty());
+    // flush_if_dirty on an in-memory store must be a no-op, not an error.
+    store.flush_if_dirty().await.unwrap();
+    assert!(!store.is_dirty(), "flush_if_dirty should clear dirty bit");
+    // No file should have been created in the temp fallback dir.
+    assert!(
+        !fallback_dir.exists(),
+        "new_empty must not write to the temp fallback dir"
+    );
+
+    // set_sync must succeed (in-memory only) and also not touch disk.
+    store.set_sync("k2", &"v2".to_string()).unwrap();
+    assert!(
+        !fallback_dir.exists(),
+        "set_sync on an in-memory store must not create a temp fallback dir"
+    );
+
+    // In-memory read-after-write should still work.
+    let v1: Option<String> = store.get("k").unwrap();
+    assert_eq!(v1, Some("v".to_string()));
+    let v2: Option<String> = store.get("k2").unwrap();
+    assert_eq!(v2, Some("v2".to_string()));
+}
+
+#[tokio::test]
+async fn test_new_empty_drop_does_not_write() {
+    // Repeatable: create, mutate, drop — must not produce a file.
+    let fallback_dir = std::env::temp_dir().join("athena-core-fallback");
+    let _ = std::fs::remove_dir_all(&fallback_dir);
+
+    {
+        let store = KeyValueStore::new_empty();
+        store.set("drop_key", &"drop_value".to_string()).await.unwrap();
+        assert!(store.is_dirty());
+        // Intentionally NO explicit flush — Drop must not write to disk.
+    }
+
+    assert!(
+        !fallback_dir.exists(),
+        "Drop of an in-memory store must not create a temp fallback dir"
+    );
+}
+
+#[test]
+fn test_persistent_store_is_not_in_memory() {
+    let name = unique_name();
+    let store = KeyValueStore::with_name_sync(&name).unwrap();
+    assert!(
+        !store.is_in_memory(),
+        "stores opened with a real path must report non-fallback"
+    );
+    assert!(store.path().is_some(), "real store must have an on-disk path");
+}
+
+#[tokio::test]
+async fn test_new_empty_delete_sync_is_noop() {
+    let store = KeyValueStore::new_empty();
+    store.set("k", &"v".to_string()).await.unwrap();
+    // delete_sync on an in-memory store should succeed without touching disk.
+    store.delete_sync("k").unwrap();
+    let v: Option<String> = store.get("k").unwrap();
+    assert_eq!(v, None, "in-memory delete_sync removes the in-memory key");
+}
