@@ -494,7 +494,7 @@ mod agent_comms_tests {
     #[test]
     fn test_respond_to_input_request() {
         let comms = make_comms();
-        let rx = comms.inject_input_request("req-1");
+        let rx = comms.inject_input_request("req-1", "sess-1");
         let result = comms.respond_to_input_request("req-1", "my response");
         assert!(result.is_ok());
         assert_eq!(rx.recv().unwrap(), "my response");
@@ -503,7 +503,7 @@ mod agent_comms_tests {
     #[test]
     fn test_cancel_input_request() {
         let comms = make_comms();
-        let _rx = comms.inject_input_request("req-cancel");
+        let _rx = comms.inject_input_request("req-cancel", "sess-cancel");
         let result = comms.cancel_input_request("req-cancel");
         assert!(result.is_ok());
         assert!(result.unwrap());
@@ -530,7 +530,7 @@ mod agent_comms_tests {
     #[test]
     fn test_shutdown_agent_comms() {
         let comms = make_comms();
-        let _rx = comms.inject_input_request("req-shutdown");
+        let _rx = comms.inject_input_request("req-shutdown", "sess-shutdown");
         assert!(!comms.pending_input_is_empty());
         comms.shutdown_agent_comms().unwrap();
         assert!(comms.pending_input_is_empty());
