@@ -75,25 +75,22 @@ fn is_system_message(_m: &SessionMessage) -> bool {
 }
 
 impl ChatSession {
-    /// Append a message, evicting the oldest non-system messages if the
-    /// total would exceed `MAX_SESSION_MESSAGES`. The newest message is
-    /// always retained.
+    /// Append a message, evicting the oldest messages (FIFO) if the total
+    /// would exceed `MAX_SESSION_MESSAGES`. The newest message is always
+    /// retained. System messages are preserved if `is_system_message` returns
+    /// `true`; otherwise, the oldest entry is dropped to satisfy the cap.
     pub fn add_message_evicting(&mut self, msg: SessionMessage) {
         self.messages.push(msg);
-        if self.messages.len() > MAX_SESSION_MESSAGES {
-            let preserve_from = self
+        while self.messages.len() > MAX_SESSION_MESSAGES {
+            // Find the oldest entry that is NOT a system message and drop it.
+            // If every entry is a system message, fall back to dropping the
+            // oldest entry (FIFO) to satisfy the cap.
+            let drop_idx = self
                 .messages
                 .iter()
                 .position(|m| !is_system_message(m))
                 .unwrap_or(0);
-            let excess = self.messages.len() - MAX_SESSION_MESSAGES;
-            // If everything is a system message we still have to drop
-            // something to satisfy the cap; fall back to FIFO from the head.
-            let start = preserve_from.min(self.messages.len());
-            let end = (start + excess).min(self.messages.len());
-            if end > start {
-                self.messages.drain(start..end);
-            }
+            self.messages.remove(drop_idx);
         }
     }
 
@@ -179,9 +176,13 @@ mod tests {
 
         assert_eq!(session.messages.len(), MAX_SESSION_MESSAGES);
 
-        // The two oldest messages are gone.
+        // The two oldest messages are gone. Since `is_system_message` always
+        // returns false (no System role in MessageRole), the first two
+        // messages inserted — sys-0 and u-00000 — are evicted.
+        assert!(!session.messages.iter().any(|m| m.id == "sys-0"));
         assert!(!session.messages.iter().any(|m| m.id == "u-00000"));
-        assert!(!session.messages.iter().any(|m| m.id == "u-00001"));
+        // The next-oldest survives because we only added 2 more messages.
+        assert!(session.messages.iter().any(|m| m.id == "u-00001"));
 
         // The two newest messages are at the tail.
         assert_eq!(session.messages.last().unwrap().id, "new-2");
