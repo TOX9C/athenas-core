@@ -214,17 +214,6 @@ pub fn App() -> Element {
         });
     }
 
-    // Restore recent command ids from persistent store on startup
-    {
-        let mut cmd = use_command_store();
-        use_effect(move || {
-            spawn(async move {
-                let loaded = CommandState::load_recent().await;
-                cmd.write().recent_ids = loaded;
-            });
-        });
-    }
-
     // Track mounted spaces — pruned each render to current space IDs so
     // removed spaces do not leak in the set indefinitely.
     let active_space_id = workspace.read().active_space_id.clone();

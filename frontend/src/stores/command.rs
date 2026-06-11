@@ -1,5 +1,8 @@
 use dioxus::prelude::*;
 
+use crate::tauri_bridge::store_get as kv_get;
+use crate::tauri_bridge::store_set as kv_set;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -36,6 +39,9 @@ pub struct Command {
 
 /// Maximum number of recent command ids retained.
 const MAX_RECENT: usize = 8;
+
+/// Key used in KeyValueStore for recent command ids persistence.
+const RECENT_KEY: &str = "command_recent";
 
 // ---------------------------------------------------------------------------
 // State
@@ -109,10 +115,60 @@ impl CommandState {
     }
 
     /// Record a command execution in the recent list.
+    /// Persists the updated list to the backend KeyValueStore so the
+    /// recents survive an app restart.
     pub fn record_execution(&mut self, id: &str) {
         self.recent_ids.retain(|rid| rid != id);
         self.recent_ids.insert(0, id.to_string());
         self.recent_ids.truncate(MAX_RECENT);
+
+        // Persist the updated list. Best-effort: a failure to save is
+        // logged but does not disrupt the in-memory state.
+        let json = match serde_json::to_string(&self.recent_ids) {
+            Ok(j) => j,
+            Err(e) => {
+                web_sys::console::error_1(
+                    &format!("[CommandState] serialize error: {}", e).into(),
+                );
+                return;
+            }
+        };
+
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = kv_set(RECENT_KEY, &json).await {
+                web_sys::console::error_1(
+                    &format!("[CommandState] store_set error: {:?}", e).into(),
+                );
+            }
+        });
+    }
+
+    /// Load the persisted recent ids from the backend KeyValueStore.
+    /// Returns an empty vec if nothing is saved or the payload is
+    /// malformed; logs (but does not propagate) deserialization errors.
+    pub async fn load_recent() -> Vec<String> {
+        match kv_get(RECENT_KEY).await {
+            Ok(json) => {
+                if json.trim().is_empty() {
+                    return Vec::new();
+                }
+                match serde_json::from_str::<Vec<String>>(&json) {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        web_sys::console::error_1(
+                            &format!("[CommandState] deserialize error: {}", e).into(),
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+            Err(e) => {
+                web_sys::console::error_1(
+                    &format!("[CommandState] store_get error: {:?}", e).into(),
+                );
+                Vec::new()
+            }
+        }
     }
 }
 
