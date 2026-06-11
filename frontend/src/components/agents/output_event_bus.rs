@@ -1,4 +1,4 @@
-use crate::stores::agent_output::{is_stderr_like, use_agent_output_store};
+use crate::stores::agent_output::use_agent_output_store;
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatusUpdate};
 use crate::stores::notification::{
     add_notification, use_notification_store, NotificationRecord, NotificationType,
@@ -8,6 +8,62 @@ use crate::tauri_bridge;
 use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// Events that the output bus can receive from the Tauri backend.
+///
+/// Signal writes are deferred to the coroutine so they happen inside the
+/// reactive runtime, avoiding panics when a write lands while a read lock
+/// is still held.
+#[derive(Debug)]
+enum OutputBusEvent {
+    AgentStatus {
+        pane_id: String,
+        status: AgentRunStatus,
+        message: Option<String>,
+        progress: Option<crate::stores::agent_status::AgentProgress>,
+        now: i64,
+    },
+    TerminalExit {
+        pane_id: String,
+        now: i64,
+    },
+    TerminalPrompt {
+        pane_id: String,
+        now: i64,
+    },
+    TerminalData {
+        session_id: String,
+        payload: String,
+    },
+    AgentConnected {
+        pane_id: String,
+        now: i64,
+    },
+    AgentDisconnected {
+        pane_id: String,
+        now: i64,
+    },
+    AgentStatusUpdate {
+        pane_id: String,
+        status: AgentRunStatus,
+        message: Option<String>,
+        now: i64,
+    },
+    InputRequested {
+        pane_id: String,
+        message: String,
+        now: i64,
+    },
+    OutputLine(crate::stores::agent_output::OutputLine),
+    PaneRegistered {
+        pane_id: String,
+        agent_type: String,
+        now: i64,
+    },
+    PaneUnregistered {
+        pane_id: String,
+    },
+}
 
 /// Output event bus component - renders nothing, handles IPC events.
 ///
@@ -34,6 +90,107 @@ pub fn OutputEventBus() -> Element {
     let unlistens: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
         use_hook(|| Rc::new(RefCell::new(Vec::new())));
 
+    // Dispatcher coroutine: receives parsed events from the Tauri listen
+    // callbacks and performs all signal writes inside the reactive runtime.
+    let dispatcher = use_coroutine(move |mut rx: UnboundedReceiver<OutputBusEvent>| async move {
+        let mut agent_status = agent_status;
+        let mut agent_output = agent_output;
+        let mut notifications = notifications;
+        while let Some(event) = rx.recv().await {
+            match event {
+                OutputBusEvent::AgentStatus {
+                    pane_id,
+                    status,
+                    message,
+                    progress,
+                    now,
+                } => {
+                    agent_status.write().update_status(
+                        pane_id,
+                        AgentStatusUpdate {
+                            status: Some(status),
+                            message,
+                            progress,
+                        },
+                        now,
+                    );
+                }
+                OutputBusEvent::TerminalExit { pane_id, now } => {
+                    agent_status.write().update_status(
+                        pane_id,
+                        AgentStatusUpdate {
+                            status: Some(AgentRunStatus::Disconnected),
+                            message: Some("PTY exited".to_string()),
+                            progress: None,
+                        },
+                        now,
+                    );
+                }
+                OutputBusEvent::TerminalPrompt { pane_id, now } => {
+                    agent_status.write().update_status(
+                        pane_id,
+                        AgentStatusUpdate {
+                            status: Some(AgentRunStatus::Idle),
+                            message: None,
+                            progress: None,
+                        },
+                        now,
+                    );
+                }
+                OutputBusEvent::TerminalData { session_id, payload } => {
+                    use_terminal_store().write().on_data(&session_id, &payload);
+                }
+                OutputBusEvent::AgentConnected { pane_id, now } => {
+                    agent_status.write().connect_agent(pane_id, now);
+                }
+                OutputBusEvent::AgentDisconnected { pane_id, now } => {
+                    agent_status.write().disconnect_agent(&pane_id, now);
+                }
+                OutputBusEvent::AgentStatusUpdate {
+                    pane_id,
+                    status,
+                    message,
+                    now,
+                } => {
+                    agent_status.write().update_status(
+                        pane_id,
+                        AgentStatusUpdate {
+                            status: Some(status),
+                            message,
+                            progress: None,
+                        },
+                        now,
+                    );
+                }
+                OutputBusEvent::InputRequested { pane_id, message, now } => {
+                    agent_status
+                        .write()
+                        .request_input(pane_id, message.clone(), now);
+
+                    let notif = NotificationRecord {
+                        id: format!("input-{}", chrono::Utc::now().timestamp_millis()),
+                        r#type: NotificationType::NeedsInput,
+                        title: "Agent Input Requested".to_string(),
+                        message,
+                        source: "agent".to_string(),
+                        read: false,
+                        timestamp: chrono::Utc::now().timestamp(),
+                    };
+                    add_notification(&mut notifications, notif);
+                }
+                OutputBusEvent::OutputLine(line) => {
+                    agent_output.write().append_line(line);
+                }
+                OutputBusEvent::PaneRegistered { pane_id, agent_type, now } => {
+                    agent_output.write().register_pane(pane_id, agent_type, now);
+                }
+                OutputBusEvent::PaneUnregistered { pane_id } => {
+                    agent_output.write().unregister_pane(&pane_id);
+                }
+            }
+        }
+    });
+
     // One-time mount effect: register global Tauri event listeners.
     let unlistens_effect = unlistens.clone();
     use_effect(move || {
@@ -43,7 +200,7 @@ pub fn OutputEventBus() -> Element {
         mounted.set(true);
 
         // Listener for agent:status
-        let mut status_store = agent_status;
+        let dispatcher = dispatcher.clone();
         let status_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agent:status", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -89,22 +246,20 @@ pub fn OutputEventBus() -> Element {
                 });
 
                 let now = js_sys::Date::now() as i64;
-                status_store.write().update_status(
+                dispatcher.send(OutputBusEvent::AgentStatus {
                     pane_id,
-                    AgentStatusUpdate {
-                        status: Some(status_enum),
-                        message,
-                        progress,
-                    },
+                    status: status_enum,
+                    message,
+                    progress,
                     now,
-                );
+                });
             }
         }) {
             status_unlistens.borrow_mut().push(u);
         }
 
         // Listener for terminal:exit
-        let mut exit_store = agent_status;
+        let dispatcher = dispatcher.clone();
         let exit_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("terminal:exit", move |payload: String| {
             let pane_id = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -118,22 +273,14 @@ pub fn OutputEventBus() -> Element {
 
             if !pane_id.is_empty() {
                 let now = js_sys::Date::now() as i64;
-                exit_store.write().update_status(
-                    pane_id,
-                    AgentStatusUpdate {
-                        status: Some(AgentRunStatus::Disconnected),
-                        message: Some("PTY exited".to_string()),
-                        progress: None,
-                    },
-                    now,
-                );
+                dispatcher.send(OutputBusEvent::TerminalExit { pane_id, now });
             }
         }) {
             exit_unlistens.borrow_mut().push(u);
         }
 
         // Listener for terminal:prompt
-        let mut prompt_store = agent_status;
+        let dispatcher = dispatcher.clone();
         let prompt_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("terminal:prompt", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -144,15 +291,7 @@ pub fn OutputEventBus() -> Element {
                     .to_string();
                 if !pane_id.is_empty() {
                     let now = js_sys::Date::now() as i64;
-                    prompt_store.write().update_status(
-                        pane_id,
-                        AgentStatusUpdate {
-                            status: Some(AgentRunStatus::Idle),
-                            message: None,
-                            progress: None,
-                        },
-                        now,
-                    );
+                    dispatcher.send(OutputBusEvent::TerminalPrompt { pane_id, now });
                 }
             }
         }) {
@@ -160,7 +299,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for terminal:data
-        let mut terminal_store = use_terminal_store();
+        let dispatcher = dispatcher.clone();
         let terminal_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("terminal:data", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -170,7 +309,7 @@ pub fn OutputEventBus() -> Element {
                     .unwrap_or("")
                     .to_string();
                 if !session_id.is_empty() {
-                    terminal_store.write().on_data(&session_id, &payload);
+                    dispatcher.send(OutputBusEvent::TerminalData { session_id, payload });
                 }
             }
         }) {
@@ -178,7 +317,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for agents:connected
-        let mut connect_store = agent_status;
+        let dispatcher = dispatcher.clone();
         let connect_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agents:connected", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -189,7 +328,7 @@ pub fn OutputEventBus() -> Element {
                     .to_string();
                 if !pane_id.is_empty() {
                     let now = js_sys::Date::now() as i64;
-                    connect_store.write().connect_agent(pane_id, now);
+                    dispatcher.send(OutputBusEvent::AgentConnected { pane_id, now });
                 }
             }
         }) {
@@ -197,7 +336,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for agents:disconnected
-        let mut disconnect_store = agent_status;
+        let dispatcher = dispatcher.clone();
         let disconnect_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agents:disconnected", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -208,7 +347,7 @@ pub fn OutputEventBus() -> Element {
                     .to_string();
                 if !pane_id.is_empty() {
                     let now = js_sys::Date::now() as i64;
-                    disconnect_store.write().disconnect_agent(&pane_id, now);
+                    dispatcher.send(OutputBusEvent::AgentDisconnected { pane_id, now });
                 }
             }
         }) {
@@ -216,7 +355,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for agents:statusUpdate
-        let mut update_store = agent_status;
+        let dispatcher = dispatcher.clone();
         let update_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agents:statusUpdate", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -244,23 +383,19 @@ pub fn OutputEventBus() -> Element {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 let now = js_sys::Date::now() as i64;
-                update_store.write().update_status(
+                dispatcher.send(OutputBusEvent::AgentStatusUpdate {
                     pane_id,
-                    AgentStatusUpdate {
-                        status: Some(status_enum),
-                        message,
-                        progress: None,
-                    },
+                    status: status_enum,
+                    message,
                     now,
-                );
+                });
             }
         }) {
             update_unlistens.borrow_mut().push(u);
         }
 
         // Listener for agents:inputRequested
-        let mut input_store = agent_status;
-        let mut input_notif_store = notifications;
+        let dispatcher = dispatcher.clone();
         let input_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agents:inputRequested", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -276,21 +411,7 @@ pub fn OutputEventBus() -> Element {
                     .to_string();
                 if !pane_id.is_empty() {
                     let now = js_sys::Date::now() as i64;
-                    input_store
-                        .write()
-                        .request_input(pane_id.clone(), message.clone(), now);
-
-                    // Also push a NeedsInput notification.
-                    let notif = NotificationRecord {
-                        id: format!("input-{}", chrono::Utc::now().timestamp_millis()),
-                        r#type: NotificationType::NeedsInput,
-                        title: "Agent Input Requested".to_string(),
-                        message,
-                        source: "agent".to_string(),
-                        read: false,
-                        timestamp: chrono::Utc::now().timestamp(),
-                    };
-                    add_notification(&mut input_notif_store, notif);
+                    dispatcher.send(OutputBusEvent::InputRequested { pane_id, message, now });
                 }
             }
         }) {
@@ -298,7 +419,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for output-capture:line
-        let mut output_store = agent_output;
+        let dispatcher = dispatcher.clone();
         let output_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("output-capture:line", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -326,7 +447,7 @@ pub fn OutputEventBus() -> Element {
                         text,
                         is_stderr,
                     };
-                    output_store.write().append_line(line);
+                    dispatcher.send(OutputBusEvent::OutputLine(line));
                 }
             }
         }) {
@@ -334,7 +455,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for output-capture:paneRegistered
-        let mut register_store = agent_output;
+        let dispatcher = dispatcher.clone();
         let register_unlistens = unlistens_effect.clone();
         if let Ok(u) =
             tauri_bridge::listen("output-capture:paneRegistered", move |payload: String| {
@@ -351,9 +472,11 @@ pub fn OutputEventBus() -> Element {
                         .to_string();
                     if !pane_id.is_empty() {
                         let now = js_sys::Date::now() as i64;
-                        register_store
-                            .write()
-                            .register_pane(pane_id, agent_type, now);
+                        dispatcher.send(OutputBusEvent::PaneRegistered {
+                            pane_id,
+                            agent_type,
+                            now,
+                        });
                     }
                 }
             })
@@ -362,7 +485,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for output-capture:paneUnregistered
-        let mut unregister_store = agent_output;
+        let dispatcher = dispatcher.clone();
         let unregister_unlistens = unlistens_effect.clone();
         if let Ok(u) =
             tauri_bridge::listen("output-capture:paneUnregistered", move |payload: String| {
@@ -373,7 +496,7 @@ pub fn OutputEventBus() -> Element {
                         .unwrap_or("")
                         .to_string();
                     if !pane_id.is_empty() {
-                        unregister_store.write().unregister_pane(&pane_id);
+                        dispatcher.send(OutputBusEvent::PaneUnregistered { pane_id });
                     }
                 }
             })
