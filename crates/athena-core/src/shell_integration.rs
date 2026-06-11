@@ -440,15 +440,34 @@ pub fn process_sequences(
 // Shell integration scripts
 // ---------------------------------------------------------------------------
 
+/// Errors returned by `get_shell_integration_script`.
+#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
+pub enum ShellIntegrationError {
+    /// The requested shell does not have a shell-integration script. Callers
+    /// should treat this as a hard failure and not inject a fallback script,
+    /// which may produce invalid syntax in the unsupported shell.
+    #[error("unsupported shell for shell integration: {0} (supported: bash, zsh, fish)")]
+    UnsupportedShell(String),
+}
+
+// ---------------------------------------------------------------------------
+// Shell integration scripts
+// ---------------------------------------------------------------------------
+
 /// Return the shell integration script for the given shell.
-pub fn get_shell_integration_script(shell: &str) -> String {
-    let base = shell.rsplit('/').next().unwrap_or("zsh");
+///
+/// Returns `Err(ShellIntegrationError::UnsupportedShell)` if the shell is
+/// not one of `bash`, `zsh`, or `fish`. Callers MUST NOT inject a fallback
+/// script for unknown shells — the script syntax is shell-specific and a
+/// mismatched injection will break the target shell.
+pub fn get_shell_integration_script(shell: &str) -> Result<String, ShellIntegrationError> {
+    let base = shell.rsplit('/').next().unwrap_or("");
 
     match base {
-        "zsh" => get_zsh_integration(),
-        "bash" => get_bash_integration(),
-        "fish" => get_fish_integration(),
-        _ => get_zsh_integration(),
+        "zsh" => Ok(get_zsh_integration()),
+        "bash" => Ok(get_bash_integration()),
+        "fish" => Ok(get_fish_integration()),
+        other => Err(ShellIntegrationError::UnsupportedShell(other.to_string())),
     }
 }
 
@@ -593,3 +612,76 @@ mod strip_osc633_tests {
         assert_eq!(output, "regular text");
     }
 }
+
+#[cfg(test)]
+mod get_shell_integration_script_tests {
+    use super::*;
+
+    #[test]
+    fn known_shells_return_ok() {
+        assert!(get_shell_integration_script("bash").is_ok());
+        assert!(get_shell_integration_script("zsh").is_ok());
+        assert!(get_shell_integration_script("fish").is_ok());
+    }
+
+    #[test]
+    fn known_shells_with_paths_return_ok() {
+        // Full paths should resolve to the same scripts as bare names.
+        assert!(get_shell_integration_script("/bin/bash").is_ok());
+        assert!(get_shell_integration_script("/usr/local/bin/zsh").is_ok());
+        assert!(get_shell_integration_script("/opt/homebrew/bin/fish").is_ok());
+    }
+
+    #[test]
+    fn known_shells_return_real_script() {
+        // Sanity-check the script content is shell-specific, not a zsh fallback.
+        let zsh = get_shell_integration_script("zsh").unwrap();
+        assert!(zsh.contains("add-zsh-hook"));
+        let bash = get_shell_integration_script("bash").unwrap();
+        assert!(bash.contains("PROMPT_COMMAND"));
+        let fish = get_shell_integration_script("fish").unwrap();
+        assert!(fish.contains("fish_prompt"));
+    }
+
+    #[test]
+    fn unknown_shell_returns_unsupported_error() {
+        let result = get_shell_integration_script("tcsh");
+        assert!(
+            matches!(&result, Err(ShellIntegrationError::UnsupportedShell(s)) if s == "tcsh"),
+            "expected UnsupportedShell(\"tcsh\"), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_shell_with_path_returns_basename_in_error() {
+        // The error reports the basename of the unsupported path.
+        let result = get_shell_integration_script("/usr/bin/tcsh");
+        assert!(
+            matches!(&result, Err(ShellIntegrationError::UnsupportedShell(s)) if s == "tcsh"),
+            "expected UnsupportedShell(\"tcsh\"), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn empty_shell_returns_unsupported_error() {
+        let result = get_shell_integration_script("");
+        assert!(
+            matches!(&result, Err(ShellIntegrationError::UnsupportedShell(s)) if s.is_empty()),
+            "expected UnsupportedShell with empty name, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn unsupported_shell_does_not_silently_fallback_to_zsh() {
+        // Regression: prior implementation returned the zsh script for any
+        // unknown shell. The function must now return Err for unsupported
+        // shells — no script is ever returned for them.
+        let err = get_shell_integration_script("powershell").unwrap_err();
+        match err {
+            ShellIntegrationError::UnsupportedShell(name) => {
+                assert_eq!(name, "powershell");
+            }
+        }
+    }
+}
+
