@@ -15,8 +15,6 @@ const MAX_AGENT_LINE_BYTES: usize = 65_536; // 64 KiB
 /// from streaming a giant line and forcing the server to allocate
 /// unbounded memory before it ever sees a newline. Exceeding this cap
 /// disconnects the misbehaving agent.
-const MAX_AGENT_LINE_BYTES: usize = 65_536; // 64 KiB
-
 /// Type of agent message in the agent communications protocol.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
