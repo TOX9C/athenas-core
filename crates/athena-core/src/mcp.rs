@@ -11,8 +11,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::time::{timeout, Duration};
 
 use crate::tool_executor::ToolExecutor;
+
+/// How long a connected MCP client may sit idle between requests before
+/// the server disconnects it. Guards against half-open connections and
+/// buggy clients that never send a newline.
+const MCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -1023,11 +1029,19 @@ impl ConnectionHandler {
         }
 
         loop {
-            let line = match lines.next_line().await {
-                Ok(Some(l)) => l,
-                Ok(None) => break,
-                Err(e) => {
+            let line = match timeout(MCP_IDLE_TIMEOUT, lines.next_line()).await {
+                Ok(Ok(Some(l))) => l,
+                Ok(Ok(None)) => break, // EOF
+                Ok(Err(e)) => {
                     log::warn!("MCP: read error from {}: {}", peer, e);
+                    break;
+                }
+                Err(_) => {
+                    log::info!(
+                        "MCP: client {} idle for >{}s, closing connection",
+                        peer,
+                        MCP_IDLE_TIMEOUT.as_secs()
+                    );
                     break;
                 }
             };

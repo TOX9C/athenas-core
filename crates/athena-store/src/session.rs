@@ -23,11 +23,18 @@ pub enum SessionStoreError {
 pub struct SessionStore {
     sessions_dir: PathBuf,
     images_dir: PathBuf,
+    /// `true` when the store was constructed via `new_empty` (fallback path
+    /// to a temp directory). Used by `is_in_memory()` to surface a warning
+    /// to operators; the data is still written to disk for the lifetime of
+    /// the process, but is not guaranteed to survive a restart.
+    is_empty: bool,
 }
 
 impl SessionStore {
-    /// Empty fallback constructor — creates a store pointing at a temp directory.
-    /// Used when the real data directory is inaccessible at startup.
+    /// Empty fallback constructor — creates a store pointing at a temp
+    /// directory. Used when the real data directory is inaccessible at
+    /// startup. Data is written to disk for the session's lifetime but is
+    /// not guaranteed to survive a restart.
     pub fn new_empty() -> Self {
         let base = std::env::temp_dir().join("athena-core-fallback");
         let sessions_dir = base.join("athena-sessions");
@@ -37,7 +44,14 @@ impl SessionStore {
         SessionStore {
             sessions_dir,
             images_dir,
+            is_empty: true,
         }
+    }
+
+    /// Returns `true` if this store was created via `new_empty()` (fallback
+    /// to a temp directory). The data may be lost on process restart.
+    pub fn is_in_memory(&self) -> bool {
+        self.is_empty
     }
 
     /// Create the directories if they don't exist and return the store.
@@ -53,6 +67,7 @@ impl SessionStore {
         Ok(SessionStore {
             sessions_dir,
             images_dir,
+            is_empty: false,
         })
     }
 
@@ -75,6 +90,7 @@ impl SessionStore {
         Ok(SessionStore {
             sessions_dir,
             images_dir,
+            is_empty: false,
         })
     }
 
