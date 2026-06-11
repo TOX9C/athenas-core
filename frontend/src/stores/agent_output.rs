@@ -13,6 +13,23 @@ pub struct OutputLine {
     pub line_num: usize,
     pub timestamp: i64,
     pub text: String,
+    /// Precomputed stderr heuristic. Set once at line arrival; never
+    /// re-evaluated during render. See [`is_stderr_like`].
+    pub is_stderr: bool,
+}
+
+/// Heuristic: text containing error/warn/fail/exception keywords looks like
+/// stderr output. Called once per line at construction time (in the IPC
+/// listener), never per render.
+///
+/// Returns the same answer as the legacy render-time heuristic. Allocates a
+/// single lowercased copy of `text` per call — at most once per incoming line.
+pub fn is_stderr_like(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("error")
+        || lower.contains("warn")
+        || lower.contains("fail")
+        || lower.contains("exception")
 }
 
 /// Metadata about an agent's output stream.
@@ -299,6 +316,7 @@ mod tests {
             line_num: 0,
             timestamp: 0,
             text: text.to_string(),
+            is_stderr: false,
         }
     }
 

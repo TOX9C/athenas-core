@@ -1,4 +1,4 @@
-use crate::stores::agent_output::use_agent_output_store;
+use crate::stores::agent_output::{is_stderr_like, use_agent_output_store};
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatusUpdate};
 use crate::stores::notification::{
     add_notification, use_notification_store, NotificationRecord, NotificationType,
@@ -316,11 +316,15 @@ pub fn OutputEventBus() -> Element {
                 let timestamp = val.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
 
                 if !pane_id.is_empty() {
+                    // Precompute stderr heuristic once at arrival; the render
+                    // path now just reads `line.is_stderr`.
+                    let is_stderr = is_stderr_like(&text);
                     let line = crate::stores::agent_output::OutputLine {
                         pane_id,
                         line_num,
                         timestamp,
                         text,
+                        is_stderr,
                     };
                     output_store.write().append_line(line);
                 }

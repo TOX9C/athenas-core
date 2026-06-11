@@ -12,7 +12,7 @@ fn to_display_line(store: &StoreLine) -> super::agent_output_line::OutputLine {
         line_num: store.line_num,
         text: store.text.clone(),
         timestamp: store.timestamp,
-        is_stderr: false,
+        is_stderr: store.is_stderr,
     }
 }
 
@@ -54,18 +54,15 @@ pub fn AgentOutputPanel() -> Element {
     // and the per-render allocation is skipped when nothing has changed.
     let lines = use_memo(move || {
         let store = agent_output.read();
-        let buf = store
-            .selected_pane_id
-            .as_ref()
-            .and_then(|pid| {
-                store
-                    .buffers
-                    .iter()
-                    .find(|(k, _)| k == pid)
-                    .map(|(_, v)| v)
-            })
-            .unwrap_or(&[]);
-        buf.iter().map(to_display_line).collect::<Vec<_>>()
+        match store.selected_pane_id.as_deref() {
+            Some(pid) => store
+                .buffers
+                .iter()
+                .find(|(k, _)| k.as_str() == pid)
+                .map(|(_, v)| v.iter().map(to_display_line).collect::<Vec<_>>())
+                .unwrap_or_default(),
+            None => Vec::new(),
+        }
     });
 
     let pane_id_display: String = selected_id
