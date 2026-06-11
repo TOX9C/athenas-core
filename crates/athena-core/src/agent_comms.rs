@@ -399,7 +399,7 @@ impl AgentComms {
     /// Returns `Ok(true)` if the agent was found and removed, `Ok(false)` otherwise.
     /// The agent's socket is not explicitly closed — it will detect disconnection on next read.
     pub fn disconnect_agent(&self, agent_id: &str) -> Result<bool, AgentCommsError> {
-        let sessions = self
+        let mut sessions = self
             .sessions
             .lock()
             .map_err(|_| AgentCommsError::LockPoisoned)?;
@@ -407,13 +407,7 @@ impl AgentComms {
             .values()
             .find(|s| s.session.agent_id == agent_id)
             .map(|s| s.session.id.clone());
-        drop(sessions);
-
         if let Some(id) = session_id {
-            let mut sessions = self
-                .sessions
-                .lock()
-                .map_err(|_| AgentCommsError::LockPoisoned)?;
             sessions.remove(&id);
             Ok(true)
         } else {
@@ -1129,5 +1123,59 @@ mod tests {
 
         let response = rx.recv_timeout(std::time::Duration::from_millis(100));
         assert_eq!(response.unwrap(), "hello");
+    }
+
+    #[test]
+    fn disconnect_agent_concurrent_single_winner() {
+        use std::sync::Arc;
+        use std::sync::Barrier;
+
+        let comms = Arc::new(AgentComms::new());
+        // Seed a single session under a shared agent_id.
+        {
+            let mut map = comms.sessions.lock().unwrap();
+            let (tx, _rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+            map.insert(
+                "session-shared".to_string(),
+                SessionInternal {
+                    session: AgentSession {
+                        id: "session-shared".to_string(),
+                        plugin_id: "plugin-test".to_string(),
+                        agent_id: "agent-shared".to_string(),
+                        connected_at: 0,
+                        last_activity_at: 0,
+                        status: SessionStatus::Active,
+                    },
+                    sender: tx,
+                    peer_addr: None,
+                },
+            );
+        }
+
+        let n = 10;
+        let barrier = Arc::new(Barrier::new(n));
+        let mut handles = Vec::with_capacity(n);
+        for _ in 0..n {
+            let c = comms.clone();
+            let b = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                b.wait();
+                c.disconnect_agent("agent-shared")
+            }));
+        }
+
+        let mut winners = 0usize;
+        let mut losers = 0usize;
+        for h in handles {
+            match h.join().unwrap() {
+                Ok(true) => winners += 1,
+                Ok(false) => losers += 1,
+                Err(e) => panic!("unexpected error: {:?}", e),
+            }
+        }
+        assert_eq!(winners, 1, "exactly one thread should win the disconnect");
+        assert_eq!(losers, n - 1, "remaining threads should report not-found");
+        // Sessions map should now be empty.
+        assert!(comms.sessions.lock().unwrap().is_empty());
     }
 }
