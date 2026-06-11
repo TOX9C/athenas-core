@@ -139,7 +139,7 @@ mod tests {
         let (prefix, after) = result.split_at(prefix_end);
 
         // Prefix block must be sorted by ascending length.
-        let mut prefix_sorted: Vec<&String> = prefix.iter().collect();
+        let mut prefix_sorted: Vec<String> = prefix.to_vec();
         prefix_sorted.sort_by_key(|s| s.len());
         assert_eq!(
             prefix,

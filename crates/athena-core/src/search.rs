@@ -247,6 +247,13 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
 }
 
 /// Locate the ripgrep binary synchronously.
+///
+/// **Deprecated**: Spawns a blocking `std::process::Command`. Prefer the
+/// async [`find_rg_binary`] which uses `tokio::process::Command`.
+#[deprecated(
+    since = "0.1.0",
+    note = "Spawns a blocking std::process::Command; use the async `find_rg_binary` instead"
+)]
 pub fn find_rg_binary_sync() -> Result<PathBuf, SearchError> {
     let candidates = if cfg!(windows) {
         vec!["rg.exe"]
@@ -288,7 +295,16 @@ pub fn find_rg_binary_sync() -> Result<PathBuf, SearchError> {
 }
 
 /// Synchronous version of `search_code` — runs ripgrep and parses results.
+///
+/// **Deprecated**: Spawns a blocking `std::process::Command` which can stall
+/// the Tokio worker thread. Prefer the async [`search_code`], which uses
+/// `tokio::process::Command` and integrates with the Tokio runtime.
+#[deprecated(
+    since = "0.1.0",
+    note = "Spawns a blocking std::process::Command; use the async `search_code` instead"
+)]
 pub fn search_code_sync(options: &SearchOptions) -> Result<SearchResult, SearchError> {
+    #[allow(deprecated)]
     let rg_bin = find_rg_binary_sync()?;
 
     let mut args: Vec<String> = vec![
