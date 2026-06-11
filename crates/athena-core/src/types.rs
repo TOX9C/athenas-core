@@ -70,6 +70,35 @@ pub struct SearchOptions {
     pub context_lines: Option<usize>,
 }
 
+impl SearchOptions {
+    /// Maximum allowed value for `context_lines` (prevents ripgrep OOM).
+    pub const MAX_CONTEXT_LINES: usize = 100;
+    /// Maximum allowed value for `max_results` (bounds memory usage).
+    pub const MAX_RESULTS: usize = 5000;
+
+    /// Cap `context_lines` and `max_results` to safe upper bounds, and
+    /// escape any leading `-` in `pattern` to prevent argument injection
+    /// into ripgrep.
+    ///
+    /// Defense in depth: the actual `rg` invocation already passes
+    /// `pattern` after a `--` end-of-options marker, but escaping here
+    /// keeps the option safe if it is ever reused in a path without
+    /// that separator.
+    pub fn validate(&mut self) {
+        if let Some(ctx) = self.context_lines {
+            self.context_lines = Some(ctx.min(Self::MAX_CONTEXT_LINES));
+        }
+        if let Some(max) = self.max_results {
+            self.max_results = Some(max.min(Self::MAX_RESULTS));
+        }
+        if self.pattern.starts_with('-') {
+            // Prefix with a backslash so ripgrep treats the dash literally
+            // (e.g. `--version` matches the literal string `--version`).
+            self.pattern = format!("\\{}", self.pattern);
+        }
+    }
+}
+
 /// A single match found during a code search.
 ///
 /// Contains the matched line plus optional context lines before and after.

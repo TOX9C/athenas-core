@@ -1,6 +1,6 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
@@ -24,8 +24,13 @@ pub enum StoreError {
 /// rather than writing immediately. The actual disk write happens when the caller
 /// invokes `flush_if_dirty` (or implicitly on `Drop`). This batches rapid IPC
 /// mutations and avoids O(n) write amplification.
+///
+/// When `path` is `None` (constructed via `new_empty`), the store is purely
+/// in-memory: `set_sync`/`flush_if_dirty`/`Drop` are no-ops for disk and the
+/// data is lost on process exit. Use `is_in_memory()` to detect this
+/// condition.
 pub struct KeyValueStore {
-    path: PathBuf,
+    path: Option<PathBuf>,
     data: parking_lot::Mutex<std::collections::HashMap<String, serde_json::Value>>,
     dirty: AtomicBool,
 }
@@ -37,17 +42,22 @@ impl KeyValueStore {
         Self::with_name_sync("store")
     }
 
-    /// Empty fallback constructor — creates an in-memory store with no persistence.
-    /// Used when the real data directory is inaccessible at startup.
+    /// Empty fallback constructor — creates a truly in-memory store with no
+    /// persistence. Used when the real data directory is inaccessible at startup.
+    /// In-memory writes succeed; nothing is written to disk. `Drop` is a no-op.
     pub fn new_empty() -> Self {
-        let data_dir = std::env::temp_dir().join("athena-core-fallback");
-        let _ = std::fs::create_dir_all(&data_dir);
-        let path = data_dir.join("store.json");
         Self {
-            path,
+            path: None, // truly in-memory, no persistence
             data: parking_lot::Mutex::new(std::collections::HashMap::new()),
             dirty: AtomicBool::new(false),
         }
+    }
+
+    /// Returns `true` when this store is the in-memory fallback (constructed via
+    /// `new_empty`). Such a store never writes to disk and is reset on process
+    /// restart. Callers may want to surface a warning to the user.
+    pub fn is_in_memory(&self) -> bool {
+        self.path.is_none()
     }
 
     /// Test-only constructor: open a store at an explicit path. Used by the
@@ -64,7 +74,7 @@ impl KeyValueStore {
             std::collections::HashMap::new()
         };
         Ok(Self {
-            path,
+            path: Some(path),
             data: parking_lot::Mutex::new(data),
             dirty: AtomicBool::new(false),
         })
@@ -84,7 +94,7 @@ impl KeyValueStore {
             std::collections::HashMap::new()
         };
         Ok(Self {
-            path,
+            path: Some(path),
             data: parking_lot::Mutex::new(data),
             dirty: AtomicBool::new(false),
         })
@@ -110,7 +120,7 @@ impl KeyValueStore {
             std::collections::HashMap::new()
         };
         Ok(Self {
-            path,
+            path: Some(path),
             data: parking_lot::Mutex::new(data),
             dirty: AtomicBool::new(false),
         })
@@ -133,6 +143,8 @@ impl KeyValueStore {
     /// writes in quick succession to avoid O(n) write amplification.
     ///
     /// Call `flush_if_dirty().await` after a batch of mutations to persist them.
+    /// For an in-memory fallback store, this updates the in-memory map but
+    /// `flush_if_dirty` will not write to disk.
     pub async fn set<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
         {
@@ -157,6 +169,9 @@ impl KeyValueStore {
     /// Set a key synchronously, persist to disk immediately (blocking I/O).
     /// Bypasses the dirty flag — useful when the caller needs durability
     /// guarantees for a single write without flushing an unrelated batch.
+    ///
+    /// For an in-memory fallback store (constructed via `new_empty`), this
+    /// updates the in-memory map and returns `Ok(())` without touching disk.
     pub fn set_sync<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
         let json = {
@@ -164,9 +179,18 @@ impl KeyValueStore {
             map.insert(key.to_string(), json_value);
             serde_json::to_string_pretty(&*map)?
         };
-        let tmp_path = self.path.with_extension("json.tmp");
+        let path = match &self.path {
+            Some(p) => p,
+            None => {
+                // In-memory fallback: update the in-memory state and clear the
+                // dirty flag (no on-disk file to flush). Data lives until drop.
+                self.dirty.store(false, Ordering::SeqCst);
+                return Ok(());
+            }
+        };
+        let tmp_path = path.with_extension("json.tmp");
         std::fs::write(&tmp_path, json.as_bytes())?;
-        std::fs::rename(&tmp_path, &self.path)?;
+        std::fs::rename(&tmp_path, path)?;
         // In-memory state matches disk; clear any pending dirty bit.
         self.dirty.store(false, Ordering::SeqCst);
         Ok(())
@@ -174,15 +198,25 @@ impl KeyValueStore {
 
     /// Delete a key synchronously, persist to disk immediately (blocking I/O).
     /// Bypasses the dirty flag.
+    ///
+    /// For an in-memory fallback store, this removes the key from the in-memory
+    /// map and returns `Ok(())` without touching disk.
     pub fn delete_sync(&self, key: &str) -> Result<(), StoreError> {
         let json = {
             let mut map = self.data.lock();
             map.remove(key);
             serde_json::to_string_pretty(&*map)?
         };
-        let tmp_path = self.path.with_extension("json.tmp");
+        let path = match &self.path {
+            Some(p) => p,
+            None => {
+                self.dirty.store(false, Ordering::SeqCst);
+                return Ok(());
+            }
+        };
+        let tmp_path = path.with_extension("json.tmp");
         std::fs::write(&tmp_path, json.as_bytes())?;
-        std::fs::rename(&tmp_path, &self.path)?;
+        std::fs::rename(&tmp_path, path)?;
         self.dirty.store(false, Ordering::SeqCst);
         Ok(())
     }
@@ -192,10 +226,11 @@ impl KeyValueStore {
         self.data.lock().contains_key(key)
     }
 
-    /// Returns the on-disk path backing this store. Exposed primarily for
-    /// tests; production callers should not rely on the path layout.
-    pub fn path(&self) -> &std::path::Path {
-        &self.path
+    /// Returns the on-disk path backing this store, or `None` for an
+    /// in-memory fallback store. Exposed primarily for tests; production
+    /// callers should not rely on the path layout.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     /// Mark the store as having pending writes. Cheap atomic flag — safe to
@@ -218,8 +253,17 @@ impl KeyValueStore {
     /// If the store is dirty, write the in-memory state to disk and clear the
     /// flag. Returns `Ok(())` whether or not a write was required.
     ///
+    /// For an in-memory fallback store, this is a no-op (the dirty bit is
+    /// cleared but no file is touched).
+    ///
     /// Call this after a batch of `set`/`delete` calls to persist them.
     pub async fn flush_if_dirty(&self) -> Result<(), StoreError> {
+        if self.path.is_none() {
+            // In-memory fallback: no file to flush. Clear the dirty bit so
+            // is_dirty() accurately reflects that there is nothing to write.
+            self.dirty.store(false, Ordering::SeqCst);
+            return Ok(());
+        }
         if !self.take_dirty() {
             return Ok(());
         }
@@ -228,16 +272,20 @@ impl KeyValueStore {
 
     /// Persist the current in-memory state to disk unconditionally.
     /// Used by `flush_if_dirty` and `Drop`; rarely needed by callers.
+    /// For an in-memory fallback store, returns `Ok(())` without writing.
     async fn persist(&self) -> Result<(), StoreError> {
+        let path = match &self.path {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
         let json = {
             let map = self.data.lock();
             serde_json::to_string_pretty(&*map)?
         };
-        let path_clone = self.path.clone();
-        let tmp_path = self.path.with_extension("json.tmp");
+        let tmp_path = path.with_extension("json.tmp");
         tokio::task::spawn_blocking(move || {
             std::fs::write(&tmp_path, json.as_bytes())?;
-            std::fs::rename(&tmp_path, &path_clone)?;
+            std::fs::rename(&tmp_path, &path)?;
             Ok::<_, StoreError>(())
         })
         .await
@@ -249,11 +297,22 @@ impl KeyValueStore {
 /// On drop, attempt a best-effort synchronous flush if dirty. This protects
 /// against losing pending writes when the store is dropped (e.g., on app exit)
 /// without requiring every caller to remember to flush.
+///
+/// For an in-memory fallback store (constructed via `new_empty`), Drop is a
+/// no-op: the in-memory data is released by the destructor naturally.
 impl Drop for KeyValueStore {
     fn drop(&mut self) {
+        // In-memory fallback: nothing to persist.
+        if self.path.is_none() {
+            return;
+        }
         if !self.dirty.load(Ordering::SeqCst) {
             return;
         }
+        let path = match &self.path {
+            Some(p) => p.clone(),
+            None => return,
+        };
         let json = match {
             let map = self.data.lock();
             serde_json::to_string_pretty(&*map)
@@ -264,12 +323,12 @@ impl Drop for KeyValueStore {
                 return;
             }
         };
-        let tmp_path = self.path.with_extension("json.tmp");
+        let tmp_path = path.with_extension("json.tmp");
         if let Err(e) = std::fs::write(&tmp_path, json.as_bytes()) {
             eprintln!("KeyValueStore drop: write failed: {e}");
             return;
         }
-        if let Err(e) = std::fs::rename(&tmp_path, &self.path) {
+        if let Err(e) = std::fs::rename(&tmp_path, &path) {
             eprintln!("KeyValueStore drop: rename failed: {e}");
         }
     }
