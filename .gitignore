@@ -53,10 +53,16 @@ e2e-tests/test/screenshots/
 
 # Claude Code worktrees
 .claude/worktrees/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Backup / legacy directories
 backup_*/
 dist-electron/
+
+# Old / legacy tool directories
+.omo/
+
 
 # Rust compile artifacts (redundant with target/ but explicit)
 *.rlib

@@ -1,19 +1,19 @@
 # Athena's Core
 
-<img src="src-tauri/icons/icon.png" alt="Athena's Core" width="128" height="128" />
+<img src="src-tauri/icons/128x128.png?v=2025" alt="Athena's Core" width="128" height="128" />
 
 A next-generation desktop IDE for AI-assisted software development. Athena's Core unifies a multi-pane terminal, AI chat assistant, task management, and multi-agent orchestration into a single cross-platform native application.
 
 ## Preview
 
 <p align="center">
-  <a href="docs/athenas-core-ad.mp4?raw=true">
-    <img src="docs/athenas-core-ad-poster.jpg" alt="Athena's Core - Product Advertisement" width="800" />
+  <a href="docs/athenas-core-ad.mp4">
+    <img src="docs/athenas-core-ad.gif" alt="Athena's Core - Product Advertisement" width="800" />
   </a>
 </p>
 
 <p align="center">
-  <i>Click to watch the 35-second product showcase: terminal, AI chat, and multi-agent swarm in action.</i>
+  <i>Preview above is an animated GIF. <a href="docs/athenas-core-ad.mp4">Click here to download the full 1080p MP4 (11 MB)</a>.</i>
 </p>
 
 ---
