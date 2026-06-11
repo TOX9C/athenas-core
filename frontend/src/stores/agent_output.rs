@@ -1,4 +1,6 @@
 use dioxus::prelude::*;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,13 +37,24 @@ pub struct SubscriptionState {
 const MAX_LINES_PER_BUFFER: usize = 5000;
 /// Maximum characters retained per output line (prevents DoS from huge single lines).
 const MAX_TEXT_LENGTH: usize = 10000;
+/// Maximum number of tracked output panes.
+const MAX_PANE_COUNT: usize = 100;
+/// Target pane count after garbage collection.
+const PANE_GC_TARGET: usize = 80;
+/// Threshold for idle-pane GC: a pane whose buffer has not been touched for
+/// this duration is eligible for eviction. Stops the buffers map from growing
+/// unboundedly in long sessions where many panes are created and destroyed.
+const PANE_GC_IDLE_THRESHOLD: Duration = Duration::from_secs(30 * 60);
+/// Recommended sweep interval for periodic GC. Pair with `PANE_GC_IDLE_THRESHOLD`
+/// when wiring a `use_effect` to call `gc()`.
+pub const PANE_GC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
 /// Global agent output tracking state.
-#[derive(Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq)]
 pub struct AgentOutputState {
     pub buffers: Vec<(String, Vec<OutputLine>)>,
     pub agents: Vec<AgentOutputInfo>,
@@ -49,6 +62,15 @@ pub struct AgentOutputState {
     pub subscription: SubscriptionState,
     pub inspector_open: bool,
     pub auto_scroll: bool,
+    /// Last time each pane's buffer was read/written. Used by `gc()` to evict
+    /// panes that have been idle longer than `PANE_GC_IDLE_THRESHOLD`.
+    last_access: HashMap<String, Instant>,
+}
+
+impl Default for AgentOutputState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AgentOutputState {
@@ -64,6 +86,7 @@ impl AgentOutputState {
             },
             inspector_open: false,
             auto_scroll: true,
+            last_access: HashMap::new(),
         }
     }
 
@@ -83,17 +106,53 @@ impl AgentOutputState {
         }
     }
 
+    fn update_last_activity(&mut self, pane_id: &str, timestamp: i64) {
+        if let Some(agent) = self.agents.iter_mut().find(|a| a.pane_id == pane_id) {
+            agent.last_activity_at = timestamp;
+        }
+    }
+
+    /// Mark a pane as recently used. Call on every buffer mutation so that
+    /// the idle-based `gc()` doesn't evict an active pane.
+    fn touch(&mut self, pane_id: &str) {
+        self.last_access.insert(pane_id.to_string(), Instant::now());
+    }
+
+    fn maybe_gc_panes(&mut self) {
+        if self.agents.len() <= MAX_PANE_COUNT {
+            return;
+        }
+        let mut activity: Vec<(i64, String)> = self
+            .agents
+            .iter()
+            .map(|a| (a.last_activity_at, a.pane_id.clone()))
+            .collect();
+        activity.sort_by_key(|x| x.0);
+        let to_remove = self.agents.len().saturating_sub(PANE_GC_TARGET);
+        for (_, pane_id) in activity.into_iter().take(to_remove) {
+            self.unregister_pane(&pane_id);
+        }
+    }
+
     // -- Mutators (in-place, compatible with Signal::write()) ---------------
 
     pub fn set_lines(&mut self, pane_id: impl Into<String>, lines: Vec<OutputLine>) {
         let key = pane_id.into();
         let mut trimmed = lines;
+        // Defensive: per-line text length cap (set_lines may be called with
+        // a fresh batch from the backend that hasn't gone through append_line).
+        for line in trimmed.iter_mut() {
+            if line.text.len() > MAX_TEXT_LENGTH {
+                line.text.truncate(MAX_TEXT_LENGTH);
+            }
+        }
         Self::trim_lines(&mut trimmed);
         if let Some(buf) = self.find_buffer_mut(&key) {
             *buf = trimmed;
         } else {
-            self.buffers.push((key, trimmed));
+            self.buffers.push((key.clone(), trimmed));
         }
+        self.touch(&key);
     }
 
     pub fn append_line(&mut self, mut line: OutputLine) {
@@ -106,12 +165,20 @@ impl AgentOutputState {
             buf.push(line);
             Self::trim_lines(buf);
         } else {
-            self.buffers.push((pane_id, vec![line]));
+            self.buffers.push((pane_id.clone(), vec![line]));
+            self.maybe_gc_panes();
         }
+        // Update last activity for GC sorting
+        let timestamp = chrono::Utc::now().timestamp();
+        self.update_last_activity(&pane_id, timestamp);
+        self.touch(&pane_id);
     }
 
     pub fn clear_buffer(&mut self, pane_id: &str) {
         self.buffers.retain(|(id, _)| id != pane_id);
+        // Clear the access stamp so the idle GC doesn't keep a phantom entry
+        // around pointing at a non-existent buffer.
+        self.last_access.remove(pane_id);
     }
 
     pub fn set_agents(&mut self, agents: Vec<AgentOutputInfo>) {
@@ -142,6 +209,36 @@ impl AgentOutputState {
         self.auto_scroll = auto;
     }
 
+    // -- Garbage collection -------------------------------------------------
+
+    /// Evict panes (and their buffers) that have not been touched within
+    /// `PANE_GC_IDLE_THRESHOLD`. Safe to call periodically (every
+    /// `PANE_GC_INTERVAL` from a `use_effect`).
+    ///
+    /// This complements `maybe_gc_panes` (a hard cap on the total number of
+    /// panes) by removing panes that exist *below* that cap but are no longer
+    /// receiving output — e.g. an agent pane whose subscription ended without
+    /// an explicit `unregister_pane` event.
+    pub fn gc(&mut self) {
+        let now = Instant::now();
+        // First pass: collect stale pane ids.
+        let stale: Vec<String> = self
+            .last_access
+            .iter()
+            .filter_map(|(pane_id, t)| {
+                if now.duration_since(*t) >= PANE_GC_IDLE_THRESHOLD {
+                    Some(pane_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for pane_id in &stale {
+            self.unregister_pane(pane_id);
+        }
+    }
+
     // -- Event handlers for Tauri push events -------------------------------
 
     /// Register a new output pane.
@@ -156,9 +253,11 @@ impl AgentOutputState {
             });
             // Ensure buffer exists
             if !self.buffers.iter().any(|(id, _)| id == &pane_id) {
-                self.buffers.push((pane_id, Vec::new()));
+                self.buffers.push((pane_id.clone(), Vec::new()));
             }
+            self.maybe_gc_panes();
         }
+        self.touch(&pane_id);
     }
 
     /// Unregister an output pane.
@@ -168,6 +267,7 @@ impl AgentOutputState {
         if self.selected_pane_id.as_deref() == Some(pane_id) {
             self.selected_pane_id = None;
         }
+        self.last_access.remove(pane_id);
     }
 }
 
@@ -183,4 +283,109 @@ pub fn use_agent_output_store() -> Signal<AgentOutputState> {
 /// Initialize the agent output store as a context provider.
 pub fn provide_agent_output_store() {
     use_context_provider(|| Signal::new(AgentOutputState::new()));
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_line(pane: &str, text: &str) -> OutputLine {
+        OutputLine {
+            pane_id: pane.to_string(),
+            line_num: 0,
+            timestamp: 0,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn gc_removes_idle_panes_and_keeps_active() {
+        let mut state = AgentOutputState::new();
+        state.register_pane("pane-1".to_string(), "claude".to_string(), 1_000);
+        state.register_pane("pane-2".to_string(), "shell".to_string(), 1_000);
+        state.append_line(make_line("pane-1", "hello"));
+        state.append_line(make_line("pane-2", "world"));
+
+        assert_eq!(state.buffers.len(), 2);
+        assert_eq!(state.agents.len(), 2);
+
+        // Backdate pane-1 so it appears 31 minutes idle.
+        let stale = Instant::now()
+            .checked_sub(PANE_GC_IDLE_THRESHOLD + Duration::from_secs(60))
+            .expect("monotonic clock supports backwards arithmetic");
+        state.last_access.insert("pane-1".to_string(), stale);
+
+        state.gc();
+
+        // pane-1 evicted everywhere
+        assert!(
+            !state.buffers.iter().any(|(id, _)| id == "pane-1"),
+            "stale buffer should be evicted"
+        );
+        assert!(
+            !state.agents.iter().any(|a| a.pane_id == "pane-1"),
+            "stale agent should be evicted"
+        );
+        assert!(
+            !state.last_access.contains_key("pane-1"),
+            "stale last_access should be removed"
+        );
+
+        // pane-2 retained
+        assert!(
+            state.buffers.iter().any(|(id, _)| id == "pane-2"),
+            "active buffer should remain"
+        );
+        assert!(
+            state.agents.iter().any(|a| a.pane_id == "pane-2"),
+            "active agent should remain"
+        );
+        assert!(
+            state.last_access.contains_key("pane-2"),
+            "active last_access should remain"
+        );
+    }
+
+    #[test]
+    fn append_line_truncates_oversized_text() {
+        let mut state = AgentOutputState::new();
+        state.register_pane("pane-x".to_string(), "shell".to_string(), 1_000);
+        let huge = "a".repeat(MAX_TEXT_LENGTH + 100);
+        state.append_line(make_line("pane-x", &huge));
+        let (_, lines) = state
+            .buffers
+            .iter()
+            .find(|(id, _)| id == "pane-x")
+            .expect("buffer exists");
+        assert_eq!(lines[0].text.len(), MAX_TEXT_LENGTH);
+    }
+
+    #[test]
+    fn touch_resets_idle_clock() {
+        let mut state = AgentOutputState::new();
+        state.register_pane("pane-y".to_string(), "claude".to_string(), 1_000);
+        // Backdate
+        let stale = Instant::now()
+            .checked_sub(PANE_GC_IDLE_THRESHOLD + Duration::from_secs(60))
+            .unwrap();
+        state.last_access.insert("pane-y".to_string(), stale);
+
+        // A subsequent append should refresh the timestamp.
+        state.append_line(make_line("pane-y", "ping"));
+        state.gc();
+        assert!(state.buffers.iter().any(|(id, _)| id == "pane-y"));
+    }
+
+    #[test]
+    fn unregister_clears_last_access() {
+        let mut state = AgentOutputState::new();
+        state.register_pane("pane-z".to_string(), "shell".to_string(), 1_000);
+        assert!(state.last_access.contains_key("pane-z"));
+        state.unregister_pane("pane-z");
+        assert!(!state.last_access.contains_key("pane-z"));
+    }
 }

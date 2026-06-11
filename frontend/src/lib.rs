@@ -29,7 +29,7 @@ use components::workspace::new_space_modal::NewSpaceModal;
 use components::workspace::terminal_grid::WorkspaceGrid;
 use components::workspace::workspace_tabs::WorkspaceTabs;
 use dioxus::prelude::*;
-use stores::agent_output::provide_agent_output_store;
+use stores::agent_output::{provide_agent_output_store, use_agent_output_store, PANE_GC_INTERVAL};
 use stores::agent_status::provide_agent_status_store;
 use stores::athena::{provide_athena_store, use_athena_store};
 use stores::command::provide_command_store;
@@ -71,8 +71,8 @@ pub fn App() -> Element {
     let mut athena_state = use_athena_store();
     let mut panel_state = use_panel_manager_store();
     let mut terminal_store = use_terminal_store();
+    let mut agent_output_store = use_agent_output_store();
 
-    let mut mounted_spaces = use_signal(std::collections::HashSet::<String>::new);
     let mut platform = use_signal(|| {
         crate::utils::platform_utils::is_mac()
             .then_some("MacIntel")
@@ -101,58 +101,63 @@ pub fn App() -> Element {
         });
     });
 
-    // Apply theme and font on mount (load persisted values from store)
+    // Sync maximize state with actual window state on mount.
+    use_effect(move || {
+        spawn(async move {
+            if let Ok(state) = crate::tauri_bridge::window_is_maximized().await {
+                is_maximized.set(state);
+            }
+        });
+    });
+
+    // Apply theme and font reactively whenever the corresponding UI state changes.
+    // This fires on mount (with defaults/current values) and re-fires when the
+    // async store load below updates the signal.
     {
-        let mut ui_state_for_load = ui_state.clone();
+        let ui_state_apply = ui_state.clone();
         use_effect(move || {
-            let mut ui = ui_state_for_load.clone();
+            let theme_name = ui_state_apply.read().theme.name().to_string();
+            let font_family = ui_state_apply.read().font_family.clone();
+            let font_size = ui_state_apply.read().font_size;
+            crate::themes::apply_theme_to_dom(&theme_name);
+            crate::themes::apply_font_to_dom(&font_family, font_size);
+        });
+    }
+
+    // Load persisted UI settings from the backend store on startup.
+    // Only writes to the signal (triggering the reactive effect above)
+    // — no direct DOM / apply calls inside the async block.
+    {
+        let mut ui_state_load = ui_state.clone();
+        use_effect(move || {
             spawn(async move {
-                // Load theme from persist
                 if let Ok(theme_name) = crate::tauri_bridge::store_get("theme").await {
                     if !theme_name.is_empty() {
                         let theme = crate::stores::ui::UITheme::from_name(&theme_name);
-                        ui.write().theme = theme;
-                        crate::themes::apply_theme_to_dom(&theme_name);
+                        ui_state_load.write().theme = theme;
                     }
                 }
-                // Load font family from persist
                 if let Ok(font_family) = crate::tauri_bridge::store_get("font_family").await {
                     if !font_family.is_empty() {
-                        ui.write().font_family = font_family.clone();
-                        crate::themes::apply_font_to_dom(&font_family, ui.read().font_size);
+                        ui_state_load.write().font_family = font_family;
                     }
                 }
-                // Load font size from persist
                 if let Ok(font_size_str) = crate::tauri_bridge::store_get("font_size").await {
                     if let Ok(size) = font_size_str.parse::<u8>() {
-                        ui.write().font_size = size;
-                        let fam = ui.read().font_family.clone();
-                        crate::themes::apply_font_to_dom(&fam, size);
+                        ui_state_load.write().font_size = size;
                     }
                 }
-                // Load custom agents from persist
                 if let Ok(agents_json) = crate::tauri_bridge::store_get("custom_agents").await {
                     if !agents_json.is_empty() {
                         if let Ok(agents) = serde_json::from_str::<
                             Vec<crate::types::workspace::CustomAgent>,
                         >(&agents_json)
                         {
-                            ui.write().custom_agents = agents;
+                            ui_state_load.write().custom_agents = agents;
                         }
                     }
                 }
             });
-        });
-    }
-
-    // Also apply current local settings synchronously on mount (in case store fetch is slow)
-    {
-        let theme_name = ui_state.read().theme.name().to_string();
-        let font_family = ui_state.read().font_family.clone();
-        let font_size = ui_state.read().font_size;
-        use_effect(move || {
-            crate::themes::apply_theme_to_dom(&theme_name);
-            crate::themes::apply_font_to_dom(&font_family, font_size);
         });
     }
 
@@ -168,28 +173,24 @@ pub fn App() -> Element {
         // Mark effect as run-once by not capturing any reactive dependencies
     }
 
-    // Track mounted spaces
-    let active_space_id = workspace.read().active_space_id.clone();
-    if let Some(id) = &active_space_id {
-        if !mounted_spaces.read().contains(id) {
-            mounted_spaces.write().insert(id.clone());
-        }
+    // Hide the browser native webview when the right sidebar is closed.
+    {
+        let ui_state_hide = ui_state.clone();
+        use_effect(move || {
+            if !ui_state_hide.read().right_sidebar_open {
+                spawn(async move {
+                    let _ = crate::tauri_bridge::browser_hide("sidebar-browser").await;
+                });
+            }
+        });
     }
 
+    let active_space_id = workspace.read().active_space_id.clone();
     let spaces = workspace.read().spaces.clone();
     let active_space: Option<Space> = spaces
         .iter()
         .find(|s| Some(&s.id) == active_space_id.as_ref())
         .cloned();
-    let mounted_space_ids = mounted_spaces.read().clone();
-    let mounted_workspaces: Vec<Space> = spaces
-        .iter()
-        .filter(|space| {
-            mounted_space_ids.contains(&space.id)
-                || active_space_id.as_deref() == Some(space.id.as_str())
-        })
-        .cloned()
-        .collect();
 
     let active_space_pane_ids: Vec<String> = active_space
         .as_ref()
@@ -214,6 +215,20 @@ pub fn App() -> Element {
                     .set_active(active_space_pane_ids[0].clone());
             }
         }
+    });
+
+    // Periodic GC for agent output buffers. Evicts panes whose buffer has not
+    // been touched within `PANE_GC_IDLE_THRESHOLD` (30 min). Keeps long-lived
+    // sessions from accumulating orphan buffers from panes that were created
+    // and torn down without an explicit unregister event.
+    use_effect(move || {
+        let interval_ms = PANE_GC_INTERVAL.as_millis() as u32;
+        spawn(async move {
+            loop {
+                gloo::timers::future::TimeoutFuture::new(interval_ms).await;
+                agent_output_store.write().gc();
+            }
+        });
     });
 
     let is_mac = platform().to_lowercase().contains("mac");
@@ -263,14 +278,22 @@ pub fn App() -> Element {
                             let v = ui_state.read().command_palette_open; ui_state.write().command_palette_open = !v;
                         }
                         Key::Character(ref c) if c == "j" => {
-                            // Toggle right sidebar to Assistant (Athena) tab
+                            // Toggle right sidebar (smart: restore last panel, or switch to Athena)
                             let sidebar_open = ui_state.read().right_sidebar_open;
                             let active = panel_state.read().active_right_panel;
-                            if !sidebar_open || active != RightPanel::Assistant {
-                                panel_state.write().active_right_panel = RightPanel::Assistant;
+                            if !sidebar_open {
+                                // Opening: restore last active panel (defaults to Assistant on first open)
+                                let last = panel_state.read().last_active_right_panel;
+                                panel_state.write().active_right_panel = last;
                                 ui_state.write().right_sidebar_open = true;
-                            } else {
+                            } else if active == RightPanel::Assistant {
+                                // Close sidebar, saving current panel as last-active
+                                panel_state.write().last_active_right_panel = active;
+                                panel_state.write().active_right_panel = RightPanel::None;
                                 ui_state.write().right_sidebar_open = false;
+                            } else {
+                                // Switch to Assistant tab
+                                panel_state.write().active_right_panel = RightPanel::Assistant;
                             }
                         }
                         Key::Character(ref c) if c == "t" => {
@@ -308,6 +331,13 @@ pub fn App() -> Element {
                         };
                         if let (Some(sid), Some(pid)) = (space_id, first_pane_id) {
                             workspace_mut.write().remove_pane_from_space(&sid, &pid);
+                            {
+                                let mut term = terminal_store.write();
+                                term.remove_session(&pid);
+                            }
+                            spawn(async move {
+                                let _ = crate::tauri_bridge::pty_kill(&pid).await;
+                            });
                             e.prevent_default();
                         }
                     }
@@ -395,6 +425,12 @@ pub fn App() -> Element {
                     div { style: "width: 80px; flex-shrink: 0;" }
                 }
 
+                // App title — rendered with the Greek mythology font
+                div {
+                    style: "padding: 0 12px; font-family: var(--font-display); font-size: 14px; color: var(--text); letter-spacing: 0.04em; white-space: nowrap; -webkit-app-region: no-drag;",
+                    "Athena\u{2019}s Core"
+                }
+
                 // Workspace tabs (centered, flex-1)
                 div { style: "flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 8px; min-width: 0;",
                     WorkspaceTabs { on_new_space: move |_| { ui_state.write().show_new_space_modal = true; } }
@@ -466,11 +502,19 @@ pub fn App() -> Element {
                         onclick: move |_| {
                             let sidebar_open = ui_state.read().right_sidebar_open;
                             let active = panel_state.read().active_right_panel;
-                            if !sidebar_open || active != RightPanel::Assistant {
-                                panel_state.write().active_right_panel = RightPanel::Assistant;
+                            if !sidebar_open {
+                                // Opening: restore last active panel (defaults to Assistant on first open)
+                                let last = panel_state.read().last_active_right_panel;
+                                panel_state.write().active_right_panel = last;
                                 ui_state.write().right_sidebar_open = true;
-                            } else {
+                            } else if active == RightPanel::Assistant {
+                                // Close sidebar, saving current panel as last-active
+                                panel_state.write().last_active_right_panel = active;
+                                panel_state.write().active_right_panel = RightPanel::None;
                                 ui_state.write().right_sidebar_open = false;
+                            } else {
+                                // Switch to Assistant tab
+                                panel_state.write().active_right_panel = RightPanel::Assistant;
                             }
                         },
                         IconTerminal { size: Some(16), color: Some("currentColor".to_string()) }
@@ -632,19 +676,10 @@ pub fn App() -> Element {
                                             "display: none;"
                                         },
 
-                                        for space in mounted_workspaces.iter() {
-                                            div {
-                                                key: "workspace-view-{space.id}",
-                                                style: if active_space_id.as_deref() == Some(space.id.as_str()) {
-                                                    "position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0;"
-                                                } else {
-                                                    "position: absolute; inset: 0; display: none; min-width: 0; min-height: 0;"
-                                                },
-                                                WorkspaceGrid {
-                                                    key: "workspace-grid-{space.id}",
-                                                    active_space: Some(space.clone()),
-                                                    active_space_id: active_space_id.clone(),
-                                                }
+                                        if let Some(ref space) = active_space {
+                                            WorkspaceGrid {
+                                                active_space: Some(space.clone()),
+                                                active_space_id: active_space_id.clone(),
                                             }
                                         }
                                     }
