@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::ffi::CString;
 use std::io;
 use std::os::unix::io::{IntoRawFd, RawFd};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use vte::Parser;
@@ -40,8 +40,13 @@ pub struct TerminalUpdate {
 pub struct TerminalSession {
     pub id: String,
     pub grid: Arc<Mutex<Grid>>,
-    pub master_fd: RawFd,
-    fd_closed: AtomicBool,
+    /// Atomic FD sentinel. Holds the master PTY fd, or `-1` once the fd has
+    /// been closed. Using an atomic (rather than a separate `fd_closed` bool
+    /// plus a raw `RawFd`) closes the TOCTOU window: `read`/`write`/`resize`
+    /// load the fd under `Acquire`, and `close_fd` swaps in `-1` under
+    /// `AcqRel`. After `close_fd` returns, no other thread can observe a
+    /// stale, potentially-recycled fd.
+    pub master_fd: AtomicI32,
     pub shell_pid: nix::unistd::Pid,
     /// The process group ID of the shell. Explicitly stored because it is only
     /// equal to `shell_pid` if `setsid()` succeeded. If `setsid()` failed, the
@@ -69,9 +74,7 @@ pub struct TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        if !self.fd_closed.swap(true, Ordering::SeqCst) {
-            let _ = close(self.master_fd);
-        }
+        self.close_fd();
         let _ = nix::sys::signal::killpg(self.pgid, nix::sys::signal::Signal::SIGTERM);
     }
 }
@@ -90,8 +93,7 @@ impl TerminalSession {
         Self {
             id,
             grid: Arc::new(Mutex::new(Grid::new(cols, rows))),
-            master_fd,
-            fd_closed: AtomicBool::new(false),
+            master_fd: AtomicI32::new(master_fd),
             shell_pid,
             pgid,
             shell,
@@ -99,6 +101,29 @@ impl TerminalSession {
             status: Mutex::new(PtyStatus::Spawning),
             pending_writes: Mutex::new(VecDeque::new()),
             parser: Mutex::new(Parser::new()),
+        }
+    }
+
+    /// Atomically close the master fd. Idempotent: subsequent calls are no-ops
+    /// because the sentinel `-1` is swapped back to itself. The first caller
+    /// to swap wins and is responsible for the `libc::close` call. After this
+    /// returns, no other thread can observe a valid fd on this session
+    /// (every read/write/resize loads the sentinel under `Acquire`).
+    ///
+    /// Returns `true` if this call actually closed an open fd, `false` if
+    /// the fd was already closed.
+    fn close_fd(&self) -> bool {
+        let old = self.master_fd.swap(-1, Ordering::AcqRel);
+        if old >= 0 {
+            // SAFETY: `old` was a valid fd owned by this session; we are
+            // the first thread to swap it out, so no one else will close
+            // it. The kernel may reuse the integer for an unrelated fd
+            // after this returns — callers must reload the atomic to
+            // observe the new `-1` sentinel.
+            unsafe { libc::close(old as RawFd) };
+            true
+        } else {
+            false
         }
     }
 
@@ -121,7 +146,12 @@ impl TerminalSession {
 
     /// Internal: perform the actual write to the PTY master fd.
     async fn do_write(&self, data: &[u8]) -> io::Result<usize> {
-        let fd = self.master_fd;
+        // Load the atomic fd sentinel. A negative value means `close_fd`
+        // has already run (or the session was never given a real fd).
+        let fd = self.master_fd.load(Ordering::Acquire);
+        if fd < 0 {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "fd closed"));
+        }
         let buf = data.to_vec();
         tokio::task::spawn_blocking(move || {
             let written = unsafe { libc::write(fd, buf.as_ptr() as *const _, buf.len()) };
@@ -302,9 +332,7 @@ impl SessionManager {
                 let mut sessions = self.sessions.write().await;
                 if let Some(existing) = sessions.get(&id).cloned() {
                     drop(sessions);
-                    if !session.fd_closed.swap(true, Ordering::SeqCst) {
-                        let _ = close(session.master_fd);
-                    }
+                    session.close_fd();
                     let _ =
                         nix::sys::signal::killpg(session.pgid, nix::sys::signal::Signal::SIGTERM);
                     let _ =
@@ -327,9 +355,7 @@ impl SessionManager {
     pub async fn kill(&self, id: &str) -> io::Result<()> {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.remove(id) {
-            if !session.fd_closed.swap(true, Ordering::SeqCst) {
-                let _ = close(session.master_fd);
-            }
+            session.close_fd();
             let pgid = session.pgid;
             let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGTERM);
         }
@@ -358,7 +384,12 @@ impl SessionManager {
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             };
-            let fd = session.master_fd;
+            // Load the atomic fd sentinel. If it's been swapped to -1
+            // (closed), the ioctl would target an invalid fd, so bail out.
+            let fd = session.master_fd.load(Ordering::Acquire);
+            if fd < 0 {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "fd closed"));
+            }
             let result = tokio::task::spawn_blocking(move || unsafe {
                 libc::ioctl(fd, libc::TIOCSWINSZ, &ws)
             })
@@ -406,7 +437,13 @@ impl TerminalSession {
     /// into cell deltas. Pair with `parse_bytes` if you also need the legacy
     /// grid update.
     pub async fn read_bytes(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let nbytes = unsafe { libc::read(self.master_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        // Load the atomic fd sentinel. A negative value means `close_fd`
+        // has already run, so there is no valid fd to read from.
+        let fd = self.master_fd.load(Ordering::Acquire);
+        if fd < 0 {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "fd closed"));
+        }
+        let nbytes = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
         if nbytes < 0 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::WouldBlock || e.raw_os_error() == Some(libc::EAGAIN) {
@@ -526,5 +563,58 @@ mod tests {
         let err = result.err().expect("already checked");
         assert!(err.to_string().contains("execvp"));
         assert!(!manager.has_session("fail_id").await);
+    }
+
+    /// close_fd is idempotent and atomically swaps the fd to -1.
+    /// Uses a real pipe fd (no PTY needed) to exercise the libc::close path.
+    #[test]
+    fn close_fd_is_idempotent_and_swaps_to_sentinel() {
+        // Create a real fd via pipe() so libc::close has something valid to
+        // close. We only need one end — the other end is closed immediately
+        // and forgotten.
+        let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
+        let raw_fd = read_end.into_raw_fd();
+
+        // PGID 1 = launchd on macOS / init on Linux. We have no permission
+        // to signal it, so `Drop`'s `killpg(self.pgid, SIGTERM)` is a benign
+        // no-op (returns EPERM, discarded). Using pid 0 here would target
+        // the test process's own process group and kill the test runner.
+        let foreign_pgid = nix::unistd::Pid::from_raw(1);
+
+        let session = TerminalSession::new(
+            "test".to_string(),
+            raw_fd,
+            foreign_pgid,
+            foreign_pgid,
+            "/bin/sh".to_string(),
+            "/".to_string(),
+            80,
+            24,
+        );
+
+        // Sanity: the sentinel holds the real fd we provided.
+        assert_eq!(session.master_fd.load(Ordering::Acquire), raw_fd);
+
+        // First call: should report it actually closed the fd.
+        assert!(
+            session.close_fd(),
+            "first close_fd should report it closed a fd"
+        );
+        assert_eq!(
+            session.master_fd.load(Ordering::Acquire),
+            -1,
+            "sentinel should be -1 after close"
+        );
+
+        // Second call: should be a no-op.
+        assert!(
+            !session.close_fd(),
+            "second close_fd should report nothing to close"
+        );
+        assert_eq!(
+            session.master_fd.load(Ordering::Acquire),
+            -1,
+            "sentinel should remain -1 on second close"
+        );
     }
 }
