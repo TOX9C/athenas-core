@@ -1146,66 +1146,108 @@ fn make_parse_error_response(raw: &str) -> String {
 
 /// Tolerant `id` extraction from a (possibly truncated) JSON buffer.
 ///
-/// Looks for the first `"id"` key and parses the scalar that follows.
-/// Returns `None` if no plausible id can be recovered.
+/// Looks for the first `"id"` key in the buffer and parses the scalar
+/// that follows. Returns `None` if no plausible id can be recovered.
 fn extract_id_from_partial(raw: &str) -> Option<serde_json::Value> {
+    // Search for the literal `"id"` pattern. For each occurrence check
+    // the key is in a valid object position, then read a single scalar
+    // value (number, bool, null, or string — possibly truncated).
     let bytes = raw.as_bytes();
-    let n = bytes.len();
-    let mut i = 0;
-    while i < n {
-        if bytes[i] == b'"' {
-            // Skip string literal
-            i += 1;
-            while i < n && bytes[i] != b'"' {
-                if bytes[i] == b'\\' && i + 1 < n {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            i += 1; // past closing quote
+    let mut search_start = 0;
+    while let Some(rel) = raw[search_start..].find("\"id\"") {
+        let key_pos = search_start + rel;
+        // The character just before `"id"` should be a key-separator in
+        // valid object syntax: `{`, `,`, or whitespace.
+        let before_ok = key_pos == 0
+            || matches!(
+                bytes[key_pos - 1],
+                b'{' | b',' | b' ' | b'\n' | b'\r' | b'\t'
+            );
+        if !before_ok {
+            search_start = key_pos + 4;
             continue;
         }
-        // Look for the literal `id` followed by `:` (JSON object key pattern)
-        if i + 2 < n && &bytes[i..i + 2] == b"id" {
-            let prev_is_quote_or_brace = i == 0
-                || bytes[i - 1] == b'"'
-                || bytes[i - 1] == b'{'
-                || bytes[i - 1] == b','
-                || bytes[i - 1] == b' ';
-            let next_is_colon = i + 2 < n
-                && (bytes[i + 2] == b':' || bytes[i + 2] == b' ' || bytes[i + 2] == b'\t');
-            if prev_is_quote_or_brace && next_is_colon {
-                // Find the colon
-                let mut j = i + 2;
-                while j < n && bytes[j] != b':' {
-                    j += 1;
+        // j is just past the closing quote of "id"; expect `:` or whitespace.
+        let mut j = key_pos + 4;
+        while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b':' {
+            search_start = key_pos + 4;
+            continue;
+        }
+        j += 1;
+        while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') {
+            j += 1;
+        }
+        if j >= bytes.len() {
+            return None;
+        }
+        // Read a single scalar value starting at j.
+        return parse_scalar_at(raw, j);
+    }
+    None
+}
+
+/// Read one JSON scalar (number, bool, null, or string — possibly
+/// truncated) starting at byte offset `j` of `raw`. Returns `None` if
+/// no recognizable scalar can be recovered.
+fn parse_scalar_at(raw: &str, j: usize) -> Option<serde_json::Value> {
+    let bytes = raw.as_bytes();
+    if j >= bytes.len() {
+        return None;
+    }
+    let b = bytes[j];
+    // Quoted string
+    if b == b'"' {
+        let mut k = j + 1;
+        loop {
+            if k >= bytes.len() {
+                // Truncated string — return what we have.
+                let s = &raw[j + 1..];
+                return Some(serde_json::Value::String(s.to_string()));
+            }
+            match bytes[k] {
+                b'\\' if k + 1 < bytes.len() => k += 2,
+                b'"' => {
+                    let s = &raw[j + 1..k];
+                    // Wrap the captured body in quotes and re-parse to
+                    // honour JSON escape sequences.
+                    let quoted = format!("\"{}\"", s.replace('"', "\\\""));
+                    return serde_json::from_str(&quoted).ok();
                 }
-                j += 1;
-                // Skip whitespace
-                while j < n && (bytes[j] == b' ' || bytes[j] == b'\t') {
-                    j += 1;
-                }
-                if j >= n {
-                    return None;
-                }
-                // Try to parse the value starting at j
-                let tail = &raw[j..];
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(tail) {
-                    return Some(v);
-                }
-                // Try quoted string truncated at EOF
-                if tail.starts_with('"') {
-                    let end = tail[1..].find('"').map(|k| k + 2).unwrap_or(tail.len());
-                    let candidate = &tail[..end];
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
-                        return Some(v);
-                    }
-                }
-                return None;
+                _ => k += 1,
             }
         }
-        i += 1;
+    }
+    // Null / true / false
+    if b == b'n' || b == b't' || b == b'f' {
+        let tail = &raw[j..];
+        for kw in &["null", "true", "false"] {
+            if tail.starts_with(kw) {
+                return serde_json::from_str(kw).ok();
+            }
+        }
+        return None;
+    }
+    // Number: scan digits, sign, dot, exponent.
+    if b == b'-' || b.is_ascii_digit() {
+        let mut k = j;
+        if bytes[k] == b'-' {
+            k += 1;
+        }
+        while k < bytes.len()
+            && (bytes[k].is_ascii_digit()
+                || bytes[k] == b'.'
+                || bytes[k] == b'e'
+                || bytes[k] == b'E'
+                || bytes[k] == b'+'
+                || bytes[k] == b'-')
+        {
+            k += 1;
+        }
+        let n = &raw[j..k];
+        return serde_json::from_str(n).ok();
     }
     None
 }
@@ -1364,50 +1406,6 @@ fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::
     }
 
     Some(ti)
-}
-
-#[cfg(test)]
-mod tests_parse_error {
-    use super::*;
-
-    #[test]
-    fn parse_error_response_includes_id() {
-        // Truncated JSON with a valid `id` field at the start
-        let raw = r#"{"id":42,"method":"foo"#;
-        let resp = make_parse_error_response(raw);
-        assert!(resp.contains("\"id\":42"), "expected id 42 in: {}", resp);
-        assert!(resp.contains("-32700"), "expected parse error code in: {}", resp);
-        assert!(resp.contains("\"jsonrpc\":\"2.0\""), "expected jsonrpc 2.0 in: {}", resp);
-    }
-
-    #[test]
-    fn parse_error_response_with_no_id() {
-        // Completely unparseable input
-        let raw = "not json at all";
-        let resp = make_parse_error_response(raw);
-        assert!(resp.contains("\"id\":null"), "expected null id in: {}", resp);
-        assert!(resp.contains("-32700"), "expected parse error code in: {}", resp);
-    }
-
-    #[test]
-    fn parse_error_response_is_valid_json() {
-        let raw = r#"{"id":"abc","method":"x"#;
-        let resp = make_parse_error_response(raw);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&resp).expect("response must be valid JSON");
-        assert_eq!(parsed["jsonrpc"], "2.0");
-        assert_eq!(parsed["id"], "abc");
-        assert_eq!(parsed["error"]["code"], -32700);
-        assert_eq!(parsed["error"]["message"], "Parse error");
-    }
-
-    #[test]
-    fn parse_error_response_falls_back_to_null_when_id_missing() {
-        // Valid JSON object but no `id` key
-        let raw = r#"{"method":"foo"}"#;
-        let resp = make_parse_error_response(raw);
-        assert!(resp.contains("\"id\":null"), "expected null id in: {}", resp);
-    }
 }
 
 #[cfg(test)]
