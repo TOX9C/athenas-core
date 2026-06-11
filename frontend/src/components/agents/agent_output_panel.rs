@@ -23,20 +23,6 @@ pub fn AgentOutputPanel() -> Element {
     let selected_id = agent_output.read().selected_pane_id.clone();
     let auto_scroll = agent_output.read().auto_scroll;
 
-    let store_lines: Vec<StoreLine> = selected_id
-        .as_ref()
-        .and_then(|id| {
-            agent_output
-                .read()
-                .buffers
-                .iter()
-                .find(|(pid, _)| pid == id)
-                .map(|(_, l)| l.clone())
-        })
-        .unwrap_or_default();
-    let lines: Vec<super::agent_output_line::OutputLine> =
-        store_lines.iter().map(to_display_line).collect();
-
     if selected_id.is_none() {
         return rsx! {
             div {
@@ -60,11 +46,33 @@ pub fn AgentOutputPanel() -> Element {
         };
     }
 
+    // Convert the selected buffer's lines once per signal change. Avoids cloning
+    // the entire `Vec<StoreLine>` on every render — the previous code cloned the
+    // buffer Vec (deep-cloning every `text` and `pane_id` String) and then cloned
+    // each string a second time during the `to_display_line` map. This memo
+    // iterates the store buffer by reference, so strings are cloned exactly once
+    // and the per-render allocation is skipped when nothing has changed.
+    let lines = use_memo(move || {
+        let store = agent_output.read();
+        let buf = store
+            .selected_pane_id
+            .as_ref()
+            .and_then(|pid| {
+                store
+                    .buffers
+                    .iter()
+                    .find(|(k, _)| k == pid)
+                    .map(|(_, v)| v)
+            })
+            .unwrap_or(&[]);
+        buf.iter().map(to_display_line).collect::<Vec<_>>()
+    });
+
     let pane_id_display: String = selected_id
         .as_ref()
         .map(|s| s.chars().take(16).collect())
         .unwrap_or_default();
-    let line_count = lines.len();
+    let line_count = lines().len();
 
     rsx! {
         div {
@@ -111,14 +119,14 @@ pub fn AgentOutputPanel() -> Element {
             div {
                 style: "flex: 1; overflow-y: auto; overflow-x: hidden; background: var(--bg);",
 
-                if lines.is_empty() {
+                if lines().is_empty() {
                     EmptyState {
                         kind: EmptyArt::Generic,
                         title: "No output".to_string(),
                         hint: Some("Agent output will stream here.".to_string()),
                     }
                 } else {
-                    for line in lines.iter() {
+                    for line in lines().iter() {
                         AgentOutputLine {
                             key: "{line.pane_id}-{line.line_num}",
                             line: line.clone(),
