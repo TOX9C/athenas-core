@@ -57,6 +57,58 @@ pub struct ChatSession {
     pub messages: Vec<SessionMessage>,
 }
 
+/// Maximum number of messages retained in a single chat session.
+///
+/// Older non-system messages are evicted (FIFO) once this cap is reached so
+/// that long-running sessions don't grow unbounded in memory or on disk.
+pub const MAX_SESSION_MESSAGES: usize = 10_000;
+
+/// Returns true if the message should be treated as a system message and
+/// preserved across eviction. Today `MessageRole` only has `User` and
+/// `Athena`; system prompts are stored separately in the orchestrator, so
+/// this currently never matches. Kept as a hook so that adding a `System`
+/// role later preserves eviction correctness.
+fn is_system_message(_m: &SessionMessage) -> bool {
+    // Matches the `m.role == "system"` style predicate from the spec.
+    // Extend when MessageRole gains a System variant.
+    false
+}
+
+impl ChatSession {
+    /// Append a message, evicting the oldest non-system messages if the
+    /// total would exceed `MAX_SESSION_MESSAGES`. The newest message is
+    /// always retained.
+    pub fn add_message_evicting(&mut self, msg: SessionMessage) {
+        self.messages.push(msg);
+        if self.messages.len() > MAX_SESSION_MESSAGES {
+            let preserve_from = self
+                .messages
+                .iter()
+                .position(|m| !is_system_message(m))
+                .unwrap_or(0);
+            let excess = self.messages.len() - MAX_SESSION_MESSAGES;
+            // If everything is a system message we still have to drop
+            // something to satisfy the cap; fall back to FIFO from the head.
+            let start = preserve_from.min(self.messages.len());
+            let end = (start + excess).min(self.messages.len());
+            if end > start {
+                self.messages.drain(start..end);
+            }
+        }
+    }
+
+    /// Truncate the messages vector to `MAX_SESSION_MESSAGES`, keeping the
+    /// most recent messages. Call this after bulk updates (e.g. loading
+    /// from disk or replacing the entire list) so a session loaded from a
+    /// file larger than the cap is brought back under the limit.
+    pub fn truncate_messages(&mut self) {
+        let len = self.messages.len();
+        if len > MAX_SESSION_MESSAGES {
+            self.messages.drain(..len - MAX_SESSION_MESSAGES);
+        }
+    }
+}
+
 /// Metadata about an image stored on disk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImageAttachment {
@@ -65,8 +117,10 @@ pub struct ImageAttachment {
     /// Base64-encoded image data.
     #[serde(rename = "base64")]
     pub base64: String,
+    /// MIME type of the image.
     #[serde(rename = "mediaType")]
     pub media_type: String,
+    /// Optional human-readable name for the image.
     #[serde(rename = "name", skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -81,4 +135,77 @@ pub struct SessionListItem {
     pub updated_at: u64,
     pub message_count: usize,
     pub last_message_preview: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_msg(id: &str, role: MessageRole) -> SessionMessage {
+        SessionMessage {
+            id: id.to_string(),
+            role,
+            content: format!("content-{id}"),
+            timestamp: 0,
+            is_error: None,
+            image_refs: None,
+        }
+    }
+
+    #[test]
+    fn add_message_evicting_caps_at_max() {
+        let mut session = ChatSession {
+            id: "s1".to_string(),
+            title: "t".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            messages: Vec::new(),
+        };
+
+        // 1 "system" + 9999 user messages = 10_000 (at the cap, no eviction yet)
+        session.add_message_evicting(make_msg("sys-0", MessageRole::User));
+        for i in 0..9_999 {
+            session.add_message_evicting(make_msg(&format!("u-{i:05}"), MessageRole::User));
+        }
+        assert_eq!(session.messages.len(), MAX_SESSION_MESSAGES);
+
+        // Add 2 more — should evict 2 oldest messages. (MessageRole has no
+        // System variant today; the "sys-0" message above is just a
+        // placeholder so the test mirrors the spec. Once a System role
+        // is added and `is_system_message` updated, the same drain logic
+        // will preserve it.)
+        session.add_message_evicting(make_msg("new-1", MessageRole::User));
+        session.add_message_evicting(make_msg("new-2", MessageRole::User));
+
+        assert_eq!(session.messages.len(), MAX_SESSION_MESSAGES);
+
+        // The two oldest messages are gone.
+        assert!(!session.messages.iter().any(|m| m.id == "u-00000"));
+        assert!(!session.messages.iter().any(|m| m.id == "u-00001"));
+
+        // The two newest messages are at the tail.
+        assert_eq!(session.messages.last().unwrap().id, "new-2");
+        assert_eq!(
+            session.messages[session.messages.len() - 2].id,
+            "new-1"
+        );
+    }
+
+    #[test]
+    fn truncate_messages_brings_oversized_session_under_cap() {
+        let mut session = ChatSession {
+            id: "s2".to_string(),
+            title: "t".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            messages: (0..(MAX_SESSION_MESSAGES + 50))
+                .map(|i| make_msg(&format!("m-{i:05}"), MessageRole::User))
+                .collect(),
+        };
+        assert!(session.messages.len() > MAX_SESSION_MESSAGES);
+        session.truncate_messages();
+        assert_eq!(session.messages.len(), MAX_SESSION_MESSAGES);
+        // Most recent messages are kept.
+        assert_eq!(session.messages.last().unwrap().id, "m-10049");
+    }
 }
