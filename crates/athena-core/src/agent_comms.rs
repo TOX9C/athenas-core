@@ -399,21 +399,19 @@ impl AgentComms {
     /// Returns `Ok(true)` if the agent was found and removed, `Ok(false)` otherwise.
     /// The agent's socket is not explicitly closed — it will detect disconnection on next read.
     pub fn disconnect_agent(&self, agent_id: &str) -> Result<bool, AgentCommsError> {
-        let sessions = self
+        // Single lock acquisition prevents TOCTOU on the session map and
+        // eliminates a lock-ordering deadlock surface that the previous
+        // double-acquire (`lock` -> drop -> `lock`) created when other
+        // methods held `sessions` + `pending_input` in a different order.
+        let mut sessions = self
             .sessions
             .lock()
             .map_err(|_| AgentCommsError::LockPoisoned)?;
-        let session_id = sessions
+        if let Some(id) = sessions
             .values()
             .find(|s| s.session.agent_id == agent_id)
-            .map(|s| s.session.id.clone());
-        drop(sessions);
-
-        if let Some(id) = session_id {
-            let mut sessions = self
-                .sessions
-                .lock()
-                .map_err(|_| AgentCommsError::LockPoisoned)?;
+            .map(|s| s.session.id.clone())
+        {
             sessions.remove(&id);
             Ok(true)
         } else {
@@ -454,6 +452,33 @@ impl AgentComms {
     #[cfg(test)]
     pub(crate) fn pending_input_is_empty(&self) -> bool {
         self.pending_input.lock().unwrap().is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_session(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
+        let session = AgentSession {
+            id: session_id.to_string(),
+            plugin_id: "test-plugin".to_string(),
+            agent_id: agent_id.to_string(),
+            connected_at: now_ms(),
+            last_activity_at: now_ms(),
+            status: SessionStatus::Active,
+        };
+        let internal = SessionInternal {
+            session,
+            sender: tx,
+            peer_addr: None,
+        };
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), internal);
+        rx
     }
 
     /// Initialize the TCP server for agent communication.
@@ -1129,5 +1154,39 @@ mod tests {
 
         let response = rx.recv_timeout(std::time::Duration::from_millis(100));
         assert_eq!(response.unwrap(), "hello");
+    }
+
+    #[test]
+    fn disconnect_agent_concurrent_single_winner() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let comms = Arc::new(AgentComms::new());
+        comms.inject_session("sess-A", "agent-shared");
+
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let c = Arc::clone(&comms);
+            handles.push(thread::spawn(move || {
+                c.disconnect_agent("agent-shared")
+            }));
+        }
+
+        let mut ok_true = 0;
+        let mut ok_false = 0;
+        for h in handles {
+            match h.join().expect("thread did not panic") {
+                Ok(true) => ok_true += 1,
+                Ok(false) => ok_false += 1,
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+
+        assert_eq!(ok_true, 1, "exactly one thread should remove the session");
+        assert_eq!(ok_false, 9, "nine threads should see it already gone");
+
+        // Session map should be empty afterwards.
+        let sessions = comms.sessions.lock().unwrap();
+        assert!(sessions.is_empty());
     }
 }
