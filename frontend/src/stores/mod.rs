@@ -9,5 +9,7 @@ pub mod session;
 pub mod swarm;
 pub mod task;
 pub mod terminal;
+pub mod terminal_blocks;
+pub mod terminal_blocks;
 pub mod ui;
 pub mod workspace;

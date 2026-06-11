@@ -1,6 +1,7 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -18,9 +19,15 @@ pub enum StoreError {
 /// Simple key-value JSON store backed by a file in the user's data directory.
 /// Enforces immutability of data by returning new values rather than mutating in place.
 /// Thread-safe via `Mutex` on the data map (using parking_lot for no poisoning).
+///
+/// Writes are debounced: `set`/`delete` mark the store dirty (cheap atomic flag)
+/// rather than writing immediately. The actual disk write happens when the caller
+/// invokes `flush_if_dirty` (or implicitly on `Drop`). This batches rapid IPC
+/// mutations and avoids O(n) write amplification.
 pub struct KeyValueStore {
     path: PathBuf,
     data: parking_lot::Mutex<std::collections::HashMap<String, serde_json::Value>>,
+    dirty: AtomicBool,
 }
 
 impl KeyValueStore {
@@ -39,6 +46,7 @@ impl KeyValueStore {
         Self {
             path,
             data: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            dirty: AtomicBool::new(false),
         }
     }
 
@@ -58,6 +66,7 @@ impl KeyValueStore {
         Ok(Self {
             path,
             data: parking_lot::Mutex::new(data),
+            dirty: AtomicBool::new(false),
         })
     }
 
@@ -83,6 +92,7 @@ impl KeyValueStore {
         Ok(Self {
             path,
             data: parking_lot::Mutex::new(data),
+            dirty: AtomicBool::new(false),
         })
     }
 
@@ -98,26 +108,35 @@ impl KeyValueStore {
         }
     }
 
-    /// Set the value for a key and persist to disk. The value must be serializable.
+    /// Set the value for a key. Marks the store dirty; the actual disk write
+    /// is deferred to `flush_if_dirty` (or `Drop`). Use this when emitting many
+    /// writes in quick succession to avoid O(n) write amplification.
+    ///
+    /// Call `flush_if_dirty().await` after a batch of mutations to persist them.
     pub async fn set<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
         {
             let mut map = self.data.lock();
             map.insert(key.to_string(), json_value);
         }
-        self.persist().await
+        self.mark_dirty();
+        Ok(())
     }
 
-    /// Delete a key and persist.
+    /// Delete a key. Marks the store dirty; the actual disk write is deferred
+    /// to `flush_if_dirty` (or `Drop`).
     pub async fn delete(&self, key: &str) -> Result<(), StoreError> {
         {
             let mut map = self.data.lock();
             map.remove(key);
         }
-        self.persist().await
+        self.mark_dirty();
+        Ok(())
     }
 
-    /// Set a key synchronously and persist to disk (blocking I/O).
+    /// Set a key synchronously, persist to disk immediately (blocking I/O).
+    /// Bypasses the dirty flag — useful when the caller needs durability
+    /// guarantees for a single write without flushing an unrelated batch.
     pub fn set_sync<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
         let json = {
@@ -128,10 +147,13 @@ impl KeyValueStore {
         let tmp_path = self.path.with_extension("json.tmp");
         std::fs::write(&tmp_path, json.as_bytes())?;
         std::fs::rename(&tmp_path, &self.path)?;
+        // In-memory state matches disk; clear any pending dirty bit.
+        self.dirty.store(false, Ordering::SeqCst);
         Ok(())
     }
 
-    /// Delete a key synchronously and persist to disk (blocking I/O).
+    /// Delete a key synchronously, persist to disk immediately (blocking I/O).
+    /// Bypasses the dirty flag.
     pub fn delete_sync(&self, key: &str) -> Result<(), StoreError> {
         let json = {
             let mut map = self.data.lock();
@@ -141,6 +163,7 @@ impl KeyValueStore {
         let tmp_path = self.path.with_extension("json.tmp");
         std::fs::write(&tmp_path, json.as_bytes())?;
         std::fs::rename(&tmp_path, &self.path)?;
+        self.dirty.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -149,6 +172,36 @@ impl KeyValueStore {
         self.data.lock().contains_key(key)
     }
 
+    /// Mark the store as having pending writes. Cheap atomic flag — safe to
+    /// call on every mutation.
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::SeqCst);
+    }
+
+    /// Returns `true` if there are pending writes that have not been flushed.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::SeqCst)
+    }
+
+    /// Atomically check the dirty flag and clear it. Returns `true` if a flush
+    /// is required (caller should invoke `persist`).
+    fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::SeqCst)
+    }
+
+    /// If the store is dirty, write the in-memory state to disk and clear the
+    /// flag. Returns `Ok(())` whether or not a write was required.
+    ///
+    /// Call this after a batch of `set`/`delete` calls to persist them.
+    pub async fn flush_if_dirty(&self) -> Result<(), StoreError> {
+        if !self.take_dirty() {
+            return Ok(());
+        }
+        self.persist().await
+    }
+
+    /// Persist the current in-memory state to disk unconditionally.
+    /// Used by `flush_if_dirty` and `Drop`; rarely needed by callers.
     async fn persist(&self) -> Result<(), StoreError> {
         let json = {
             let map = self.data.lock();
@@ -164,6 +217,35 @@ impl KeyValueStore {
         .await
         .map_err(|e| StoreError::Generic(e.to_string()))??;
         Ok(())
+    }
+}
+
+/// On drop, attempt a best-effort synchronous flush if dirty. This protects
+/// against losing pending writes when the store is dropped (e.g., on app exit)
+/// without requiring every caller to remember to flush.
+impl Drop for KeyValueStore {
+    fn drop(&mut self) {
+        if !self.dirty.load(Ordering::SeqCst) {
+            return;
+        }
+        let json = match {
+            let map = self.data.lock();
+            serde_json::to_string_pretty(&*map)
+        } {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("KeyValueStore drop: failed to serialize: {e}");
+                return;
+            }
+        };
+        let tmp_path = self.path.with_extension("json.tmp");
+        if let Err(e) = std::fs::write(&tmp_path, json.as_bytes()) {
+            eprintln!("KeyValueStore drop: write failed: {e}");
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &self.path) {
+            eprintln!("KeyValueStore drop: rename failed: {e}");
+        }
     }
 }
 
