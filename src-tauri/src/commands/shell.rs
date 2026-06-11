@@ -16,9 +16,14 @@ pub async fn shell_integration_parse(state: State<'_, AppState>, data: String) -
 }
 
 /// Get the shell integration script for the specified shell (bash, zsh, fish).
+///
+/// Returns an error if the shell is not one of the supported shells. Callers
+/// should not inject a fallback script for unsupported shells — the script
+/// syntax is shell-specific and a mismatched injection will break the shell.
 #[tauri::command]
-pub fn shell_integration_script(shell: String) -> String {
+pub fn shell_integration_script(shell: String) -> Result<String, CommandError> {
     athena_core::shell_integration::get_shell_integration_script(&shell)
+        .map_err(|e| CommandError::InvalidInput(e.to_string()))
 }
 
 /// Check whether the specified shell supports shell integration.
