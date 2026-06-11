@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use std::collections::VecDeque;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -173,7 +174,9 @@ const DEFAULT_AUTO_LAUNCH: bool = true;
 /// Global Athena chat state.
 #[derive(Clone, PartialEq, Default)]
 pub struct AthenaState {
-    pub messages: Vec<AthenaMessage>,
+    /// Bounded message log. VecDeque gives O(1) front-pop for ring-buffer
+    /// eviction in add_message (vs Vec O(n) shift on drain(0..n)).
+    pub messages: VecDeque<AthenaMessage>,
     pub is_open: bool,
     pub is_loading: bool,
     pub is_streaming: bool,
@@ -192,7 +195,7 @@ pub struct AthenaState {
 impl AthenaState {
     pub fn new() -> Self {
         Self {
-            messages: Vec::new(),
+            messages: VecDeque::new(),
             is_open: false,
             is_loading: false,
             is_streaming: false,
@@ -211,10 +214,10 @@ impl AthenaState {
     // -- Mutators (in-place, compatible with Signal::write()) ---------------
 
     pub fn add_message(&mut self, msg: AthenaMessage) {
-        self.messages.push(msg);
-        if self.messages.len() > MAX_MESSAGES {
-            let excess = self.messages.len() - MAX_MESSAGES;
-            self.messages.drain(0..excess);
+        // O(1) ring-buffer append + O(1) front eviction via VecDeque.
+        self.messages.push_back(msg);
+        while self.messages.len() > MAX_MESSAGES {
+            self.messages.pop_front();
         }
     }
 
@@ -268,7 +271,8 @@ impl AthenaState {
     }
 
     pub fn set_messages(&mut self, messages: Vec<AthenaMessage>) {
-        self.messages = messages;
+        // Convert Vec into VecDeque via FromIterator.
+        self.messages = messages.into_iter().collect();
         self.error = None;
     }
 
@@ -307,7 +311,7 @@ impl AthenaState {
             Ok(v) => v,
             Err(_) => return,
         };
-        let mut loaded = Vec::new();
+        let mut loaded: VecDeque<AthenaMessage> = VecDeque::new();
         for val in parsed {
             let role = val
                 .get("role")
@@ -524,4 +528,58 @@ pub fn use_athena_store() -> Signal<AthenaState> {
 /// Initialize the Athena store as a context provider.
 pub fn provide_athena_store() {
     use_context_provider(|| Signal::new(AthenaState::new()));
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_msg(id: &str) -> AthenaMessage {
+        AthenaMessage {
+            id: id.to_string(),
+            role: MessageRole::User,
+            content: format!("msg-{id}"),
+            timestamp: 0,
+            is_error: false,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn add_message_evicts_oldest() {
+        let mut s = AthenaState::default();
+        for i in 0..(MAX_MESSAGES + 5) {
+            s.add_message(make_msg(&i.to_string()));
+        }
+        assert_eq!(s.messages.len(), MAX_MESSAGES);
+        // First five (0..5) should be evicted - 5 is the new front.
+        assert_eq!(s.messages.front().unwrap().id, "5");
+        assert_eq!(s.messages.back().unwrap().id, &(MAX_MESSAGES + 4).to_string());
+    }
+
+    #[test]
+    fn add_message_under_cap_keeps_all() {
+        let mut s = AthenaState::default();
+        for i in 0..10 {
+            s.add_message(make_msg(&i.to_string()));
+        }
+        assert_eq!(s.messages.len(), 10);
+        assert_eq!(s.messages.front().unwrap().id, "0");
+        assert_eq!(s.messages.back().unwrap().id, "9");
+    }
+
+    #[test]
+    fn clear_messages_empties_deque() {
+        let mut s = AthenaState::default();
+        for i in 0..5 {
+            s.add_message(make_msg(&i.to_string()));
+        }
+        s.clear_messages();
+        assert!(s.messages.is_empty());
+    }
 }

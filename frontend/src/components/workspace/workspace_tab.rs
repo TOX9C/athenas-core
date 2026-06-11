@@ -2,10 +2,11 @@ use crate::components::shared::icon::IconClose;
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
 use crate::stores::workspace::Space;
 use dioxus::prelude::*;
+use std::rc::Rc;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WorkspaceTabProps {
-    pub space: Space,
+    pub space: Rc<Space>,
     pub is_active: bool,
     pub on_select: EventHandler<()>,
     pub on_close: EventHandler<()>,
