@@ -75,7 +75,8 @@ pub fn NotificationBell() -> Element {
                     message,
                     source: "backend".to_string(),
                     read: false,
-                    timestamp: chrono::Utc::now().timestamp(),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                    count: 1,
                 };
                 add_notification(&mut new_store, record);
             }
@@ -116,6 +117,7 @@ pub fn NotificationBell() -> Element {
                                 source: "backend".to_string(),
                                 read,
                                 timestamp,
+                                count: 1,
                             })
                         })
                         .collect();
@@ -200,6 +202,12 @@ pub fn NotificationBell() -> Element {
                                     let title = n.title.clone();
                                     let message = n.message.clone();
                                     let is_read = n.read;
+                                    let count = n.count;
+                                    let display_title = if count > 1 {
+                                        format!("{} (\u{00d7}{})", title, count)
+                                    } else {
+                                        title.clone()
+                                    };
                                     let weight = if is_read { "400" } else { "600" };
                                     let type_color = match &n.r#type {
                                         NotificationType::Error | NotificationType::TaskError => "var(--error)",
@@ -223,7 +231,7 @@ pub fn NotificationBell() -> Element {
                                                 style: "flex: 1; min-width: 0;",
                                                 div {
                                                     style: "font-size: var(--text-sm); font-weight: {weight}; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
-                                                    "{title}"
+                                                    "{display_title}"
                                                 }
                                                 div {
                                                     style: "font-size: var(--text-2xs); color: var(--textDim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;",

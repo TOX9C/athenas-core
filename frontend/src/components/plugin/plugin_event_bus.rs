@@ -141,7 +141,8 @@ pub fn PluginEventBus() -> Element {
                         message: format!("{} is now connected", name),
                         source: "plugin".to_string(),
                         read: false,
-                        timestamp: chrono::Utc::now().timestamp(),
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                        count: 1,
                     };
                     add_notification(&mut notif_store, notif);
                 }

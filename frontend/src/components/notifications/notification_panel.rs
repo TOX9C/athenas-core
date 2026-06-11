@@ -100,6 +100,12 @@ pub fn NotificationPanel() -> Element {
                             let n_title = n.title.clone();
                             let n_msg = n.message.clone();
                             let n_read = n.read;
+                            let n_count = n.count;
+                            let display_title = if n_count > 1 {
+                                format!("{} (\u{00d7}{})", n_title, n_count)
+                            } else {
+                                n_title.clone()
+                            };
                             let weight = if n_read { "400" } else { "600" };
                             let opacity = if n_read { "0.6" } else { "1" };
                             rsx! {
@@ -119,7 +125,7 @@ pub fn NotificationPanel() -> Element {
                                             style: "display: flex; align-items: center; gap: 4px;",
                                             span {
                                                 style: "font-size: var(--text-sm); font-weight: {weight}; color: var(--text);",
-                                                "{n_title}"
+                                                "{display_title}"
                                             }
                                         }
                                         p {
