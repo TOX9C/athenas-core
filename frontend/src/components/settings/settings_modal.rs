@@ -137,29 +137,38 @@ fn GeneralSettings() -> Element {
                     }
                     div {
                         style: "display: flex; flex-wrap: wrap; gap: 6px;",
-                        for font in AVAILABLE_FONTS {
-                            {
-                                let is_selected = *font == ui_state.read().font_family;
-                                let current_theme = get_theme(ui_state.read().theme.name());
-                                let bg = if is_selected { current_theme.accent } else { current_theme.bg_tertiary };
-                                let fg = if is_selected { "var(--bg)" } else { "var(--textMuted)" };
-                                let border = if is_selected { "var(--accent)" } else { "var(--border)" };
-                                let font_str = font.to_string();
-                                rsx! {
-                                    button {
-                                        key: "{font}",
-                                        style: "padding: 5px 12px; border-radius: var(--radius-sm); border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; font-size: var(--text-xs); font-family: '{font}', monospace;",
-                                        onclick: move |_| {
-                                            let font_clone = font_str.clone();
-                                            ui_state.write().font_family = font_clone;
-                                            let size = ui_state.read().font_size;
-                                            crate::themes::apply_font_to_dom(&font_str, size);
-                                            let f = font_str.clone();
-                                            spawn(async move {
-                                                let _ = crate::tauri_bridge::store_set("font_family", &f).await;
-                                            });
-                                        },
-                                        "{font}"
+                        {
+                            // Snapshot ui_state once outside the font loop to avoid
+                            // re-reading the store (and re-resolving the theme) per font.
+                            let ui = ui_state.read();
+                            let current_font = ui.font_family.clone();
+                            let current_theme = get_theme(ui.theme.name());
+                            drop(ui);
+                            rsx! {
+                                for font in AVAILABLE_FONTS {
+                                    {
+                                        let is_selected = *font == current_font;
+                                        let bg = if is_selected { current_theme.accent } else { current_theme.bg_tertiary };
+                                        let fg = if is_selected { "var(--bg)" } else { "var(--textMuted)" };
+                                        let border = if is_selected { "var(--accent)" } else { "var(--border)" };
+                                        let font_str = font.to_string();
+                                        rsx! {
+                                            button {
+                                                key: "{font}",
+                                                style: "padding: 5px 12px; border-radius: var(--radius-sm); border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; font-size: var(--text-xs); font-family: '{font}', monospace;",
+                                                onclick: move |_| {
+                                                    let font_clone = font_str.clone();
+                                                    ui_state.write().font_family = font_clone;
+                                                    let size = ui_state.read().font_size;
+                                                    crate::themes::apply_font_to_dom(&font_str, size);
+                                                    let f = font_str.clone();
+                                                    spawn(async move {
+                                                        let _ = crate::tauri_bridge::store_set("font_family", &f).await;
+                                                    });
+                                                },
+                                                "{font}"
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -511,9 +520,11 @@ fn AgentsSettings() -> Element {
 #[component]
 fn CustomAgentList() -> Element {
     let ui_state = use_ui_store();
-    let agents = ui_state.read().custom_agents.clone();
+    // Snapshot only the length for the empty check; clone per-row during render
+    // so we avoid a single full-Vec clone up front.
+    let agents_len = ui_state.read().custom_agents.len();
 
-    if agents.is_empty() {
+    if agents_len == 0 {
         return rsx! {
             div {
                 style: "padding: 24px; text-align: center; color: var(--textDim); font-size: var(--text-xs); border: 1px dashed var(--border); border-radius: var(--radius-md);",
@@ -523,8 +534,14 @@ fn CustomAgentList() -> Element {
     }
 
     rsx! {
-        for agent in agents {
-            CustomAgentRow { agent: agent.clone() }
+        for i in 0..agents_len {
+            {
+                // Per-row read keeps the borrow short and avoids cloning the whole Vec.
+                let agent = ui_state.read().custom_agents[i].clone();
+                rsx! {
+                    CustomAgentRow { agent }
+                }
+            }
         }
     }
 }
