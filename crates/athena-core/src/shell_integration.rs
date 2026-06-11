@@ -593,31 +593,3 @@ mod strip_osc633_tests {
         assert_eq!(output, "regular text");
     }
 }
-
-#[cfg(test)]
-mod strip_osc633_tests {
-    use super::*;
-
-    #[test]
-    fn strip_osc633_removes_bel_terminator() {
-        let input = "\x1b]633;set-mark\x07hello";
-        let output = strip_osc633(input);
-        assert_eq!(output, "hello");
-        assert!(!output.contains('\x07'));
-    }
-
-    #[test]
-    fn strip_osc633_removes_st_terminator() {
-        let input = "\x1b]633;set-mark\x1b\\hello";
-        let output = strip_osc633(input);
-        assert_eq!(output, "hello");
-        assert!(!output.contains("\x1b\\"));
-    }
-
-    #[test]
-    fn strip_osc633_preserves_non_osc_text() {
-        let input = "regular text";
-        let output = strip_osc633(input);
-        assert_eq!(output, "regular text");
-    }
-}
