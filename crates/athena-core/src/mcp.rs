@@ -1054,6 +1054,15 @@ impl ConnectionHandler {
                 Ok(r) => r,
                 Err(e) => {
                     log::warn!("MCP: parse error from {}: {}", peer, e);
+                    // JSON-RPC 2.0 spec: invalid JSON must yield a Parse error
+                    // response. Silent drop would hang the client waiting for
+                    // its reply. Best-effort recover the `id` from the
+                    // partial payload; fall back to null.
+                    let err = make_parse_error_response(trimmed);
+                    let mut writer = write_half.lock().await;
+                    if writer.write_all((err + "\n").as_bytes()).await.is_err() {
+                        break;
+                    }
                     continue;
                 }
             };
@@ -1109,6 +1118,97 @@ impl ConnectionHandler {
 // ---------------------------------------------------------------------------
 // Helper functions for tool executor delegation
 // ---------------------------------------------------------------------------
+
+/// Build a JSON-RPC 2.0 Parse error response for a malformed request.
+///
+/// The `id` is best-effort recovered from the raw payload — if the buffer
+/// is not even valid JSON, the id is `null` per the spec. The error code
+/// `-32700` is the standardized JSON-RPC Parse error.
+fn make_parse_error_response(raw: &str) -> String {
+    // Try full parse first. If that fails (truncated/garbled input), fall
+    // back to a tolerant scan for the first `"id": <value>` pair in the
+    // buffer. Spec-compliant: id falls back to null if unrecoverable.
+    let id = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| v.get("id").cloned())
+        .or_else(|| extract_id_from_partial(raw))
+        .unwrap_or(serde_json::Value::Null);
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32700,
+            "message": "Parse error"
+        }
+    })
+    .to_string()
+}
+
+/// Tolerant `id` extraction from a (possibly truncated) JSON buffer.
+///
+/// Looks for the first `"id"` key and parses the scalar that follows.
+/// Returns `None` if no plausible id can be recovered.
+fn extract_id_from_partial(raw: &str) -> Option<serde_json::Value> {
+    let bytes = raw.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n {
+        if bytes[i] == b'"' {
+            // Skip string literal
+            i += 1;
+            while i < n && bytes[i] != b'"' {
+                if bytes[i] == b'\\' && i + 1 < n {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            i += 1; // past closing quote
+            continue;
+        }
+        // Look for the literal `id` followed by `:` (JSON object key pattern)
+        if i + 2 < n && &bytes[i..i + 2] == b"id" {
+            let prev_is_quote_or_brace = i == 0
+                || bytes[i - 1] == b'"'
+                || bytes[i - 1] == b'{'
+                || bytes[i - 1] == b','
+                || bytes[i - 1] == b' ';
+            let next_is_colon = i + 2 < n
+                && (bytes[i + 2] == b':' || bytes[i + 2] == b' ' || bytes[i + 2] == b'\t');
+            if prev_is_quote_or_brace && next_is_colon {
+                // Find the colon
+                let mut j = i + 2;
+                while j < n && bytes[j] != b':' {
+                    j += 1;
+                }
+                j += 1;
+                // Skip whitespace
+                while j < n && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                    j += 1;
+                }
+                if j >= n {
+                    return None;
+                }
+                // Try to parse the value starting at j
+                let tail = &raw[j..];
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(tail) {
+                    return Some(v);
+                }
+                // Try quoted string truncated at EOF
+                if tail.starts_with('"') {
+                    let end = tail[1..].find('"').map(|k| k + 2).unwrap_or(tail.len());
+                    let candidate = &tail[..end];
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
+                        return Some(v);
+                    }
+                }
+                return None;
+            }
+        }
+        i += 1;
+    }
+    None
+}
 
 /// Map MCP tool names to ToolExecutor tool names.
 fn map_mcp_to_executor_name(mcp_name: &str) -> &str {
@@ -1264,4 +1364,92 @@ fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::
     }
 
     Some(ti)
+}
+
+#[cfg(test)]
+mod tests_parse_error {
+    use super::*;
+
+    #[test]
+    fn parse_error_response_includes_id() {
+        // Truncated JSON with a valid `id` field at the start
+        let raw = r#"{"id":42,"method":"foo"#;
+        let resp = make_parse_error_response(raw);
+        assert!(resp.contains("\"id\":42"), "expected id 42 in: {}", resp);
+        assert!(resp.contains("-32700"), "expected parse error code in: {}", resp);
+        assert!(resp.contains("\"jsonrpc\":\"2.0\""), "expected jsonrpc 2.0 in: {}", resp);
+    }
+
+    #[test]
+    fn parse_error_response_with_no_id() {
+        // Completely unparseable input
+        let raw = "not json at all";
+        let resp = make_parse_error_response(raw);
+        assert!(resp.contains("\"id\":null"), "expected null id in: {}", resp);
+        assert!(resp.contains("-32700"), "expected parse error code in: {}", resp);
+    }
+
+    #[test]
+    fn parse_error_response_is_valid_json() {
+        let raw = r#"{"id":"abc","method":"x"#;
+        let resp = make_parse_error_response(raw);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&resp).expect("response must be valid JSON");
+        assert_eq!(parsed["jsonrpc"], "2.0");
+        assert_eq!(parsed["id"], "abc");
+        assert_eq!(parsed["error"]["code"], -32700);
+        assert_eq!(parsed["error"]["message"], "Parse error");
+    }
+
+    #[test]
+    fn parse_error_response_falls_back_to_null_when_id_missing() {
+        // Valid JSON object but no `id` key
+        let raw = r#"{"method":"foo"}"#;
+        let resp = make_parse_error_response(raw);
+        assert!(resp.contains("\"id\":null"), "expected null id in: {}", resp);
+    }
+}
+
+#[cfg(test)]
+mod tests_parse_error {
+    use super::*;
+
+    #[test]
+    fn parse_error_response_includes_id() {
+        // Truncated JSON with a valid `id` field at the start
+        let raw = r#"{"id":42,"method":"foo"#;
+        let resp = make_parse_error_response(raw);
+        assert!(resp.contains("\"id\":42"), "expected id 42 in: {}", resp);
+        assert!(resp.contains("-32700"), "expected parse error code in: {}", resp);
+        assert!(resp.contains("\"jsonrpc\":\"2.0\""), "expected jsonrpc 2.0 in: {}", resp);
+    }
+
+    #[test]
+    fn parse_error_response_with_no_id() {
+        // Completely unparseable input
+        let raw = "not json at all";
+        let resp = make_parse_error_response(raw);
+        assert!(resp.contains("\"id\":null"), "expected null id in: {}", resp);
+        assert!(resp.contains("-32700"), "expected parse error code in: {}", resp);
+    }
+
+    #[test]
+    fn parse_error_response_is_valid_json() {
+        let raw = r#"{"id":"abc","method":"x"#;
+        let resp = make_parse_error_response(raw);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&resp).expect("response must be valid JSON");
+        assert_eq!(parsed["jsonrpc"], "2.0");
+        assert_eq!(parsed["id"], "abc");
+        assert_eq!(parsed["error"]["code"], -32700);
+        assert_eq!(parsed["error"]["message"], "Parse error");
+    }
+
+    #[test]
+    fn parse_error_response_falls_back_to_null_when_id_missing() {
+        // Valid JSON object but no `id` key
+        let raw = r#"{"method":"foo"}"#;
+        let resp = make_parse_error_response(raw);
+        assert!(resp.contains("\"id\":null"), "expected null id in: {}", resp);
+    }
 }
