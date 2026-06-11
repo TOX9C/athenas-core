@@ -50,6 +50,26 @@ impl KeyValueStore {
         }
     }
 
+    /// Test-only constructor: open a store at an explicit path. Used by the
+    /// debouncing tests to isolate the on-disk file from production data dir.
+    #[doc(hidden)]
+    pub fn with_path_sync(path: std::path::PathBuf) -> Result<Self, StoreError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let data: std::collections::HashMap<String, serde_json::Value> = if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            serde_json::from_str(&content)?
+        } else {
+            std::collections::HashMap::new()
+        };
+        Ok(Self {
+            path,
+            data: parking_lot::Mutex::new(data),
+            dirty: AtomicBool::new(false),
+        })
+    }
+
     /// Synchronous version for initialization (blocking is acceptable at startup).
     pub fn with_name_sync(name: &str) -> Result<Self, StoreError> {
         let data_dir = dirs::data_dir()
@@ -170,6 +190,12 @@ impl KeyValueStore {
     /// Check if a key exists.
     pub fn has(&self, key: &str) -> bool {
         self.data.lock().contains_key(key)
+    }
+
+    /// Returns the on-disk path backing this store. Exposed primarily for
+    /// tests; production callers should not rely on the path layout.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
     /// Mark the store as having pending writes. Cheap atomic flag — safe to
