@@ -20,15 +20,6 @@ fn format_time(ts: i64) -> String {
     format!("{h:02}:{m:02}:{s:02}")
 }
 
-/// Heuristic: text containing error/warn/fail/exception keywords is stderr-like.
-fn is_stderr_like(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    lower.contains("error")
-        || lower.contains("warn")
-        || lower.contains("fail")
-        || lower.contains("exception")
-}
-
 #[derive(Props, Clone, PartialEq)]
 pub struct AgentOutputLineProps {
     pub line: OutputLine,
@@ -38,7 +29,9 @@ pub struct AgentOutputLineProps {
 
 #[component]
 pub fn AgentOutputLine(props: AgentOutputLineProps) -> Element {
-    let is_err = props.line.is_stderr || is_stderr_like(&props.line.text);
+    // `is_stderr` is precomputed at line arrival (see
+    // `stores::agent_output::is_stderr_like`); no per-render allocation.
+    let is_err = props.line.is_stderr;
     let color = if is_err {
         "var(--error)"
     } else {
