@@ -32,7 +32,7 @@ use dioxus::prelude::*;
 use stores::agent_output::provide_agent_output_store;
 use stores::agent_status::provide_agent_status_store;
 use stores::athena::{provide_athena_store, use_athena_store};
-use stores::command::provide_command_store;
+use stores::command::{provide_command_store, use_command_store, CommandState};
 use stores::editor::provide_editor_store;
 use stores::notification::provide_notification_store;
 use stores::panel_manager::{provide_panel_manager_store, use_panel_manager_store, RightPanel};
@@ -105,6 +105,37 @@ pub fn App() -> Element {
         });
     });
 
+    // Sync is_maximized with actual window state on mount, then keep it
+    // in sync on every resize event (covers OS-level maximize via native
+    // controls and drag-resize). The button click handler also toggles the
+    // signal optimistically; the resize listener reconciles with truth.
+    use_effect(move || {
+        spawn(async move {
+            if let Ok(maximized) = crate::tauri_bridge::window_is_maximized().await {
+                is_maximized.set(maximized);
+            }
+        });
+    });
+
+    use_effect(move || {
+        spawn(async move {
+            // Capture unlisten for cleanup. The closure runs for the app
+            // lifetime if unlisten is dropped without being called.
+            let _unlisten = crate::tauri_bridge::listen(
+                "tauri://resize",
+                move |_payload| {
+                    spawn(async move {
+                        if let Ok(maximized) =
+                            crate::tauri_bridge::window_is_maximized().await
+                        {
+                            is_maximized.set(maximized);
+                        }
+                    });
+                },
+            );
+        });
+    });
+
     // Apply theme and font on mount (load persisted values from store)
     {
         let mut ui_state_for_load = ui_state.clone();
@@ -170,6 +201,28 @@ pub fn App() -> Element {
             });
         });
         // Mark effect as run-once by not capturing any reactive dependencies
+    }
+
+    // Restore recent command ids from persistent store on startup
+    {
+        let mut cmd = use_command_store();
+        use_effect(move || {
+            spawn(async move {
+                let loaded = CommandState::load_recent().await;
+                cmd.write().recent_ids = loaded;
+            });
+        });
+    }
+
+    // Restore recent command ids from persistent store on startup
+    {
+        let mut cmd = use_command_store();
+        use_effect(move || {
+            spawn(async move {
+                let loaded = CommandState::load_recent().await;
+                cmd.write().recent_ids = loaded;
+            });
+        });
     }
 
     // Track mounted spaces — pruned each render to current space IDs so
