@@ -38,32 +38,30 @@ fn escape_text_nodes(html: &str) -> String {
     result
 }
 
-/// Highlight source code based on language.
-pub fn highlight_code(code: &str, language: &str) -> String {
-    match language.to_lowercase().as_str() {
-        "rust" => highlight_rust(code),
-        "typescript" | "ts" => highlight_typescript(code),
-        "javascript" | "js" | "jsx" | "tsx" => highlight_javascript(code),
-        "python" | "py" => highlight_python(code),
-        "toml" => highlight_toml(code),
-        "json" => highlight_json(code),
-        "css" | "scss" | "less" => highlight_css(code),
-        "html" | "xml" | "svg" => highlight_html(code),
-        "bash" | "sh" | "shell" | "zsh" => highlight_bash(code),
-        _ => {
-            // Fallback: just escape HTML
-            escape_html(code)
-                .lines()
-                .enumerate()
-                .map(|(i, line)| {
-                    format!(
-                        "<div class=\"code-line\"><span class=\"line-number\">{:>4}</span> {}</div>",
-                        i + 1,
-                        line
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+/// If `line` starts with an optional-whitespace + 1+ ASCII-digits + single-space
+/// prefix (e.g., `"   123 "`), returns the byte length of that prefix.
+/// Otherwise returns 0. The visible text starts right after.
+fn strip_line_number_prefix(line: &str) -> usize {
+    let trimmed = line.trim_start();
+    let leading_ws = line.len() - trimmed.len();
+    if leading_ws >= line.len() {
+        return 0;
+    }
+    // Find end of digit run
+    let digit_end = trimmed
+        .as_bytes()
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if digit_end == 0 {
+        return 0;
+    }
+    // Must be followed by exactly one space (not more, not less)
+    if trimmed.as_bytes().get(digit_end) != Some(&b' ') {
+        return 0;
+    }
+    leading_ws + digit_end + 1
+}
         }
     }
 }
@@ -91,19 +89,9 @@ fn highlight_rust_line(line: &str, in_block_comment: &mut bool) -> String {
     let len = chars.len();
 
     // Check for line number prefix (format: "   N ")
-    let mut line_num_end = 0;
-    if len >= 6 {
-        let mut all_space_or_digit = true;
-        for j in 0..5 {
-            if !chars[j].is_ascii_digit() && chars[j] != ' ' {
-                all_space_or_digit = false;
-                break;
-            }
-        }
-        if all_space_or_digit && chars[5] == ' ' {
-            line_num_end = 6;
-            output.push_str(&line[..line_num_end]);
-        }
+    let line_num_end = strip_line_number_prefix(line);
+    if line_num_end > 0 {
+        output.push_str(&line[..line_num_end]);
     }
 
     let rest = &line[line_num_end..];
@@ -498,19 +486,9 @@ fn highlight_js_line(
     let len = chars.len();
 
     // Line number prefix
-    let mut line_num_end = 0;
-    if len >= 6 {
-        let mut ok = true;
-        for j in 0..5 {
-            if !chars[j].is_ascii_digit() && chars[j] != ' ' {
-                ok = false;
-                break;
-            }
-        }
-        if ok && chars[5] == ' ' {
-            line_num_end = 6;
-            output.push_str(&line[..line_num_end]);
-        }
+    let line_num_end = strip_line_number_prefix(line);
+    if line_num_end > 0 {
+        output.push_str(&line[..line_num_end]);
     }
 
     let rest = &line[line_num_end..];
@@ -792,19 +770,9 @@ fn highlight_python_line(line: &str) -> String {
     let len = chars.len();
 
     // Line number prefix
-    let mut line_num_end = 0;
-    if len >= 6 {
-        let mut ok = true;
-        for j in 0..5 {
-            if !chars[j].is_ascii_digit() && chars[j] != ' ' {
-                ok = false;
-                break;
-            }
-        }
-        if ok && chars[5] == ' ' {
-            line_num_end = 6;
-            output.push_str(&line[..line_num_end]);
-        }
+    let line_num_end = strip_line_number_prefix(line);
+    if line_num_end > 0 {
+        output.push_str(&line[..line_num_end]);
     }
 
     let rest = &line[line_num_end..];
@@ -1053,19 +1021,9 @@ fn highlight_toml_line(line: &str) -> String {
     let len = chars.len();
 
     // Line number prefix
-    let mut line_num_end = 0;
-    if len >= 6 {
-        let mut ok = true;
-        for j in 0..5 {
-            if !chars[j].is_ascii_digit() && chars[j] != ' ' {
-                ok = false;
-                break;
-            }
-        }
-        if ok && chars[5] == ' ' {
-            line_num_end = 6;
-            output.push_str(&line[..line_num_end]);
-        }
+    let line_num_end = strip_line_number_prefix(line);
+    if line_num_end > 0 {
+        output.push_str(&line[..line_num_end]);
     }
 
     let rest = &line[line_num_end..];
@@ -1216,19 +1174,9 @@ fn highlight_json_line(line: &str) -> String {
     let len = chars.len();
 
     // Line number prefix
-    let mut line_num_end = 0;
-    if len >= 6 {
-        let mut ok = true;
-        for j in 0..5 {
-            if !chars[j].is_ascii_digit() && chars[j] != ' ' {
-                ok = false;
-                break;
-            }
-        }
-        if ok && chars[5] == ' ' {
-            line_num_end = 6;
-            output.push_str(&line[..line_num_end]);
-        }
+    let line_num_end = strip_line_number_prefix(line);
+    if line_num_end > 0 {
+        output.push_str(&line[..line_num_end]);
     }
 
     let rest = &line[line_num_end..];
@@ -1348,19 +1296,9 @@ fn highlight_css_line(line: &str) -> String {
     let len = chars.len();
 
     // Line number prefix
-    let mut line_num_end = 0;
-    if len >= 6 {
-        let mut ok = true;
-        for j in 0..5 {
-            if !chars[j].is_ascii_digit() && chars[j] != ' ' {
-                ok = false;
-                break;
-            }
-        }
-        if ok && chars[5] == ' ' {
-            line_num_end = 6;
-            output.push_str(&line[..line_num_end]);
-        }
+    let line_num_end = strip_line_number_prefix(line);
+    if line_num_end > 0 {
+        output.push_str(&line[..line_num_end]);
     }
 
     let rest = &line[line_num_end..];
@@ -1550,19 +1488,9 @@ fn highlight_html_line(line: &str) -> String {
     let len = chars.len();
 
     // Line number prefix
-    let mut line_num_end = 0;
-    if len >= 6 {
-        let mut ok = true;
-        for j in 0..5 {
-            if !chars[j].is_ascii_digit() && chars[j] != ' ' {
-                ok = false;
-                break;
-            }
-        }
-        if ok && chars[5] == ' ' {
-            line_num_end = 6;
-            output.push_str(&line[..line_num_end]);
-        }
+    let line_num_end = strip_line_number_prefix(line);
+    if line_num_end > 0 {
+        output.push_str(&line[..line_num_end]);
     }
 
     let rest = &line[line_num_end..];
@@ -1689,19 +1617,9 @@ fn highlight_bash_line(line: &str) -> String {
     let len = chars.len();
 
     // Line number prefix
-    let mut line_num_end = 0;
-    if len >= 6 {
-        let mut ok = true;
-        for j in 0..5 {
-            if !chars[j].is_ascii_digit() && chars[j] != ' ' {
-                ok = false;
-                break;
-            }
-        }
-        if ok && chars[5] == ' ' {
-            line_num_end = 6;
-            output.push_str(&line[..line_num_end]);
-        }
+    let line_num_end = strip_line_number_prefix(line);
+    if line_num_end > 0 {
+        output.push_str(&line[..line_num_end]);
     }
 
     let rest = &line[line_num_end..];
