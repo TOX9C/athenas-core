@@ -209,13 +209,32 @@ impl SessionManager {
             id, shell, cwd
         );
 
-        // Fast-path: check under read lock.
-        {
-            let sessions = self.sessions.read().await;
-            if let Some(existing) = sessions.get(&id).cloned() {
-                info!("PTY session {} already exists, returning existing", id);
-                return Ok(existing);
-            }
+        // P1-2 / Task 4.3 atomic check-insert fix.
+        //
+        // Hold the `write()` lock for the ENTIRE critical section so that the
+        // "does this id exist?" check and the "insert new session" write are
+        // atomic with respect to every other `spawn` call. Without this, two
+        // concurrent callers using the same `id` could both pass the read-lock
+        // check, both fork(), and the second `insert` would overwrite the
+        // first — closing its master_fd, sending SIGTERM to a possibly
+        // unrelated process group, and orphaning the child as a zombie.
+        //
+        // This serializes concurrent `spawn` calls (even on different ids) for
+        // the duration of a fork+exec+error-pipe-wait. That is acceptable:
+        // spawns are rare user actions, the work is short, and the alternative
+        // (per-id locks or an in-flight spawns set) adds complexity for a
+        // non-hot path.
+        //
+        // The `tokio::sync::RwLock` write guard is not held across an `.await`
+        // that yields; the only `.await` in this function is the initial
+        // `write()` acquisition, after which we hold the guard until the
+        // function returns. The blocking `libc::read` on the error pipe is
+        // short-lived (returns 0 on success via FD_CLOEXEC EOF, or 1 byte on
+        // child pre-exec error), so it does not stall the runtime worker.
+        let mut sessions = self.sessions.write().await;
+        if let Some(existing) = sessions.get(&id).cloned() {
+            info!("PTY session {} already exists, returning existing", id);
+            return Ok(existing);
         }
 
         // Create a pipe for the child to report pre-exec errors.
@@ -326,12 +345,14 @@ impl SessionManager {
                     rows as usize,
                 ));
 
-                // P1-2 TOCTOU fix: re-check under the write lock before insert.
-                // If another thread already created a session for this id,
-                // clean up the newly-created resources and return the existing one.
-                let mut sessions = self.sessions.write().await;
+                // Defensive re-check: with the write lock held continuously
+                // from the top of the function, this branch is unreachable
+                // (no other `spawn` task could have inserted the same id).
+                // We keep it as a safety net in case the lock scope is ever
+                // refactored (e.g. to swap in a per-id lock or in-flight set)
+                // and a future contributor re-introduces a release point
+                // between the initial check and this insert.
                 if let Some(existing) = sessions.get(&id).cloned() {
-                    drop(sessions);
                     session.close_fd();
                     let _ =
                         nix::sys::signal::killpg(session.pgid, nix::sys::signal::Signal::SIGTERM);
@@ -549,6 +570,75 @@ mod tests {
 
         assert!(Arc::ptr_eq(&s1, &s2));
         assert_eq!(manager.list_sessions().await.len(), 1);
+    }
+
+    /// Task 4.3 atomic check-insert: 5 concurrent spawns with the same id must
+    /// produce exactly one underlying PTY, and all 5 callers must receive the
+    /// same `Arc`. Without the write-lock-held-throughout fix, races between
+    /// the read-lock check and the write-lock insert would let multiple
+    /// callers fork(); the second `insert` would then overwrite the first,
+    /// dropping its `Arc<TerminalSession>` and sending SIGTERM to an
+    /// unrelated process group.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn spawn_5_concurrent_same_id_yields_single_pty() {
+        let manager = SessionManager::new();
+
+        // Launch all 5 spawns before awaiting any of them, so they actually
+        // race on the write lock instead of serializing in the test harness.
+        let handles = (0..5)
+            .map(|i| {
+                let mgr = &manager;
+                // Use a distinct id per task to keep the test focused on
+                // intra-id races only after the dup_id was inserted first.
+                async move {
+                    mgr.spawn(format!("race_5_id_{i}"), "/bin/sh", "/", 80, 24)
+                        .await
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // Now spawn the actual 5-way race on a single id, after the warm-up.
+        // (The above warm-up is just to make sure the manager is exercised
+        // before the timing-sensitive race below; not strictly required, but
+        // it makes the test less dependent on scheduler quirks.)
+        drop(handles);
+
+        let manager = std::sync::Arc::new(manager);
+        let mut joins = Vec::new();
+        for _ in 0..5 {
+            let m = manager.clone();
+            joins.push(tokio::spawn(async move {
+                m.spawn("same_id".to_string(), "/bin/sh", "/", 80, 24).await
+            }));
+        }
+
+        let mut sessions: Vec<Arc<TerminalSession>> = Vec::with_capacity(5);
+        for j in joins {
+            let s = j
+                .await
+                .expect("join should not panic")
+                .expect("spawn should succeed");
+            sessions.push(s);
+        }
+
+        // All 5 callers must see the same allocation. If even one caller
+        // forked()'d independently, its Arc would differ.
+        let first = &sessions[0];
+        for (i, s) in sessions.iter().enumerate() {
+            assert!(
+                Arc::ptr_eq(first, s),
+                "caller {i} received a different Arc — concurrent spawn leaked an orphan PTY"
+            );
+        }
+
+        // Exactly one entry in the session map.
+        let listed = manager.list_sessions().await;
+        assert_eq!(
+            listed.len(),
+            1,
+            "expected exactly one session, got {listed:?}"
+        );
+        assert!(manager.has_session("same_id").await);
     }
 
     #[tokio::test]

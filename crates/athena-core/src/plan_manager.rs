@@ -73,7 +73,7 @@ pub enum PlanManagerError {
 pub struct PlanManager {
     active_plan: Arc<RwLock<Option<ExecutionPlan>>>,
     event_emitter:
-        Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+        Arc<parking_lot::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 }
 
 impl std::fmt::Debug for PlanManager {
@@ -104,7 +104,7 @@ impl PlanManager {
     pub fn new() -> Self {
         Self {
             active_plan: Arc::new(RwLock::new(None)),
-            event_emitter: Arc::new(std::sync::Mutex::new(None)),
+            event_emitter: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -113,17 +113,15 @@ impl PlanManager {
     where
         F: Fn(&str, &serde_json::Value) + Send + Sync + 'static,
     {
-        if let Ok(mut guard) = self.event_emitter.lock() {
-            *guard = Some(Box::new(emitter));
-        }
+        let mut guard = self.event_emitter.lock();
+        *guard = Some(Box::new(emitter));
     }
 
     fn emit_event(&self, channel: &str, data: &serde_json::Value) {
-        if let Ok(guard) = self.event_emitter.lock() {
-            if let Some(ref emitter) = *guard {
-                emitter(channel, data);
-                return;
-            }
+        let guard = self.event_emitter.lock();
+        if let Some(ref emitter) = *guard {
+            emitter(channel, data);
+            return;
         }
         log::debug!("[plan-manager] {} -> {}", channel, data);
     }

@@ -2,7 +2,7 @@ use crate::tool_executor::{to_openai_tools, ToolExecutor, ToolInput};
 use crate::types::*;
 use secrecy::ExposeSecret;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // Session persistence types
 use athena_store::MessageRole as StoreMessageRole;
@@ -276,31 +276,51 @@ fn json_to_tool_input(value: &serde_json::Value) -> Result<ToolInput, Orchestrat
     serde_json::from_value(value.clone()).map_err(OrchestratorError::SerializationError)
 }
 
-/// Rate limiter to prevent hammering the LLM API.
+/// Global rate limiter to prevent hammering the LLM API.
 ///
-/// Uses `tokio::sync::Mutex` so the lock can be held across `.await`
-/// boundaries, preventing the TOCTOU race condition where two concurrent
-/// requests could both bypass the limiter.
+/// Uses a `tokio::sync::Semaphore` with a single permit. A caller that
+/// arrives while a permit is held will be suspended at `acquire_owned().await`
+/// until the previous permit is released, giving true global rate limiting
+/// across concurrent callers (the prior `Instant` + `Mutex` design
+/// computed per-caller sleep durations and did not serialize them).
+///
+/// Semantics: at most one caller passes through `wait_if_needed` per
+/// `min_interval_ms`. The permit is released on a background task after
+/// the interval, so the caller's HTTP round-trip is *not* included in
+/// the wait window — we throttle request *starts*, which matches the
+/// rate-limit headers enforced by major LLM providers.
 struct RateLimiter {
-    last_request: tokio::sync::Mutex<Instant>,
-    min_interval: std::time::Duration,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    min_interval: Duration,
 }
 
 impl RateLimiter {
     fn new(min_interval_ms: u64) -> Self {
         Self {
-            last_request: tokio::sync::Mutex::new(Instant::now()),
-            min_interval: std::time::Duration::from_millis(min_interval_ms),
+            // One permit = strictly serial access; each new caller must
+            // wait until the previous permit is released.
+            semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            min_interval: Duration::from_millis(min_interval_ms),
         }
     }
 
     async fn wait_if_needed(&self) {
-        let mut last = self.last_request.lock().await;
-        let elapsed = last.elapsed();
-        if elapsed < self.min_interval {
-            tokio::time::sleep(self.min_interval - elapsed).await;
-        }
-        *last = Instant::now();
+        // Acquire an owned permit; this awaits if all permits are in use.
+        // The semaphore is never closed, so the `Err` branch is unreachable
+        // in practice — handle it defensively to keep the API `async fn`
+        // (non-fallible) for callers.
+        let permit = match self.semaphore.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        // Release the permit after the configured interval. Spawning
+        // decouples the release from the caller's HTTP round-trip so
+        // the next caller can be admitted exactly `min_interval` later.
+        let interval = self.min_interval;
+        tokio::spawn(async move {
+            tokio::time::sleep(interval).await;
+            drop(permit);
+        });
     }
 }
 
@@ -814,10 +834,7 @@ impl AthenaOrchestrator {
         {
             Ok(Ok(result)) => (result.text, result.is_error.unwrap_or(false)),
             Ok(Err(e)) => (format!("Tool execution error: {}", e), true),
-            Err(join_err) => (
-                format!("Tool execution task panicked: {}", join_err),
-                true,
-            ),
+            Err(join_err) => (format!("Tool execution task panicked: {}", join_err), true),
         }
     }
 
@@ -1173,7 +1190,8 @@ impl AthenaOrchestrator {
                             serde_json::json!({})
                         });
 
-                    let (result_text, is_error) = self.execute_tool(function_name, &function_args).await;
+                    let (result_text, is_error) =
+                        self.execute_tool(function_name, &function_args).await;
 
                     let tool_response_content = if is_error {
                         serde_json::json!({
@@ -1276,9 +1294,8 @@ mod tests {
         // Spawn the long-blocking execute_tool in a background task.
         let orch = Arc::new(orchestrator);
         let orch_for_long = Arc::clone(&orch);
-        let long_task = tokio::spawn(async move {
-            orch_for_long.execute_tool("ask_user", &input_json).await
-        });
+        let long_task =
+            tokio::spawn(async move { orch_for_long.execute_tool("ask_user", &input_json).await });
 
         // The runtime should still service other tasks while the long
         // task is in-flight. We give the long task a head start, then
@@ -1286,12 +1303,9 @@ mod tests {
         // task finishes.
         tokio::time::sleep(Duration::from_millis(50)).await;
         let started_at = std::time::Instant::now();
-        let short_completed = tokio::time::timeout(
-            Duration::from_millis(500),
-            async {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            },
-        )
+        let short_completed = tokio::time::timeout(Duration::from_millis(500), async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        })
         .await
         .is_ok();
         let short_elapsed = started_at.elapsed();
@@ -1356,4 +1370,74 @@ mod tests {
     // are stripped at compile time.
     #[allow(dead_code)]
     fn _tool_input_ref(_t: &ToolInput) {}
+
+    // -----------------------------------------------------------------
+    // RateLimiter tests
+    //
+    // These exercise the global rate-limit semantics implemented via
+    // a `tokio::sync::Semaphore`. The limiter is `struct`-private, so
+    // we drive it from within the `tests` submodule which has access
+    // to `super::*`.
+    // -----------------------------------------------------------------
+
+    /// First call to `wait_if_needed` must proceed near-instantly: the
+    /// semaphore starts with one permit available, so the acquire
+    /// completes without awaiting any sleep.
+    #[tokio::test]
+    async fn rate_limiter_first_call_proceeds_immediately() {
+        let limiter = RateLimiter::new(500);
+        let started = std::time::Instant::now();
+        limiter.wait_if_needed().await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "first call should not block on a sleep, took {:?}",
+            elapsed
+        );
+    }
+
+    /// Ten concurrent callers must be throttled by the global limiter.
+    /// With a 200ms interval and a single permit, callers 2..=10 must
+    /// wait until the previous permit is released. Total wall time
+    /// should be at least (N-1) * interval (≈1.8s for N=10) — far
+    /// longer than the ~0s they would take without throttling.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rate_limiter_concurrent_callers_are_throttled_globally() {
+        const N: usize = 10;
+        const INTERVAL_MS: u64 = 200;
+        let limiter = Arc::new(RateLimiter::new(INTERVAL_MS));
+
+        let started = std::time::Instant::now();
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let l = Arc::clone(&limiter);
+            handles.push(tokio::spawn(async move {
+                l.wait_if_needed().await;
+            }));
+        }
+        for h in handles {
+            h.await.expect("task should not panic");
+        }
+        let total = started.elapsed();
+
+        // Lower bound: 9 intervals between the 10 admissions = 1.8s.
+        // Use a slightly relaxed bound to avoid flakiness on slow CI.
+        let min_expected = Duration::from_millis((N as u64 - 1) * INTERVAL_MS);
+        assert!(
+            total >= min_expected,
+            "expected throttled callers to take at least {:?}, got {:?}",
+            min_expected,
+            total
+        );
+        // Upper bound sanity check — 5x the lower bound, catching the
+        // "limiter is not actually serializing" regression where each
+        // caller would complete in microseconds.
+        let max_expected = min_expected * 5;
+        assert!(
+            total < max_expected,
+            "rate limiter took unexpectedly long: {:?} (expected < {:?})",
+            total,
+            max_expected
+        );
+    }
 }
