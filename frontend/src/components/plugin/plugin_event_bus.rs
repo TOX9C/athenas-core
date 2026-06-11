@@ -111,7 +111,7 @@ pub fn PluginEventBus() -> Element {
         let mut plugin_store = plugin_store;
         let mut toast_store = toast_store;
         let mut notif_store = notif_store;
-        while let Some(event) = rx.recv().await {
+        while let Ok(event) = rx.recv().await {
             match event {
                 PluginBusEvent::RegistryUpdated(entries) => {
                     for entry in entries {

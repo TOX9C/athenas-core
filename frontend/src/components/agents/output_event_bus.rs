@@ -1,4 +1,4 @@
-use crate::stores::agent_output::use_agent_output_store;
+use crate::stores::agent_output::{is_stderr_like, use_agent_output_store};
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatusUpdate};
 use crate::stores::notification::{
     add_notification, use_notification_store, NotificationRecord, NotificationType,
@@ -96,7 +96,7 @@ pub fn OutputEventBus() -> Element {
         let mut agent_status = agent_status;
         let mut agent_output = agent_output;
         let mut notifications = notifications;
-        while let Some(event) = rx.recv().await {
+        while let Ok(event) = rx.recv().await {
             match event {
                 OutputBusEvent::AgentStatus {
                     pane_id,
