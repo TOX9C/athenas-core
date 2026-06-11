@@ -110,13 +110,20 @@ pub fn FileTree() -> Element {
     }
 
     // Subscribe to fs:change:* events to auto-refresh the tree.
+    // Registered exactly once on mount; cleaned up on unmount via use_drop.
     {
         let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
             use_hook(|| Rc::new(RefCell::new(Vec::new())));
         let unlisteners_clone = unlisteners.clone();
+        let mut mounted = use_signal(|| false);
         let dir_for_effect = active_dir.clone();
 
         use_effect(move || {
+            if mounted() {
+                return;
+            }
+            mounted.set(true);
+
             let dir_path = dir_for_effect.clone();
             let mut nodes_for_listen = nodes;
             let mut loading_for_listen = loading;
