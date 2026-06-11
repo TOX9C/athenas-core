@@ -3,6 +3,8 @@ use base64::Engine;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
+pub mod caps;
+
 // ── Path validation helpers ──────────────────────────────────────────────────
 
 /// Get the canonicalized workspace root for path sandboxing.
@@ -257,6 +259,13 @@ pub async fn fs_list_dir(path: String) -> Result<String, CommandError> {
 /// Write content to a file, creating it if it doesn't exist.
 #[tauri::command]
 pub async fn fs_write_file(path: String, content: String) -> Result<(), CommandError> {
+    if content.len() > caps::MAX_FS_WRITE_BYTES {
+        return Err(CommandError::InvalidInput(format!(
+            "content too large: {} > {}",
+            content.len(),
+            caps::MAX_FS_WRITE_BYTES
+        )));
+    }
     let path_ref = std::path::Path::new(&path);
     let validated = validate_path(path_ref)?;
     let content_clone = content.clone();
@@ -383,6 +392,7 @@ pub async fn fs_search_files(pattern: String, path: String) -> Result<String, St
 /// Get a value from the persistent key-value store.
 #[tauri::command]
 pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, CommandError> {
+    caps::validate_key(&key).map_err(CommandError::InvalidInput)?;
     if key == "llm.api_key" {
         // Check keyring first
         if let Ok(entry) = keyring::Entry::new("athena", "api_key") {
@@ -419,6 +429,7 @@ pub async fn store_set(
     key: String,
     value: String,
 ) -> Result<(), String> {
+    caps::validate_key(&key)?;
     if key == "llm.api_key" {
         if !value.is_empty() && value != "set" && value != "not_set" {
             // Store the API key securely in the OS keyring, never in plaintext
@@ -462,6 +473,7 @@ pub fn store_has(state: State<'_, AppState>, key: String) -> bool {
 /// Delete a key from the persistent key-value store.
 #[tauri::command]
 pub async fn store_delete(state: State<'_, AppState>, key: String) -> Result<(), String> {
+    caps::validate_key(&key)?;
     if key == "llm.api_key" {
         let entry = keyring::Entry::new("athena", "api_key")
             .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
@@ -478,6 +490,9 @@ pub async fn session_create(
     state: State<'_, AppState>,
     title: Option<String>,
 ) -> Result<String, String> {
+    if let Some(ref t) = title {
+        caps::validate_title(t)?;
+    }
     let session = state
         .session_store
         .create_session(title.as_deref())
@@ -544,6 +559,9 @@ pub async fn session_update(
     title: Option<String>,
     messages: Option<String>,
 ) -> Result<String, CommandError> {
+    if let Some(ref t) = title {
+        caps::validate_title(t).map_err(CommandError::InvalidInput)?;
+    }
     let parsed_messages: Option<Vec<athena_store::SessionMessage>> = match messages {
         Some(json) => Some(
             serde_json::from_str(&json)
@@ -1559,6 +1577,13 @@ pub async fn mcp_handle_request(
     state: State<'_, AppState>,
     request: String,
 ) -> Result<String, String> {
+    if request.len() > caps::MAX_REQUEST_BYTES {
+        return Err(format!(
+            "request too large: {} > {}",
+            request.len(),
+            caps::MAX_REQUEST_BYTES
+        ));
+    }
     let server = state.mcp_server.lock().await;
     let req =
         athena_core::mcp::McpServer::parse_request(&request).ok_or("Invalid JSON-RPC request")?;
@@ -1642,6 +1667,13 @@ pub async fn shell_integration_parse(
     state: State<'_, AppState>,
     data: String,
 ) -> Result<String, String> {
+    if data.len() > caps::MAX_DATA_BYTES {
+        return Err(format!(
+            "data too large: {} > {}",
+            data.len(),
+            caps::MAX_DATA_BYTES
+        ));
+    }
     let shell_integration_parser = state.shell_integration_parser.clone();
     tokio::task::spawn_blocking(move || {
         let mut parser = shell_integration_parser.lock();
