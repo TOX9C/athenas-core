@@ -237,7 +237,13 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 button {
                     class: "btn-ghost",
                     onclick: move |_| {
-                        if step() == 1 { step.set(0); } else { step.set(step() - 1); }
+                        // saturating_sub avoids a u8 underflow panic in debug
+                        // builds if the render guard ever lets this fire at
+                        // step 0 (the explicit step==1 branch is currently
+                        // redundant with the saturating form, but kept
+                        // defensive against future changes to the footer
+                        // condition).
+                        step.set(step().saturating_sub(1));
                     },
                         "Back"
                     }
@@ -301,11 +307,19 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     agent_type: row.agent_type.clone(),
                                                     custom_cmd: row.custom_cmd.clone(),
                                                     custom_agent_id: row.custom_id.clone(),
-                                                    label: Some(row.label.clone()),
+                                                    // Default to None so the pane pill's
+                                                    // fallback chain can resolve the live
+                                                    // label (scraped title for agents,
+                                                    // random name for idle shells). The
+                                                    // modal row still shows "Shell"/"Codex"
+                                                    // via AgentRowState.label at creation.
+                                                    label: None,
                                                     bypass_mode: None,
                                                     project_name: None,
                                                     model_name: None,
                                                     resume_id: None,
+                                                    resume_cmd: None,
+                                                    resume_dismissed: None,
                                                 });
                                             }
                                         }
@@ -375,6 +389,8 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 project_name: None,
                                                 model_name: None,
                                                 resume_id: None,
+                                                resume_cmd: None,
+                                                resume_dismissed: None,
                                             });
                                             _swarm_agents.push(SwarmAgent {
                                                 id: agent_id,

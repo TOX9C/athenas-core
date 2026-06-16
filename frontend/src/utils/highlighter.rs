@@ -62,9 +62,6 @@ fn strip_line_number_prefix(line: &str) -> usize {
     }
     leading_ws + digit_end + 1
 }
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Rust highlighter

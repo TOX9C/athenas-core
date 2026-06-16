@@ -253,6 +253,16 @@ pub struct TerminalSession {
     pub exited: bool,
     /// Whether the session is rendered by xterm.js (skip grid updates).
     pub is_xterm: bool,
+    /// Detected foreground process name (e.g., "claude", "codex", "nvim")
+    pub foreground_process: Option<String>,
+    /// Detected agent task title (e.g. "Fix login bug"), scraped from the agent's state files.
+    pub task_title: Option<String>,
+    /// Session ID from the agent's history file (used to avoid re-summarizing).
+    pub session_id: Option<String>,
+    /// Raw prompt text (available for LLM summarization).
+    pub raw_prompt: Option<String>,
+    /// LLM-generated short title (2-3 words). Only populated when the feature is enabled.
+    pub summarized_title: Option<String>,
 }
 
 impl TerminalSession {
@@ -277,6 +287,11 @@ impl TerminalSession {
             last_update_ms: 0.0,
             exited: false,
             is_xterm: false,
+            foreground_process: None,
+            task_title: None,
+            session_id: None,
+            raw_prompt: None,
+            summarized_title: None,
         }
     }
 
@@ -499,11 +514,41 @@ impl TerminalStore {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// Update the detected foreground process + scraped task title for a pane.
+    ///
+    /// Called on a slow timer (the central `AgentInfoPoller`) for every pane,
+    /// so it guards against spurious re-renders by only bumping `generation`
+    /// when one of the values actually changed.
+    pub fn update_agent_info(
+        &mut self,
+        id: &str,
+        fg_process: Option<String>,
+        task_title: Option<String>,
+        session_id: Option<String>,
+        raw_prompt: Option<String>,
+    ) {
+        if let Some(session) = self.sessions.get_mut(id) {
+            if session.foreground_process != fg_process || session.task_title != task_title {
+                session.foreground_process = fg_process;
+                session.task_title = task_title;
+                session.generation = session.generation.wrapping_add(1);
+                self.generation = self.generation.wrapping_add(1);
+            }
+            if let Some(sid) = session_id {
+                session.session_id = Some(sid);
+            }
+            if let Some(prompt) = raw_prompt {
+                session.raw_prompt = Some(prompt);
+            }
+        }
+    }
+
     /// Activate a session by ID.
     pub fn set_active(&mut self, id: impl Into<String>) {
         let id = id.into();
         if self.active_session_id.as_ref() != Some(&id) {
             self.active_session_id = Some(id);
+            self.generation = self.generation.wrapping_add(1);
         }
     }
 }

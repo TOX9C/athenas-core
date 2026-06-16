@@ -228,18 +228,58 @@ fn build_anthropic_content(text: &str, images: Option<&[ImageData]>) -> serde_js
     }
 }
 
+/// Extract the host portion from a URL authority, stripping userinfo and
+/// port, and handling IPv6 literals (`[::1]:8080`). Returned without brackets.
+fn url_host(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest)?;
+    let authority = after_scheme.split('/').next()?;
+    let hostport = authority.rsplit('@').next()?;
+    if let Some(rest) = hostport.strip_prefix('[') {
+        // IPv6 literal: host is everything up to the closing ']'.
+        let v6 = rest.split(']').next().unwrap_or("");
+        return Some(v6.to_string());
+    }
+    Some(hostport.split(':').next().unwrap_or("").to_string())
+}
+
 fn validate_base_url(url: &str) -> Result<(), OrchestratorError> {
-    if !url.starts_with("https://") {
+    // Accept either scheme. We enforce HTTPS for any host that isn't a
+    // loopback / private address, so an API key is never sent in cleartext
+    // over the public internet — but local LLM servers (LM Studio, Ollama,
+    // vLLM, …) documented as `http://localhost:1234/v1` still work.
+    let (scheme, _rest) = url
+        .split_once("://")
+        .ok_or_else(|| OrchestratorError::Generic("Base URL must include a scheme (https:// or http://)".to_string()))?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "https" && scheme != "http" {
+        return Err(OrchestratorError::Generic(format!(
+            "Base URL must use http:// or https:// (got '{scheme}://')"
+        )));
+    }
+
+    let host = url_host(url).unwrap_or_default();
+    if host.is_empty() {
         return Err(OrchestratorError::Generic(
-            "Base URL must use HTTPS".to_string(),
+            "Base URL must have a valid hostname".to_string(),
         ));
     }
-    let host = url
-        .trim_start_matches("https://")
-        .split('/')
-        .next()
-        .unwrap_or("");
-    if host.is_empty() || !host.contains('.') {
+
+    // A loopback IP (IPv4 or IPv6) or the "localhost" label identifies a
+    // local server and is exempt from the HTTPS requirement.
+    let is_loopback = host
+        .parse::<std::net::IpAddr>()
+        .map_or(false, |ip| ip.is_loopback())
+        || host == "localhost";
+
+    if scheme == "http" && !is_loopback {
+        return Err(OrchestratorError::Generic(
+            "Base URL must use HTTPS for non-local hosts".to_string(),
+        ));
+    }
+
+    // Public hostnames need a dot (e.g. api.openai.com). Single-label names
+    // other than localhost are almost certainly a typo.
+    if !is_loopback && !host.contains('.') {
         return Err(OrchestratorError::Generic(
             "Base URL must have a valid hostname".to_string(),
         ));
@@ -795,6 +835,98 @@ impl AthenaOrchestrator {
         result
     }
 
+    /// Send a one-shot request to the configured LLM to summarize a prompt
+    /// into a short (2–3 word) title. Does NOT touch conversation history.
+    pub async fn summarize_title(&self, raw_prompt: &str) -> Result<String, OrchestratorError> {
+        const SYSTEM: &str = "You summarize prompts into 2-3 word titles. Output ONLY the title, no quotes.";
+        let prompt = format!("Summarize in 2-3 words: {}", raw_prompt);
+
+        let config = { self.provider_config.lock().as_ref().cloned() };
+
+        let (provider, api_key, model, base_url) = match config {
+            Some(c) => (c.provider.clone(), c.api_key().clone(), c.model.clone(), c.base_url.clone()),
+            None => {
+                let api_key = std::env::var("ANTHROPIC_API_KEY")
+                    .ok()
+                    .ok_or(OrchestratorError::MissingApiKey)?;
+                (LLMProvider::Anthropic, secrecy::SecretString::from(api_key), "claude-sonnet-4-20250514".to_string(), None)
+            }
+        };
+
+        let client = &self.http_client;
+
+        match provider {
+            LLMProvider::Anthropic => {
+                let body = serde_json::json!({
+                    "model": model,
+                    "max_tokens": 20,
+                    "system": SYSTEM,
+                    "messages": [{"role": "user", "content": prompt}]
+                });
+                let response = client
+                    .post("https://api.anthropic.com/v1/messages")
+                    .header("x-api-key", api_key.expose_secret())
+                    .header("anthropic-version", "2024-10-22")
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await?;
+
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let err_text = response.text().await.unwrap_or_default();
+                    return Err(OrchestratorError::Generic(format!("Anthropic API error {}: {}", status, err_text)));
+                }
+                let json: serde_json::Value = response.json().await?;
+                let content = json["content"].as_array().ok_or_else(|| OrchestratorError::Generic("Invalid Anthropic response: no content array".to_string()))?;
+                let summary = content.iter()
+                    .filter(|b| b["type"].as_str() == Some("text"))
+                    .map(|b| b["text"].as_str().unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .trim()
+                    .to_string();
+                Ok(summary)
+            }
+            LLMProvider::OpenAI | LLMProvider::NvidiaNim | LLMProvider::Lmstudio => {
+                let url = match &provider {
+                    LLMProvider::NvidiaNim => "https://integrate.api.nvidia.com/v1".to_string(),
+                    LLMProvider::OpenAI => "https://api.openai.com/v1".to_string(),
+                    LLMProvider::Lmstudio => base_url.unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
+                    _ => unreachable!(),
+                };
+                let body = serde_json::json!({
+                    "model": model,
+                    "max_tokens": 20,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM},
+                        {"role": "user", "content": prompt}
+                    ]
+                });
+                let response = client
+                    .post(format!("{}/chat/completions", url))
+                    .header("Authorization", format!("Bearer {}", api_key.expose_secret()))
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await?;
+
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let err_text = response.text().await.unwrap_or_default();
+                    return Err(OrchestratorError::Generic(format!("OpenAI API error {}: {}", status, err_text)));
+                }
+                let json: serde_json::Value = response.json().await?;
+                let summary = json["choices"][0]["message"]["content"]
+                    .as_str()
+                    .unwrap_or("Summary")
+                    .trim()
+                    .to_string();
+                Ok(summary)
+            }
+        }
+    }
+
     /// Execute a single tool call through the configured executor.
     ///
     /// Returns a tuple of `(text, is_error)`. If no executor is configured,
@@ -956,32 +1088,43 @@ impl AthenaOrchestrator {
                 return Ok(response_text.trim().to_string());
             }
 
-            // Execute each tool call and append tool_result messages.
+            // Execute each tool call WITHOUT holding the message lock across
+            // the (potentially long, up to 30s for ask_user) await, then push
+            // all results at once under a fresh lock. Holding a sync
+            // parking_lot::Mutex across `.await` stalls the Tokio worker and
+            // serializes the whole runtime against any other task that touches
+            // `anthropic_messages` (auto-save, load_conversation, a second
+            // send_message).
+            let mut tool_results: Vec<serde_json::Value> = Vec::with_capacity(tool_calls.len());
+            for tool_call in &tool_calls {
+                let tool_use_id = tool_call["id"].as_str().unwrap_or("unknown");
+                let tool_name = tool_call["name"].as_str().unwrap_or("unknown");
+                let tool_input = &tool_call["input"];
+
+                // No lock held here — execute_tool may block or await.
+                let (result_text, is_error) = self.execute_tool(tool_name, tool_input).await;
+
+                let tool_result = if is_error {
+                    serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "is_error": true,
+                        "content": result_text,
+                    })
+                } else {
+                    serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": result_text,
+                    })
+                };
+                tool_results.push(tool_result);
+            }
+
+            // Append all tool results under a single short-lived lock.
             {
                 let mut msgs = self.anthropic_messages.lock();
-
-                for tool_call in &tool_calls {
-                    let tool_use_id = tool_call["id"].as_str().unwrap_or("unknown");
-                    let tool_name = tool_call["name"].as_str().unwrap_or("unknown");
-                    let tool_input = &tool_call["input"];
-
-                    let (result_text, is_error) = self.execute_tool(tool_name, tool_input).await;
-
-                    let tool_result = if is_error {
-                        serde_json::json!({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "is_error": true,
-                            "content": result_text,
-                        })
-                    } else {
-                        serde_json::json!({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": result_text,
-                        })
-                    };
-
+                for tool_result in tool_results {
                     msgs.push(AnthropicMessage {
                         role: "user".to_string(),
                         content: tool_result,
@@ -1106,11 +1249,17 @@ impl AthenaOrchestrator {
             if !response.status().is_success() {
                 let status = response.status();
                 let err_text = response.text().await.unwrap_or_default();
+                // Sanitize provider error bodies before embedding them: provider
+                // responses can echo request headers (e.g. `Authorization: Bearer
+                // sk-…`) or contain other identifying material. The Anthropic
+                // path at ~line 918 already does this; the OpenAI/NvidiaNim/
+                // Lmstudio path (which all flow through here) must too.
+                let sanitized = sanitize_error_message(&err_text);
                 let mut msgs = self.openai_messages.lock();
                 msgs.truncate(user_msg_index);
                 return Err(OrchestratorError::Generic(format!(
                     "OpenAI API error {}: {}",
-                    status, err_text
+                    status, sanitized
                 )));
             }
 
@@ -1170,46 +1319,59 @@ impl AthenaOrchestrator {
                     )
                 })?;
 
+            // Execute each tool call WITHOUT holding the message lock across
+            // the (potentially long, up to 30s for ask_user) await, then push
+            // all results at once under a fresh lock. Holding a sync
+            // parking_lot::Mutex across `.await` stalls the Tokio worker and
+            // serializes the whole runtime against any other task that touches
+            // `openai_messages` (auto-save, load_conversation, a second
+            // send_message).
+            let mut tool_responses: Vec<OpenAIMessage> = Vec::with_capacity(tool_calls_array.len());
+            for tool_call in tool_calls_array {
+                let call_id = tool_call["id"].as_str().unwrap_or("unknown");
+                let function = &tool_call["function"];
+                let function_name = function["name"].as_str().unwrap_or("unknown");
+                let function_args_str = function["arguments"].as_str().unwrap_or("{}");
+
+                // Parse the arguments string into a JSON value.
+                let function_args: serde_json::Value = serde_json::from_str(function_args_str)
+                    .unwrap_or_else(|e| {
+                        log::warn!(
+                            "Failed to parse tool call arguments for '{}': {}. \
+                             Raw arguments: {}. Using empty object.",
+                            function_name,
+                            e,
+                            function_args_str
+                        );
+                        serde_json::json!({})
+                    });
+
+                // No lock held here — execute_tool may block or await.
+                let (result_text, is_error) =
+                    self.execute_tool(function_name, &function_args).await;
+
+                let tool_response_content = if is_error {
+                    serde_json::json!({
+                        "error": result_text,
+                    })
+                } else {
+                    serde_json::Value::String(result_text)
+                };
+
+                tool_responses.push(OpenAIMessage {
+                    role: "tool".to_string(),
+                    content: tool_response_content,
+                    tool_calls: None,
+                    tool_call_id: Some(call_id.to_string()),
+                    name: Some(function_name.to_string()),
+                });
+            }
+
+            // Append all tool responses under a single short-lived lock.
             {
                 let mut msgs = self.openai_messages.lock();
-
-                for tool_call in tool_calls_array {
-                    let call_id = tool_call["id"].as_str().unwrap_or("unknown");
-                    let function = &tool_call["function"];
-                    let function_name = function["name"].as_str().unwrap_or("unknown");
-                    let function_args_str = function["arguments"].as_str().unwrap_or("{}");
-
-                    // Parse the arguments string into a JSON value.
-                    let function_args: serde_json::Value = serde_json::from_str(function_args_str)
-                        .unwrap_or_else(|e| {
-                            log::warn!(
-                                "Failed to parse tool call arguments for '{}': {}. \
-                                 Raw arguments: {}. Using empty object.",
-                                function_name,
-                                e,
-                                function_args_str
-                            );
-                            serde_json::json!({})
-                        });
-
-                    let (result_text, is_error) =
-                        self.execute_tool(function_name, &function_args).await;
-
-                    let tool_response_content = if is_error {
-                        serde_json::json!({
-                            "error": result_text,
-                        })
-                    } else {
-                        serde_json::Value::String(result_text)
-                    };
-
-                    msgs.push(OpenAIMessage {
-                        role: "tool".to_string(),
-                        content: tool_response_content,
-                        tool_calls: None,
-                        tool_call_id: Some(call_id.to_string()),
-                        name: Some(function_name.to_string()),
-                    });
+                for resp in tool_responses {
+                    msgs.push(resp);
                 }
             }
 
@@ -1460,5 +1622,83 @@ mod tests {
             "concurrent calls should not be doubly-serialised (< 5s), got {:?}",
             elapsed
         );
+    }
+
+    /// Regression test for H1: provider error bodies must have API-key fragments
+    /// redacted before being embedded into `OrchestratorError::Generic`. The
+    /// OpenAI/NvidiaNim/Lmstudio error path previously embedded `err_text`
+    /// verbatim; it now routes through `sanitize_error_message` like the
+    /// Anthropic path. This test pins the sanitizer's contract directly so a
+    /// future regression in either path is caught.
+    #[test]
+    fn sanitize_error_message_redacts_key_fragments() {
+        // OpenAI-style key in an echoed Authorization header.
+        let raw = r#"{"error":{"message":"Unauthorized","header":"Authorization: Bearer sk-proj-AbCdEf1234567890GhIjKl"}}"#;
+        let sanitized = sanitize_error_message(raw);
+        assert!(
+            !sanitized.contains("sk-proj-AbCdEf1234567890GhIjKl"),
+            "raw key leaked into sanitized output: {}",
+            sanitized
+        );
+        assert!(
+            sanitized.contains("Bearer [REDACTED]"),
+            "expected Bearer redaction, got: {}",
+            sanitized
+        );
+
+        // Bare sk- key embedded in body text.
+        let raw2 = "Invalid API key sk-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJ";
+        let sanitized2 = sanitize_error_message(raw2);
+        assert!(
+            !sanitized2.contains("sk-abcdefghijklmnopqrstuvwxyz"),
+            "bare key leaked: {}",
+            sanitized2
+        );
+        assert!(sanitized2.contains("sk-[REDACTED]"));
+
+        // Anthropic-style x-api-key header.
+        let raw3 = "x-api-key: sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+        let sanitized3 = sanitize_error_message(raw3);
+        assert!(
+            sanitized3.contains("x-api-key: [REDACTED]"),
+            "x-api-key not redacted: {}",
+            sanitized3
+        );
+
+        // Non-secret text passes through unmodified.
+        let benign = "HTTP 429 Too Many Requests: rate limit exceeded";
+        assert_eq!(sanitize_error_message(benign), benign);
+    }
+
+    #[test]
+    fn validate_base_url_accepts_https_public() {
+        assert!(validate_base_url("https://api.openai.com/v1").is_ok());
+        assert!(validate_base_url("https://api.groq.com/openai/v1").is_ok());
+        assert!(validate_base_url("https://api.anthropic.com").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_accepts_http_loopback() {
+        // Local LLM servers (LM Studio, Ollama, vLLM) documented in the
+        // Settings placeholder must work over plain HTTP.
+        assert!(validate_base_url("http://localhost:1234/v1").is_ok());
+        assert!(validate_base_url("http://127.0.0.1:11434/v1").is_ok());
+        assert!(validate_base_url("http://[::1]:8080/v1").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_http_public_host() {
+        // No plaintext API keys over the public internet.
+        assert!(validate_base_url("http://api.openai.com/v1").is_err());
+        assert!(validate_base_url("http://example.com/v1").is_err());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_bad_scheme_and_empty_host() {
+        assert!(validate_base_url("ftp://api.openai.com/v1").is_err());
+        assert!(validate_base_url("api.openai.com").is_err()); // no scheme
+        assert!(validate_base_url("https://").is_err()); // no host
+        // Single-label non-loopback host: almost certainly a typo.
+        assert!(validate_base_url("https://internalhost/v1").is_err());
     }
 }

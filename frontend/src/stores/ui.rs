@@ -45,6 +45,14 @@ pub struct UIState {
     pub font_family: String,
     pub font_size: u8,
     pub custom_agents: Vec<crate::types::workspace::CustomAgent>,
+    /// Whether idle Shell panes should get an auto-generated random name
+    /// and agent panes should surface their scraped task title. Toggleable
+    /// from the General settings tab; persisted under `"auto_generate_titles"`.
+    pub auto_generate_titles: bool,
+    /// Whether to send the first prompt to the configured LLM to get a
+    /// 2-3 word summary of what the agent is doing. Toggleable from the
+    /// General settings tab; persisted under `"summarize_agent_titles"`.
+    pub summarize_agent_titles: bool,
 }
 
 impl Default for UIState {
@@ -66,6 +74,8 @@ impl Default for UIState {
             font_family: String::from("Monaspace Neon"),
             font_size: 14,
             custom_agents: Vec::new(),
+            auto_generate_titles: true,
+            summarize_agent_titles: false,
         }
     }
 }

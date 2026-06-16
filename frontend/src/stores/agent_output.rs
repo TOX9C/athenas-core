@@ -1,6 +1,20 @@
 use dioxus::prelude::*;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+
+fn now_ms() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::SystemTime;
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,13 +72,11 @@ const MAX_TEXT_LENGTH: usize = 10000;
 const MAX_PANE_COUNT: usize = 100;
 /// Target pane count after garbage collection.
 const PANE_GC_TARGET: usize = 80;
-/// Threshold for idle-pane GC: a pane whose buffer has not been touched for
-/// this duration is eligible for eviction. Stops the buffers map from growing
-/// unboundedly in long sessions where many panes are created and destroyed.
-const PANE_GC_IDLE_THRESHOLD: Duration = Duration::from_secs(30 * 60);
-/// Recommended sweep interval for periodic GC. Pair with `PANE_GC_IDLE_THRESHOLD`
-/// when wiring a `use_effect` to call `gc()`.
-pub const PANE_GC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// Threshold for idle-pane GC (milliseconds). A pane whose buffer has not been
+/// touched for this duration is eligible for eviction.
+const PANE_GC_IDLE_THRESHOLD_MS: u64 = 30 * 60 * 1000;
+/// Recommended sweep interval for periodic GC (milliseconds).
+pub const PANE_GC_INTERVAL_MS: u64 = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // State
@@ -79,9 +91,9 @@ pub struct AgentOutputState {
     pub subscription: SubscriptionState,
     pub inspector_open: bool,
     pub auto_scroll: bool,
-    /// Last time each pane's buffer was read/written. Used by `gc()` to evict
-    /// panes that have been idle longer than `PANE_GC_IDLE_THRESHOLD`.
-    last_access: HashMap<String, Instant>,
+    /// Last time each pane's buffer was read/written (epoch ms). Used by `gc()` to evict
+    /// panes that have been idle longer than `PANE_GC_IDLE_THRESHOLD_MS`.
+    last_access: HashMap<String, u64>,
 }
 
 impl Default for AgentOutputState {
@@ -132,7 +144,7 @@ impl AgentOutputState {
     /// Mark a pane as recently used. Call on every buffer mutation so that
     /// the idle-based `gc()` doesn't evict an active pane.
     fn touch(&mut self, pane_id: &str) {
-        self.last_access.insert(pane_id.to_string(), Instant::now());
+        self.last_access.insert(pane_id.to_string(), now_ms());
     }
 
     fn maybe_gc_panes(&mut self) {
@@ -237,13 +249,13 @@ impl AgentOutputState {
     /// receiving output — e.g. an agent pane whose subscription ended without
     /// an explicit `unregister_pane` event.
     pub fn gc(&mut self) {
-        let now = Instant::now();
+        let now = now_ms();
         // First pass: collect stale pane ids.
         let stale: Vec<String> = self
             .last_access
             .iter()
             .filter_map(|(pane_id, t)| {
-                if now.duration_since(*t) >= PANE_GC_IDLE_THRESHOLD {
+                if now - *t >= PANE_GC_IDLE_THRESHOLD_MS {
                     Some(pane_id.clone())
                 } else {
                     None
@@ -332,9 +344,7 @@ mod tests {
         assert_eq!(state.agents.len(), 2);
 
         // Backdate pane-1 so it appears 31 minutes idle.
-        let stale = Instant::now()
-            .checked_sub(PANE_GC_IDLE_THRESHOLD + Duration::from_secs(60))
-            .expect("monotonic clock supports backwards arithmetic");
+        let stale = now_ms() - (PANE_GC_IDLE_THRESHOLD_MS + 60_000);
         state.last_access.insert("pane-1".to_string(), stale);
 
         state.gc();
@@ -387,9 +397,7 @@ mod tests {
         let mut state = AgentOutputState::new();
         state.register_pane("pane-y".to_string(), "claude".to_string(), 1_000);
         // Backdate
-        let stale = Instant::now()
-            .checked_sub(PANE_GC_IDLE_THRESHOLD + Duration::from_secs(60))
-            .unwrap();
+        let stale = now_ms() - (PANE_GC_IDLE_THRESHOLD_MS + 60_000);
         state.last_access.insert("pane-y".to_string(), stale);
 
         // A subsequent append should refresh the timestamp.

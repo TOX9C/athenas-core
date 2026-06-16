@@ -3,6 +3,7 @@ use crate::grid::CellDelta;
 use crate::grid::Grid;
 use log::info;
 use nix::pty::{openpty, Winsize};
+use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::{close, fork, setsid, ForkResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,6 +15,42 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use vte::Parser;
+
+/// Reap a child process group after signaling it.
+///
+/// Sends SIGTERM, gives the group a short grace window to exit, then escalates
+/// to SIGKILL if needed. `waitpid(WNOHANG)` is polled throughout so the child
+/// does not become a zombie — without this, `Drop`/`kill` would signal the
+/// group but never reap it, leaking process-table entries over the app's
+/// lifetime.
+///
+/// `pid` is the child to reap; `pgid` is the group to signal (they differ when
+/// `setsid` failed and the child stayed in the parent's group — in that case we
+/// must NOT `killpg`, but we still reap our own child).
+fn reap_process_group(pid: nix::unistd::Pid, pgid: nix::unistd::Pid) {
+    use nix::sys::signal::{killpg, Signal};
+    use nix::sys::wait::WaitStatus;
+
+    let _ = killpg(pgid, Signal::SIGTERM);
+
+    // Grace window: poll for ~200ms for the child to exit.
+    let reaped = (0..20).any(|_| match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+        Ok(WaitStatus::StillAlive) => {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        }
+        Ok(_) => true, // Exited / Signaled / etc. — reaped.
+        Err(nix::Error::ECHILD) => true, // Already reaped elsewhere.
+        Err(_) => true, // Treat other errors as "nothing more to do".
+    });
+    if reaped {
+        return;
+    }
+
+    // Still alive after the grace window — SIGKILL and reap (blocking).
+    let _ = killpg(pgid, Signal::SIGKILL);
+    let _ = waitpid(pid, None);
+}
 
 /// Status of a PTY session lifecycle.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -75,7 +112,11 @@ pub struct TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         self.close_fd();
-        let _ = nix::sys::signal::killpg(self.pgid, nix::sys::signal::Signal::SIGTERM);
+        // Signal AND reap. Without `waitpid` the signaled shell becomes a
+        // zombie until process exit; over a long app session that leaks the
+        // process table. The grace-then-SIGKILL escalation also handles
+        // defiant shells that ignore SIGTERM.
+        reap_process_group(self.shell_pid, self.pgid);
     }
 }
 
@@ -377,10 +418,91 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.remove(id) {
             session.close_fd();
-            let pgid = session.pgid;
-            let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGTERM);
+            // Reap on kill too (mirrors Drop) so explicit kills don't leak
+            // zombies either.
+            reap_process_group(session.shell_pid, session.pgid);
         }
         Ok(())
+    }
+
+    /// Gracefully shut down every live PTY session.
+    ///
+    /// Used on app exit (`RunEvent::ExitRequested`) so that foreground
+    /// processes (e.g. `claude`, `codex`) started inside shells are
+    /// interrupted and reaped rather than orphaned when the app process
+    /// exits. Without this, the child shells + their `claude`/`codex`
+    /// children are reparented to launchd and the OS just closes their fds.
+    ///
+    /// Two-phase, "Ctrl+C then kill":
+    ///   1. Write Ctrl+C (`\x03`) to each session's master fd. Because the
+    ///      PTY is the child's controlling terminal (set up via `TIOCSCTTY`
+    ///      at spawn), the kernel line discipline translates the INTR byte
+    ///      into SIGINT to the session's *foreground* process group — which
+    ///      correctly targets `claude` even when the shell has placed it in
+    ///      a separate job-control process group. This gives the agent a
+    ///      chance to run its exit handler, flush its session file, and
+    ///      print its resume line (already captured by the frontend scanner
+    ///      from the live `pty:raw` stream, so it is persisted before the
+    ///      kill).
+    ///   2. After a short grace window, force-close + reap every session via
+    ///      `reap_process_group` (SIGTERM → grace → SIGKILL → waitpid), so
+    ///      no survivors are orphaned and no zombies linger.
+    ///
+    /// The sessions map is drained first so each `Arc<TerminalSession>` is
+    /// reaped exactly here; a later `Drop` (when the read loop releases its
+    /// own clone) finds an already-reaped child and no-ops on `ECHILD`.
+    pub async fn shutdown_all(&self) {
+        // Drain the map so Drop's reaping can't race our explicit reaping.
+        // The read loop still holds its own Arc clone, so the session isn't
+        // dropped yet — it lives until close_fd() makes the loop observe EOF.
+        let sessions: Vec<Arc<TerminalSession>> = {
+            let mut sessions = self.sessions.write().await;
+            sessions.drain().map(|(_, v)| v).collect::<Vec<_>>()
+        };
+        if sessions.is_empty() {
+            return;
+        }
+        info!(
+            "shutdown_all: gracefully interrupting {} PTY session(s)",
+            sessions.len()
+        );
+
+        // Phase 1 — graceful, in-band exit. Write `/exit` + Enter so the
+        // foreground agent (claude/codex/…) runs its OWN exit handler, flushes
+        // its session file, and prints its resume line — which the read loop
+        // then emits as `pty:raw` for the frontend scanner AND appends to the
+        // backend OutputBuffer (used by the app-exit capture path). This is
+        // strictly gentler than SIGINT and gives the resume id the best chance
+        // to appear before we tear things down. Best-effort: ignore write
+        // errors (the fd may already be closed, or the child may have exited).
+        for session in &sessions {
+            let _ = session.write(b"/exit\r").await;
+        }
+
+        // Let the agents process `/exit`, flush state, and print their resume
+        // line. ~700 ms covers claude/codex exit handlers; the read loop's
+        // 8 ms flush interval guarantees the bytes reach listeners in time.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+        // Phase 2 — SIGINT fallback. Any agent that ignored `/exit` (or whose
+        // shell has already returned to a prompt with no agent running) gets a
+        // Ctrl+C. Because the PTY is the controlling terminal, the kernel line
+        // discipline turns `\x03` into SIGINT for the foreground process group.
+        for session in &sessions {
+            let _ = session.write(b"\x03").await;
+        }
+
+        // Brief grace for the SIGINT to take effect before we escalate to
+        // SIGKILL. Kept short so app quit doesn't feel sluggish.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Phase 3 — force reap. close_fd first so the read loop observes EOF
+        // and exits cleanly, then signal+reap the process group.
+        for session in sessions {
+            session.close_fd();
+            reap_process_group(session.shell_pid, session.pgid);
+        }
+        info!("shutdown_all: all PTY sessions reaped");
     }
 
     pub async fn write(&self, id: &str, data: &[u8]) -> io::Result<usize> {
@@ -432,6 +554,23 @@ impl SessionManager {
     pub async fn has_session(&self, id: &str) -> bool {
         let sessions = self.sessions.read().await;
         sessions.contains_key(id)
+    }
+
+    /// Synchronous, non-blocking session existence check.
+    ///
+    /// Uses `try_read` so it never blocks (and therefore never panics with
+    /// "Cannot start a runtime from within a runtime" when called from a
+    /// tokio worker thread, unlike an async variant driven via `block_on`).
+    /// Returns `false` if the read lock is contended — callers should treat
+    /// that as "session not confirmed" and fall back to the async path or the
+    /// active-sessions cache. This is correct for the only caller
+    /// (`TauriEventSender::has_session`), which already has a fast-path
+    /// cache and uses this as a best-effort secondary check.
+    pub fn has_session_sync(&self, id: &str) -> bool {
+        match self.sessions.try_read() {
+            Ok(sessions) => sessions.contains_key(id),
+            Err(_) => false,
+        }
     }
 
     pub async fn list_sessions(&self) -> Vec<String> {

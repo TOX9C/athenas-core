@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pty-agent-info"
+description = "Enables the pty_agent_info command without any pre-configured scope."
+commands.allow = ["pty_agent_info"]
+
+[[permission]]
+identifier = "deny-pty-agent-info"
+description = "Denies the pty_agent_info command without any pre-configured scope."
+commands.deny = ["pty_agent_info"]

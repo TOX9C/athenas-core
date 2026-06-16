@@ -176,6 +176,13 @@ pub fn App() -> Element {
                         }
                     }
                 }
+                // Load auto-generate-titles setting from persist
+                if let Ok(v) = crate::tauri_bridge::store_get("auto_generate_titles").await {
+                    ui.write().auto_generate_titles = v == "true";
+                }
+                if let Ok(v) = crate::tauri_bridge::store_get("summarize_agent_titles").await {
+                    ui.write().summarize_agent_titles = v == "true";
+                }
             });
         });
     }
@@ -197,7 +204,12 @@ pub fn App() -> Element {
         use_effect(move || {
             spawn(async move {
                 let loaded = WorkspaceState::load().await;
-                *ws.write() = loaded;
+                let mut ws = ws.write();
+                // Only apply loaded state if workspace hasn't been modified since
+                // mount (prevents async load from clobbering user mutations).
+                if ws.spaces.is_empty() && ws.active_space_id.is_none() {
+                    *ws = loaded;
+                }
             });
         });
         // Mark effect as run-once by not capturing any reactive dependencies
@@ -214,19 +226,51 @@ pub fn App() -> Element {
         });
     }
 
-    // Track mounted spaces — pruned each render to current space IDs so
-    // removed spaces do not leak in the set indefinitely.
-    let active_space_id = workspace.read().active_space_id.clone();
-    if let Some(id) = &active_space_id {
-        if !mounted_spaces.read().contains(id) {
-            mounted_spaces.write().insert(id.clone());
-        }
+    // Force a final workspace save before the window closes
+    {
+        let final_ws = workspace.clone();
+        use_effect(move || {
+            let Some(window) = web_sys::window() else { return; };
+            let ws_signal = final_ws.clone();
+            let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                ws_signal.read().save();
+            }) as Box<dyn FnMut()>);
+            let _ = js_sys::Reflect::set(
+                &window,
+                &wasm_bindgen::JsValue::from_str("onbeforeunload"),
+                closure.as_ref(),
+            );
+            closure.forget();
+        });
     }
 
+    // Read-only access for rendering — all mounted_spaces mutations happen
+    // inside use_effect (after render) to avoid the write-during-render
+    // anti-pattern that triggers infinite re-render loops in Dioxus.
+    let active_space_id = workspace.read().active_space_id.clone();
     let spaces = workspace.read().spaces.clone();
-    let current_space_ids: std::collections::HashSet<String> =
-        spaces.iter().map(|s| s.id.clone()).collect();
-    mounted_spaces.write().retain(|id| current_space_ids.contains(id));
+
+    // Sync mounted_spaces inside use_effect so writes happen after render.
+    use_effect({
+        let mut mounted_spaces = mounted_spaces.clone();
+        let workspace = workspace.clone();
+        move || {
+            let ws = workspace.read();
+            let existing_ids: std::collections::HashSet<String> =
+                ws.spaces.iter().map(|s| s.id.clone()).collect();
+            let active = ws.active_space_id.clone();
+
+            let mut mounted = mounted_spaces.write();
+
+            // Track active space
+            if let Some(id) = &active {
+                mounted.insert(id.clone());
+            }
+
+            // Prune spaces that no longer exist
+            mounted.retain(|id| existing_ids.contains(id));
+        }
+    });
 
     let active_space: Option<Space> = spaces
         .iter()
@@ -254,6 +298,8 @@ pub fn App() -> Element {
                 return;
             }
 
+            // Only default to first pane when switching spaces and no visible
+            // active session exists in the new space.
             let current_active = terminal_store.read().active_session_id.clone();
             let is_current_visible = current_active
                 .as_ref()
@@ -401,6 +447,8 @@ pub fn App() -> Element {
                                     project_name: None,
                                     model_name: None,
                                     resume_id: None,
+                                    resume_cmd: None,
+                                    resume_dismissed: None,
                                 };
                                 workspace_mut.write().add_pane_to_space(&sid, pane);
                                 e.prevent_default();
@@ -447,7 +495,7 @@ pub fn App() -> Element {
                 }
 
                 // Workspace tabs (centered, flex-1)
-                div { style: "flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 8px; min-width: 0;",
+                div { style: "flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 8px; min-width: 0; overflow: hidden;",
                     WorkspaceTabs { on_new_space: move |_| { ui_state.write().show_new_space_modal = true; } }
                 }
 
@@ -456,7 +504,7 @@ pub fn App() -> Element {
 
                     // Panel switcher (only when a workspace is active)
                     if active_space.is_some() {
-                        div { style: "display: flex; align-items: center; margin-right: 4px;",
+                        div { class: "tb-panel-switcher", style: "display: flex; align-items: center; margin-right: 4px;",
                             for (panel, label) in [
                                 (Panel::Workspace, "workspace"),
                                 (Panel::Kanban, "kanban"),
@@ -482,7 +530,7 @@ pub fn App() -> Element {
                     // Add Shell pane
                     if active_space.is_some() {
                         button {
-                            class: "icon-btn",
+                            class: "icon-btn tb-extra-btn",
                             title: "Add Shell (Cmd+Shift+A)",
                             onclick: move |_| {
                                 let active_id = {
@@ -500,7 +548,9 @@ pub fn App() -> Element {
                                         bypass_mode: None,
                                         project_name: None,
                                         model_name: None,
-                                    resume_id: None,
+                                        resume_id: None,
+                                        resume_cmd: None,
+                                        resume_dismissed: None,
                                     };
                                     workspace_mut.write().add_pane_to_space(&sid, pane);
                                 }
@@ -529,7 +579,7 @@ pub fn App() -> Element {
 
                     // Swarm launch
                     button {
-                        class: "icon-btn",
+                        class: "icon-btn tb-extra-btn",
                         title: "Launch Swarm",
                         onclick: move |_| { ui_state.write().show_swarm_modal = true; },
                         IconSwarm { size: Some(16), color: Some("currentColor".to_string()) }
@@ -826,6 +876,10 @@ pub fn App() -> Element {
             NotificationToast {}
             PluginEventBus {}
             OutputEventBus {}
+            // Central agent-info poller: writes detected foreground process +
+            // scraped task title into the terminal store so pane pills reflect
+            // what's actually running (Claude/Codex detection, idle Shell names).
+            crate::components::workspace::agent_info_poller::AgentInfoPoller {}
 
             // Terminal sessions are spawned lazily inside the TerminalPaneBody component
 

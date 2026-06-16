@@ -4,6 +4,7 @@ use crate::components::shared::icon::{
     IconAmphora, IconColumn, IconHelmet, IconScroll, IconSettings, IconTerminal,
 };
 use crate::components::shared::modal::Modal;
+use crate::stores::athena::use_athena_store;
 use crate::stores::ui::use_ui_store;
 use crate::themes::{get_theme, AVAILABLE_FONTS};
 use dioxus::prelude::*;
@@ -142,13 +143,17 @@ fn GeneralSettings() -> Element {
                             // re-reading the store (and re-resolving the theme) per font.
                             let ui = ui_state.read();
                             let current_font = ui.font_family.clone();
-                            let current_theme = get_theme(ui.theme.name());
+                            let theme_colors = get_theme(ui.theme.name());
+                            let theme_accent = theme_colors.accent.clone();
+                            let theme_bg_tertiary = theme_colors.bg_tertiary.clone();
+                            let theme_text = theme_colors.text.clone();
+                            let theme_text_muted = theme_colors.text_muted.clone();
                             drop(ui);
                             rsx! {
                                 for font in AVAILABLE_FONTS {
                                     {
                                         let is_selected = *font == current_font;
-                                        let bg = if is_selected { current_theme.accent } else { current_theme.bg_tertiary };
+                                        let bg = if is_selected { &theme_accent } else { &theme_bg_tertiary };
                                         let fg = if is_selected { "var(--bg)" } else { "var(--textMuted)" };
                                         let border = if is_selected { "var(--accent)" } else { "var(--border)" };
                                         let font_str = font.to_string();
@@ -225,6 +230,86 @@ fn GeneralSettings() -> Element {
                     }
                 }
             }
+
+            /* Pane Titles */
+            SectionHeader { title: "Pane Titles", desc: "Auto-generated labels above each pane" }
+            div {
+                style: "display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0;",
+                div {
+                    style: "display: flex; flex-direction: column; gap: 4px; min-width: 0;",
+                    div {
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
+                        "Auto-generate pane titles"
+                    }
+                    div {
+                        style: "font-size: var(--text-xs); color: var(--textMuted);",
+                        "Show scraped task titles for Claude/Codex and a random name for idle shells."
+                    }
+                }
+                {
+                    let enabled = ui_state.read().auto_generate_titles;
+                    let bg = if enabled { "var(--accent)" } else { "var(--bgTertiary)" };
+                    let knob = if enabled { "translateX(20px)" } else { "translateX(0px)" };
+                    rsx! {
+                        button {
+                            style: "position: relative; width: 44px; height: 24px; border-radius: 999px; border: 1px solid var(--border); background: {bg}; cursor: pointer; padding: 0; flex-shrink: 0; transition: background 0.15s ease;",
+                            onclick: move |_| {
+                                let next = !ui_state.read().auto_generate_titles;
+                                ui_state.write().auto_generate_titles = next;
+                                spawn(async move {
+                                    let _ = crate::tauri_bridge::store_set(
+                                        "auto_generate_titles",
+                                        if next { "true" } else { "false" },
+                                    )
+                                    .await;
+                                });
+                            },
+                            div {
+                                style: "position: absolute; top: 1px; left: 1px; width: 20px; height: 20px; border-radius: 50%; background: var(--bg); transform: {knob}; transition: transform 0.15s ease;",
+                            }
+                        }
+                    }
+                }
+            }
+            /* Summarize Agent Titles */
+            div {
+                style: "display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0;",
+                div {
+                    style: "display: flex; flex-direction: column; gap: 4px; min-width: 0;",
+                    div {
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
+                        "Summarize agent titles via LLM"
+                    }
+                    div {
+                        style: "font-size: var(--text-xs); color: var(--textMuted);",
+                        "Send first prompt to the configured LLM to get a 2-3 word summary. One API call per new session."
+                    }
+                }
+                {
+                    let enabled = ui_state.read().summarize_agent_titles;
+                    let bg = if enabled { "var(--accent)" } else { "var(--bgTertiary)" };
+                    let knob = if enabled { "translateX(20px)" } else { "translateX(0px)" };
+                    rsx! {
+                        button {
+                            style: "position: relative; width: 44px; height: 24px; border-radius: 999px; border: 1px solid var(--border); background: {bg}; cursor: pointer; padding: 0; flex-shrink: 0; transition: background 0.15s ease;",
+                            onclick: move |_| {
+                                let next = !ui_state.read().summarize_agent_titles;
+                                ui_state.write().summarize_agent_titles = next;
+                                spawn(async move {
+                                    let _ = crate::tauri_bridge::store_set(
+                                        "summarize_agent_titles",
+                                        if next { "true" } else { "false" },
+                                    )
+                                    .await;
+                                });
+                            },
+                            div {
+                                style: "position: absolute; top: 1px; left: 1px; width: 20px; height: 20px; border-radius: 50%; background: var(--bg); transform: {knob}; transition: transform 0.15s ease;",
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -239,7 +324,18 @@ fn AthenaSettings() -> Element {
     let mut api_key_input = use_signal(String::new);
     let mut base_url = use_signal(|| "https://api.openai.com/v1".to_string());
     let mut model = use_signal(|| "gpt-4o".to_string());
-    let mut is_saved = use_signal(|| false);
+    // None = not attempted this round; Some(true) = saved ok;
+    // Some(false) = the save FAILED (e.g. keyring backend missing). We only
+    // flip to true once the backend actually acknowledges the write — the
+    // previous version set this unconditionally on click, so a silent
+    // keyring failure showed a green "Saved" badge while the key was lost.
+    let mut save_status = use_signal(|| Option::<bool>::None);
+    let mut save_error = use_signal(String::new);
+    // Mirror saved state into the live Athena store so the chat panel's
+    // status dot / model badge / send-blocking reflect the new config the
+    // instant Settings closes — no remount or app restart required.
+    let mut athena_state = use_athena_store();
+    let mut toast_store = crate::components::shared::toast::use_toast_store();
 
     // Load saved values from store on mount
     use_effect(move || {
@@ -260,16 +356,79 @@ fn AthenaSettings() -> Element {
         let new_key = api_key_input.read().clone();
         let url = base_url.read().clone();
         let m = model.read().clone();
+        // Whether a key will be present after this save: true if a new key
+        // was just entered, otherwise whatever the existing state was.
+        let key_will_be_set = !new_key.is_empty() || api_key_set();
 
         // Clear the input field immediately so the raw key never lingers in the signal
         api_key_input.set(String::new());
 
         spawn(async move {
+            let mut key_ok = key_will_be_set;
+            let mut key_err = String::new();
+
             if !new_key.is_empty() {
-                let _ = crate::tauri_bridge::store_set("llm.api_key", &new_key).await;
+                match crate::tauri_bridge::store_set("llm.api_key", &new_key).await {
+                    Ok(()) => {
+                        api_key_set.set(true);
+                        key_ok = true;
+                    }
+                    Err(e) => {
+                        key_ok = false;
+                        key_err = format!("{:?}", e);
+                        web_sys::console::error_1(
+                            &format!("[AthenaSettings] Failed to save API key: {:?}", e).into(),
+                        );
+                    }
+                }
             }
-            let _ = crate::tauri_bridge::store_set("llm.base_url", &url).await;
-            let _ = crate::tauri_bridge::store_set("llm.model", &m).await;
+            // Base URL + model go to the SQLite store and are very unlikely
+            // to fail, but if they do we want to know rather than show a
+            // green badge.
+            if let Err(e) = crate::tauri_bridge::store_set("llm.base_url", &url).await {
+                key_err = if key_err.is_empty() {
+                    format!("base URL: {:?}", e)
+                } else {
+                    format!("{}; base URL: {:?}", key_err, e)
+                };
+            }
+            if let Err(e) = crate::tauri_bridge::store_set("llm.model", &m).await {
+                key_err = if key_err.is_empty() {
+                    format!("model: {:?}", e)
+                } else {
+                    format!("{}; model: {:?}", key_err, e)
+                };
+            }
+
+            let any_error = !key_err.is_empty();
+            save_error.set(key_err.clone());
+            save_status.set(Some(!any_error));
+
+            if any_error {
+                // Surface the failure loudly so it can't be confused with
+                // success. This is the guard that would have caught the
+                // keyring-mock-backend bug immediately.
+                toast_store.write().push(crate::components::shared::toast::Toast {
+                    id: format!("athena-save-{}", chrono::Utc::now().timestamp_millis()),
+                    toast_type: crate::components::shared::toast::ToastType::Error,
+                    title: "Failed to save Athena settings".to_string(),
+                    message: format!(
+                        "The API key could not be stored. Check that OS keychain access is allowed. ({})",
+                        key_err
+                    ),
+                    duration_ms: 6000,
+                });
+            }
+
+            // Push the freshly-persisted state into the live Athena store so
+            // the panel (model badge, status dot, send-gate) updates without
+            // a remount. `m` is the user-entered model string; only store a
+            // non-empty value so the panel falls back to its default label
+            // for an empty model.
+            athena_state.write().set_api_configured(Some(key_ok));
+            athena_state
+                .write()
+                .set_configured_model(if m.trim().is_empty() { None } else { Some(m) });
         });
     };
 
@@ -303,7 +462,7 @@ fn AthenaSettings() -> Element {
                         class: "field",
                         style: "width: 100%; box-sizing: border-box;",
                         placeholder: "Enter new API key…",
-                        oninput: move |e| { api_key_input.set(e.value()); is_saved.set(false); },
+                        oninput: move |e| { api_key_input.set(e.value()); save_status.set(None); },
                     }
                 }
 
@@ -319,7 +478,7 @@ fn AthenaSettings() -> Element {
                         class: "field",
                         style: "width: 100%; box-sizing: border-box;",
                         placeholder: "https://api.openai.com/v1",
-                        oninput: move |e| { base_url.set(e.value()); is_saved.set(false); },
+                        oninput: move |e| { base_url.set(e.value()); save_status.set(None); },
                     }
                     div {
                         style: "font-size: var(--text-2xs); color: var(--textDim);",
@@ -339,7 +498,7 @@ fn AthenaSettings() -> Element {
                         class: "field",
                         style: "width: 100%; box-sizing: border-box;",
                         placeholder: "gpt-4o, gpt-4, llama3.1, ...",
-                        oninput: move |e| { model.set(e.value()); is_saved.set(false); },
+                        oninput: move |e| { model.set(e.value()); save_status.set(None); },
                     }
                 }
 
@@ -348,17 +507,31 @@ fn AthenaSettings() -> Element {
                     style: "display: flex; align-items: center; gap: 12px; margin-top: 4px;",
                     button {
                         class: "btn-primary",
+                        // The badge is driven by the actual backend result
+                        // (set inside do_save's async completion), NOT by
+                        // the click itself — so a failed keyring write can
+                        // no longer masquerade as a successful save.
                         onclick: move |_| {
+                            save_status.set(None);
+                            save_error.set(String::new());
                             do_save();
-                            is_saved.set(true);
                         },
                         "Save"
                     }
-                    if is_saved() {
-                        span {
-                            style: "font-size: var(--text-xs); color: var(--success);",
-                            "Saved"
-                        }
+                    match save_status() {
+                        Some(true) => rsx! {
+                            span {
+                                style: "font-size: var(--text-xs); color: var(--success);",
+                                "Saved"
+                            }
+                        },
+                        Some(false) => rsx! {
+                            span {
+                                style: "font-size: var(--text-xs); color: var(--error);",
+                                "Save failed — see notification"
+                            }
+                        },
+                        None => rsx! {},
                     }
                 }
             }
@@ -375,6 +548,7 @@ fn AgentsSettings() -> Element {
     let mut ui_state = use_ui_store();
     let mut new_alias = use_signal(String::new);
     let mut new_command = use_signal(String::new);
+    let mut new_is_claude = use_signal(|| false);
     let mut show_form = use_signal(|| false);
 
     // Read agents into local variable for the render
@@ -411,7 +585,7 @@ fn AgentsSettings() -> Element {
                     }
                     button {
                         class: "btn-secondary btn-sm",
-                        onclick: move |_| { show_form.set(true); new_alias.set(String::new()); new_command.set(String::new()); },
+                        onclick: move |_| { show_form.set(true); new_alias.set(String::new()); new_command.set(String::new()); new_is_claude.set(false); },
                         "+ Add Agent"
                     }
                 }
@@ -419,7 +593,7 @@ fn AgentsSettings() -> Element {
                 if show_form() {
                     div {
                         class: "card",
-                        style: "display: flex; flex-direction: column; gap: 10px;",
+                        style: "display: flex; flex-direction: column; gap: 10px; padding: 12px 14px;",
                         div {
                             style: "font-size: var(--text-2xs); color: var(--textDim); margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.05em;",
                             "New Agent"
@@ -437,6 +611,42 @@ fn AgentsSettings() -> Element {
                             value: "{new_command}",
                             placeholder: "Command (e.g., claude --project foo)",
                             oninput: move |e| new_command.set(e.value()),
+                        }
+                        // Treat as Claude — marks this custom agent as a Claude
+                        // alias so its resume variant appears in the resume
+                        // dropdown and running-detection works for its panes.
+                        // Apple-style pill toggle — no nested card; the form's
+                        // own card already provides the container.
+                        div {
+                            style: "display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; user-select: none; padding: 2px 0;",
+                            onclick: move |_| new_is_claude.set(!new_is_claude()),
+                            div {
+                                style: "display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-right: 8px;",
+                                span {
+                                    style: "font-family: var(--font-ui); font-size: var(--text-sm); font-weight: 600; color: var(--text);",
+                                    "Treat as Claude"
+                                }
+                                span {
+                                    style: "font-family: var(--font-ui); font-size: var(--text-xs); color: var(--textDim);",
+                                    "Show resume variants + running detection"
+                                }
+                            }
+                            // Track: inset shadow for depth when off, gold when on.
+                            // Border stays visible (var(--border)) so it never disappears.
+                            div {
+                                style: format!(
+                                    "flex-shrink: 0; width: 48px; height: 28px; border-radius: var(--radius-pill); background: {}; border: 1px solid var(--border); position: relative; box-shadow: inset 0 1px 2px rgba(0,0,0,0.12); transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);",
+                                    if new_is_claude() { "var(--accent)" } else { "var(--bgTertiary)" },
+                                ),
+                                div {
+                                    style: format!(
+                                        // Knob slides via transform for GPU-composited animation.
+                                        "position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: {}; transform: translateX({}); box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); will-change: transform;",
+                                        if new_is_claude() { "var(--text)" } else { "var(--textDim)" },
+                                        if new_is_claude() { "22px" } else { "0px" },
+                                    ),
+                                }
+                            }
                         }
                         div {
                             style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;",
@@ -456,10 +666,12 @@ fn AgentsSettings() -> Element {
                                     let alias = new_alias.read().trim().to_string();
                                     let cmd = new_command.read().trim().to_string();
                                     if alias.is_empty() || cmd.is_empty() { return; }
+                                    let is_claude = new_is_claude();
                                     let new_agent = crate::types::workspace::CustomAgent {
                                         id: format!("custom-{}", js_sys::Date::now() as u64),
                                         alias: alias,
                                         command: cmd,
+                                        is_claude,
                                     };
                                     let mut ag = ui_state.read().custom_agents.clone();
                                     ag.push(new_agent);
@@ -569,6 +781,15 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
                     span {
                         style: "font-size: var(--text-sm); font-weight: 600; color: var(--accent); background: var(--accentSubtle); padding: 2px 8px; border-radius: var(--radius-sm);",
                         "{alias}"
+                    }
+                    // Badge showing this agent is treated as Claude for resume.
+                    if props.agent.is_claude {
+                        span {
+                            class: "badge",
+                            style: "background: var(--accentSubtle); color: var(--accent); border: 1px solid var(--accent);",
+                            title: "Treated as Claude for resume + running detection",
+                            "Claude"
+                        }
                     }
                 }
                 button {

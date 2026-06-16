@@ -162,16 +162,14 @@ pub fn apply_theme_and_persist(theme: UITheme) {
 }
 
 fn detect_system_theme() -> &'static str {
+    // Query the OS color-scheme preference via typed `matchMedia` instead of
+    // `new Function("window.matchMedia(...)...")`, which the app CSP blocks
+    // (script-src 'self' 'wasm-unsafe-eval' — no 'unsafe-eval'). The previous
+    // eval-based implementation threw EvalError here and poisoned the runtime.
     if let Some(window) = web_sys::window() {
-        let result = js_sys::Function::new_no_args(
-            "window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'",
-        )
-        .call0(&window);
-        if let Ok(val) = result {
-            if let Some(s) = val.as_string() {
-                if s == "light" {
-                    return "pentelic";
-                }
+        if let Ok(Some(mql)) = window.match_media("(prefers-color-scheme: light)") {
+            if mql.matches() {
+                return "pentelic";
             }
         }
     }

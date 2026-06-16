@@ -3,8 +3,9 @@ use crate::stores::terminal::TerminalSession;
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
-    pty_default_shell_cached, pty_listen_raw, pty_resize, pty_spawn, pty_write,
+    pty_default_shell_cached, pty_has_session, pty_listen_raw, pty_resize, pty_spawn, pty_write,
 };
+use crate::utils::resume_scanner::ResumeScanner;
 use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -52,14 +53,14 @@ pub fn XtermMount(
 ) -> Element {
     let mount_id = pane_id.clone();
     let mut cleanup: Signal<Option<XtermCleanup>> = use_signal(|| None);
-    let mut is_initialized = use_signal(|| false);
+    let is_initialized = use_hook(|| Rc::new(RefCell::new(false)));
     let term_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let mut terminal_store = use_terminal_store();
     let workspace_store = use_workspace_store();
     let ui_state = use_ui_store();
 
     use_effect(move || {
-        if is_initialized() {
+        if *is_initialized.borrow() {
             return;
         }
 
@@ -76,7 +77,19 @@ pub fn XtermMount(
             return;
         };
 
-        is_initialized.set(true);
+        // Guard: if container already has .xterm children, clear stale DOM first
+        if let Some(existing) = container.query_selector(".xterm").ok().flatten() {
+            web_sys::console::warn_1(
+                &format!(
+                    "[XtermMount] Found existing .xterm in #{}; clearing stale DOM before open",
+                    mount_id
+                )
+                .into(),
+            );
+            container.set_inner_html("");  // clear any stale xterm DOM
+        }
+
+        *is_initialized.borrow_mut() = true;
 
         let agent_type_for_spawn = agent_type.clone();
         let resume_id_for_spawn = resume_id.clone();
@@ -101,70 +114,62 @@ pub fn XtermMount(
                 let s = store.read();
                 s.sessions.contains_key(&mount_id_for_spawn)
             };
-            let reusing_existing_session = has_session;
+            let has_backend = pty_has_session(&mount_id_for_spawn).await.unwrap_or(false);
+            let reusing_existing_session = has_session || has_backend;
             if !has_session {
-                let shell = pty_default_shell_cached().await;
-                web_sys::console::log_1(
-                    &format!(
-                        "[XtermMount] spawning PTY id={} cwd={} shell={} cols=80 rows=24",
-                        mount_id_for_spawn, spawn_cwd, shell
-                    )
-                    .into(),
-                );
-                if let Err(e) = pty_spawn(&mount_id_for_spawn, &spawn_cwd, &shell, 80, 24).await {
-                    web_sys::console::error_1(
+                if !has_backend {
+                    let shell = pty_default_shell_cached().await;
+                    web_sys::console::log_1(
                         &format!(
-                            "XtermMount: pty_spawn failed for id={} cwd={} shell={}: {e:?}",
+                            "[XtermMount] spawning PTY id={} cwd={} shell={} cols=80 rows=24",
                             mount_id_for_spawn, spawn_cwd, shell
                         )
                         .into(),
                     );
-                    return;
+                    if let Err(e) = pty_spawn(&mount_id_for_spawn, &spawn_cwd, &shell, 80, 24).await {
+                        web_sys::console::error_1(
+                            &format!(
+                                "XtermMount: pty_spawn failed for id={} cwd={} shell={}: {e:?}",
+                                mount_id_for_spawn, spawn_cwd, shell
+                            )
+                            .into(),
+                        );
+                        return;
+                    }
+                    web_sys::console::log_1(
+                        &format!(
+                            "[XtermMount] PTY spawn succeeded for id={}",
+                            mount_id_for_spawn
+                        )
+                        .into(),
+                    );
                 }
-                web_sys::console::log_1(
-                    &format!(
-                        "[XtermMount] PTY spawn succeeded for id={}",
-                        mount_id_for_spawn
-                    )
-                    .into(),
-                );
                 store.write().ensure_session(&mount_id_for_spawn, 80, 24);
 
-                // Auto-resume agent session if a resume_id is stored
-                if let Some(ref id) = resume_id_for_spawn {
-                    let cmd = match agent_type_for_spawn {
-                        AgentType::Claude => format!("claude --resume {}\n", id),
-                        AgentType::Codex => format!("codex --resume {}\n", id),
-                        AgentType::Opencode => format!("opencode --resume {}\n", id),
-                        AgentType::Gemini => format!("gemini --resume {}\n", id),
-                        _ => String::new(),
-                    };
-                    if !cmd.is_empty() {
-                        let mount_id_for_resume = mount_id_for_spawn.clone();
-                        spawn(async move {
-                            if let Err(e) = pty_write(&mount_id_for_resume, &cmd).await {
-                                web_sys::console::error_1(
-                                    &format!("XtermMount: resume write failed: {:?}", e).into(),
-                                );
-                            }
-                        });
-                    }
-                }
-
-                // Write custom agent command into newly spawned shell
-                if let Some(ref cmd_str) = custom_cmd_for_spawn {
-                    if matches!(agent_type_for_spawn, AgentType::Custom) {
-                        let cmd_with_newline = format!("{}\n", cmd_str);
-                        let mount_id_for_custom = mount_id_for_spawn.clone();
-                        spawn(async move {
-                            if let Err(e) = pty_write(&mount_id_for_custom, &cmd_with_newline).await
-                            {
-                                web_sys::console::error_1(
-                                    &format!("XtermMount: custom command write failed: {:?}", e)
-                                        .into(),
-                                );
-                            }
-                        });
+                // NOTE: We intentionally do NOT auto-run `claude --resume <id>`
+                // here. A stored `resume_id` is surfaced to the user as a
+                // dismissible banner in the pane header (see PaneItem in
+                // terminal_grid.rs); the user chooses when to resume. This keeps
+                // the user in control and avoids re-running a session on every
+                // app launch. The `resume_id_for_spawn` binding is retained only
+                // so the spawn signature stays stable for custom_cmd handling.
+                let _ = &resume_id_for_spawn;
+                if !has_backend {
+                    // Write custom agent command into newly spawned shell
+                    if let Some(ref cmd_str) = custom_cmd_for_spawn {
+                        if matches!(agent_type_for_spawn, AgentType::Custom) {
+                            let cmd_with_newline = format!("{}\n", cmd_str);
+                            let mount_id_for_custom = mount_id_for_spawn.clone();
+                            spawn(async move {
+                                if let Err(e) = pty_write(&mount_id_for_custom, &cmd_with_newline).await
+                                {
+                                    web_sys::console::error_1(
+                                        &format!("XtermMount: custom command write failed: {:?}", e)
+                                            .into(),
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
             } else {
@@ -246,8 +251,8 @@ pub fn XtermMount(
             let _ = js_sys::Reflect::set(&options, &JsValue::from_str("theme"), &theme);
             let _ = js_sys::Reflect::set(
                 &options,
-                &JsValue::from_str("rendererType"),
-                &JsValue::from_str("canvas"),
+                &JsValue::from_str("scrollback"),
+                &JsValue::from_f64(2500.0),
             );
 
             let term_val =
@@ -356,6 +361,7 @@ pub fn XtermMount(
 
             let mount_id_for_scan = mount_id.clone();
             let workspace_for_scan = workspace_store.clone();
+            let mut resume_scanner = ResumeScanner::new();
             let unlisten = match pty_listen_raw(&mount_id, move |bytes: Vec<u8>| {
                 let text = String::from_utf8_lossy(&bytes).to_string();
                 wq_queue.borrow_mut().push(bytes);
@@ -379,10 +385,22 @@ pub fn XtermMount(
                         });
                     });
                 }
-                if let Some(id) = scan_for_resume_id(&text) {
+                if let Some((prefix, id)) = resume_scanner.feed(&text) {
+                    // Reconstruct the full command for Shell→manual-claude case
+                    let full_cmd = format!("{} {};", prefix, &id);
+                    web_sys::console::log_1(
+                        &format!("[XtermMount] capture resume id={} cmd={} for pane={}",
+                                 id, full_cmd, mount_id_for_scan).into(),
+                    );
                     let mid = mount_id_for_scan.clone();
                     let mut ws = workspace_for_scan.clone();
-                    spawn(async move {
+                    let cmd_for_store = full_cmd.clone();
+                    // IMPORTANT: use wasm_bindgen_futures::spawn_local here, not
+                    // Dioxus's `spawn`. This closure runs inside a raw
+                    // pty_listen_raw JS callback — outside any Dioxus scope — so
+                    // Dioxus's `spawn` panics at current_scope_id().unwrap()
+                    // (scope stack is empty). spawn_local does not need a scope.
+                    wasm_bindgen_futures::spawn_local(async move {
                         let mut space_id: Option<String> = None;
                         {
                             let ws_guard = ws.read();
@@ -398,6 +416,14 @@ pub fn XtermMount(
                                 for pane in &mut space.panes {
                                     if pane.id == mid {
                                         pane.resume_id = Some(id.clone());
+                                        pane.resume_cmd = Some(cmd_for_store.clone());
+                                        // A new session supersedes any previously
+                                        // dismissed banner: reset so the resume
+                                        // banner reappears for this new id.
+                                        pane.resume_dismissed = Some(false);
+                                        web_sys::console::log_1(
+                                            &format!("[XtermMount] persisted resume_id for pane={}", mid).into(),
+                                        );
                                         break;
                                     }
                                 }
@@ -487,12 +513,15 @@ pub fn XtermMount(
                         }
                         let fit_for_cb = fit_for_ro.clone();
                         let container_for_cb = container_for_ro.clone();
-                        let timer = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                            if let Some(win) = web_sys::window() {
-                                schedule_fit(&win, &fit_for_cb, &container_for_cb);
-                            }
-                        })
-                            as Box<dyn FnMut()>);
+                        // Single-fire timer closure — once_into_js auto-frees
+                        // after the timeout fires, so this no longer leaks one
+                        // Closure per resize tick.
+                        let timer =
+                            wasm_bindgen::closure::Closure::once_into_js(move || {
+                                if let Some(win) = web_sys::window() {
+                                    schedule_fit(&win, &fit_for_cb, &container_for_cb);
+                                }
+                            });
                         let handle = w.set_timeout_with_callback_and_timeout_and_arguments_0(
                             timer.as_ref().unchecked_ref(),
                             50,
@@ -500,7 +529,6 @@ pub fn XtermMount(
                         if let Ok(h) = handle {
                             *ro_timer_for_cb.borrow_mut() = Some(h);
                         }
-                        timer.forget();
                     }
                 })
                     as Box<dyn FnMut()>);
@@ -644,12 +672,7 @@ pub fn XtermMount(
     let term_ref_for_theme = term_ref.clone();
     use_effect(move || {
         let _theme = ui_state.read().theme;
-        let initialized = is_initialized();
         let term_opt = term_ref_for_theme();
-
-        if !initialized || term_opt.is_none() {
-            return;
-        }
 
         let Some(window) = web_sys::window() else {
             return;
@@ -733,7 +756,7 @@ pub fn XtermMount(
         div {
             id: "{pane_id}",
             class: "xterm-mount",
-            style: "width: 100%; height: 100%; min-height: 0; flex: 1; background: var(--bg); position: relative; overflow: hidden; padding-bottom: 4px; box-sizing: border-box;",
+            style: "width: 100%; height: 100%; min-height: 0; flex: 1; background: var(--bg); position: relative; overflow: hidden; padding-left: 4px; padding-bottom: 4px; box-sizing: border-box;",
             onpointerdown: move |e| {
                 e.stop_propagation();
                 terminal_store.write().set_active(pane_id.clone());
@@ -743,17 +766,6 @@ pub fn XtermMount(
                         if let Ok(focus_fn) = focus_val.dyn_into::<js_sys::Function>() {
                             if let Err(e) = focus_fn.call0(&term) {
                                 web_sys::console::warn_1(&format!("XtermMount: focus() failed: {e:?}").into());
-                            }
-                        }
-                    }
-                    // If the canvas was blanked by a display:none or resize
-                    // race, force a full redraw so content is readable again.
-                    if let Ok(rows_val) = js_sys::Reflect::get(&term, &JsValue::from_str("rows")) {
-                        if let Some(rows) = rows_val.as_f64() {
-                            if let Ok(refresh_val) = js_sys::Reflect::get(&term, &JsValue::from_str("refresh")) {
-                                if let Ok(refresh_fn) = refresh_val.dyn_into::<js_sys::Function>() {
-                                    let _ = refresh_fn.call2(&term, &JsValue::from_f64(0.0), &JsValue::from_f64(rows - 1.0));
-                                }
                             }
                         }
                     }
@@ -868,67 +880,22 @@ fn call_fit(fit_instance: &JsValue, container: &web_sys::Element) {
 fn schedule_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &web_sys::Element) {
     let fit_for_raf = fit_instance.clone();
     let container_for_raf = container.clone();
-    let raf_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-        call_fit(&fit_for_raf, &container_for_raf);
-    }) as Box<dyn FnMut()>);
+    // RAF callbacks fire exactly once, so use once_into_js which auto-frees
+    // the closure after invocation. The previous Closure::wrap + forget()
+    // leaked one closure per call (per resize tick).
+    let raf_closure =
+        wasm_bindgen::closure::Closure::once_into_js(move || {
+            call_fit(&fit_for_raf, &container_for_raf);
+        });
     let _ = window.request_animation_frame(raf_closure.as_ref().unchecked_ref());
-    raf_closure.forget();
+    // raf_closure is a JsValue here; keep it alive in this scope until the
+    // RAF fires by... actually once_into_js hands ownership to JS. The RAF
+    // holds a reference until it fires, then the closure frees itself.
 }
 
-/// Debounced `fit()` — waits 150 ms after the last resize event. This lets
-/// CSS flex transitions (like the sidebar expanding) settle before xterm
-/// recalculates its dimensions, avoiding a race that blanks the canvas.
-fn debounced_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &web_sys::Element) {
-    let fit_for_cb = fit_instance.clone();
-    let container_for_cb = container.clone();
-    let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-        call_fit(&fit_for_cb, &container_for_cb);
-    }) as Box<dyn FnMut()>);
-    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-        closure.as_ref().unchecked_ref(),
-        150,
-    );
-    closure.forget();
-}
+// `debounced_fit` was deleted: it was dead code (never called) and leaked a
+// Closure per invocation via forget(). schedule_fit (above) + the
+// ResizeObserver's own 50ms timer in ro_closure handle debouncing.
 
-/// Scan raw PTY output for a resume session ID.
-/// Looks for patterns like "claude --resume <id>" or "To resume: codex --resume <id>".
-/// This runs on every data chunk, so it must be allocation-free and fast.
-fn scan_for_resume_id(text: &str) -> Option<String> {
-    // Only scan the tail end where a prompt would appear—resume IDs are short
-    // and never appear in the middle of a massive stdout flood.
-    let scan = if text.len() > 256 {
-        let mut start = text.len() - 256;
-        while !text.is_char_boundary(start) {
-            start += 1;
-        }
-        &text[start..]
-    } else {
-        text
-    };
-
-    // Case-insensitive search without allocating a lowercase copy.
-    for pat in [
-        "claude --resume ",
-        "codex --resume ",
-        "opencode --resume ",
-        "gemini --resume ",
-    ] {
-        if let Some(idx) = scan.as_bytes().windows(pat.len()).position(|w| {
-            w.iter()
-                .zip(pat.bytes())
-                .all(|(a, b)| a.eq_ignore_ascii_case(&b))
-        }) {
-            let start = idx + pat.len();
-            let rest = &scan[start..];
-            let id: String = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            if !id.is_empty() {
-                return Some(id);
-            }
-        }
-    }
-    None
-}
+// scan_for_resume_id has been replaced by ResumeScanner in utils::resume_scanner.
+// Kept out to prevent stale references.

@@ -5,14 +5,11 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Support --debug for dev builds
-if [[ "${1:-}" == "--debug" ]]; then
-  PROFILE="debug"
-  DX_FLAG=""
-else
-  PROFILE="release"
-  DX_FLAG="--release"
-fi
+# Always build the frontend in release mode. Dioxus debug builds enable
+# devtools that attempt a WebSocket connection for hot-reload, which panics
+# in WKWebView (SecurityError). See E2E notes in CLAUDE.md.
+PROFILE="release"
+DX_FLAG="--release"
 
 BUILD_DIR="$PROJECT_ROOT/target/dx/athena-frontend/$PROFILE/web/public"
 DIST_DIR="$SCRIPT_DIR/dist"

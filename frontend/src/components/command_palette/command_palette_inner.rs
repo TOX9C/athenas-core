@@ -117,13 +117,21 @@ fn filter_and_group(commands: &[Command], recent_ids: &[String], query: &str) ->
         }
 
         if score == 0 {
-            let mut qi = 0;
+            // Subsequence match: every char of the query appears in the label
+            // in order. Iterate the query by chars (not by byte index — the
+            // previous code used `lower.chars().nth(qi).unwrap()` where `qi`
+            // was a byte index, which panics for any multi-byte query).
+            let mut query_chars = lower.chars();
+            let mut next_q = query_chars.next();
             for ch in label_lower.chars() {
-                if qi < lower.len() && ch == lower.chars().nth(qi).unwrap() {
-                    qi += 1;
+                if let Some(q) = next_q {
+                    if ch == q {
+                        next_q = query_chars.next();
+                    }
                 }
             }
-            if qi == lower.len() {
+            if next_q.is_none() {
+                // Whole query consumed as a subsequence.
                 score = 3;
             }
         }
@@ -403,5 +411,54 @@ pub fn CommandPalette() -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stores::command::{Command, CommandCategory};
+
+    fn cmd(id: &str, label: &str) -> Command {
+        Command {
+            id: id.to_string(),
+            label: label.to_string(),
+            category: CommandCategory::Workspace,
+            description: None,
+            keywords: vec![],
+            shortcut: None,
+            handler_key: id.to_string(),
+            when_key: None,
+        }
+    }
+
+    /// H8 regression: a multi-byte (non-ASCII) query MUST NOT panic the
+    /// subsequence matcher. Previously the matcher did
+    /// `lower.chars().nth(qi).unwrap()` where `qi` was a byte index; for any
+    /// multi-byte query `qi` exceeds the char count and `nth()` returns
+    /// `None`, panicking and aborting the WASM renderer.
+    #[test]
+    fn fuzzy_match_handles_non_ascii_query_without_panicking() {
+        let commands = vec![
+            cmd("open", "Open File"),
+            cmd("save", "Save Workspace"),
+            cmd("term", "New Terminal"),
+        ];
+        // Accented, CJK, and emoji — all multi-byte in UTF-8. The old code
+        // panicked on any of these.
+        for q in ["fïlé", "终端", "😀", "café"] {
+            // Must not panic. (Result may be empty — that's fine; the point
+            // is that non-ASCII input doesn't abort the renderer.)
+            let _ = filter_and_group(&commands, &[], q);
+        }
+    }
+
+    /// Sanity: ASCII subsequence matching still works after the rewrite.
+    #[test]
+    fn fuzzy_match_ascii_subsequence_still_works() {
+        let commands = vec![cmd("term", "New Terminal"), cmd("save", "Save")];
+        // "trm" is a subsequence of "new terminal".
+        let groups = filter_and_group(&commands, &[], "trm");
+        assert!(groups.iter().any(|g| g.commands.iter().any(|c| c.id == "term")));
     }
 }

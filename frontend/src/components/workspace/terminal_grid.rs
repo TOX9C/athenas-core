@@ -2,10 +2,15 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::stores::terminal::{use_terminal_store, TerminalCell, TerminalColor};
+use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType, Space};
-use crate::tauri_bridge::pty_kill;
-use crate::utils::agent_commands::{get_agent_color, get_agent_label};
-use crate::components::shared::icon::{IconClose, IconFullscreen};
+use crate::tauri_bridge::{pty_agent_info, pty_kill, pty_write};
+use crate::types::workspace::CustomAgent;
+use crate::utils::agent_commands::{
+    claude_resume_variants, custom_agent_process_name, agent_process_name, get_agent_color,
+    get_agent_label, get_agent_resume_command,
+};
+use crate::components::shared::icon::{IconCheck, IconClose, IconCopy, IconFullscreen, IconMinimize};
 use crate::components::shared::illustration::{EmptyState, EmptyArt};
 
 #[cfg(feature = "xterm")]
@@ -109,12 +114,20 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     // Row heights remain row-scoped across the whole grid.
     let mut row_heights = use_signal(|| vec![1.0_f64; actual_row_count.max(1)]);
     let drag = use_signal(|| None::<DragInfo>);
+    let fullscreen_pane_id = use_signal(|| None::<String>);
     let terminal_store = use_terminal_store();
     let active_pane_id = terminal_store.read().active_session_id.clone();
     // Note: active pane selection is stored in TerminalStore (single source of truth).
     // The clicked pane gets a subtle gold focus ring (see `.pane-focus-ring`).
 
+    // Subscribe to workspace changes so this effect re-runs when panes are
+    // added or removed, ensuring col_widths shape stays in sync.
+    let workspace = use_workspace_store();
+
     use_effect(move || {
+        // Reactive read causes re-run on workspace mutations (add/remove panes).
+        let _ = workspace.read().spaces.len();
+
         let target_width_shape: Vec<usize> = (0..actual_row_count)
             .map(|row_idx| {
                 let start = row_idx * cols;
@@ -122,7 +135,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
             })
             .collect();
         let current_width_shape: Vec<usize> =
-            col_widths.peek().iter().map(|row| row.len()).collect();
+            col_widths.read().iter().map(|row| row.len()).collect();
         if current_width_shape != target_width_shape {
             col_widths.set(
                 target_width_shape
@@ -133,7 +146,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
         }
 
         let target_row_count = actual_row_count.max(1);
-        if row_heights.peek().len() != target_row_count {
+        if row_heights.read().len() != target_row_count {
             row_heights.set(vec![1.0_f64; target_row_count]);
         }
     });
@@ -169,24 +182,32 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                     let has_right = rel_idx + 1 < row_panes.len();
                                     let has_bottom = row_idx + 1 < actual_row_count;
                                     let is_active = active_pane_id.as_deref() == Some(pane.id.as_str());
+                                    let is_fullscreenmode = fullscreen_pane_id.read().as_deref() == Some(pane.id.as_str());
 
-                                    let mut wrapper_style = format!(
-                                        "position: relative; flex: {}; min-height: 0; min-width: 0; padding: 0; display: flex; flex-direction: column; box-sizing: border-box;",
-                                        flex_weight
-                                    );
-                                    if has_right {
-                                        wrapper_style.push_str(" border-right: 1px solid color-mix(in srgb, var(--border, #888) 58%, transparent);");
-                                    }
-                                    if has_bottom {
-                                        wrapper_style.push_str(" border-bottom: 1px solid color-mix(in srgb, var(--border, #888) 58%, transparent);");
-                                    }
+                                    let wrapper_style = if is_fullscreenmode {
+                                        "position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 40; background: var(--bg); box-sizing: border-box;".to_string()
+                                    } else if fullscreen_pane_id.read().is_some() {
+                                        "display: none;".to_string()
+                                    } else {
+                                        let mut s = format!(
+                                            "position: relative; flex: {}; min-height: 0; min-width: 0; padding: 0; display: flex; flex-direction: column; box-sizing: border-box;",
+                                            flex_weight
+                                        );
+                                        if has_right {
+                                            s.push_str(" border-right: 1px solid color-mix(in srgb, var(--border, #888) 58%, transparent);");
+                                        }
+                                        if has_bottom {
+                                            s.push_str(" border-bottom: 1px solid color-mix(in srgb, var(--border, #888) 58%, transparent);");
+                                        }
+                                        s
+                                    };
 
                                     rsx! {
                                         div {
                                             key: "pane-wrap-{space.id}-{pane.id}",
                                             style: "{wrapper_style}",
 
-                                            if is_active {
+                                            if is_active && !is_fullscreenmode {
                                                 div { class: "pane-focus-ring" }
                                             }
 
@@ -198,7 +219,12 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 agent_type: pane.agent_type.clone(),
                                                 is_shell: matches!(pane.agent_type, AgentType::Shell | AgentType::Custom),
                                                 resume_id: pane.resume_id.clone(),
+                                                resume_cmd: pane.resume_cmd.clone(),
+                                                resume_dismissed: pane.resume_dismissed.clone(),
                                                 custom_cmd: pane.custom_cmd.clone(),
+                                                custom_agent_id: pane.custom_agent_id.clone(),
+                                                label: pane.label.clone(),
+                                                fullscreen_pane_id: fullscreen_pane_id,
                                             }
                                         }
 
@@ -253,19 +279,238 @@ struct PaneItemProps {
     agent_type: AgentType,
     is_shell: bool,
     resume_id: Option<String>,
+    resume_cmd: Option<String>,
+    resume_dismissed: Option<bool>,
     custom_cmd: Option<String>,
+    custom_agent_id: Option<String>,
+    label: Option<String>,
+    fullscreen_pane_id: Signal<Option<String>>,
 }
 
 #[component]
 fn PaneItem(props: PaneItemProps) -> Element {
     let mut workspace = use_workspace_store();
     let mut terminal_store = use_terminal_store();
+    let ui_state = use_ui_store();
+    let mut fullscreen_pane_id = props.fullscreen_pane_id;
 
     let pane_id_for_close = props.pane_id.clone();
     let space_id_for_close = props.space_id.clone();
     let agent_label = get_agent_label(&props.agent_type);
     let _agent_color = get_agent_color(&props.agent_type);
     let _display_id: String = props.pane_id.chars().take(10).collect();
+    let is_fullscreen = fullscreen_pane_id.read().as_deref() == Some(&props.pane_id);
+    let pane_id_for_fullscreen = props.pane_id.clone();
+
+    // Editable title state
+    let mut editing_title = use_signal(|| false);
+    let mut temp_title = use_signal(|| String::new());
+
+    // Read current foreground process, task title, and summarized title from terminal store
+    let (fg_process, task_title, summarized_title) = {
+        let ts = terminal_store.read();
+        if let Some(session) = ts.sessions.get(&props.pane_id) {
+            (
+                session.foreground_process.clone(),
+                session.task_title.clone(),
+                session.summarized_title.clone(),
+            )
+        } else {
+            (None, None, None)
+        }
+    };
+
+    // ── Resume banner state ──────────────────────────────────────────────
+    // If the pane has a captured resume command (from PTY output for Shell
+    // panes, or from resume_id + agent type for agent panes), show a banner
+    // so the user can choose to resume the session. The banner auto-hides
+    // while the agent is running (only for detectable agent types).
+    let display_resume_cmd = props
+        .resume_cmd
+        .as_ref()
+        .cloned()
+        .or_else(|| {
+            props.resume_id.as_deref().and_then(|id| {
+                get_agent_resume_command(&props.agent_type, id)
+            })
+        });
+
+    // Resolve the custom agent config for a Custom pane — used to decide
+    // running-detection and whether this pane is a Claude alias.
+    let custom_agent: Option<CustomAgent> = if props.agent_type == AgentType::Custom {
+        if let Some(cid) = props.custom_agent_id.as_deref() {
+            ui_state
+                .read()
+                .custom_agents
+                .iter()
+                .find(|a| a.id == cid)
+                .cloned()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Running-detection process name. Built-in agent types map to their binary;
+    // a Custom pane maps to "claude" only when the agent is marked `is_claude`
+    // (same binary, different flags), so its panes get running-detection too.
+    let known_process = match &props.agent_type {
+        AgentType::Custom => custom_agent
+            .as_ref()
+            .and_then(|a| custom_agent_process_name(a.is_claude)),
+        other => agent_process_name(other),
+    };
+    let has_detectable_agent = known_process.is_some();
+
+    // Build the resume variant list. A Claude session — a Claude pane, a
+    // Custom is-claude pane, or a Shell pane where the user ran `claude`
+    // manually — offers plain `claude --resume <id>` plus each is-claude
+    // alias's variant (its flags preserved, `--resume <id>` appended).
+    // Non-Claude sessions keep the single captured/synthesized command.
+    let is_claude_session = match &props.agent_type {
+        AgentType::Claude => true,
+        AgentType::Custom => custom_agent.as_ref().map(|a| a.is_claude).unwrap_or(false),
+        AgentType::Shell => display_resume_cmd
+            .as_deref()
+            .map(|c| c.starts_with("claude"))
+            .unwrap_or(false),
+        _ => false,
+    };
+    let claude_aliases: Vec<CustomAgent> = ui_state
+        .read()
+        .custom_agents
+        .iter()
+        .filter(|a| a.is_claude)
+        .cloned()
+        .collect();
+    let resume_variants: Vec<String> = if is_claude_session {
+        if let Some(id) = props.resume_id.as_deref() {
+            claude_resume_variants(id, &claude_aliases)
+        } else {
+            Vec::new()
+        }
+    } else {
+        display_resume_cmd.iter().cloned().collect()
+    };
+    let mut selected_variant = use_signal(|| 0usize);
+    let mut agent_running = use_signal(|| false);
+    // Initialize the dismissed flag from the persisted pane state so a
+    // banner the user dismissed survives an app restart. Re-seeding on each
+    // mount is fine: a new session capture resets `resume_dismissed` to
+    // `Some(false)` on the pane (see xterm_mount.rs), so this reads false and
+    // the banner reappears for the new session.
+    let persisted_dismissed = props.resume_dismissed.unwrap_or(false);
+    let mut banner_dismissed = use_signal(|| persisted_dismissed);
+    let mut copied = use_signal(|| false);
+
+    // Clamp selected_variant if the variant list shrank (e.g. an alias was
+    // removed from settings while the banner was open) so the index stays in
+    // range and Resume always points at a valid command.
+    {
+        let variant_count = resume_variants.len();
+        use_effect(move || {
+            if *selected_variant.read() >= variant_count && variant_count > 0 {
+                selected_variant.set(variant_count.saturating_sub(1));
+            }
+        });
+    }
+
+    // Running-detection only for agent panes (Claude, Codex, etc.) since
+    // Shell panes started manually don't have a reliable running signal.
+    {
+        let poll_pane_id = props.pane_id.clone();
+        let want_process = known_process.map(|s| s.to_string());
+        let has_resume = !resume_variants.is_empty() || display_resume_cmd.is_some();
+        use_future(move || {
+            let poll_pane_id = poll_pane_id.clone();
+            let want_process = want_process.clone();
+            async move {
+                let Some(want) = want_process else { return; };
+                if !has_resume { return; }
+                loop {
+                    if let Ok(info) = pty_agent_info(&poll_pane_id).await {
+                        let running = info.foreground_process == want;
+                        if agent_running() != running {
+                            agent_running.set(running);
+                        }
+                    }
+                    // Shorter interval than the general status poll: once the
+                    // agent exits we want the resume banner to reappear quickly
+                    // (the scanner already captured the id the instant it was
+                    // printed; this only gates the "not running" reveal).
+                    gloo::timers::future::TimeoutFuture::new(750).await;
+                }
+            }
+        });
+    }
+
+    // Banner shown when: a resume command is available (either a single
+    // captured/synthesized command, or at least one Claude variant), not
+    // dismissed, and either there's no running-detection or the agent is not
+    // currently detected running.
+    let show_resume_banner = (!resume_variants.is_empty() || display_resume_cmd.is_some())
+        && !banner_dismissed()
+        && (!has_detectable_agent || !agent_running());
+
+    // Priority for the main label:
+    //   1. user-edited label (explicit rename) >
+    //   2. LLM-generated summary (if feature enabled) >
+    //   3. agent-scraped task title (raw prompt) >
+    //   4. idle-Shell random name (auto_generate_titles) >
+    //   5. static agent label ("Shell"/"Claude Code"/…)
+    let left_label = {
+        let summarize_active = ui_state.read().summarize_agent_titles;
+        if let Some(label) = props.label.clone() {
+            // 1. User-edited label always wins
+            label
+        } else if summarize_active {
+            // 2. Feature ON: prefer LLM summary, fall back through scraped title
+            if let Some(summary) = summarized_title {
+                summary
+            } else if let Some(title) = task_title {
+                title
+            } else if props.agent_type == AgentType::Shell
+                && fg_process.as_deref().map_or(true, |p| p == "shell")
+                && ui_state.read().auto_generate_titles {
+                crate::utils::pane_names::name_for_pane(&props.pane_id)
+            } else {
+                agent_label.to_string()
+            }
+        } else {
+            // Feature OFF: never use raw prompt as label.
+            // Show static label for all pane types.
+            if props.agent_type == AgentType::Shell
+                && fg_process.as_deref().map_or(true, |p| p == "shell")
+                && ui_state.read().auto_generate_titles
+            {
+                crate::utils::pane_names::name_for_pane(&props.pane_id)
+            } else {
+                agent_label.to_string()
+            }
+        }
+    };
+    // Show the detected foreground process as a subtle badge when it's meaningful
+    let right_badge = fg_process
+        .filter(|p| p != "shell" && p != &left_label && !p.is_empty());
+    let pane_id_for_rename = props.pane_id.clone();
+    let space_id_for_rename = props.space_id.clone();
+
+    // Resolve the currently-selected resume command + whether the dropdown is
+    // shown. Computed here (not inside rsx!) because rsx! is a macro that
+    // doesn't accept arbitrary `let` bindings in element position.
+    let active_cmd: Option<String> = if resume_variants.is_empty() {
+        display_resume_cmd.clone()
+    } else {
+        let idx = *selected_variant.read();
+        Some(
+            resume_variants
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| resume_variants[0].clone()),
+        )
+    };
+    let is_multi = resume_variants.len() > 1;
 
     rsx! {
         div {
@@ -281,20 +526,80 @@ fn PaneItem(props: PaneItemProps) -> Element {
                 div {
                     style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 999px; flex-shrink: 0;",
 
-                    span {
-                        style: "display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; color: var(--accent); padding: 0;",
-                        dangerous_inner_html: "<svg viewBox='0 0 24 24' fill='currentColor' width='14' height='14'><circle cx='12' cy='12' r='3'/><circle cx='12' cy='3' r='3'/><circle cx='12' cy='21' r='3'/></svg>",
+                    // Left: editable title
+                    {
+                        let editing = editing_title();
+                        let left_text = if editing {
+                            rsx! {
+                                input {
+                                    style: "font-family: var(--font-ui); font-size: var(--text-xs); font-weight: 600; color: var(--text); background: transparent; border: none; outline: none; max-width: 200px; padding: 0; margin: 0;",
+                                    value: temp_title(),
+                                    oninput: move |e: dioxus::prelude::FormEvent| {
+                                        temp_title.set(e.value().clone());
+                                    },
+                                    onblur: move |_| {
+                                        editing_title.set(false);
+                                    },
+                                    onkeydown: move |e: dioxus::prelude::KeyboardEvent| {
+                                        if matches!(e.key(), dioxus::prelude::Key::Enter) {
+                                            let new_label = temp_title();
+                                            let pid = pane_id_for_rename.clone();
+                                            let sid = space_id_for_rename.clone();
+                                            {
+                                                let mut ws = workspace.write();
+                                                ws.update_space(&sid, |space| {
+                                                    for pane in &mut space.panes {
+                                                        if pane.id == pid {
+                                                            pane.label = Some(new_label.clone());
+                                                            break;
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                            editing_title.set(false);
+                                        }
+                                    },
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                span {
+                                    style: "font-family: var(--font-ui); font-size: var(--text-xs); font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; cursor: text;",
+                                    ondblclick: move |_| {
+                                        temp_title.set(left_label.clone());
+                                        editing_title.set(true);
+                                    },
+                                    "{left_label}"
+                                }
+                            }
+                        };
+                        left_text
                     }
-                    span {
-                        style: "font-family: var(--font-ui); font-size: var(--text-xs); font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
-                        "{agent_label}"
+                    // Right: subtle process badge
+                    if let Some(ref badge) = right_badge {
+                        span {
+                            style: "font-family: var(--font-ui); font-size: var(--text-2xs); font-weight: 500; color: var(--text-secondary); background: var(--bgTertiary); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; margin-left: 6px;",
+                            "{badge}"
+                        }
                     }
                     div {
                         style: "display: flex; align-items: center; gap: 4px; margin-left: auto;",
                         button {
                             class: "icon-btn",
-                            title: "Fullscreen",
-                            IconFullscreen { size: Some(12), color: Some("currentColor".to_string()) }
+                            title: if is_fullscreen { "Exit Fullscreen" } else { "Fullscreen" },
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                if is_fullscreen {
+                                    fullscreen_pane_id.set(None);
+                                } else {
+                                    fullscreen_pane_id.set(Some(pane_id_for_fullscreen.clone()));
+                                }
+                            },
+                            if is_fullscreen {
+                                IconMinimize { size: Some(12), color: Some("currentColor".to_string()) }
+                            } else {
+                                IconFullscreen { size: Some(12), color: Some("currentColor".to_string()) }
+                            }
                         }
 
                         button {
@@ -314,6 +619,10 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                     }
                                     term.generation = term.generation.wrapping_add(1);
                                 }
+                                // Clear fullscreen if this pane was full-screened
+                                if is_fullscreen {
+                                    fullscreen_pane_id.set(None);
+                                }
                                 spawn({
                                     let pane_id = pane_id_for_close.clone();
                                     async move {
@@ -322,6 +631,182 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                 });
                             },
                             IconClose { size: Some(14), color: Some("currentColor".to_string()) }
+                        }
+                    }
+                }
+
+            }
+
+            // Resume banner — appears when a previous agent session left a
+            // resume id and the agent isn't currently running. For Claude
+            // sessions this renders a dropdown of every resume variant (plain
+            // `claude --resume <id>` plus each "Treat as Claude" alias); for
+            // other agents it shows the single captured/synthesized command.
+            if show_resume_banner {
+                if let Some(cmd) = active_cmd.clone() {
+                    div {
+                        style: "flex-shrink: 0; padding: 6px 8px 0 8px;",
+                        div {
+                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 12px; background: var(--bgSecondary); border: 1px solid var(--accent, var(--border)); border-radius: 10px;",
+                            span {
+                                style: "font-family: var(--font-ui); font-size: var(--text-2xs); font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; flex-shrink: 0;",
+                                "Resume"
+                            }
+                            // Command: a dropdown when there are multiple
+                            // variants (Claude aliases), otherwise a static
+                            // code element. Both bound to the active variant.
+                            if is_multi {
+                                select {
+                                    style: "font-family: var(--font-mono, monospace); font-size: var(--text-xs); color: var(--text); background: var(--bgTertiary); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; flex: 1; min-width: 0; max-width: 360px; overflow: hidden;",
+                                    value: "{*selected_variant.read()}",
+                                    onchange: {
+                                        move |e: dioxus::prelude::FormEvent| {
+                                            if let Ok(idx) = e.value().parse::<usize>() {
+                                                if idx < resume_variants.len() {
+                                                    selected_variant.set(idx);
+                                                }
+                                            }
+                                        }
+                                    },
+                                    for (i, variant) in resume_variants.iter().enumerate() {
+                                        option {
+                                            value: "{i}",
+                                            selected: i == *selected_variant.read(),
+                                            title: "{variant}",
+                                            "{variant}"
+                                        }
+                                    }
+                                }
+                            } else {
+                                code {
+                                    style: "font-family: var(--font-mono, monospace); font-size: var(--text-xs); color: var(--text); background: var(--bgTertiary); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;",
+                                    title: "{cmd}",
+                                    "{cmd}"
+                                }
+                            }
+                            div {
+                                style: "display: flex; align-items: center; gap: 4px; flex-shrink: 0;",
+                                // Resume — write the selected variant into this
+                                // pane's PTY and run it.
+                                button {
+                                    class: "btn-pill",
+                                    style: "font-family: var(--font-ui); font-size: var(--text-2xs); font-weight: 600; color: var(--bg); background: var(--accent, var(--text)); border: none; border-radius: 999px; padding: 3px 12px; cursor: pointer;",
+                                    title: "Run this command in the pane",
+                                    onclick: {
+                                        let pane_id = props.pane_id.clone();
+                                        let space_id = props.space_id.clone();
+                                        let cmd = cmd.clone();
+                                        move |e: dioxus::prelude::MouseEvent| {
+                                            e.stop_propagation();
+                                            banner_dismissed.set(true);
+                                            // Persist dismissal synchronously in
+                                            // the handler (the signal is already
+                                            // captured at component top). Do NOT
+                                            // call use_workspace_store() inside
+                                            // the spawned task — it is a Dioxus
+                                            // hook and panics outside of render.
+                                            {
+                                                let pid = pane_id.clone();
+                                                let sid = space_id.clone();
+                                                workspace.write().update_space(&sid, |space| {
+                                                    for pane in &mut space.panes {
+                                                        if pane.id == pid {
+                                                            pane.resume_dismissed = Some(true);
+                                                            break;
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                            let pane_id = pane_id.clone();
+                                            let to_run = format!("{}\n", cmd);
+                                            spawn(async move {
+                                                if let Err(err) = pty_write(&pane_id, &to_run).await {
+                                                    web_sys::console::error_1(
+                                                        &format!("resume write failed: {:?}", err).into(),
+                                                    );
+                                                }
+                                            });
+                                        }
+                                    },
+                                    "Resume"
+                                }
+                                // Copy — copy the selected variant to the clipboard.
+                                button {
+                                    class: "icon-btn",
+                                    title: "Copy command",
+                                    onclick: {
+                                        let cmd = cmd.clone();
+                                        move |e: dioxus::prelude::MouseEvent| {
+                                            e.stop_propagation();
+                                            if let Some(window) = web_sys::window() {
+                                                if let Ok(nav) = js_sys::Reflect::get(
+                                                    &window,
+                                                    &wasm_bindgen::JsValue::from_str("navigator"),
+                                                ) {
+                                                    if let Ok(cb) = js_sys::Reflect::get(
+                                                        &nav,
+                                                        &wasm_bindgen::JsValue::from_str("clipboard"),
+                                                    ) {
+                                                        if let Ok(write_text) = js_sys::Reflect::get(
+                                                            &cb,
+                                                            &wasm_bindgen::JsValue::from_str("writeText"),
+                                                        ) {
+                                                            if let Ok(fn_) =
+                                                                write_text.dyn_into::<js_sys::Function>()
+                                                            {
+                                                                let _ = fn_.call1(
+                                                                    &cb,
+                                                                    &wasm_bindgen::JsValue::from_str(&cmd),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            copied.set(true);
+                                        }
+                                    },
+                                    if copied() {
+                                        IconCheck { size: Some(13), color: Some("currentColor".to_string()) }
+                                    } else {
+                                        IconCopy { size: Some(13), color: Some("currentColor".to_string()) }
+                                    }
+                                }
+                                // Dismiss — hide the banner and persist the
+                                // dismissal so it stays gone across restarts.
+                                // (A freshly captured, different resume id
+                                // resets this back to Some(false).)
+                                button {
+                                    class: "icon-btn",
+                                    title: "Dismiss",
+                                    onclick: {
+                                        let pane_id = props.pane_id.clone();
+                                        let space_id = props.space_id.clone();
+                                        move |e: dioxus::prelude::MouseEvent| {
+                                            e.stop_propagation();
+                                            banner_dismissed.set(true);
+                                            let pid = pane_id.clone();
+                                            let sid = space_id.clone();
+                                            // Write the signal directly in the
+                                            // handler (mirrors the rename
+                                            // handler). Do NOT call
+                                            // use_workspace_store() here — that
+                                            // is a Dioxus hook and may only run
+                                            // during component render, not in
+                                            // an event callback.
+                                            workspace.write().update_space(&sid, |space| {
+                                                for pane in &mut space.panes {
+                                                    if pane.id == pid {
+                                                        pane.resume_dismissed = Some(true);
+                                                        break;
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    },
+                                    IconClose { size: Some(13), color: Some("currentColor".to_string()) }
+                                }
+                            }
                         }
                     }
                 }
@@ -357,7 +842,7 @@ fn TerminalPaneBody(pane_id: String) -> Element {
 
     rsx! {
         div {
-            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); overflow: hidden; padding: 0;",
+            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); overflow: hidden; padding-left: 3px; padding-bottom: 4px;",
             div {
                 style: "font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 11px; line-height: 1.4; color: var(--text); white-space: pre-wrap; overflow-wrap: break-word;",
                 if Bud.is_empty() {

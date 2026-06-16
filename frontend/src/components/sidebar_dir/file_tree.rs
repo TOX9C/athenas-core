@@ -116,7 +116,6 @@ pub fn FileTree() -> Element {
             use_hook(|| Rc::new(RefCell::new(Vec::new())));
         let unlisteners_clone = unlisteners.clone();
         let mut mounted = use_signal(|| false);
-        let dir_for_effect = active_dir.clone();
 
         use_effect(move || {
             if mounted() {
@@ -124,14 +123,31 @@ pub fn FileTree() -> Element {
             }
             mounted.set(true);
 
-            let dir_path = dir_for_effect.clone();
+            // Capture the workspace signal (Copy) — NOT a snapshot of the
+            // current dir. Re-derive the active dir on each event so a
+            // workspace switch refreshes the *new* directory, not the one
+            // that was active at mount time (which left the listener pointed
+            // at a stale dir for the app's lifetime).
+            let workspace_for_listen = workspace;
             let mut nodes_for_listen = nodes;
             let mut loading_for_listen = loading;
 
             if let Ok(u) = tauri_bridge::listen("fs:change:*", move |_payload: String| {
-                if let Some(ref dir) = dir_path {
+                // Re-read the current active dir from the live workspace state.
+                let dir_path = workspace_for_listen
+                    .read()
+                    .active_space_id
+                    .as_ref()
+                    .and_then(|id| {
+                        workspace_for_listen
+                            .read()
+                            .spaces
+                            .iter()
+                            .find(|s| s.id == *id)
+                            .map(|s| s.dir.clone())
+                    });
+                if let Some(dir) = dir_path {
                     loading_for_listen.set(true);
-                    let dir = dir.clone();
                     spawn(async move {
                         match tauri_bridge::fs_list_dir(&dir).await {
                             Ok(response) => {

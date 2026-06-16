@@ -183,7 +183,6 @@ body::after {
   pointer-events: none;
   opacity: var(--themeNoiseOpacity);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  mix-blend-mode: overlay;
 }
 
 /* Greek-key (meander) hairline rule — opt-in decorative divider. */
@@ -557,6 +556,20 @@ body::after {
 .rounded-md { border-radius: var(--radius-md); }
 .rounded-lg { border-radius: var(--radius-lg); }
 .rounded-pill { border-radius: var(--radius-pill); }
+
+/* ── Responsive titlebar ───────────────────────────────────────────────────
+   Hides less-critical chrome when the window gets narrow so the workspace
+   tabs (centre) and the right toolbar (Athena/Settings) never overlap.
+   Classes are assigned to the inline-style containers in lib.rs.
+   The breakpoints target *window* width (standard media query) since this
+   is a desktop Tauri app and the entire window is the viewport.
+   ──────────────────────────────────────────────────────────────────────────── */
+@media (max-width: 680px) {
+  .tb-panel-switcher { display: none !important; }
+}
+@media (max-width: 520px) {
+  .tb-extra-btn { display: none !important; }
+}
 
 /* ── XTERM.JS overrides ──────────────────────────────────────────────────── */
 .xterm .xterm-viewport { background-color: var(--bg) !important; }

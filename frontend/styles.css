@@ -132,6 +132,18 @@ color: inherit;
 }
 
 /* ============================================================
+   RESPONSIVE TITLEBAR
+   Hides less-critical chrome when window gets narrow so the
+   workspace tabs (centre) and the right toolbar don't overlap.
+   ============================================================ */
+@media (max-width: 680px) {
+  .tb-panel-switcher { display: none !important; }
+}
+@media (max-width: 520px) {
+  .tb-extra-btn { display: none !important; }
+}
+
+/* ============================================================
    SEMANTIC UTILITY CLASS TOKENS
    ============================================================ */
 

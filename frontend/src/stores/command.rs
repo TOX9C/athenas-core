@@ -162,10 +162,8 @@ impl CommandState {
                     }
                 }
             }
-            Err(e) => {
-                web_sys::console::error_1(
-                    &format!("[CommandState] store_get error: {:?}", e).into(),
-                );
+            Err(_) => {
+                // Key absent on first run — not an error.
                 Vec::new()
             }
         }

@@ -27,8 +27,6 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
     };
 
     // Compute aggregate agent status for this space's panes.
-    let mut any_error = false;
-    let mut any_working = false;
     let mut idle_count = 0usize;
     let mut running_count = 0usize;
     for pane in props.space.panes.iter() {
@@ -40,19 +38,11 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
             .map(|(_, s)| &s.status)
         {
             match status {
-                AgentRunStatus::Error => {
-                    any_error = true;
-                    running_count += 1;
-                }
-                AgentRunStatus::Working | AgentRunStatus::Thinking => {
-                    any_working = true;
-                    running_count += 1;
-                }
+                AgentRunStatus::Error |
+                AgentRunStatus::Working |
+                AgentRunStatus::Thinking |
                 AgentRunStatus::WaitingForInput => {
                     running_count += 1;
-                }
-                AgentRunStatus::Idle | AgentRunStatus::Completed => {
-                    idle_count += 1;
                 }
                 _ => {
                     idle_count += 1;
@@ -63,24 +53,11 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
         }
     }
 
-    let status_dot_color = if any_error {
-        "var(--error)"
-    } else if any_working {
-        "var(--warning)"
-    } else {
-        "var(--success)"
-    };
-
     rsx! {
         div {
             class: "workspace-tab",
             style: "display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; background: {bg}; flex-shrink: 0; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);",
             onclick: move |_| props.on_select.call(()),
-
-            // Status dot (green/orange/red based on aggregate agent status)
-            div {
-                style: "width: 8px; height: 8px; border-radius: 50%; background: {status_dot_color}; flex-shrink: 0;",
-            }
 
             span {
                 style: "font-size: var(--text-xs); color: {text_color}; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",

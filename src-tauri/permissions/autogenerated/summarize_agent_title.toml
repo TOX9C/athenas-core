@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-summarize-agent-title"
+description = "Enables the summarize_agent_title command without any pre-configured scope."
+commands.allow = ["summarize_agent_title"]
+
+[[permission]]
+identifier = "deny-summarize-agent-title"
+description = "Denies the summarize_agent_title command without any pre-configured scope."
+commands.deny = ["summarize_agent_title"]

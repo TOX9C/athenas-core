@@ -4,7 +4,7 @@
 //! to the output buffer. This is the main entry point for registering
 //! panes, appending output, and handling PTY exits.
 
-use crate::output_buffer::OutputBuffer;
+use crate::output_buffer::{AgentSessionState, OutputBuffer};
 use crate::shell_hooks::ShellHooks;
 use std::sync::{Arc, Mutex};
 
@@ -61,6 +61,7 @@ impl OutputCapture {
     /// Called when a new PTY is spawned.
     pub fn on_pty_spawn(&self, pane_id: &str, agent_type: Option<&str>) {
         self.shell_hooks.on_pty_spawn(pane_id, agent_type);
+        self.output_buffer.mark_pane_state(pane_id, AgentSessionState::Running);
     }
 
     /// Called when data is received from a running PTY.
@@ -71,6 +72,8 @@ impl OutputCapture {
     /// Called when a PTY exits.
     pub fn on_pty_exit(&self, pane_id: &str) {
         self.shell_hooks.on_pty_exit(pane_id);
+        self.output_buffer.capture_exit_snapshot(pane_id, 20);
+        self.output_buffer.mark_pane_state(pane_id, AgentSessionState::Exited);
     }
 
     /// Capture stderr output from a child pane.
@@ -91,5 +94,10 @@ impl OutputCapture {
     /// Get a reference to the underlying shell hooks.
     pub fn shell_hooks(&self) -> &ShellHooks {
         &self.shell_hooks
+    }
+
+    /// Set the resume id for a pane.
+    pub fn set_pane_resume_id(&self, pane_id: &str, resume_id: Option<String>) {
+        self.output_buffer.set_pane_resume_id(pane_id, resume_id);
     }
 }

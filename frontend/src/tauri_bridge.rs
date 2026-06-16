@@ -179,12 +179,19 @@ pub async fn store_get(key: &str) -> TauriResult<String> {
     invoke("store_get", &serde_json::json!({ "key": key }).to_string()).await
 }
 
-pub async fn store_set(key: &str, value: &str) -> TauriResult<String> {
-    invoke(
+pub async fn store_set(key: &str, value: &str) -> TauriResult<()> {
+    web_sys::console::log_1(&format!("[tauri_bridge] store_set key={:?} value_len={}", key, value.len()).into());
+    let result = invoke(
         "store_set",
         &serde_json::json!({ "key": key, "value": value }).to_string(),
     )
-    .await
+    .await;
+    if result.is_ok() {
+        web_sys::console::log_1(&format!("[tauri_bridge] store_set SUCCESS key={:?}", key).into());
+    } else {
+        web_sys::console::error_1(&format!("[tauri_bridge] store_set FAILED key={:?}", key).into());
+    }
+    result
 }
 
 /// Session operations
@@ -459,6 +466,31 @@ pub async fn pty_default_shell_cached() -> String {
     s
 }
 
+/// Response from `pty_agent_info`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct AgentInfo {
+    pub foreground_process: String,
+    pub task_title: Option<String>,
+    /// Session ID from the agent's history file (used for de-duplication).
+    pub session_id: Option<String>,
+    /// Unix timestamp (ms) of the last prompt for the session.
+    pub timestamp: Option<u64>,
+    /// Raw prompt text (available for LLM summarization). Only set when the
+    /// feature is enabled so the frontend can call the summarizer.
+    pub raw_prompt: Option<String>,
+}
+
+/// Get the active foreground process and, if known, the agent's current task title.
+pub async fn pty_agent_info(id: &str) -> TauriResult<AgentInfo> {
+    let raw: String = invoke(
+        "pty_agent_info",
+        &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await?;
+    serde_json::from_str(&raw)
+        .map_err(|e| js_sys::Error::new(&format!("failed to parse AgentInfo: {}", e)).into())
+}
+
 /// Spawn a new PTY session with the given shell and dimensions.
 pub async fn pty_spawn(id: &str, cwd: &str, shell: &str, cols: u16, rows: u16) -> TauriResult<()> {
     invoke(
@@ -511,7 +543,39 @@ pub async fn pty_get_cwd(id: &str) -> TauriResult<Option<String>> {
     invoke("pty_get_cwd", &serde_json::json!({ "id": id }).to_string()).await
 }
 
-/// Subscribe to the raw PTY output stream for a specific session.
+/// Get the current foreground process name for a PTY session.
+pub async fn pty_foreground_process(id: &str) -> TauriResult<String> {
+    invoke(
+        "pty_foreground_process",
+        &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Pane history operations
+// ---------------------------------------------------------------------------
+
+/// A line of output history from a pane.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OutputLine {
+    pub pane_id: String,
+    pub line_num: u32,
+    pub timestamp: u64,
+    pub text: String,
+}
+
+/// Get the accumulated output history for a pane.
+pub async fn get_pane_history(pane_id: &str) -> TauriResult<Vec<OutputLine>> {
+    let raw: String = invoke(
+        "get_pane_history",
+        &serde_json::json!({ "pane_id": pane_id }).to_string(),
+    )
+    .await?;
+    serde_json::from_str(&raw).map_err(|e| {
+        js_sys::Error::new(&format!("failed to parse output history: {}", e)).into()
+    })
+}
 ///
 /// The backend emits `pty:raw` events with a JSON payload of the form
 /// `{ "sessionId": "<id>", "data": "<base64>" }`. This function filters
@@ -618,6 +682,16 @@ pub async fn athena_chat_with_images(message: &str, images: &str) -> TauriResult
     invoke(
         "athena_chat_with_images",
         &serde_json::json!({ "message": message, "images": images }).to_string(),
+    )
+    .await
+}
+
+/// Summarize a raw prompt into a short (2-3 word) title using the
+/// configured LLM. Does NOT touch conversation history.
+pub async fn summarize_agent_title(raw_prompt: &str) -> TauriResult<String> {
+    invoke(
+        "summarize_agent_title",
+        &serde_json::json!({ "rawPrompt": raw_prompt }).to_string(),
     )
     .await
 }
