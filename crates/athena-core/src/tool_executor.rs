@@ -107,528 +107,310 @@ pub struct ToolCallResult {
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-/// Schema for a single property in a tool's input schema.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolPropertySchema {
-    #[serde(rename = "type")]
-    pub prop_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<ToolPropertySchema>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub r#enum: Option<Vec<String>>,
-}
-
-/// Input schema for a tool.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolInputSchema {
-    #[serde(rename = "type")]
-    pub schema_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<HashMap<String, ToolPropertySchema>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required: Option<Vec<String>>,
-}
-
-/// Definition of a single MCP tool.
+/// Definition of a single orchestrator tool.
+///
+/// `input_schema` is a JSON Schema object — `{"type":"object",
+/// "properties":{...},"required":[...]}` — passed verbatim to the LLM
+/// provider as the tool's parameter schema.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     #[serde(rename = "inputSchema")]
-    pub input_schema: ToolInputSchema,
+    pub input_schema: serde_json::Value,
 }
 
-/// The full list of orchestrator tools.
+/// The full list of orchestrator tools, with JSON Schema parameter
+/// definitions passed verbatim to the LLM provider.
 pub fn orchestrator_tools() -> Vec<ToolDefinition> {
+    use serde_json::json;
     vec![
         ToolDefinition {
             name: "close_terminals".to_string(),
-            description: "Close, remove, or replace terminal panes/agents from the UI entirely (using pane IDs). Use this tool whenever the user asks to close, exit, completely remove, or replace an existing running terminal/agent.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("pane_ids".to_string(), ToolPropertySchema {
-                        prop_type: "array".to_string(),
-                        description: Some("Array of string IDs of the panes to drop/remove.".to_string()),
-                        items: Some(Box::new(ToolPropertySchema {
-                            prop_type: "string".to_string(),
-                            description: None,
-                            items: None,
-                            r#enum: None,
-                        })),
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["pane_ids".to_string()]),
-            },
+            description: "Close and remove terminal panes/agents from the UI using their pane IDs. Use whenever the user asks to close, exit, or remove a running terminal/agent. Destructive — confirm with the user first.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pane_ids": {
+                        "type": "array",
+                        "description": "IDs of the panes to close (taken from the STATE SNAPSHOT).",
+                        "items": { "type": "string" }
+                    }
+                },
+                "required": ["pane_ids"]
+            }),
         },
         ToolDefinition {
             name: "launch_builtin_agent".to_string(),
-            description: "Launch one or more standard background agents using system built-in integrations. If the user doesn't specify a task, you MUST leave task_prompt empty to launch an interactive agent shell.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("agent_type".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The type of agent to spawn. Must be one of: 'claude', 'codex', 'opencode', 'gemini', 'shell'. Examples: 'Open Code' -> 'opencode', 'Gemini' -> 'gemini'.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("task_prompt".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Optional. The prompt to start the background agent with. Leave entirely empty or omit it to open a blank terminal.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("agent_count".to_string(), ToolPropertySchema {
-                        prop_type: "number".to_string(),
-                        description: Some("The number of agents to spawn.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["agent_type".to_string(), "agent_count".to_string()]),
-            },
+            description: "Launch one or more standard background agents. Omit task_prompt to open an interactive agent shell with no initial prompt.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "agent_type": {
+                        "type": "string",
+                        "enum": ["claude", "codex", "opencode", "gemini", "shell"],
+                        "description": "Which built-in agent to spawn. Map names like 'Open Code' -> 'opencode', 'Gemini' -> 'gemini'."
+                    },
+                    "task_prompt": {
+                        "type": "string",
+                        "description": "Optional. Initial prompt for the agent. Omit to open a blank interactive shell."
+                    },
+                    "agent_count": {
+                        "type": "number",
+                        "description": "How many agents to spawn. Defaults to 1."
+                    }
+                },
+                "required": ["agent_type"]
+            }),
         },
         ToolDefinition {
             name: "run_command_in_terminals".to_string(),
             description: "Run a CLI command inside one or more ALREADY OPEN shell/terminal panes.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("pane_ids".to_string(), ToolPropertySchema {
-                        prop_type: "array".to_string(),
-                        description: Some("Array of string IDs of the panes (from the Currently Running Terminals list).".to_string()),
-                        items: Some(Box::new(ToolPropertySchema {
-                            prop_type: "string".to_string(),
-                            description: None,
-                            items: None,
-                            r#enum: None,
-                        })),
-                        r#enum: None,
-                    });
-                    props.insert("command".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The command string to execute in the shells.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["pane_ids".to_string(), "command".to_string()]),
-            },
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pane_ids": {
+                        "type": "array",
+                        "description": "IDs of the target panes (from the STATE SNAPSHOT).",
+                        "items": { "type": "string" }
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "The command string to execute in the shells."
+                    }
+                },
+                "required": ["pane_ids", "command"]
+            }),
         },
         ToolDefinition {
             name: "launch_custom_agent".to_string(),
-            description: "Launch one of the user's custom-defined agents using a direct CLI command.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("command".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The exact CLI command of the custom agent to launch.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("agent_count".to_string(), ToolPropertySchema {
-                        prop_type: "number".to_string(),
-                        description: Some("The number of custom agents to spawn.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["command".to_string(), "agent_count".to_string()]),
-            },
+            description: "Launch one of the user's custom-defined agents using its direct CLI command.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The exact CLI command of the custom agent to launch."
+                    },
+                    "agent_count": {
+                        "type": "number",
+                        "description": "How many custom agents to spawn. Defaults to 1."
+                    }
+                },
+                "required": ["command"]
+            }),
         },
         ToolDefinition {
             name: "read_agent_output".to_string(),
-            description: "Read the captured terminal output from a specific agent pane. Use this to see what an agent has been doing, check for errors, or read results.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("pane_id".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The pane ID of the agent to read output from.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("limit".to_string(), ToolPropertySchema {
-                        prop_type: "number".to_string(),
-                        description: Some("Maximum number of lines to return. Defaults to 100.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("since_line".to_string(), ToolPropertySchema {
-                        prop_type: "number".to_string(),
-                        description: Some("Only return lines after this line number (for pagination).".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("since_time".to_string(), ToolPropertySchema {
-                        prop_type: "number".to_string(),
-                        description: Some("Only return lines after this Unix ms timestamp.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["pane_id".to_string()]),
-            },
+            description: "Read the captured terminal output from a specific agent pane. Use this to see what an agent has done, check for errors, or read results.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pane_id": { "type": "string", "description": "The pane ID to read output from." },
+                    "limit": { "type": "number", "description": "Maximum number of lines to return. Defaults to 100." },
+                    "since_line": { "type": "number", "description": "Only return lines after this line number (for pagination)." },
+                    "since_time": { "type": "number", "description": "Only return lines after this Unix-ms timestamp." }
+                },
+                "required": ["pane_id"]
+            }),
         },
         ToolDefinition {
             name: "list_agents".to_string(),
-            description: "List all currently running agent panes with their IDs, types, line counts, and last activity timestamps. Use this to discover which agents are available to monitor.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some(HashMap::new()),
-                required: None,
-            },
+            description: "List all currently running agent panes with their IDs, types, line counts, and last-activity timestamps. The STATE SNAPSHOT already includes this — call only when you need a refresh.".to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDefinition {
             name: "check_agent_status".to_string(),
-            description: "Check the current status of a specific agent by its pane or agent ID. Returns connection status, last activity time, output line count, and whether the agent is waiting for input.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("agent_id".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The agent or pane ID to check status for.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["agent_id".to_string()]),
-            },
+            description: "Check the current status of a specific agent by its pane or agent ID. Returns connection status, last activity, line count, and whether it is waiting for input.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string", "description": "The agent or pane ID to check." }
+                },
+                "required": ["agent_id"]
+            }),
         },
         ToolDefinition {
             name: "create_execution_plan".to_string(),
-            description: "Create a structured execution plan before dispatching any agents. You MUST call this tool before launching agents for any non-trivial task. Each step must have a DISTINCT task_prompt tailored to what that specific agent should do. Never give the same prompt to multiple agents.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("goal".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The high-level goal this plan achieves.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("reasoning".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Your reasoning for why this plan structure was chosen.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("steps".to_string(), ToolPropertySchema {
-                        prop_type: "array".to_string(),
-                        description: None,
-                        r#enum: None,
-                        items: Some(Box::new(ToolPropertySchema {
-                            prop_type: "object".to_string(),
-                            description: None,
-                            items: None,
-                            r#enum: None,
-                        })),
-                    });
-                    props
-                }),
-                required: Some(vec!["goal".to_string(), "reasoning".to_string(), "steps".to_string()]),
-            },
+            description: "Create a structured execution plan before dispatching agents for any non-trivial task. Give each step a unique `id` and a `description`. The step's description is sent to the agent as its prompt, so write each one as a clear, self-contained instruction.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "goal": { "type": "string", "description": "The high-level goal this plan achieves." },
+                    "reasoning": { "type": "string", "description": "Why this plan structure was chosen." },
+                    "steps": {
+                        "type": "array",
+                        "description": "Ordered plan steps.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "Unique identifier for this step (e.g. 'step-1'). You reference it later in dispatch_plan_step and evaluate_results." },
+                                "description": { "type": "string", "description": "Self-contained instruction for this step. This exact text is sent to the agent as its prompt — keep each step distinct." }
+                            },
+                            "required": ["id", "description"]
+                        }
+                    }
+                },
+                "required": ["goal", "reasoning", "steps"]
+            }),
         },
         ToolDefinition {
             name: "dispatch_plan_step".to_string(),
-            description: "Launch an agent to execute a specific step from the active execution plan. The agent receives the step-specific task_prompt. Use this instead of launch_builtin_agent when executing a plan.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("step_id".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The step ID from the execution plan to dispatch.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["step_id".to_string()]),
-            },
+            description: "Launch an agent to execute a step from the active execution plan, by its step id. Use this instead of launch_builtin_agent when executing a plan.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "step_id": { "type": "string", "description": "The id of the step (from create_execution_plan) to dispatch." }
+                },
+                "required": ["step_id"]
+            }),
         },
         ToolDefinition {
             name: "prompt_agent".to_string(),
-            description: "Send a specific prompt or instruction to an already-running agent pane. Use this to give follow-up instructions, ask clarifying questions, or re-direct an agent.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("pane_id".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The pane ID of the running agent.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("prompt".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The prompt or instruction to send to the agent.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["pane_id".to_string(), "prompt".to_string()]),
-            },
+            description: "Send a prompt or instruction to an already-running agent pane — for follow-ups, clarifications, or re-direction.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pane_id": { "type": "string", "description": "The pane ID of the running agent." },
+                    "prompt": { "type": "string", "description": "The prompt or instruction to send." }
+                },
+                "required": ["pane_id", "prompt"]
+            }),
         },
         ToolDefinition {
             name: "ask_user".to_string(),
-            description: "Ask the user a clarifying question with selectable options. Use this when you need user input to proceed — choosing between approaches, confirming scope, selecting preferences. The user clicks an option and you immediately continue.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("question".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The question to ask.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("options".to_string(), ToolPropertySchema {
-                        prop_type: "array".to_string(),
-                        description: Some("Available choices (2-5 options). User can also type a custom response.".to_string()),
-                        r#enum: None,
-                        items: Some(Box::new(ToolPropertySchema {
-                            prop_type: "object".to_string(),
-                            description: None,
-                            items: None,
-                            r#enum: None,
-                        })),
-                    });
-                    props
-                }),
-                required: Some(vec!["question".to_string(), "options".to_string()]),
-            },
+            description: "Ask the user a clarifying question with selectable options. Use when you need a decision to proceed — choosing an approach, confirming scope, selecting a preference. The user clicks an option (or types a custom reply) and you continue.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "The question to ask." },
+                    "options": {
+                        "type": "array",
+                        "description": "2-5 selectable choices.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": { "type": "string", "description": "Short text shown on the clickable option button. Required." },
+                                "description": { "type": "string", "description": "Optional longer explanation of this choice." }
+                            },
+                            "required": ["label"]
+                        }
+                    }
+                },
+                "required": ["question", "options"]
+            }),
         },
         ToolDefinition {
             name: "evaluate_results".to_string(),
-            description: "Evaluate the results of an execution plan. Read agent outputs for each completed step and assess whether the goal was achieved. This tool records the evaluation and determines next action.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("plan_id".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The plan ID to evaluate.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("overall_status".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Your assessment of the overall plan outcome.".to_string()),
-                        items: None,
-                        r#enum: Some(vec!["success".to_string(), "partial_success".to_string(), "failure".to_string(), "needs_replanning".to_string()]),
-                    });
-                    props.insert("step_evaluations".to_string(), ToolPropertySchema {
-                        prop_type: "array".to_string(),
-                        description: None,
-                        r#enum: None,
-                        items: Some(Box::new(ToolPropertySchema {
-                            prop_type: "object".to_string(),
-                            description: None,
-                            items: None,
-                            r#enum: None,
-                        })),
-                    });
-                    props.insert("next_action".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("What to do next based on the evaluation.".to_string()),
-                        items: None,
-                        r#enum: Some(vec!["done".to_string(), "replan".to_string(), "retry_steps".to_string(), "escalate_to_user".to_string()]),
-                    });
-                    props.insert("reasoning".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Your reasoning for this evaluation.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec![
-                    "plan_id".to_string(),
-                    "overall_status".to_string(),
-                    "step_evaluations".to_string(),
-                    "next_action".to_string(),
-                    "reasoning".to_string(),
-                ]),
-            },
+            description: "Evaluate the results of an execution plan: read agent outputs, assess whether each step and the overall goal succeeded, and decide the next action.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "plan_id": { "type": "string", "description": "The plan ID to evaluate." },
+                    "overall_status": {
+                        "type": "string",
+                        "enum": ["success", "partial_success", "failure", "needs_replanning"],
+                        "description": "Your assessment of the overall plan outcome."
+                    },
+                    "step_evaluations": {
+                        "type": "array",
+                        "description": "Per-step outcomes.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "step_id": { "type": "string", "description": "The id of the step being evaluated." },
+                                "status": { "type": "string", "enum": ["success", "failure"], "description": "Whether this step succeeded." }
+                            },
+                            "required": ["step_id", "status"]
+                        }
+                    },
+                    "next_action": {
+                        "type": "string",
+                        "enum": ["done", "replan", "retry_steps", "escalate_to_user"],
+                        "description": "What to do next based on the evaluation."
+                    },
+                    "reasoning": { "type": "string", "description": "Your reasoning for this evaluation." }
+                },
+                "required": ["plan_id", "overall_status", "step_evaluations", "next_action", "reasoning"]
+            }),
         },
         ToolDefinition {
             name: "kanban_list_tasks".to_string(),
             description: "List all tasks on the active workspace's Kanban board.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some(HashMap::new()),
-                required: None,
-            },
+            input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDefinition {
             name: "kanban_create_task".to_string(),
             description: "Create a new Kanban task in the specified workspace.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("title".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Title of the task.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("description".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Optional description of the task.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("status".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Status of the task. Must be one of: 'todo', 'in_progress', 'in_review', 'complete'.".to_string()),
-                        items: None,
-                        r#enum: Some(vec!["todo".to_string(), "in_progress".to_string(), "in_review".to_string(), "complete".to_string()]),
-                    });
-                    props.insert("space_id".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The workspace (space) ID to create the task in.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["title".to_string(), "space_id".to_string()]),
-            },
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Title of the task." },
+                    "description": { "type": "string", "description": "Optional description of the task." },
+                    "status": { "type": "string", "enum": ["todo", "in_progress", "in_review", "complete"], "description": "Status of the task." },
+                    "space_id": { "type": "string", "description": "The workspace (space) ID to create the task in." }
+                },
+                "required": ["title", "space_id"]
+            }),
         },
         ToolDefinition {
             name: "kanban_update_task".to_string(),
             description: "Update an existing Kanban task.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("task_id".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The ID of the task to update.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("title".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Optional new title for the task.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("description".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Optional new description for the task.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("status".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Optional new status. Must be one of: 'todo', 'in_progress', 'in_review', 'complete'.".to_string()),
-                        items: None,
-                        r#enum: Some(vec!["todo".to_string(), "in_progress".to_string(), "in_review".to_string(), "complete".to_string()]),
-                    });
-                    props
-                }),
-                required: Some(vec!["task_id".to_string()]),
-            },
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "The ID of the task to update." },
+                    "title": { "type": "string", "description": "Optional new title." },
+                    "description": { "type": "string", "description": "Optional new description." },
+                    "status": { "type": "string", "enum": ["todo", "in_progress", "in_review", "complete"], "description": "Optional new status." }
+                },
+                "required": ["task_id"]
+            }),
         },
         ToolDefinition {
             name: "kanban_delete_task".to_string(),
-            description: "Delete a Kanban task by its ID.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("task_id".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The ID of the task to delete.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["task_id".to_string()]),
-            },
+            description: "Delete a Kanban task by its ID. Destructive — confirm with the user first.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "The ID of the task to delete." }
+                },
+                "required": ["task_id"]
+            }),
         },
         ToolDefinition {
             name: "fs_read_file".to_string(),
             description: "Read the contents of a file from the workspace.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("path".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Path of the file to read (relative to workspace root or absolute).".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["path".to_string()]),
-            },
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path of the file to read (relative to workspace root or absolute)." }
+                },
+                "required": ["path"]
+            }),
         },
         ToolDefinition {
             name: "fs_list_dir".to_string(),
             description: "List the contents of a directory in the workspace.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("path".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("Path of the directory to list (relative to workspace root or absolute).".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["path".to_string()]),
-            },
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path of the directory to list (relative to workspace root or absolute)." }
+                },
+                "required": ["path"]
+            }),
         },
         ToolDefinition {
             name: "fs_search".to_string(),
             description: "Search files in the workspace using ripgrep.".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("pattern".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The regex or literal pattern to search for.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props.insert("path".to_string(), ToolPropertySchema {
-                        prop_type: "string".to_string(),
-                        description: Some("The directory path to search in.".to_string()),
-                        items: None,
-                        r#enum: None,
-                    });
-                    props
-                }),
-                required: Some(vec!["pattern".to_string(), "path".to_string()]),
-            },
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "The regex or literal pattern to search for." },
+                    "path": { "type": "string", "description": "Optional directory to search in. Defaults to the workspace root." }
+                },
+                "required": ["pattern"]
+            }),
         },
     ]
 }
@@ -650,18 +432,8 @@ pub struct OpenAITool {
 pub struct OpenAIFunction {
     pub name: String,
     pub description: String,
-    pub parameters: OpenAIParameters,
-}
-
-/// Parameters for an OpenAI tool function.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct OpenAIParameters {
-    #[serde(rename = "type")]
-    pub schema_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<HashMap<String, ToolPropertySchema>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required: Option<Vec<String>>,
+    /// JSON Schema for the function parameters, passed through verbatim.
+    pub parameters: serde_json::Value,
 }
 
 /// Convert the orchestrator tools list into OpenAI function-calling format.
@@ -673,11 +445,7 @@ pub fn to_openai_tools() -> Vec<OpenAITool> {
             function: OpenAIFunction {
                 name: t.name,
                 description: t.description,
-                parameters: OpenAIParameters {
-                    schema_type: "object".to_string(),
-                    properties: t.input_schema.properties,
-                    required: t.input_schema.required,
-                },
+                parameters: t.input_schema,
             },
         })
         .collect()
@@ -1625,10 +1393,8 @@ impl ToolExecutor {
             .pattern
             .as_deref()
             .ok_or_else(|| ToolExecutorError::MissingParam("pattern".to_string()))?;
-        let path = args
-            .path
-            .as_deref()
-            .ok_or_else(|| ToolExecutorError::MissingParam("path".to_string()))?;
+        // `path` is optional in the tool schema; default to the workspace root.
+        let path = args.path.as_deref().unwrap_or(".");
 
         let validated = match self.validate_path(path) {
             Ok(p) => p,

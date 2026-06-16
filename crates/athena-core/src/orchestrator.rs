@@ -8,41 +8,40 @@ use std::time::Duration;
 use athena_store::MessageRole as StoreMessageRole;
 use athena_store::SessionMessage as StoreMessage;
 
+/// Default model used when no provider config is set (env-key fallback path).
+pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
+
+/// Stable Anthropic API version header value.
+pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Maximum output tokens per LLM request. The orchestrator reads agent
+/// terminal output and writes multi-step plans, so this needs headroom.
+pub const MAX_OUTPUT_TOKENS: u32 = 8192;
+
 /// System prompt defining Athena as a workspace-aware orchestrator.
 /// This prompt is injected into every LLM conversation unless the user
-/// explicitly overrides it in their provider configuration.
-pub const SYSTEM_PROMPT: &str = r#"You are Athena, the orchestrator of a developer desktop environment.
+/// explicitly overrides it in their provider configuration. The live state
+/// snapshot (see `build_app_state_snapshot`) is appended to it per request.
+pub const SYSTEM_PROMPT: &str = r#"You are Athena, the orchestrator of a developer desktop environment. You manage background agents, terminals, an execution-plan engine, and a Kanban board on the user's behalf, using the tools provided to you.
 
-You have access to tools that let you interact with the user's workspace.
-IMPORTANT: You are workspace-aware. When asked about agents, ALWAYS check which
-workspace the user is on first.
+## State snapshot
+Each request ends with a STATE SNAPSHOT showing the active workspace, the currently running agent panes (with their pane IDs), and the active execution plan. Treat it as ground truth. The pane IDs you pass to tools come from this snapshot — never invent them, and don't call a tool just to re-discover what the snapshot already shows.
 
-NEVER launch an agent implicitly. Always check the current state first.
-If asked to "prompt 4 agents" but only 3 exist, ask the user what the 4th should be.
+## Launching work
+- Use launch_builtin_agent for the standard agents (claude, codex, opencode, gemini, shell). Omit task_prompt to open an interactive shell.
+- Use launch_custom_agent only for a user-defined CLI agent.
+- For any multi-step task, call create_execution_plan first, then dispatch_plan_step for each step, then evaluate_results. Give every step a unique id and a self-contained description (the description is what the agent receives as its prompt).
+- Never launch an agent the user didn't ask for. If asked for N agents but only M exist or are defined, use ask_user to resolve the gap before launching.
 
-When a command would modify state (spawn agent, run command, create task),
-confirm with the user first.
+## Talking to agents & terminals
+- prompt_agent sends an instruction to one already-running agent.
+- run_command_in_terminals runs a shell command in already-open panes.
 
-Available tools:
-- close_terminals: Close, remove, or replace terminal panes/agents from the UI.
-- launch_builtin_agent: Launch standard background agents (claude, codex, opencode, gemini, shell).
-- launch_custom_agent: Launch a user-defined custom agent via CLI command.
-- run_command_in_terminals: Run a CLI command in already-open shell/terminal panes.
-- read_agent_output: Read captured terminal output from a specific agent pane.
-- list_agents: List all currently running agent panes with their IDs, types, line counts, and timestamps.
-- check_agent_status: Check the current status of a specific agent by ID.
-- create_execution_plan: Create a structured execution plan before dispatching agents.
-- dispatch_plan_step: Launch an agent to execute a specific plan step.
-- prompt_agent: Send a prompt to an already-running agent pane.
-- ask_user: Ask the user a clarifying question with selectable options.
-- evaluate_results: Evaluate the results of an execution plan.
-- kanban_list_tasks: List all tasks on the active workspace's Kanban board.
-- kanban_create_task: Create a new Kanban task (requires title, space_id).
-- kanban_update_task: Update a Kanban task (requires task_id).
-- kanban_delete_task: Delete a Kanban task by ID (requires task_id).
-- fs_read_file: Read the contents of a file from the workspace.
-- fs_list_dir: List the contents of a directory in the workspace.
-- fs_search: Search files in the workspace using ripgrep."#;
+## Confirmation
+Proceed autonomously for read-only actions and for launching/dispatching agents the user requested. Confirm with the user first ONLY for destructive actions: close_terminals and kanban_delete_task.
+
+## Asking the user
+Use ask_user when you need a decision to proceed. Each option must have a short `label` (shown on the button) and may include a longer `description`."#;
 
 /// Configuration for a specific LLM provider.
 ///
@@ -753,19 +752,22 @@ impl AthenaOrchestrator {
         text: String,
         images: Option<Vec<ImageData>>,
     ) -> Result<String, OrchestratorError> {
-        // Build current app state snapshot and prepend it to the user text
+        // Build a fresh app-state snapshot and append it to the SYSTEM prompt
+        // for this request. Keeping it out of the persisted user text means the
+        // message history doesn't accumulate stale, conflicting snapshots — the
+        // model always sees exactly one, current, snapshot.
         let snapshot = self.build_app_state_snapshot();
-        let full_text = format!("{}\n{}", snapshot, text);
 
         let (provider, api_key, model, system_prompt, base_url) = {
             let guard = self.provider_config.lock();
             match guard.as_ref() {
                 Some(config) => {
-                    let sp = if config.system_prompt.trim().is_empty() {
-                        SYSTEM_PROMPT.to_string()
+                    let base = if config.system_prompt.trim().is_empty() {
+                        SYSTEM_PROMPT
                     } else {
-                        config.system_prompt.clone()
+                        config.system_prompt.as_str()
                     };
+                    let sp = format!("{}\n\n{}", base, snapshot);
                     (
                         config.provider.clone(),
                         config.api_key().clone(),
@@ -781,8 +783,8 @@ impl AthenaOrchestrator {
                     (
                         LLMProvider::Anthropic,
                         secrecy::SecretString::from(api_key),
-                        "claude-sonnet-4-20250514".to_string(),
-                        SYSTEM_PROMPT.to_string(),
+                        DEFAULT_ANTHROPIC_MODEL.to_string(),
+                        format!("{}\n\n{}", SYSTEM_PROMPT, snapshot),
                         None,
                     )
                 }
@@ -814,14 +816,14 @@ impl AthenaOrchestrator {
                     api_key,
                     model,
                     system_prompt,
-                    full_text,
+                    text,
                     images,
                     resolved_base_url,
                 )
                 .await
             }
             LLMProvider::Anthropic => {
-                self.send_anthropic(api_key, model, system_prompt, full_text, images)
+                self.send_anthropic(api_key, model, system_prompt, text, images)
                     .await
             }
         };
@@ -849,7 +851,7 @@ impl AthenaOrchestrator {
                 let api_key = std::env::var("ANTHROPIC_API_KEY")
                     .ok()
                     .ok_or(OrchestratorError::MissingApiKey)?;
-                (LLMProvider::Anthropic, secrecy::SecretString::from(api_key), "claude-sonnet-4-20250514".to_string(), None)
+                (LLMProvider::Anthropic, secrecy::SecretString::from(api_key), DEFAULT_ANTHROPIC_MODEL.to_string(), None)
             }
         };
 
@@ -866,7 +868,7 @@ impl AthenaOrchestrator {
                 let response = client
                     .post("https://api.anthropic.com/v1/messages")
                     .header("x-api-key", api_key.expose_secret())
-                    .header("anthropic-version", "2024-10-22")
+                    .header("anthropic-version", ANTHROPIC_VERSION)
                     .header("Content-Type", "application/json")
                     .json(&body)
                     .send()
@@ -901,7 +903,8 @@ impl AthenaOrchestrator {
                     "messages": [
                         {"role": "system", "content": SYSTEM},
                         {"role": "user", "content": prompt}
-                    ]
+                    ],
+                    "stream": false,
                 });
                 let response = client
                     .post(format!("{}/chat/completions", url))
@@ -1006,11 +1009,7 @@ impl AthenaOrchestrator {
                 serde_json::json!({
                     "name": t.function.name,
                     "description": t.function.description,
-                    "input_schema": {
-                        "type": t.function.parameters.schema_type,
-                        "properties": t.function.parameters.properties,
-                        "required": t.function.parameters.required,
-                    }
+                    "input_schema": t.function.parameters,
                 })
             })
             .collect();
@@ -1026,7 +1025,7 @@ impl AthenaOrchestrator {
 
             let mut body = serde_json::json!({
                 "model": model,
-                "max_tokens": 4096,
+                "max_tokens": MAX_OUTPUT_TOKENS,
                 "system": system_prompt,
                 "messages": messages,
                 "tools": anthropic_tools,
@@ -1229,10 +1228,11 @@ impl AthenaOrchestrator {
 
             let body = serde_json::json!({
                 "model": model,
-                "max_tokens": 4096,
+                "max_tokens": MAX_OUTPUT_TOKENS,
                 "messages": body_messages,
                 "tools": tools,
                 "tool_choice": "auto",
+                "stream": false,
             });
 
             let response = client

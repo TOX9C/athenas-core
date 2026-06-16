@@ -1,5 +1,6 @@
 use super::athena_input::AthenaInput;
 use super::chat_message::AthenaChatMessage;
+use super::session_switcher::SessionSwitcher;
 use super::thinking::AthenaThinkingIndicator;
 use crate::stores::athena::{
     use_athena_store, AskUserOption, AthenaMessage, MessageRole, PlanStatus, PlanStepStatus,
@@ -412,9 +413,12 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
 
                     span {
-                        style: "font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex: 1;",
+                        style: "font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex-shrink: 0;",
                         "Athena"
                     }
+
+                    // Session switcher dropdown
+                    SessionSwitcher {}
 
                     span {
                         class: "badge",
