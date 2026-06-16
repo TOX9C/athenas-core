@@ -203,6 +203,10 @@ pub struct AthenaState {
     /// from the in-memory `model` field, which historically carried a stale
     /// default ("claude") that was never synced to the backend.
     pub configured_model: Option<String>,
+    /// If the keyring probe failed (e.g. keychain locked), this holds the
+    /// error message so the UI can show a warning instead of silently
+    /// looking like everything is fine. `None` = no error or not checked.
+    pub api_keyring_error: Option<String>,
 }
 
 impl AthenaState {
@@ -223,6 +227,7 @@ impl AthenaState {
             dropped_context: Vec::new(),
             api_configured: None,
             configured_model: None,
+            api_keyring_error: None,
         }
     }
 
@@ -308,6 +313,11 @@ impl AthenaState {
     /// Record the model actually persisted in the store (`llm.model`).
     pub fn set_configured_model(&mut self, model: Option<String>) {
         self.configured_model = model;
+    }
+
+    /// Record a keyring probe error so the UI can warn the user.
+    pub fn set_api_keyring_error(&mut self, error: Option<String>) {
+        self.api_keyring_error = error;
     }
 
     /// Convert messages to a JSON string suitable for the backend session store.

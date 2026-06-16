@@ -710,6 +710,12 @@ pub async fn athena_set_session_context(history: &str) -> TauriResult<JsValue> {
     .await
 }
 
+/// Test whether the saved LLM API key can be read from the keyring.
+/// Returns a JSON object: { ok: bool, message: string }.
+pub async fn test_llm_api_key() -> TauriResult<String> {
+    invoke("test_llm_api_key", "{}").await
+}
+
 // ---------------------------------------------------------------------------
 // Browser operations
 // ---------------------------------------------------------------------------

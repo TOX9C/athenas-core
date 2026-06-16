@@ -507,6 +507,12 @@
           "markdownDescription": "Enables the browser_navigate command without any pre-configured scope."
         },
         {
+          "description": "Enables the browser_open_external command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-browser-open-external",
+          "markdownDescription": "Enables the browser_open_external command without any pre-configured scope."
+        },
+        {
           "description": "Enables the browser_reload command without any pre-configured scope.",
           "type": "string",
           "const": "allow-browser-reload",
@@ -571,6 +577,12 @@
           "type": "string",
           "const": "allow-fs-write-file",
           "markdownDescription": "Enables the fs_write_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_pane_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-pane-history",
+          "markdownDescription": "Enables the get_pane_history command without any pre-configured scope."
         },
         {
           "description": "Enables the mcp_broadcast command without any pre-configured scope.",
@@ -1029,6 +1041,12 @@
           "markdownDescription": "Enables the swarm_send_message command without any pre-configured scope."
         },
         {
+          "description": "Enables the test_llm_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-test-llm-api-key",
+          "markdownDescription": "Enables the test_llm_api_key command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tool_execute command without any pre-configured scope.",
           "type": "string",
           "const": "allow-tool-execute",
@@ -1197,6 +1215,12 @@
           "markdownDescription": "Denies the browser_navigate command without any pre-configured scope."
         },
         {
+          "description": "Denies the browser_open_external command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-browser-open-external",
+          "markdownDescription": "Denies the browser_open_external command without any pre-configured scope."
+        },
+        {
           "description": "Denies the browser_reload command without any pre-configured scope.",
           "type": "string",
           "const": "deny-browser-reload",
@@ -1261,6 +1285,12 @@
           "type": "string",
           "const": "deny-fs-write-file",
           "markdownDescription": "Denies the fs_write_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_pane_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-pane-history",
+          "markdownDescription": "Denies the get_pane_history command without any pre-configured scope."
         },
         {
           "description": "Denies the mcp_broadcast command without any pre-configured scope.",
@@ -1717,6 +1747,12 @@
           "type": "string",
           "const": "deny-swarm-send-message",
           "markdownDescription": "Denies the swarm_send_message command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the test_llm_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-test-llm-api-key",
+          "markdownDescription": "Denies the test_llm_api_key command without any pre-configured scope."
         },
         {
           "description": "Denies the tool_execute command without any pre-configured scope.",

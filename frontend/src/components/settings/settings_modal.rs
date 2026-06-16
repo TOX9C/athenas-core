@@ -449,11 +449,70 @@ fn AthenaSettings() -> Element {
                         "API Key"
                     }
                     div {
-                        style: "font-size: var(--text-xs); color: var(--textMuted); font-family: var(--fontFamily);",
-                        if api_key_set() {
-                            "•••• Set"
-                        } else {
-                            "Not set"
+                        style: "display: flex; align-items: center; gap: 8px;",
+                        div {
+                            style: "font-size: var(--text-xs); color: var(--textMuted); font-family: var(--fontFamily);",
+                            if api_key_set() {
+                                "•••• Set"
+                            } else {
+                                "Not set"
+                            }
+                        }
+                        button {
+                            class: "btn-secondary btn-sm",
+                            style: "padding: 2px 8px; font-size: 11px;",
+                            title: "Test keyring access",
+                            onclick: move |_| {
+                                let mut toast = toast_store.clone();
+                                spawn(async move {
+                                    match crate::tauri_bridge::test_llm_api_key().await {
+                                        Ok(json) => {
+                                            let parsed: serde_json::Value = match serde_json::from_str(&json) {
+                                                Ok(v) => v,
+                                                Err(_) => {
+                                                    toast.write().push(
+                                                        crate::components::shared::toast::Toast {
+                                                            id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
+                                                            toast_type: crate::components::shared::toast::ToastType::Warning,
+                                                            title: "Key test error".to_string(),
+                                                            message: "Could not parse key test response".to_string(),
+                                                            duration_ms: 4000,
+                                                        }
+                                                    );
+                                                    return;
+                                                }
+                                            };
+                                            let ok = parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                                            let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown response");
+                                            toast.write().push(
+                                                crate::components::shared::toast::Toast {
+                                                    id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
+                                                    toast_type: if ok {
+                                                        crate::components::shared::toast::ToastType::Success
+                                                    } else {
+                                                        crate::components::shared::toast::ToastType::Warning
+                                                    },
+                                                    title: if ok { "Key OK".to_string() } else { "Key test failed".to_string() },
+                                                    message: msg.to_string(),
+                                                    duration_ms: 6000,
+                                                }
+                                            );
+                                        }
+                                        Err(e) => {
+                                            toast.write().push(
+                                                crate::components::shared::toast::Toast {
+                                                    id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
+                                                    toast_type: crate::components::shared::toast::ToastType::Error,
+                                                    title: "Key test failed".to_string(),
+                                                    message: format!("{:?}", e),
+                                                    duration_ms: 5000,
+                                                }
+                                            );
+                                        }
+                                    }
+                                });
+                            },
+                            "Test Key"
                         }
                     }
                     input {

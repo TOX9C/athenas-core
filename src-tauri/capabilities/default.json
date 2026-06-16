@@ -68,6 +68,7 @@
     "allow-output-capture-list-agents",
     "allow-output-capture-get-info",
     "allow-output-capture-clear",
+    "allow-get-pane-history",
     "allow-notification-push",
     "allow-notification-history",
     "allow-notification-count",
@@ -112,6 +113,7 @@
     "allow-browser-back",
     "allow-browser-forward",
     "allow-browser-reload",
+    "allow-browser-open-external",
     "allow-plugin-list",
     "allow-plugin-get",
     "allow-plugin-register",
@@ -131,6 +133,7 @@
     "allow-plugin-host-setup-plugin",
     "allow-plugin-host-remove-plugin",
     "allow-store-api-key",
-    "allow-clear-api-key"
+    "allow-clear-api-key",
+    "allow-test-llm-api-key"
   ]
 }
