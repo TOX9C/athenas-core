@@ -50,6 +50,7 @@ fn main() {
             store_set,
             store_has,
             store_delete,
+            test_llm_api_key,
             // Sessions
             session_create,
             session_get,

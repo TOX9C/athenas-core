@@ -257,8 +257,21 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
             // keyring-backed sentinel ("set" / "not_set"); `llm.model` is the
             // user-entered model string.
             match tauri_bridge::store_get("llm.api_key").await {
-                Ok(v) => athena.write().set_api_configured(Some(v == "set")),
-                Err(_) => athena.write().set_api_configured(Some(false)),
+                Ok(v) => {
+                    athena.write().set_api_configured(Some(v == "set"));
+                    // Clear any previous keyring error on success
+                    athena.write().set_api_keyring_error(None);
+                }
+                // If the keyring read failed (e.g. keychain locked), DON'T
+                // flip the UI to "not set". Leave it at its previous value
+                // (None or whatever was last known good) so the send button
+                // stays usable and the user can at least *try* to send.
+                Err(e) => {
+                    web_sys::console::warn_1(
+                        &format!("[AthenaPanel] Keyring probe failed: {:?}. Leaving api_configured as-is.", e).into(),
+                    );
+                    athena.write().set_api_keyring_error(Some(format!("Keychain access failed: {:?}", e)));
+                }
             }
             match tauri_bridge::store_get("llm.model").await {
                 Ok(m) if !m.is_empty() => athena.write().set_configured_model(Some(m)),
@@ -366,9 +379,16 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         .unwrap_or_else(|| "claude".to_string());
 
     // A small status dot in the header: green when an API key is set,
-    // amber when confirmed unset, neutral while still probing on mount.
+    // amber when confirmed unset, red if the keyring is inaccessible,
+    // neutral while still probing on mount.
     let (status_color, status_title) = match state.api_configured {
-        Some(true) => ("var(--success)", "API key configured"),
+        Some(true) => {
+            if state.api_keyring_error.is_some() {
+                ("var(--warning)", "API key set but keychain locked")
+            } else {
+                ("var(--success)", "API keyconfigured")
+            }
+        }
         Some(false) => ("var(--warning)", "API key not set — configure in Settings"),
         None => ("var(--textDim)", "Checking configuration…"),
     };
@@ -414,6 +434,17 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                             style: "font-size: var(--text-2xs); color: var(--accent); letter-spacing: 0.04em; text-transform: lowercase;",
                             "streaming..."
                         }
+                    }
+                }
+
+                // Keyring failure warning — shows when the keychain is locked
+                // but we have the confirmation flag, so the user knows why the
+                // status dot may look odd.
+                if let Some(ref err) = state.api_keyring_error {
+                    div {
+                        style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--warning); background: rgba(235, 145, 19, 0.08); color: var(--warning); font-size: 12px;",
+                        span { style: "flex-shrink: 0;", "⚠️" }
+                        span { "{err}" }
                     }
                 }
 

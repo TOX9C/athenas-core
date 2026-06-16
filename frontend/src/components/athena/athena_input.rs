@@ -223,6 +223,15 @@ pub fn AthenaInput() -> Element {
                     class: "field",
                     style: "flex: 1; min-height: 40px; max-height: 120px; resize: vertical;",
                     value: "{input_text}",
+                    oninput: move |e| {
+                        // Keep the controlled signal in sync with what the user
+                        // types. Without this, `input_text` stays empty, every
+                        // submit sees an empty string, and messages silently
+                        // never send.
+                        input_text.set(e.value());
+                        // Typing breaks out of history navigation.
+                        history_idx.set(None);
+                    },
                     onkeydown: move |e: KeyboardEvent| {
                         // Ignore Enter while blocked — there's nowhere to send.
                         if is_blocked { return; }
