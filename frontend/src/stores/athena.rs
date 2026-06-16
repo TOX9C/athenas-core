@@ -190,6 +190,19 @@ pub struct AthenaState {
     pub session_title: String,
     /// Items dragged/dropped or explicitly pinned to Athena's context for the current conversation.
     pub dropped_context: Vec<DraggableItem>,
+    /// Whether an API key is configured, as reported by the backend
+    /// (keyring-backed `llm.api_key` probe). `None` = not yet checked
+    /// (panel still mounting); `Some(true)` = key present; `Some(false)` =
+    /// no key, so the panel shows a "configure in Settings" banner and the
+    /// input is disabled. This is the *only* signal the UI trusts for
+    /// "can I send?" — the in-memory `model`/`provider` defaults above are
+    /// deliberately NOT used for that decision.
+    pub api_configured: Option<bool>,
+    /// The model string actually persisted in the store (`llm.model`),
+    /// loaded on panel mount and refreshed when Settings saves. Distinct
+    /// from the in-memory `model` field, which historically carried a stale
+    /// default ("claude") that was never synced to the backend.
+    pub configured_model: Option<String>,
 }
 
 impl AthenaState {
@@ -208,6 +221,8 @@ impl AthenaState {
             session_id: None,
             session_title: String::new(),
             dropped_context: Vec::new(),
+            api_configured: None,
+            configured_model: None,
         }
     }
 
@@ -284,6 +299,17 @@ impl AthenaState {
         self.session_title = title.into();
     }
 
+    /// Record the result of the backend `llm.api_key` probe. Called on
+    /// panel mount and whenever Settings saves a new key.
+    pub fn set_api_configured(&mut self, configured: Option<bool>) {
+        self.api_configured = configured;
+    }
+
+    /// Record the model actually persisted in the store (`llm.model`).
+    pub fn set_configured_model(&mut self, model: Option<String>) {
+        self.configured_model = model;
+    }
+
     /// Convert messages to a JSON string suitable for the backend session store.
     pub fn messages_as_json(&self) -> String {
         let msgs: Vec<serde_json::Value> = self
@@ -339,7 +365,7 @@ impl AthenaState {
                 .get("isError")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            loaded.push(AthenaMessage {
+            loaded.push_back(AthenaMessage {
                 id,
                 role,
                 content,
@@ -394,10 +420,10 @@ impl AthenaState {
         // Try to append to the last assistant message
         let last_is_athena = self
             .messages
-            .last()
+            .back()
             .map_or(false, |m| m.role == MessageRole::Athena);
         if last_is_athena {
-            if let Some(msg) = self.messages.last_mut() {
+            if let Some(msg) = self.messages.back_mut() {
                 msg.blocks.push(ask_block);
                 return;
             }
@@ -434,10 +460,10 @@ impl AthenaState {
         // Try to update existing plan in last assistant message
         let last_is_athena = self
             .messages
-            .last()
+            .back()
             .map_or(false, |m| m.role == MessageRole::Athena);
         if last_is_athena {
-            if let Some(msg) = self.messages.last_mut() {
+            if let Some(msg) = self.messages.back_mut() {
                 // Replace existing plan block or add new one
                 let mut found = false;
                 let target_plan_id = match &plan_block {
@@ -493,10 +519,10 @@ impl AthenaState {
         // Try to append to last assistant message
         let last_is_athena = self
             .messages
-            .last()
+            .back()
             .map_or(false, |m| m.role == MessageRole::Athena);
         if last_is_athena {
-            if let Some(msg) = self.messages.last_mut() {
+            if let Some(msg) = self.messages.back_mut() {
                 msg.blocks.push(eval_block);
                 return;
             }
@@ -559,7 +585,7 @@ mod tests {
         assert_eq!(s.messages.len(), MAX_MESSAGES);
         // First five (0..5) should be evicted - 5 is the new front.
         assert_eq!(s.messages.front().unwrap().id, "5");
-        assert_eq!(s.messages.back().unwrap().id, &(MAX_MESSAGES + 4).to_string());
+        assert_eq!(s.messages.back().unwrap().id, (MAX_MESSAGES + 4).to_string());
     }
 
     #[test]

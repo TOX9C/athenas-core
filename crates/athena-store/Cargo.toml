@@ -13,7 +13,7 @@ uuid = { workspace = true }
 base64 = "0.22"
 sha2 = "0.10"
 tokio = { version = "1.43", features = ["full"] }
-parking_lot = "0.12"
+parking_lot = { version = "0.12", features = ["send_guard"] }
 
 [dev-dependencies]
 tempfile = "3"

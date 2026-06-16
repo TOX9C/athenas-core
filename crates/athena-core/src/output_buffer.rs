@@ -2,6 +2,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 use thiserror::Error;
 
+/// Represents the state of an agent session.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub enum AgentSessionState {
+    #[default]
+    Running,
+    Exited,
+    Completed,
+}
+
 /// Represents a single line of output from a pane.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OutputLine {
@@ -24,6 +33,10 @@ pub struct PaneBuffer {
     /// Whether the PTY process has exited. The buffer history is preserved
     /// so the user can still read past output, but no new data will arrive.
     dead: bool,
+    pub session_state: AgentSessionState,
+    pub exit_code: Option<i32>,
+    pub resume_id: Option<String>,
+    pub exit_snapshot: Vec<OutputLine>,
 }
 
 /// Information about a pane buffer.
@@ -67,13 +80,17 @@ const MAX_TOTAL_BYTES_PER_PANE: usize = 2_000_000;
 pub enum OutputBufferError {
     #[error("Lock poisoned: {0}")]
     LockPoison(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
 }
 
 /// Thread-safe output buffer service.
 pub struct OutputBuffer {
     buffers: Arc<RwLock<HashMap<String, PaneBuffer>>>,
     event_emitter:
-        Arc<parking_lot::Mutex<Option<Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+        Arc<parking_lot::Mutex<Option<Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,    exit_snapshots: Arc<RwLock<HashMap<String, Vec<OutputLine>>>>,
 }
 
 impl std::fmt::Debug for OutputBuffer {
@@ -90,6 +107,7 @@ impl Clone for OutputBuffer {
         Self {
             buffers: Arc::clone(&self.buffers),
             event_emitter: Arc::clone(&self.event_emitter),
+            exit_snapshots: Arc::clone(&self.exit_snapshots),
         }
     }
 }
@@ -101,10 +119,9 @@ impl Default for OutputBuffer {
 }
 
 impl OutputBuffer {
-    pub fn new() -> Self {
-        Self {
-            buffers: Arc::new(RwLock::new(HashMap::new())),
+    pub fn new() -> Self {        Self {            buffers: Arc::new(RwLock::new(HashMap::new())),
             event_emitter: Arc::new(parking_lot::Mutex::new(None)),
+            exit_snapshots: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -160,6 +177,10 @@ impl OutputBuffer {
                     last_activity_at: now,
                     agent_type: agent_type.to_string(),
                     dead: false,
+                    session_state: AgentSessionState::default(),
+                    exit_code: None,
+                    resume_id: None,
+                    exit_snapshot: Vec::new(),
                 },
             );
             let pane_id_str = pane_id.to_string();
@@ -183,9 +204,24 @@ impl OutputBuffer {
             let removed_bytes: usize = buf.lines.drain(0..excess).map(|l| l.text.len()).sum();
             buf.total_bytes = buf.total_bytes.saturating_sub(removed_bytes);
         }
-        while buf.total_bytes > MAX_TOTAL_BYTES_PER_PANE && !buf.lines.is_empty() {
-            let removed = buf.lines.remove(0);
-            buf.total_bytes = buf.total_bytes.saturating_sub(removed.text.len());
+        // Byte-budget trim: compute how many leading lines to drop in one pass,
+        // then drain once. The previous `while … remove(0)` was O(n²) (each
+        // remove shifts the whole tail), which burned CPU under high-volume
+        // PTY output (e.g. cat of a large file) on every append.
+        if buf.total_bytes > MAX_TOTAL_BYTES_PER_PANE {
+            let mut drop_count = 0usize;
+            let mut projected = buf.total_bytes;
+            while drop_count < buf.lines.len()
+                && projected > MAX_TOTAL_BYTES_PER_PANE
+            {
+                projected = projected.saturating_sub(buf.lines[drop_count].text.len());
+                drop_count += 1;
+            }
+            if drop_count > 0 {
+                let removed_bytes: usize =
+                    buf.lines.drain(0..drop_count).map(|l| l.text.len()).sum();
+                buf.total_bytes = buf.total_bytes.saturating_sub(removed_bytes);
+            }
         }
     }
 
@@ -238,6 +274,10 @@ impl OutputBuffer {
                     last_activity_at: now,
                     agent_type: agent_type.unwrap_or("shell").to_string(),
                     dead: false,
+                    session_state: AgentSessionState::default(),
+                    exit_code: None,
+                    resume_id: None,
+                    exit_snapshot: Vec::new(),
                 },
             );
         }
@@ -466,5 +506,99 @@ impl OutputBuffer {
             }
         };
         buffers.clear();
+    }
+
+    /// Capture the last `n` lines of a pane buffer as an exit snapshot.
+    pub fn capture_exit_snapshot(&self, pane_id: &str, n: usize) {
+        let buffers = match self.buffers.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                log::error!(
+                    "OutputBuffer: lock poisoned while capturing exit snapshot"
+                );
+                return;
+            }
+        };
+        if let Some(buf) = buffers.get(pane_id) {
+            let snapshot: Vec<OutputLine> =
+                buf.lines.iter().rev().take(n).rev().cloned().collect();
+            drop(buffers);
+            let mut exit_snapshots = match self.exit_snapshots.write() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    log::error!(
+                        "OutputBuffer: lock poisoned while storing exit snapshot"
+                    );
+                    return;
+                }
+            };
+            exit_snapshots.insert(pane_id.to_string(), snapshot);
+        }
+    }
+
+    /// Get the exit snapshot for a pane.
+    pub fn get_exit_snapshot(&self, pane_id: &str) -> Vec<OutputLine> {
+        let exit_snapshots = match self.exit_snapshots.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                log::error!(
+                    "OutputBuffer: lock poisoned while getting exit snapshot"
+                );
+                return Vec::new();
+            }
+        };
+        exit_snapshots.get(pane_id).cloned().unwrap_or_default()
+    }
+
+    /// Serialize the exit snapshots to a JSON file.
+    pub fn save_to_disk(&self, path: &std::path::Path) -> Result<(), OutputBufferError> {
+        let exit_snapshots = self
+            .exit_snapshots
+            .read()
+            .map_err(|_| OutputBufferError::LockPoison("exit_snapshots".to_string()))?;
+        let json = serde_json::to_string_pretty(&*exit_snapshots)?;
+        drop(exit_snapshots);
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Deserialize exit snapshots from a JSON file and replace the current state.
+    pub fn load_from_disk(&self, path: &std::path::Path) -> Result<(), OutputBufferError> {
+        let data = std::fs::read_to_string(path)?;
+        let deserialized: HashMap<String, Vec<OutputLine>> = serde_json::from_str(&data)?;
+        let mut exit_snapshots = self
+            .exit_snapshots
+            .write()
+            .map_err(|_| OutputBufferError::LockPoison("exit_snapshots".to_string()))?;
+        *exit_snapshots = deserialized;
+        Ok(())
+    }
+
+    /// Set the session state on a pane buffer.
+    pub fn mark_pane_state(&self, pane_id: &str, state: AgentSessionState) {
+        let mut buffers = match self.buffers.write() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("OutputBuffer: lock poisoned while marking pane state");
+                return;
+            }
+        };
+        if let Some(buf) = buffers.get_mut(pane_id) {
+            buf.session_state = state;
+        }
+    }
+
+    /// Set the resume id on a pane buffer.
+    pub fn set_pane_resume_id(&self, pane_id: &str, resume_id: Option<String>) {
+        let mut buffers = match self.buffers.write() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("OutputBuffer: lock poisoned while setting pane resume id");
+                return;
+            }
+        };
+        if let Some(buf) = buffers.get_mut(pane_id) {
+            buf.resume_id = resume_id;
+        }
     }
 }

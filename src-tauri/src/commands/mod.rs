@@ -8,13 +8,63 @@ pub mod caps;
 // ── Path validation helpers ──────────────────────────────────────────────────
 
 /// Get the canonicalized workspace root for path sandboxing.
+///
+/// The workspace root is the *project* directory — the ancestor that contains
+/// `src-tauri/` — not the process's current working directory, which is
+/// launch-context-dependent:
+///   - `cargo tauri dev` runs the backend with cwd = `src-tauri/`.
+///   - A bundled release `.app` launched from Finder has cwd = `/`.
+/// Using `current_dir()` directly made the sandbox root `src-tauri/` in dev
+/// (so the real project root one level up was wrongly rejected) and `/` in
+/// release (so the sandbox silently allowed every path — a latent hole, not a
+/// correct config).
+///
+/// Resolution: look for the project-root marker (`src-tauri/tauri.conf.json`)
+/// by walking up from both `current_dir()` *and* the executable's directory.
+/// The exe path is stable across launch contexts: in dev it is
+/// `target/debug/athenas-core`, in release `…/Athena's Core.app/Contents/MacOS/…`,
+/// both of which live under the project root when built locally. If neither
+/// walk finds the marker, fall back to `current_dir()` so behavior is no worse
+/// than before (and so the validator still has *some* root to check against).
 fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
-    std::env::current_dir()
-        .map_err(|e| CommandError::Internal(format!("Failed to get workspace root: {}", e)))?
-        .canonicalize()
-        .map_err(|e| {
-            CommandError::Internal(format!("Failed to canonicalize workspace root: {}", e))
-        })
+    let raw = std::env::current_dir()
+        .map_err(|e| CommandError::Internal(format!("Failed to get workspace root: {}", e)))?;
+
+    let exe = std::env::current_exe()
+        .map_err(|e| CommandError::Internal(format!("Failed to get current exe: {}", e)))?;
+
+    // Candidate starting points for the upward marker walk. `raw` (cwd)
+    // wins in dev; `exe` wins for a Finder-launched release bundle whose
+    // cwd is `/`. Both are cheap to try.
+    let starts: Vec<std::path::PathBuf> = vec![raw.clone(), exe.clone()];
+
+    let marker_name = std::path::Path::new("tauri.conf.json");
+    let src_tauri = std::path::Path::new("src-tauri");
+
+    let mut root_candidate: Option<std::path::PathBuf> = None;
+    'outer: for start in &starts {
+        let mut dir = start.as_path();
+        loop {
+            if dir.join(src_tauri).join(marker_name).exists() {
+                root_candidate = Some(dir.to_path_buf());
+                break 'outer;
+            }
+            match dir.parent() {
+                Some(parent) => dir = parent,
+                None => break,
+            }
+        }
+    }
+
+    let resolved = root_candidate.unwrap_or_else(|| raw.clone());
+    let canon = resolved.canonicalize().map_err(|e| {
+        CommandError::Internal(format!("Failed to canonicalize workspace root: {}", e))
+    })?;
+    log::debug!(
+        "[workspace_root] current_dir={:?} exe={:?} resolved={:?} canonicalized={:?}",
+        raw, exe, resolved, canon
+    );
+    Ok(canon)
 }
 
 /// Validate that a path exists and return the cleaned path.
@@ -26,19 +76,20 @@ fn validate_path_exists(path: &std::path::Path) -> Result<std::path::PathBuf, Co
         root.join(path)
     };
     if !path.exists() {
-        return Err(CommandError::NotFound(format!(
-            "Path does not exist: {}",
-            path.display()
-        )));
+        return Err(CommandError::NotFound(
+            "Path does not exist".to_string(),
+        ));
     }
-    let canonicalized = path
-        .canonicalize()
-        .map_err(|e| CommandError::Internal(format!("Failed to canonicalize path: {}", e)))?;
+    let canonicalized = path.canonicalize().map_err(|e| {
+        CommandError::Internal(format!("Failed to canonicalize path: {}", e))
+    })?;
     if !canonicalized.starts_with(&root) {
-        return Err(CommandError::PermissionDenied(format!(
-            "Path must be within the workspace: {}",
-            root.display()
-        )));
+        // Do NOT echo the canonicalized workspace root or the requested path
+        // back to the frontend — it confirms on-disk layout (user home
+        // path, project location) to a probing renderer. Generic message only.
+        return Err(CommandError::PermissionDenied(
+            "Path is outside the workspace".to_string(),
+        ));
     }
     Ok(canonicalized)
 }
@@ -65,57 +116,225 @@ fn validate_path(path: &std::path::Path) -> Result<std::path::PathBuf, CommandEr
     Ok(validated)
 }
 
+// ── PTY spawn/write validation helpers ───────────────────────────────────────
+//
+// The IPC boundary is the entire frontend renderer. A compromised or XSSed
+// renderer (note: CSP still permits `unsafe-eval`) could otherwise spawn an
+// arbitrary binary rooted at `~/.ssh` or `/`, or paste unbounded data into a
+// live PTY. These helpers gate the shell binary, the working directory, and
+// payload sizes.
+
+/// Maximum bytes accepted by `pty_write` / `pty_spawn_agent`'s `agent_cmd`.
+/// Matches the cap used elsewhere for raw data payloads.
+const MAX_PTY_DATA_BYTES: usize = 1024 * 1024; // 1 MB
+
+/// Maximum length of a PTY session id. Generous; ids are caller-chosen.
+const MAX_SESSION_ID_LEN: usize = 256;
+
+/// Validate a shell binary path for PTY spawning.
+///
+/// Allowed if the canonicalized path lives under `/bin` or `/usr/bin`, or if it
+/// matches the invoking user's `$SHELL`. This stops a renderer from spawning
+/// `/usr/sbin/installer`, a homebrew binary, or an arbitrary executable while
+/// still permitting the standard shells (bash, zsh, sh, fish when in /usr/bin).
+fn validate_shell(shell: &str) -> Result<std::path::PathBuf, String> {
+    if shell.is_empty() {
+        return Err("shell path is empty".to_string());
+    }
+    let p = std::path::Path::new(shell);
+
+    // Always allow the user's configured login shell.
+    if let Ok(user_shell) = std::env::var("SHELL") {
+        if shell == user_shell {
+            // Canonicalize if possible (so the returned path is absolute),
+            // but fall back to the literal if the file isn't resolvable yet.
+            return Ok(p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+        }
+    }
+
+    // Canonicalize and require the binary to live under a system bin dir.
+    // Using canonicalize (not lexical check) so symlinks are resolved: a
+    // symlink in /bin pointing to /Users/x/evil is followed and then rejected
+    // because the target isn't under /bin or /usr/bin.
+    let canon = p
+        .canonicalize()
+        .map_err(|e| format!("shell binary not accessible: {}", e))?;
+
+    let allowed_ancestors = [std::path::Path::new("/bin"), std::path::Path::new("/usr/bin")];
+    let ok = allowed_ancestors
+        .iter()
+        .any(|allowed| canon.starts_with(allowed));
+    if !ok {
+        return Err(format!(
+            "shell binary '{}' is outside the allowed system directories (/bin, /usr/bin) and does not match $SHELL",
+            shell
+        ));
+    }
+    Ok(canon)
+}
+
+/// Validate a working directory for PTY spawning.
+///
+/// The directory must exist, be a directory, and be inside the workspace root
+/// (reuses the read-side path validator's canonicalize+descendant logic). This
+/// stops a renderer from spawning a shell rooted at `/`, `~/.ssh`, or another
+/// project.
+fn validate_cwd(cwd: &str) -> Result<std::path::PathBuf, CommandError> {
+    if cwd.is_empty() {
+        return Err(CommandError::Internal("cwd is empty".to_string()));
+    }
+    let validated = validate_path_exists(std::path::Path::new(cwd))?;
+    if !validated.is_dir() {
+        return Err(CommandError::Internal(format!(
+            "cwd is not a directory"
+        )));
+    }
+    Ok(validated)
+}
+
+/// Validate a PTY session id: non-empty, bounded length, no control chars.
+fn validate_session_id(id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("session id is empty".to_string());
+    }
+    if id.len() > MAX_SESSION_ID_LEN {
+        return Err(format!(
+            "session id too long: {} > {}",
+            id.len(),
+            MAX_SESSION_ID_LEN
+        ));
+    }
+    if id.chars().any(|c| c.is_control()) {
+        return Err("session id contains control characters".to_string());
+    }
+    Ok(())
+}
+
+/// Validate a raw-data payload size for PTY writes.
+fn validate_data_size(data: &[u8], label: &str) -> Result<(), String> {
+    if data.len() > MAX_PTY_DATA_BYTES {
+        return Err(format!(
+            "{} too large: {} > {}",
+            label,
+            data.len(),
+            MAX_PTY_DATA_BYTES
+        ));
+    }
+    Ok(())
+}
+
+/// Infer the LLM provider from the configured base URL.
+///
+/// The Settings UI only collects a base URL + model (and an API key stored in
+/// the keyring) — there is no explicit provider picker. Historically the
+/// backend read a `llm.provider` key that nobody ever wrote, so every user was
+/// silently routed through the OpenAI transport even when they meant to talk
+/// to Anthropic. We now infer the provider from the host when the user hasn't
+/// explicitly set `llm.provider`, and treat anything OpenAI-compatible
+/// (Groq, OpenRouter, Together, local servers, …) as OpenAI.
+fn infer_provider(base_url: &str, explicit: Option<&str>) -> athena_core::types::LLMProvider {
+    use athena_core::types::LLMProvider;
+    if let Some(p) = explicit {
+        return match p.trim().to_ascii_lowercase().as_str() {
+            "anthropic" => LLMProvider::Anthropic,
+            "nvidia_nim" | "nvidia" | "nim" => LLMProvider::NvidiaNim,
+            "lmstudio" | "lm_studio" | "lm-studio" => LLMProvider::Lmstudio,
+            _ => LLMProvider::OpenAI,
+        };
+    }
+    let host = base_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(base_url);
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let host = host.split('/').next().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    if host.contains("anthropic.com") {
+        LLMProvider::Anthropic
+    } else if host == "localhost" && base_url.contains(":1234")
+        || host.ends_with(".local")
+        || (host == "localhost" && base_url.contains("/v1"))
+    {
+        // Heuristic: LM Studio's default port is 1234; Ollama lives on 11434.
+        // We can't distinguish them perfectly, but LM Studio is the only
+        // built-in provider with special behaviour (no vision), and it's the
+        // one documented in the Settings placeholder.
+        LLMProvider::Lmstudio
+    } else if host.contains("integrate.api.nvidia.com") {
+        LLMProvider::NvidiaNim
+    } else {
+        LLMProvider::OpenAI
+    }
+}
+
+/// Distinct reasons we may fail to build a provider config. Splitting these
+/// out lets the chat commands return a *specific* message ("set your API key")
+/// rather than the orchestrator wandering into its `ANTHROPIC_API_KEY` env-var
+/// fallback and failing with a confusing error far from the cause.
+enum ProviderConfigError {
+    /// No API key in the keyring and no legacy plaintext key to migrate.
+    MissingApiKey,
+}
+
 /// Build provider config from the persistent store for LLM API calls.
+///
+/// Returns `Ok(config)` when everything needed is present, or
+/// `Err(MissingApiKey)` when the user hasn't set a key. Other misconfiguration
+/// (unknown provider string) logs a warning and falls back to a sensible
+/// default instead of blocking all chat.
 fn build_provider_config_from_store(
     state: &AppState,
-) -> Option<athena_core::orchestrator::ProviderConfig> {
-    let provider_str = state
+) -> Result<athena_core::orchestrator::ProviderConfig, ProviderConfigError> {
+    // An explicit provider key, if the user (or a future settings UI) set one,
+    // overrides URL-based inference.
+    let explicit_provider = state
         .store
         .get::<String>("llm.provider")
         .ok()
         .flatten()
-        .unwrap_or_else(|| "openai".to_string());
-    let api_key = state
-        .store
-        .get::<String>("llm.api_key")
+        .filter(|s| !s.trim().is_empty());
+
+    let api_key = keyring::Entry::new("athena", "api_key")
         .ok()
-        .flatten()
-        .or_else(|| {
-            keyring::Entry::new("athena", "api_key")
-                .ok()
-                .and_then(|e| e.get_password().ok())
-        })
+        .and_then(|e| e.get_password().ok())
         .unwrap_or_default();
+
+    if api_key.is_empty() {
+        // Try migrating any legacy plaintext key that predates the keyring
+        // integration before giving up.
+        if let Ok(Some(value)) = state.store.get::<String>("llm.api_key") {
+            if !value.is_empty() && value != "not_set" && value != "set" {
+                if let Ok(entry) = keyring::Entry::new("athena", "api_key") {
+                    let _ = entry.set_password(&value);
+                }
+                let _ = state.store.delete_sync("llm.api_key");
+                // Recurse once to pick up the freshly-migrated key without
+                // duplicating the config-assembly logic below.
+                return build_provider_config_from_store(state);
+            }
+        }
+        log::warn!("No API key configured for LLM provider");
+        return Err(ProviderConfigError::MissingApiKey);
+    }
+
     let model = state
         .store
         .get::<String>("llm.model")
         .ok()
         .flatten()
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "gpt-4o".to_string());
     let base_url = state
         .store
         .get::<String>("llm.base_url")
         .ok()
         .flatten()
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
-    if api_key.is_empty() {
-        log::warn!("No API key configured for LLM provider");
-        return None;
-    }
+    let provider = infer_provider(&base_url, explicit_provider.as_deref());
 
-    let provider = match provider_str.as_str() {
-        "anthropic" => athena_core::types::LLMProvider::Anthropic,
-        "openai" => athena_core::types::LLMProvider::OpenAI,
-        "nvidia_nim" => athena_core::types::LLMProvider::NvidiaNim,
-        "lmstudio" => athena_core::types::LLMProvider::Lmstudio,
-        _ => {
-            log::warn!("Unknown LLM provider: {}", provider_str);
-            return None;
-        }
-    };
-
-    Some(athena_core::orchestrator::ProviderConfig::new(
+    Ok(athena_core::orchestrator::ProviderConfig::new(
         provider,
         api_key,
         model,
@@ -396,9 +615,17 @@ pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, Comm
     if key == "llm.api_key" {
         // Check keyring first
         if let Ok(entry) = keyring::Entry::new("athena", "api_key") {
-            if entry.get_password().is_ok() {
-                return Ok("set".to_string());
+            match entry.get_password() {
+                Ok(_) => {
+                    log::debug!("[store_get] llm.api_key => found in OS keyring");
+                    return Ok("set".to_string());
+                }
+                Err(e) => {
+                    log::warn!("[store_get] llm.api_key => keyring read failed: {}", e);
+                }
             }
+        } else {
+            log::warn!("[store_get] llm.api_key => failed to open keyring entry");
         }
         // Fallback: check store for a legacy plaintext key and migrate it
         if let Ok(Some(value)) = state.store.get::<String>(&key) {
@@ -424,7 +651,7 @@ pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, Comm
 
 /// Set a value in the persistent key-value store.
 #[tauri::command]
-pub async fn store_set(
+pub fn store_set(
     state: State<'_, AppState>,
     key: String,
     value: String,
@@ -438,23 +665,21 @@ pub async fn store_set(
             entry
                 .set_password(&value)
                 .map_err(|e| format!("Failed to store API key in keyring: {}", e))?;
+            log::info!("[store_set] API key saved to OS keyring (service='athena', account='api_key')");
             // Remove any legacy plaintext key from the store
-            let _ = state.store.delete(&key).await;
+            let _ = state.store.delete_sync(&key);
         } else if value.is_empty() || value == "not_set" {
             // Clear the API key from the keyring
             let entry = keyring::Entry::new("athena", "api_key")
                 .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
             let _ = entry.delete_credential();
-            let _ = state.store.delete(&key).await;
+            log::info!("[store_set] API key removed from OS keyring (service='athena', account='api_key')");
+            let _ = state.store.delete_sync(&key);
         }
         return Ok(());
     }
 
-    state
-        .store
-        .set(&key, &value)
-        .await
-        .map_err(|e| e.to_string())
+    state.store.set_sync(&key, &value).map_err(|e| e.to_string())
 }
 
 /// Check whether a key exists in the persistent key-value store.
@@ -472,14 +697,14 @@ pub fn store_has(state: State<'_, AppState>, key: String) -> bool {
 
 /// Delete a key from the persistent key-value store.
 #[tauri::command]
-pub async fn store_delete(state: State<'_, AppState>, key: String) -> Result<(), String> {
+pub fn store_delete(state: State<'_, AppState>, key: String) -> Result<(), String> {
     caps::validate_key(&key)?;
     if key == "llm.api_key" {
         let entry = keyring::Entry::new("athena", "api_key")
             .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
         let _ = entry.delete_credential();
     }
-    state.store.delete(&key).await.map_err(|e| e.to_string())
+    state.store.delete_sync(&key).map_err(|e| e.to_string())
 }
 
 // ── Session commands ─────────────────────────────────────────────────────────
@@ -658,9 +883,25 @@ pub async fn pty_spawn(
         cols,
         rows
     );
+    // Validate caller-supplied values before touching the session manager.
+    validate_session_id(&id).map_err(|e| {
+        log::warn!("pty_spawn rejected (bad id): {}", e);
+        e
+    })?;
+    let validated_shell = validate_shell(&shell).map_err(|e| {
+        log::warn!("pty_spawn rejected (bad shell '{}'): {}", shell, e);
+        e
+    })?;
+    let validated_cwd = validate_cwd(&cwd).map_err(|e| {
+        log::warn!("pty_spawn rejected (bad cwd '{}'): {}", cwd, e);
+        e.to_string()
+    })?;
+    let shell_str = validated_shell.to_string_lossy().to_string();
+    let cwd_str = validated_cwd.to_string_lossy().to_string();
+
     let session_manager = state.session_manager.lock().await;
     let session_result = session_manager
-        .spawn(id.clone(), &shell, &cwd, cols, rows)
+        .spawn(id.clone(), &shell_str, &cwd_str, cols, rows)
         .await;
     drop(session_manager);
 
@@ -671,8 +912,9 @@ pub async fn pty_spawn(
 
             if let Some(handle) = app_handle {
                 let session_id_for_loop = id.clone();
+                let output_buffer = std::sync::Arc::clone(&state.output_buffer);
                 tokio::spawn(async move {
-                    pty_read_loop(handle, session_id_for_loop, session).await;
+                    pty_read_loop(handle, session_id_for_loop, session, output_buffer).await;
                 });
             }
 
@@ -714,6 +956,7 @@ pub(crate) async fn pty_read_loop(
     app_handle: tauri::AppHandle,
     session_id: String,
     session: std::sync::Arc<athena_terminal::session::TerminalSession>,
+    output_buffer: std::sync::Arc<athena_core::output_buffer::OutputBuffer>,
 ) {
     log::info!("pty_read_loop[{}]: starting", session_id);
     let mut did_emit_ready = false;
@@ -828,6 +1071,10 @@ pub(crate) async fn pty_read_loop(
 
         log::trace!("pty_read_loop[{}]: read {} bytes", session_id, n);
 
+        // Convert raw PTY bytes to text and append to output buffer
+        let text = String::from_utf8_lossy(&read_buf[..n]);
+        output_buffer.append_output(&session_id, &text, None);
+
         // Step 1: parse the same bytes for the legacy cell-grid frontend.
         // `parse_bytes` returns `None` when no cells changed, in which
         // case we skip the structured event entirely.
@@ -905,7 +1152,9 @@ pub(crate) async fn pty_read_loop(
 /// Write data to a PTY session's stdin.
 #[tauri::command]
 pub async fn pty_write(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
+    validate_session_id(&id)?;
     let data_len = data.len();
+    validate_data_size(data.as_bytes(), "pty_write data")?;
     let session_manager = state.session_manager.lock().await;
     let _len = session_manager
         .write(&id, data.as_bytes())
@@ -1009,6 +1258,272 @@ pub async fn pty_get_cwd(state: State<'_, AppState>, id: String) -> Result<Optio
     }
 }
 
+/// Structured info about a PTY session's current foreground process.
+#[derive(Debug, Clone, serde::Serialize)]
+struct AgentInfo {
+    foreground_process: String,
+    task_title: Option<String>,
+    /// Session ID from the agent's history file, used to avoid
+    /// re-summarizing the same session on every poll.
+    session_id: Option<String>,
+    /// Unix timestamp (ms) of the last prompt for the session.
+    timestamp: Option<u64>,
+    /// Raw prompt text (available for LLM summarization). Only set when
+    /// the feature is enabled so the frontend can call the summarizer.
+    raw_prompt: Option<String>,
+}
+
+/// Metadata scraped from the last entry in Claude's history file.
+#[derive(Debug, Clone)]
+struct ClaudeHistoryEntry {
+    /// The raw prompt text the user typed.
+    display: String,
+    /// The session UUID this prompt belongs to.
+    session_id: String,
+    /// Unix timestamp (ms) when the prompt was sent.
+    timestamp: u64,
+}
+
+/// Scrape the last session entry from Claude's history file.
+/// Reads `~/.claude/history.jsonl` and returns the `display`, `sessionId`
+/// and `timestamp` fields of the last line.
+fn scrape_claude_task() -> Option<ClaudeHistoryEntry> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::Path::new(&home).join(".claude/history.jsonl");
+    let content = std::fs::read_to_string(path).ok()?;
+    let last_line = content.lines().last()?;
+    let json: serde_json::Value = serde_json::from_str(last_line).ok()?;
+    let display = json.get("display")?.as_str()?.trim().to_string();
+    let session_id = json.get("sessionId")?.as_str()?.to_string();
+    let timestamp = json.get("timestamp")?.as_u64()?;
+    Some(ClaudeHistoryEntry {
+        display,
+        session_id,
+        timestamp,
+    })
+}
+
+/// Scrape the latest thread name from Codex's session index.
+/// Reads `~/.codex/session_index.jsonl` and returns the `thread_name` of the last line.
+fn scrape_codex_task() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::Path::new(&home).join(".codex/session_index.jsonl");
+    let content = std::fs::read_to_string(path).ok()?;
+    let last_line = content.lines().last()?;
+    let json: serde_json::Value = serde_json::from_str(last_line).ok()?;
+    json.get("thread_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+}
+
+/// Get the active foreground process and, if it's a known agent, try to
+/// extract its current task title from the agent's own state files.
+#[tauri::command]
+pub async fn pty_agent_info(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<String, String> {
+    let session_manager = state.session_manager.lock().await;
+    let session = session_manager.get_session(&id).await;
+    drop(session_manager);
+
+    let Some(s) = session else {
+        let info = AgentInfo {
+            foreground_process: "shell".to_string(),
+            task_title: None,
+            session_id: None,
+            timestamp: None,
+            raw_prompt: None,
+        };
+        return serde_json::to_string(&info).map_err(|e| e.to_string());
+    };
+
+    // Use tcgetpgrp to get the ACTUAL foreground process group of the
+    // controlling terminal, not the shell's stored pgid. When the user runs
+    // `claude` interactively, zsh/bash job control puts it into a new
+    // process group. tcgetpgrp(master_fd) returns that foreground group.
+    let mut pgid = s.pgid.as_raw();
+    let master_fd = s.master_fd.load(std::sync::atomic::Ordering::Acquire);
+    if master_fd >= 0 {
+        let fg_pgid = unsafe { libc::tcgetpgrp(master_fd) };
+        if fg_pgid > 0 {
+            pgid = fg_pgid;
+        }
+    }
+    if pgid <= 0 {
+        let info = AgentInfo {
+            foreground_process: "shell".to_string(),
+            task_title: None,
+            session_id: None,
+            timestamp: None,
+            raw_prompt: None,
+        };
+        return serde_json::to_string(&info).map_err(|e| e.to_string());
+    }
+
+    // Get the full command line for each process in the PTY's process group.
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("ps")
+            .args(&["-o", "command=", "-g", &pgid.to_string()])
+            .output()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let process = match output {
+        Ok(out) if out.status.success() => {
+            let shell_names: std::collections::HashSet<&str> =
+                ["sh", "bash", "zsh", "fish", "csh", "tcsh"].iter().cloned().collect();
+
+            let lines: Vec<&str> = std::str::from_utf8(&out.stdout)
+                .unwrap_or("")
+                .lines()
+                .collect();
+
+            let mut detected = "shell".to_string();
+            for line in lines {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                // First whitespace-separated word is the binary path/name
+                let first_word = trimmed.split_whitespace().next().unwrap_or("");
+                let comm_name = std::path::Path::new(first_word)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(first_word);
+
+                // Skip shell processes
+                if shell_names.contains(comm_name) {
+                    continue;
+                }
+
+                // Detect node-based tools (claude, codex, opencode, etc.)
+                let lower = trimmed.to_lowercase();
+                detected = if comm_name == "node" || comm_name.ends_with("node") {
+                    if lower.contains("claude") {
+                        "claude".to_string()
+                    } else if lower.contains("codex") {
+                        "codex".to_string()
+                    } else if lower.contains("opencode") {
+                        "opencode".to_string()
+                    } else {
+                        "node".to_string()
+                    }
+                } else {
+                    comm_name.to_string()
+                };
+                break;
+            }
+            detected
+        }
+        _ => "shell".to_string(),
+    };
+
+    // Try to extract the task title and session metadata from the agent's
+    // own state files.
+    let (task_title, session_id, timestamp, raw_prompt) = match process.as_str() {
+        "claude" => {
+            match scrape_claude_task() {
+                Some(entry) => {
+                    let raw = entry.display.clone();
+                    (Some(entry.display), Some(entry.session_id), Some(entry.timestamp), Some(raw))
+                }
+                None => (None, None, None, None),
+            }
+        }
+        "codex" => (scrape_codex_task(), None, None, None),
+        _ => (None, None, None, None),
+    };
+
+    let info = AgentInfo {
+        foreground_process: process,
+        task_title,
+        session_id,
+        timestamp,
+        raw_prompt,
+    };
+    serde_json::to_string(&info).map_err(|e| e.to_string())
+}
+
+/// Get the name of the active foreground process under a PTY session.
+/// Uses `lsof` to find which command currently has the PTY's tty open.
+/// Returns `None` if the session doesn't exist or the foreground cannot be determined.
+#[tauri::command]
+pub async fn pty_foreground_process(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<String, String> {
+    let session_manager = state.session_manager.lock().await;
+    let session = session_manager.get_session(&id).await;
+    drop(session_manager);
+
+    if let Some(s) = session {
+        // Use tcgetpgrp to get the ACTUAL foreground process group of the
+        // controlling terminal, not the shell's stored pgid.
+        let mut pgid = s.pgid.as_raw();
+        let master_fd = s.master_fd.load(std::sync::atomic::Ordering::Acquire);
+        if master_fd >= 0 {
+            let fg_pgid = unsafe { libc::tcgetpgrp(master_fd) };
+            if fg_pgid > 0 {
+                pgid = fg_pgid;
+            }
+        }
+        if pgid <= 0 {
+            return Ok("shell".to_string());
+        }
+
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("ps")
+                .args(&[
+                    "-o", "command=",
+                    "-g", &pgid.to_string(),
+                ])
+                .output()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let shell_names: std::collections::HashSet<&str> = ["sh", "bash", "zsh", "fish", "csh", "tcsh"].iter().cloned().collect();
+                let lines: Vec<&str> = std::str::from_utf8(&out.stdout)
+                    .unwrap_or("")
+                    .lines()
+                    .collect();
+
+                let mut detected = "shell".to_string();
+                for line in lines {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() { continue; }
+                    let first_word = trimmed.split_whitespace().next().unwrap_or("");
+                    let comm_name = std::path::Path::new(first_word)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(first_word);
+                    if shell_names.contains(comm_name) { continue; }
+
+                    let lower = trimmed.to_lowercase();
+                    detected = if comm_name == "node" || comm_name.ends_with("node") {
+                        if lower.contains("claude") { "claude".to_string() }
+                        else if lower.contains("codex") { "codex".to_string() }
+                        else if lower.contains("opencode") { "opencode".to_string() }
+                        else { "node".to_string() }
+                    } else {
+                        comm_name.to_string()
+                    };
+                    break;
+                }
+                Ok(detected)
+            }
+            _ => Ok("shell".to_string()),
+        }
+    } else {
+        Ok("shell".to_string())
+    }
+}
+
 /// Spawn a new PTY session with the agent command to execute after startup.
 /// The `agent_cmd` is executed in the shell after the PTY is set up.
 #[tauri::command]
@@ -1023,9 +1538,27 @@ pub async fn pty_spawn_agent(
 ) -> Result<(), String> {
     let cols = cols.unwrap_or(80);
     let rows = rows.unwrap_or(24);
+    // Validate caller-supplied values (same gates as pty_spawn) plus bound the
+    // agent command payload before it is written to the PTY.
+    validate_session_id(&id).map_err(|e| {
+        log::warn!("pty_spawn_agent rejected (bad id): {}", e);
+        e
+    })?;
+    let validated_shell = validate_shell(&shell).map_err(|e| {
+        log::warn!("pty_spawn_agent rejected (bad shell '{}'): {}", shell, e);
+        e
+    })?;
+    let validated_cwd = validate_cwd(&cwd).map_err(|e| {
+        log::warn!("pty_spawn_agent rejected (bad cwd '{}'): {}", cwd, e);
+        e.to_string()
+    })?;
+    validate_data_size(agent_cmd.as_bytes(), "agent_cmd")?;
+    let shell_str = validated_shell.to_string_lossy().to_string();
+    let cwd_str = validated_cwd.to_string_lossy().to_string();
+
     let session_manager = state.session_manager.lock().await;
     let session_result = session_manager
-        .spawn(id.clone(), &shell, &cwd, cols, rows)
+        .spawn(id.clone(), &shell_str, &cwd_str, cols, rows)
         .await;
     drop(session_manager);
 
@@ -1042,8 +1575,9 @@ pub async fn pty_spawn_agent(
 
             if let Some(handle) = app_handle {
                 let session_id_for_loop = id.clone();
+                let output_buffer = std::sync::Arc::clone(&state.output_buffer);
                 tokio::spawn(async move {
-                    pty_read_loop(handle, session_id_for_loop, session).await;
+                    pty_read_loop(handle, session_id_for_loop, session, output_buffer).await;
                 });
             }
 
@@ -1062,9 +1596,24 @@ pub async fn pty_spawn_agent(
 /// Send a text message to the configured LLM provider and return the response.
 #[tauri::command]
 pub async fn athena_chat(state: State<'_, AppState>, message: String) -> Result<String, String> {
+    // The orchestrator lock is held for the whole send_message call. This is
+    // intentional, NOT a lock-across-await bug: send_message(&self) mutates
+    // shared conversation state (the provider-config and per-provider message
+    // vectors) via interior mutability, so two concurrent calls would interleave
+    // their message pushes and corrupt the conversation. The inner
+    // parking_lot mutexes inside send_anthropic/send_openai no longer hold
+    // across tool-execution awaits (see H2a fix in orchestrator.rs), so a
+    // long tool call no longer stalls unrelated runtime work — but the outer
+    // serialization of distinct chat turns is required for correctness.
     let orchestrator = state.orchestrator.lock().await;
-    if let Some(config) = build_provider_config_from_store(&state) {
-        orchestrator.set_provider_config(config);
+    match build_provider_config_from_store(&state) {
+        Ok(config) => orchestrator.set_provider_config(config),
+        // Surface the missing-key case as an actionable error instead of
+        // letting send_message fall through to the ANTHROPIC_API_KEY env-var
+        // branch (which fails with a confusing message on a normal machine).
+        Err(ProviderConfigError::MissingApiKey) => {
+            return Err("API key is required. Please set it in Settings → Athena.".to_string());
+        }
     }
     orchestrator
         .send_message(message, None)
@@ -1080,8 +1629,11 @@ pub async fn athena_chat_with_session(
     session_id: String,
 ) -> Result<String, String> {
     let orchestrator = state.orchestrator.lock().await;
-    if let Some(config) = build_provider_config_from_store(&state) {
-        orchestrator.set_provider_config(config);
+    match build_provider_config_from_store(&state) {
+        Ok(config) => orchestrator.set_provider_config(config),
+        Err(ProviderConfigError::MissingApiKey) => {
+            return Err("API key is required. Please set it in Settings → Athena.".to_string());
+        }
     }
     orchestrator.set_current_session_id(session_id);
     orchestrator
@@ -1100,12 +1652,42 @@ pub async fn athena_chat_with_images(
     let image_data: Vec<athena_core::types::ImageData> =
         serde_json::from_str(&images).map_err(|e| e.to_string())?;
     let orchestrator = state.orchestrator.lock().await;
-    if let Some(config) = build_provider_config_from_store(&state) {
-        orchestrator.set_provider_config(config);
+    match build_provider_config_from_store(&state) {
+        Ok(config) => orchestrator.set_provider_config(config),
+        Err(ProviderConfigError::MissingApiKey) => {
+            return Err("API key is required. Please set it in Settings → Athena.".to_string());
+        }
     }
     orchestrator
         .send_message(message, Some(image_data))
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// Summarize a prompt into a short (2–3 word) title using the configured LLM.
+/// Does NOT touch conversation history.
+#[tauri::command]
+pub async fn summarize_agent_title(state: State<'_, AppState>, raw_prompt: String) -> Result<String, String> {
+    // Block obviously sensitive prompts before sending anything.
+    let lowercase = raw_prompt.to_lowercase();
+    let sensitive_keywords = ["password", "token", "secret", "api_key", "apikey", "api-key", "authorization", "auth", "credential", "private key", "passphrase", "pin"];
+    if sensitive_keywords.iter().any(|&kw| lowercase.contains(kw)) {
+        return Ok("Sensitive prompt".to_string());
+    }
+    let orchestrator = state.orchestrator.lock().await;
+    match build_provider_config_from_store(&state) {
+        Ok(config) => orchestrator.set_provider_config(config),
+        // Title summarization is best-effort — if the user hasn't configured
+        // an API key yet, fall back to a placeholder rather than erroring
+        // (this command runs on every new agent pane and must not block).
+        Err(ProviderConfigError::MissingApiKey) => {
+            return Ok("Untitled".to_string());
+        }
+    }
+    orchestrator
+        .summarize_title(&raw_prompt)
+        .await
+        .map(|t| t.trim().to_string())
         .map_err(|e| e.to_string())
 }
 
@@ -1219,6 +1801,14 @@ pub fn output_buffer_list(state: State<'_, AppState>) -> Result<String, String> 
 #[tauri::command]
 pub fn output_buffer_clear(state: State<'_, AppState>, pane_id: String) -> Result<bool, String> {
     Ok(state.output_buffer.clear_pane_buffer(&pane_id))
+}
+
+/// Get the accumulated output history for a PTY session.
+/// Returns the current grid state as a JSON array of rows with cell characters.
+#[tauri::command]
+pub fn get_pane_history(state: State<'_, AppState>, pane_id: String) -> Result<String, String> {
+    let lines = state.output_buffer.get_output(&pane_id, None);
+    serde_json::to_string(&lines).map_err(|e| e.to_string())
 }
 
 // ── Output capture commands (aliases matching Electron preload API) ──────────
@@ -1584,10 +2174,38 @@ pub async fn mcp_handle_request(
             caps::MAX_REQUEST_BYTES
         ));
     }
-    let server = state.mcp_server.lock().await;
     let req =
         athena_core::mcp::McpServer::parse_request(&request).ok_or("Invalid JSON-RPC request")?;
-    let resp = server.handle_request(&req).await;
+
+    // Take the server lock, then bound how long we hold it across the
+    // (potentially slow, tool-executing) handle_request call. Without a
+    // timeout, a single hung tool call would block every other MCP IPC call
+    // for as long as the tool runs. The lock is a tokio::sync::Mutex (which
+    // yields correctly, so this does not stall the runtime) but it still
+    // serializes all MCP requests; the timeout bounds that serialization so
+    // a wedged request can't pin the queue indefinitely.
+    let server = state.mcp_server.lock().await;
+    let resp = match tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        server.handle_request(&req),
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(_) => {
+            log::warn!("MCP handle_request timed out after 60s for method {}", req.method);
+            athena_core::mcp::JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: req.id.clone(),
+                result: None,
+                error: Some(athena_core::mcp::JsonRpcError {
+                    code: -32603,
+                    message: "request timed out".into(),
+                    data: None,
+                }),
+            }
+        }
+    };
     Ok(athena_core::mcp::McpServer::serialize_response(&resp))
 }
 

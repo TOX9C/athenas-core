@@ -27,10 +27,10 @@ pub fn WorkspaceList() -> Element {
                     {
                         let is_active = active_space_id.as_deref() == Some(&space.id);
                         let bg = if is_active { "var(--bgTertiary)" } else { "transparent" };
-                        let indicator = if is_active { "var(--accent)" } else { "transparent" };
+                        let text_color = if is_active { "var(--text)" } else { "var(--textMuted)" };
+                        let font_weight = if is_active { "600" } else { "400" };
                         let space_id = space.id.clone();
                         let space_id_close = space.id.clone();
-                        let space_color = space.color.clone();
                         let space_name = space.name.clone();
                         // Count agent statuses for this space's panes
                         let mut idle_count = 0usize;
@@ -54,17 +54,23 @@ pub fn WorkspaceList() -> Element {
                             div {
                                 key: "{space_id}",
                                 class: "workspace-row",
-                                style: "display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 9px; border-left: 3px solid {indicator}; border-radius: var(--radius-sm); cursor: pointer; background: {bg}; transition: background var(--dur-fast) var(--ease);",
+                                style: "display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; background: {bg}; transition: background var(--dur-fast) var(--ease);",
                                 onclick: move |_| {
                                     workspace_state.write().set_active_space(&space_id);
                                 },
 
-                                div {
-                                    style: "width: 8px; height: 8px; border-radius: 50%; background: {space_color}; flex-shrink: 0;",
+                                if is_active {
+                                    div {
+                                        style: "width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0;",
+                                    }
+                                } else {
+                                    div {
+                                        style: "width: 6px; height: 6px; flex-shrink: 0;",
+                                    }
                                 }
 
-                                span {
-                                    style: "font-size: var(--text-xs); color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                                div {
+                                    style: "font-size: var(--text-xs); color: {text_color}; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: {font_weight};",
                                     "{space_name}"
                                 }
 

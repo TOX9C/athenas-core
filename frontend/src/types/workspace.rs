@@ -22,6 +22,12 @@ pub struct CustomAgent {
     pub id: String,
     pub alias: String,
     pub command: String,
+    /// When true, this custom agent is treated as Claude for resume: its
+    /// extra command flags are preserved and `--resume <id>` appended, and it
+    /// appears in the resume dropdown. `#[serde(default)]` so existing stored
+    /// agents (without the field) deserialize to `false`.
+    #[serde(default)]
+    pub is_claude: bool,
 }
 
 /// Grid layout template for a space.
@@ -68,6 +74,17 @@ pub struct PaneConfig {
     /// Resume session ID for agents that support session resumption (e.g. Claude Code).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_id: Option<String>,
+    /// Full resume command extracted from PTY output (useful for Shell panes
+    /// where the agent was started manually). When present, takes precedence
+    /// over `resume_id` for displaying the banner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_cmd: Option<String>,
+    /// Whether the user dismissed the resume banner for the current
+    /// `resume_id`/`resume_cmd`. Persisted so a dismissed banner stays
+    /// hidden across app restarts. A newly captured (different) id resets
+    /// this to `Some(false)` so the banner reappears for the new session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_dismissed: Option<bool>,
 }
 
 /// A workspace space (tab group) containing panes.

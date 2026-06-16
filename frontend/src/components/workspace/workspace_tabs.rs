@@ -11,7 +11,7 @@ pub struct WorkspaceTabsProps {
 
 #[component]
 pub fn WorkspaceTabs(props: WorkspaceTabsProps) -> Element {
-    let workspace_state = use_workspace_store();
+    let mut workspace_state = use_workspace_store();
 
     // Wrap each space in `Rc<Space>` so the child component receives a cheap
     // refcount handle instead of a full clone of `Space` (which contains a
@@ -21,7 +21,7 @@ pub fn WorkspaceTabs(props: WorkspaceTabsProps) -> Element {
         .read()
         .spaces
         .iter()
-        .map(Rc::new)
+        .map(|s| Rc::new(s.clone()))
         .collect();
 
     let mut items: Vec<Element> = Vec::with_capacity(space_handles.len());
@@ -49,7 +49,7 @@ pub fn WorkspaceTabs(props: WorkspaceTabsProps) -> Element {
     rsx! {
         div {
             class: "workspace-tabs",
-            style: "display: flex; align-items: center; height: 32px; padding: 0 4px; overflow-x: auto; flex-shrink: 0;",
+            style: "display: flex; align-items: center; height: 32px; padding: 0 4px; overflow-x: auto; min-width: 0; flex: 0 1 auto;",
 
             {items.into_iter()}
 

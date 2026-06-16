@@ -68,10 +68,13 @@ fn main() {
             pty_get_cwd,
             pty_spawn_agent,
             pty_default_shell,
+            pty_foreground_process,
+            pty_agent_info,
             // Athena / LLM
             athena_chat,
             athena_chat_with_session,
             athena_chat_with_images,
+            summarize_agent_title,
             athena_clear_context,
             athena_set_session_context,
             athena_user_answer,
@@ -84,6 +87,7 @@ fn main() {
             output_capture_list_agents,
             output_capture_get_info,
             output_capture_clear,
+            get_pane_history,
             // Notifications
             notification_push,
             notification_history,
@@ -173,23 +177,55 @@ fn main() {
     }
 
     app.run(|app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { api: _, .. } = event {
-            log::info!("Exit requested -- initiating graceful shutdown");
-
-            let state = app_handle.state::<state::AppState>();
-
-            // Shut down MCP server (synchronous — no tokio runtime on main thread)
-            {
-                let mcp_server = Arc::clone(&state.mcp_server);
-                if let Ok(mut server) = mcp_server.try_lock() {
-                    server.shutdown();
-                };
+        match event {
+            tauri::RunEvent::Ready => {
+                // Real-time file persistence — no load needed
             }
+            tauri::RunEvent::ExitRequested { api: _, .. } => {
+                log::info!("Exit requested -- initiating graceful shutdown");
 
-            // Shut down agent comms
-            let _ = state.agent_comms.shutdown_agent_comms();
+                let state = app_handle.state::<state::AppState>();
 
-            log::info!("Graceful shutdown complete");
+                // Shut down MCP server (synchronous — no tokio runtime on main thread)
+                {
+                    let mcp_server = Arc::clone(&state.mcp_server);
+                    if let Ok(mut server) = mcp_server.try_lock() {
+                        server.shutdown();
+                    };
+                }
+
+                // Shut down agent comms
+                let _ = state.agent_comms.shutdown_agent_comms();
+
+                // Gracefully interrupt + reap every live PTY so foreground
+                // processes (claude, codex, …) are closed cleanly rather than
+                // orphaned. Runs before the store flush so any resume id the
+                // scanner captured from the live PTY stream is already on
+                // disk before we tear the runtime down.
+                {
+                    let sm = Arc::clone(&state.session_manager);
+                    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                        if let Ok(manager) = sm.try_lock() {
+                            rt.block_on(manager.shutdown_all());
+                        } else {
+                            log::warn!("session_manager lock contended during exit; PTYs may be orphaned");
+                        }
+                    }
+                }
+
+                // Flush any dirty writes to disk before exit
+                {
+                    let store = Arc::clone(&state.store);
+                    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                        if let Err(e) = rt.block_on(store.flush_if_dirty()) {
+                            log::error!("Failed to flush KV store on exit: {}", e);
+                        }
+                    }
+                }
+
+                log::info!("Graceful shutdown complete");
+            }
+            _ => {}
         }
     });
 }

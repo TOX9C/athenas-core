@@ -4,6 +4,27 @@ use crate::stores::athena::use_athena_store;
 use crate::stores::notification::{use_notification_store, NotificationType};
 use dioxus::prelude::*;
 
+/// Mark the first pending input-request notification as read so the modal
+/// dismisses. Used by all three dismiss paths (Enter, Send button, modal
+/// on_close) so they agree — previously only the Enter handler did this,
+/// leaving the Send button and backdrop click re-popping the modal.
+///
+/// Re-derives the pending notification from the store rather than taking it
+/// as an argument, so each event handler can call it independently (the
+/// `pending` value computed in the component body is moved into the rsx
+/// closure and can't be borrowed from multiple handlers).
+fn dismiss_pending(
+    notifications: &mut Signal<Vec<crate::stores::notification::NotificationRecord>>,
+) {
+    let mut notifs = notifications.write();
+    if let Some(n) = notifs
+        .iter_mut()
+        .find(|n| matches!(n.r#type, NotificationType::NeedsInput) && !n.read)
+    {
+        n.read = true;
+    }
+}
+
 #[component]
 pub fn InputRequestModal() -> Element {
     let mut free_text = use_signal(String::new);
@@ -30,7 +51,11 @@ pub fn InputRequestModal() -> Element {
     rsx! {
         Modal {
             title: "Agent Request",
-            on_close: move |_| {},
+            // Real dismiss handler (was a no-op) — backdrop click / X now
+            // clears the request instead of leaving the modal stuck.
+            on_close: move |_| {
+                dismiss_pending(&mut notifications);
+            },
             width: 440,
 
             div {
@@ -71,23 +96,16 @@ pub fn InputRequestModal() -> Element {
                         oninput: move |e| free_text.set(e.value()),
                         onkeydown: move |e: KeyboardEvent| {
                             if e.key() == Key::Enter && !free_text().trim().is_empty() {
+                                e.prevent_default();
                                 let text = free_text();
                                 free_text.set(String::new());
-                                // Send via athena chat
                                 let mut athena_write = athena.write();
                                 athena_write.set_loading(true);
                                 drop(athena_write);
                                 spawn(async move {
                                     let _ = crate::tauri_bridge::athena_chat(&text).await;
                                 });
-                                // Mark notification as read
-                                if let Some(ref notif) = pending {
-                                    let notif_id = notif.id.clone();
-                                    let mut notifs = notifications.write();
-                                    if let Some(n) = notifs.iter_mut().find(|n| n.id == notif_id) {
-                                        n.read = true;
-                                    }
-                                }
+                                dismiss_pending(&mut notifications);
                             }
                         },
                         placeholder: "Type a response..."
@@ -99,10 +117,17 @@ pub fn InputRequestModal() -> Element {
                             if !free_text().trim().is_empty() {
                                 let text = free_text();
                                 free_text.set(String::new());
+                                let mut athena_write = athena.write();
+                                athena_write.set_loading(true);
+                                drop(athena_write);
                                 spawn(async move {
                                     let _ = crate::tauri_bridge::athena_chat(&text).await;
                                 });
                             }
+                            // Always dismiss — previously the Send button
+                            // sent the text but never marked the request read,
+                            // so the modal re-appeared immediately.
+                            dismiss_pending(&mut notifications);
                         },
                         IconSend { size: Some(14), color: Some("currentColor".to_string()) }
                         "Send"

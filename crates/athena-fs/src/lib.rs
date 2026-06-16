@@ -156,10 +156,54 @@ pub fn read_file_content(path: &Path) -> Result<String, FsError> {
 pub fn write_file_content(path: &Path, content: &str) -> Result<(), FsError> {
     let validator = home_validator()?;
     let _ = validator.validate_write(path)?;
-    let temp_path = path.with_extension("athena_tmp");
-    fs::write(&temp_path, content)?;
+
+    // Build a unique temp-file path in the SAME directory (atomic rename
+    // requires same-filesystem source+dest). The previous
+    // `path.with_extension("athena_tmp")` collided across sibling files that
+    // shared a stem and differed only in extension (`foo.json` and `foo.toml`
+    // both became `foo.athena_tmp`), and would clobber a real file literally
+    // named `*.athena_tmp`. Use the full file name + PID + timestamp suffix
+    // so concurrent writes never race on the same temp file.
+    let temp_path = unique_temp_path(path);
+
+    // Open the temp file with O_EXCL (create_new): if a file/symlink already
+    // exists at temp_path, this fails. That closes the TOCTOU window where an
+    // attacker could plant a symlink named after our temp file between
+    // validate_write and the write, redirecting content outside the sandbox.
+    // Writing through a pre-existing handle (rather than fs::write which
+    // truncates whatever is there) is what makes this safe.
+    {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(content.as_bytes())?;
+        file.flush()?;
+    }
+
+    // Atomic replace. On Unix, rename() over an existing path does NOT follow
+    // a symlink at the destination (it replaces the directory entry itself),
+    // so a symlink swapped in at `path` after validation is itself replaced
+    // rather than written-through.
     fs::rename(&temp_path, path)?;
     Ok(())
+}
+
+/// Construct a same-directory temp path that won't collide with other writes
+/// or with real files. Format: `<dir>/<filename>.athena_tmp.<pid>.<nanos>`.
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    let temp_name = format!("{}.athena_tmp.{}.{}", file_name, pid, nanos);
+    path.with_file_name(temp_name)
 }
 
 /// Returns the names of all immediate sub-directories inside `dir`.

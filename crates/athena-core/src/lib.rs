@@ -4,6 +4,7 @@ pub mod mcp;
 pub mod notification;
 pub mod orchestrator;
 pub mod output_buffer;
+pub mod resume_scanner;
 pub mod output_capture;
 pub mod plan_manager;
 pub mod search;

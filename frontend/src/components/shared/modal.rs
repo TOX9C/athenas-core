@@ -15,16 +15,32 @@ pub struct ModalProps {
 #[component]
 pub fn Modal(props: ModalProps) -> Element {
     let width_str = format!("{}px", props.width);
+    let on_close = props.on_close;
 
     rsx! {
         div {
             class: "modal-overlay modal-scrim",
-            style: "position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 72%, transparent);",
-            onclick: move |_| props.on_close.call(()),
+            // role+aria on the overlay let assistive tech announce the dialog.
+            // tabindex lets the overlay receive keyboard focus (and thus the
+            // onkeydown Escape handler below); without it, Escape never fires
+            // because focus stays on the trigger element behind the modal.
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-label": "{props.title}",
+            tabindex: "-1",
+            style: "position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 72%, transparent); outline: none;",
+            onclick: move |_| on_close.call(()),
+            // Escape closes — standard WAI-ARIA dialog behavior. Previously the
+            // modal could only be dismissed by clicking the backdrop or X,
+            // which is hostile to keyboard users.
+            onkeydown: move |e: KeyboardEvent| {
+                if e.key() == Key::Escape {
+                    e.prevent_default();
+                    on_close.call(());
+                }
+            },
             div {
                 class: "modal-container modal-card",
-                role: "dialog",
-                "aria-modal": "true",
                 style: "background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); width: {width_str}; max-width: 90vw; max-height: 82vh; display: flex; flex-direction: column; overflow: hidden;",
                 onclick: move |e| e.stop_propagation(),
 
@@ -41,7 +57,7 @@ pub fn Modal(props: ModalProps) -> Element {
                     button {
                         class: "icon-btn",
                         "aria-label": "Close dialog",
-                        onclick: move |_| props.on_close.call(()),
+                        onclick: move |_| on_close.call(()),
                         IconClose { size: Some(16), color: Some("currentColor".to_string()) }
                     }
                 }

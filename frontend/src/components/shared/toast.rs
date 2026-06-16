@@ -29,9 +29,20 @@ pub struct ToastState {
     pub toasts: Vec<Toast>,
 }
 
+/// Maximum number of toasts retained. Without a cap a misbehaving backend
+/// (rapid error events) or repeated user actions could grow the Vec
+/// indefinitely. Matches the notification store's MAX_NOTIFICATIONS (50).
+const MAX_TOASTS: usize = 50;
+
 impl ToastState {
     pub fn push(&mut self, toast: Toast) {
         self.toasts.push(toast);
+        // Drop oldest toasts beyond the cap so memory stays bounded. The
+        // newest toasts are the most relevant, so trim from the front.
+        let overflow = self.toasts.len().saturating_sub(MAX_TOASTS);
+        if overflow > 0 {
+            self.toasts.drain(0..overflow);
+        }
     }
 
     pub fn remove(&mut self, id: &str) {

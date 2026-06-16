@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
+use wasm_bindgen::JsCast;
 
 /// Whether a theme is designed for dark or light environments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, Display)]
@@ -292,26 +293,34 @@ pub fn apply_theme_to_dom(theme_name: &str) {
     set_css_property("--themeNoiseOpacity", &format!("{}", c.noise_opacity));
 }
 
+/// Set a CSS custom property on the document root via typed DOM bindings.
+///
+/// This used to build a JS string and run it through `js_sys::Function::new_no_args`
+/// (i.e. `new Function(code)`), which the JS engine treats as `eval`. The app's
+/// Content-Security-Policy only allows `'self' 'wasm-unsafe-eval'`, so that threw
+/// `EvalError: Refused to evaluate a string as JavaScript` on every theme apply —
+/// including the mount-time apply, which aborted the Dioxus runtime with a
+/// `RefCell already borrowed` panic and left the UI unable to re-render.
+/// `CssStyleDeclaration::set_property` performs the identical DOM mutation but
+/// never invokes the JS parser, so it needs no CSP relaxation.
 fn set_css_property(property: &str, value: &str) {
-    let safe_value = value.replace('\'', "\\'").replace('"', "\\\"");
-    let script = format!(
-        "document.documentElement.style.setProperty('{}', '{}');",
-        property, safe_value
-    );
-    if let Some(window) = web_sys::window() {
-        let _ = js_sys::Function::new_no_args(&script).call0(&window);
-    }
+    let Some(window) = web_sys::window() else { return };
+    let Some(document) = window.document() else { return };
+    let Some(html_el) = document.document_element() else { return };
+    // `style` is defined on `HtmlElement`, not `Element`; `document_element`
+    // returns the latter, so downcast before accessing the inline style.
+    let Some(html) = html_el.dyn_ref::<web_sys::HtmlElement>() else { return };
+    let style = html.style();
+    let _ = style.set_property(property, value);
 }
 
+/// Set `data-theme` on the document root. Same reasoning as `set_css_property`:
+/// use `Element::set_attribute` instead of `eval`-ing a JS string.
 fn set_data_theme(value: &str) {
-    let safe_value = value.replace('\'', "\\'").replace('"', "\\\"");
-    let script = format!(
-        "document.documentElement.setAttribute('data-theme', '{}');",
-        safe_value
-    );
-    if let Some(window) = web_sys::window() {
-        let _ = js_sys::Function::new_no_args(&script).call0(&window);
-    }
+    let Some(window) = web_sys::window() else { return };
+    let Some(document) = window.document() else { return };
+    let Some(html) = document.document_element() else { return };
+    let _ = html.set_attribute("data-theme", value);
 }
 
 /// Apply the user-overridable mono font + base size. Display/UI families are fixed

@@ -194,9 +194,12 @@ impl SwarmCoordinator {
 
     /// Send a message to an agent's mailbox (atomic write with lock).
     ///
-    /// Uses a per-agent advisory lock file to prevent TOCTOU races when
-    /// concurrent writers read-modify-write the same mailbox. The lock is
-    /// acquired by exclusively creating `.lock`, then released by removing it.
+    /// Uses `flock(2)` advisory locking on a per-agent lock file to serialize
+    /// concurrent writers (which may be separate agent processes). Unlike the
+    /// old create_new + stale-removal heuristic, `flock` is automatically
+    /// released when the process exits — so a crashed writer cannot leave a
+    /// stale lock, and we never risk stealing a legitimate slow writer's lock
+    /// (which would cause silent message loss).
     pub async fn send_message(
         &self,
         dir: &str,
@@ -205,83 +208,70 @@ impl SwarmCoordinator {
         msg: &str,
     ) -> Result<(), SwarmError> {
         let mailbox_dir = PathBuf::from(dir).join(".ade").join("mailbox");
-        fs::create_dir_all(&mailbox_dir).await?;
-
         let mailbox_path = mailbox_dir.join(format!("{}.json", to));
         let lock_path = mailbox_dir.join(format!("{}.lock", to));
         let tmp_path = mailbox_dir.join(format!("{}.json.tmp.{}", to, now_ms()));
+        // Clone to owned so the spawn_blocking closure can be 'static.
+        let from = from.to_string();
+        let to = to.to_string();
+        let msg = msg.to_string();
 
-        // Acquire an advisory lock by exclusively creating the lock file.
-        // Retry with backoff if another writer holds the lock.
-        let mut acquired = false;
-        for attempt in 0..20 {
-            match fs::OpenOptions::new()
+        // The entire locked read-modify-write runs in spawn_blocking because
+        // flock + std::fs are blocking. Holding the flock guard across the
+        // blocking fs calls is exactly what serializes the writers.
+        let result = tokio::task::spawn_blocking(move || -> Result<(), SwarmError> {
+            std::fs::create_dir_all(&mailbox_dir)?;
+            // Open or create the lock file, then acquire an exclusive flock.
+            // LOCK_EX blocks until the lock is acquired — no retry loop, no
+            // stale-lock heuristic. The lock auto-releases on handle drop /
+            // process death.
+            let lock_file = std::fs::OpenOptions::new()
                 .write(true)
-                .create_new(true)
-                .open(&lock_path)
-                .await
-            {
-                Ok(_) => {
-                    acquired = true;
-                    break;
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)?;
+            // `as_raw_fd` + libc::flock. On any error we return and the
+            // handle (and lock) drop, releasing the lock.
+            let fd = std::os::unix::io::AsRawFd::as_raw_fd(&lock_file);
+            let rc = unsafe { libc::flock(fd, libc::LOCK_EX) };
+            if rc != 0 {
+                return Err(SwarmError::Io(std::io::Error::last_os_error()));
+            }
+            // Lock held: do the read-modify-write. `lock_file` stays in scope
+            // and is dropped (releasing the lock) at the end of this closure.
+            let result = (|| -> Result<(), SwarmError> {
+                let mut messages: Vec<MailboxMessage> =
+                    match std::fs::read_to_string(&mailbox_path) {
+                        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+                        Err(_) => Vec::new(),
+                    };
+
+                messages.push(MailboxMessage {
+                    id: generate_msg_id(),
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    content: msg.to_string(),
+                    timestamp: now_ms(),
+                    read: false,
+                });
+
+                let content = serde_json::to_string_pretty(&messages)?;
+                {
+                    let mut file = std::fs::File::create(&tmp_path)?;
+                    std::io::Write::write_all(&mut file, content.as_bytes())?;
+                    std::io::Write::flush(&mut file)?;
                 }
-                Err(_) => {
-                    // Lock is held by another writer; back off and retry.
-                    let delay = std::time::Duration::from_millis(10 * (attempt + 1));
-                    tokio::time::sleep(delay.min(std::time::Duration::from_millis(200))).await;
-                }
-            }
-        }
+                std::fs::rename(&tmp_path, &mailbox_path)?;
+                Ok(())
+            })();
+            // Drop the lock file handle → flock released. (Implicit at end of
+            // closure, but explicit comment documents the invariant.)
+            result
+        })
+        .await
+        .map_err(|e| SwarmError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
 
-        if !acquired {
-            // Stale lock fallback: remove the lock file after a long wait
-            // (2 seconds) and try once more. This handles crashed writers.
-            log::warn!("Mailbox lock for '{}' appears stale, removing", to);
-            let _ = fs::remove_file(&lock_path).await;
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-                .await
-            {
-                Ok(_) => {}
-                Err(e) => return Err(SwarmError::Io(e)),
-            }
-        }
-
-        // Read-modify-write within the lock scope
-        let result = async {
-            // Read existing messages
-            let mut messages: Vec<MailboxMessage> = match fs::read_to_string(&mailbox_path).await {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-                Err(_) => Vec::new(),
-            };
-
-            messages.push(MailboxMessage {
-                id: generate_msg_id(),
-                from: from.to_string(),
-                to: to.to_string(),
-                content: msg.to_string(),
-                timestamp: now_ms(),
-                read: false,
-            });
-
-            let content = serde_json::to_string_pretty(&messages)?;
-            {
-                let mut file = fs::File::create(&tmp_path).await?;
-                file.write_all(content.as_bytes()).await?;
-                file.flush().await?;
-            }
-
-            fs::rename(&tmp_path, &mailbox_path).await?;
-            Ok(())
-        }
-        .await;
-
-        // Always release the lock
-        let _ = fs::remove_file(&lock_path).await;
-
-        result
+        Ok(result)
     }
 
     /// Read the mailbox for a given agent.

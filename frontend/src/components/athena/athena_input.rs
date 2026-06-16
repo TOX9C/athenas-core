@@ -1,5 +1,6 @@
 use crate::components::shared::icon::IconSend;
 use crate::stores::athena::{use_athena_store, AthenaMessage, AthenaState, MessageRole};
+use crate::stores::ui::use_ui_store;
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 
@@ -177,16 +178,42 @@ fn submit_message(
 #[component]
 pub fn AthenaInput() -> Element {
     let mut athena_state = use_athena_store();
+    let mut ui_state = use_ui_store();
     let mut input_text = use_signal(String::new);
     let mut input_history = use_signal(Vec::<String>::new);
     let mut history_idx = use_signal(|| None::<usize>);
     let mut show_file_picker = use_signal(|| false);
 
     let is_loading = athena_state.read().is_loading;
+    // Block sending until we've confirmed a key is set. This is what makes
+    // the failure mode loud-and-clear ("set your key") instead of the old
+    // behaviour where the request left, hit the env-var fallback, and came
+    // back with a confusing orchestrator error.
+    let api_configured = athena_state.read().api_configured;
+    let is_blocked = matches!(api_configured, Some(false));
 
     rsx! {
         div {
             style: "border-top: 1px solid var(--border); padding: 10px 14px; background: var(--bgSecondary); flex-shrink: 0;",
+
+            // Banner shown when no API key is configured. Replaces the
+            // "silently fails to send" experience with an actionable prompt.
+            if is_blocked {
+                div {
+                    style: "display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--warning); border-radius: var(--radius-sm); background: var(--bgTertiary);",
+                    span {
+                        style: "font-size: var(--text-xs); color: var(--warning);",
+                        "No API key set — Athena can't send messages yet."
+                    }
+                    button {
+                        class: "btn-secondary btn-sm",
+                        onclick: move |_| {
+                            ui_state.write().show_settings_modal = true;
+                        },
+                        "Open Settings"
+                    }
+                }
+            }
 
             // Input area
             div {
@@ -197,6 +224,8 @@ pub fn AthenaInput() -> Element {
                     style: "flex: 1; min-height: 40px; max-height: 120px; resize: vertical;",
                     value: "{input_text}",
                     onkeydown: move |e: KeyboardEvent| {
+                        // Ignore Enter while blocked — there's nowhere to send.
+                        if is_blocked { return; }
                         if e.key() == Key::Enter && !e.modifiers().contains(Modifiers::SHIFT) {
                             e.prevent_default();
                             let text = input_text.read().clone();
@@ -227,20 +256,31 @@ pub fn AthenaInput() -> Element {
                             }
                         }
                     },
-                    placeholder: "Ask Athena... (Shift+Enter for newline)",
-                    disabled: is_loading,
+                    placeholder: if is_blocked {
+                        "Set an API key in Settings to start chatting…".to_string()
+                    } else {
+                        "Ask Athena... (Shift+Enter for newline)".to_string()
+                    },
+                    disabled: is_loading || is_blocked,
                 }
 
                 button {
                     class: "btn-primary",
-                    style: "padding: 0 16px; height: 40px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;",
-                    style: if is_loading { "opacity: 0.5;" } else { "" },
+                    // Single merged style — two `style:` attributes previously
+                    // collided (last-writer-wins), so the entire inline style
+                    // was replaced by just "opacity: 0.5;" / "" and the button
+                    // lost its height/padding/layout on every render.
+                    style: format!(
+                        "padding: 0 16px; height: 40px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;{}",
+                        if is_loading || is_blocked { " opacity: 0.5;" } else { "" }
+                    ),
                     title: "Send (Enter)",
                     onclick: move |_| {
+                        if is_blocked { return; }
                         let text = input_text.read().clone();
                         submit_message(&text, &mut athena_state, &mut input_text, &mut input_history, &mut history_idx);
                     },
-                    disabled: is_loading,
+                    disabled: is_loading || is_blocked,
                     IconSend { size: Some(16), color: Some("currentColor".to_string()) }
                     "Send"
                 }

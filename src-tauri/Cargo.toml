@@ -18,9 +18,21 @@ base64 = "0.22"
 path-clean = "1.0"
 tauri-runtime = "2"
 uuid = { workspace = true }
-keyring = "3"
+# keyring v3 ships NO default backends — without an explicit platform
+# feature it silently falls back to an in-memory mock store that loses the
+# secret when the process exits. That made the API key "save" successfully
+# but vanish on app restart (base URL + model survived because they use the
+# SQLite store, not the keyring). Enable the native backend for each OS so
+# the key is persisted in the OS keychain / credential store.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "linux-native-sync-persistent",
+    "crypto-rust",
+] }
 env_logger = "0.11"
-parking_lot = "0.12"
+libc = "0.2"
+parking_lot = { version = "0.12", features = ["send_guard"] }
 athena-core = { path = "../crates/athena-core" }
 athena-fs = { path = "../crates/athena-fs" }
 athena-store = { path = "../crates/athena-store" }

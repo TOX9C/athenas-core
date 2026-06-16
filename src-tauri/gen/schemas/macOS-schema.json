@@ -825,10 +825,22 @@
           "markdownDescription": "Enables the plugin_unregister command without any pre-configured scope."
         },
         {
+          "description": "Enables the pty_agent_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pty-agent-info",
+          "markdownDescription": "Enables the pty_agent_info command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pty_default_shell command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pty-default-shell",
           "markdownDescription": "Enables the pty_default_shell command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pty_foreground_process command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pty-foreground-process",
+          "markdownDescription": "Enables the pty_foreground_process command without any pre-configured scope."
         },
         {
           "description": "Enables the pty_get_cwd command without any pre-configured scope.",
@@ -991,6 +1003,12 @@
           "type": "string",
           "const": "allow-store-set",
           "markdownDescription": "Enables the store_set command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the summarize_agent_title command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-summarize-agent-title",
+          "markdownDescription": "Enables the summarize_agent_title command without any pre-configured scope."
         },
         {
           "description": "Enables the swarm_read_mailbox command without any pre-configured scope.",
@@ -1497,10 +1515,22 @@
           "markdownDescription": "Denies the plugin_unregister command without any pre-configured scope."
         },
         {
+          "description": "Denies the pty_agent_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pty-agent-info",
+          "markdownDescription": "Denies the pty_agent_info command without any pre-configured scope."
+        },
+        {
           "description": "Denies the pty_default_shell command without any pre-configured scope.",
           "type": "string",
           "const": "deny-pty-default-shell",
           "markdownDescription": "Denies the pty_default_shell command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pty_foreground_process command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pty-foreground-process",
+          "markdownDescription": "Denies the pty_foreground_process command without any pre-configured scope."
         },
         {
           "description": "Denies the pty_get_cwd command without any pre-configured scope.",
@@ -1663,6 +1693,12 @@
           "type": "string",
           "const": "deny-store-set",
           "markdownDescription": "Denies the store_set command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the summarize_agent_title command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-summarize-agent-title",
+          "markdownDescription": "Denies the summarize_agent_title command without any pre-configured scope."
         },
         {
           "description": "Denies the swarm_read_mailbox command without any pre-configured scope.",

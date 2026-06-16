@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pty-foreground-process"
+description = "Enables the pty_foreground_process command without any pre-configured scope."
+commands.allow = ["pty_foreground_process"]
+
+[[permission]]
+identifier = "deny-pty-foreground-process"
+description = "Denies the pty_foreground_process command without any pre-configured scope."
+commands.deny = ["pty_foreground_process"]

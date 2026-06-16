@@ -250,6 +250,21 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
     use_effect(move || {
         let mut athena = athena_state;
         spawn(async move {
+            // Probe the backend for the real LLM configuration state BEFORE
+            // doing anything else, so the panel renders with an accurate
+            // "is the API configured?" indicator and the correct model label
+            // instead of the stale in-memory defaults. `llm.api_key` is the
+            // keyring-backed sentinel ("set" / "not_set"); `llm.model` is the
+            // user-entered model string.
+            match tauri_bridge::store_get("llm.api_key").await {
+                Ok(v) => athena.write().set_api_configured(Some(v == "set")),
+                Err(_) => athena.write().set_api_configured(Some(false)),
+            }
+            match tauri_bridge::store_get("llm.model").await {
+                Ok(m) if !m.is_empty() => athena.write().set_configured_model(Some(m)),
+                _ => athena.write().set_configured_model(None),
+            }
+
             match tauri_bridge::session_list().await {
                 Ok(json) => {
                     if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&json) {
@@ -334,10 +349,28 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
 
     let state = athena_state.read();
 
-    let model_label = if state.model.is_empty() {
-        "claude".to_string()
-    } else {
-        state.model.clone()
+    // Prefer the model actually persisted in the store over the stale
+    // in-memory default. Falls back to "claude" only when nothing is
+    // configured (matches the original display behaviour).
+    let model_label = state
+        .configured_model
+        .clone()
+        .filter(|m| !m.is_empty())
+        .or_else(|| {
+            if state.model.is_empty() {
+                None
+            } else {
+                Some(state.model.clone())
+            }
+        })
+        .unwrap_or_else(|| "claude".to_string());
+
+    // A small status dot in the header: green when an API key is set,
+    // amber when confirmed unset, neutral while still probing on mount.
+    let (status_color, status_title) = match state.api_configured {
+        Some(true) => ("var(--success)", "API key configured"),
+        Some(false) => ("var(--warning)", "API key not set — configure in Settings"),
+        None => ("var(--textDim)", "Checking configuration…"),
     };
 
     let wrapper_style = match mode {
@@ -367,6 +400,13 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                         class: "badge",
                         style: "color: var(--accent);",
                         "{model_label}"
+                    }
+
+                    // Configuration status dot — reflects the backend's
+                    // keyring-backed probe, not the in-memory defaults.
+                    span {
+                        title: "{status_title}",
+                        style: "width: 8px; height: 8px; border-radius: 50%; background: {status_color}; flex-shrink: 0;",
                     }
 
                     if state.is_streaming {

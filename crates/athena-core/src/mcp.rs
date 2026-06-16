@@ -20,6 +20,12 @@ use crate::tool_executor::ToolExecutor;
 /// buggy clients that never send a newline.
 const MCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+/// Maximum size in bytes of a single MCP JSON-RPC request line. Caps memory
+/// usage when a client streams a huge line without a newline (a cheap local
+/// DoS). 1 MiB is generous for these payloads; the request-body cap in the
+/// Tauri command layer (`MAX_REQUEST_BYTES`) is the same.
+const MAX_MCP_LINE_BYTES: usize = 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -1018,9 +1024,8 @@ impl ConnectionHandler {
 
         // Split into read/write halves for non-blocking I/O.
         let (read_half, write_half) = tokio::io::split(stream);
-        let reader = BufReader::new(read_half);
+        let mut reader = BufReader::new(read_half);
         let write_half = Arc::new(tokio::sync::Mutex::new(write_half));
-        let mut lines = reader.lines();
 
         // Register the std TcpStream clone for broadcast_notification
         // (which uses sync I/O). Will be removed on disconnect.
@@ -1028,21 +1033,56 @@ impl ConnectionHandler {
             clients.insert(peer.clone(), std_clone);
         }
 
+        // Capped line buffer: bound each request at MAX_MCP_LINE_BYTES so a
+        // client streaming a never-terminated line cannot force unbounded
+        // allocation before the JSON is parsed.
+        let mut buf: Vec<u8> = Vec::with_capacity(8192);
+
         loop {
-            let line = match timeout(MCP_IDLE_TIMEOUT, lines.next_line()).await {
-                Ok(Ok(Some(l))) => l,
-                Ok(Ok(None)) => break, // EOF
-                Ok(Err(e)) => {
-                    log::warn!("MCP: read error from {}: {}", peer, e);
-                    break;
-                }
-                Err(_) => {
-                    log::info!(
-                        "MCP: client {} idle for >{}s, closing connection",
-                        peer,
-                        MCP_IDLE_TIMEOUT.as_secs()
-                    );
-                    break;
+            buf.clear();
+            // Read a full line with an idle timeout, aborting if the
+            // accumulated size exceeds the cap.
+            let line: String = {
+                let mut total: usize = 0;
+                let read_result = timeout(MCP_IDLE_TIMEOUT, async {
+                    loop {
+                        let n = match reader.read_until(b'\n', &mut buf).await {
+                            Ok(n) => n,
+                            Err(e) => {
+                                log::warn!("MCP: read error from {}: {}", peer, e);
+                                return Err(());
+                            }
+                        };
+                        if n == 0 {
+                            return Ok(None); // EOF
+                        }
+                        total += n;
+                        if total > MAX_MCP_LINE_BYTES {
+                            log::warn!(
+                                "MCP: disconnecting {} — line exceeded {} bytes",
+                                peer,
+                                MAX_MCP_LINE_BYTES
+                            );
+                            return Err(());
+                        }
+                        if buf.last() == Some(&b'\n') {
+                            return Ok(Some(String::from_utf8_lossy(&buf).to_string()));
+                        }
+                    }
+                })
+                .await;
+                match read_result {
+                    Ok(Ok(Some(l))) => l,
+                    Ok(Ok(None)) => break,  // EOF
+                    Ok(Err(())) => break,   // read error or oversize
+                    Err(_) => {
+                        log::info!(
+                            "MCP: client {} idle for >{}s, closing connection",
+                            peer,
+                            MCP_IDLE_TIMEOUT.as_secs()
+                        );
+                        break;
+                    }
                 }
             };
             let trimmed = line.trim();

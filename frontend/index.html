@@ -80,32 +80,22 @@
       input instanceof Request ? input.url : '';
     if (url && url.endsWith('.wasm')) {
       console.info('[WASM] Intercepting fetch for:', url);
-      return new Promise(function(resolve, reject) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', url, true);
-        xhr.responseType = 'arraybuffer';
-        xhr.onload = function() {
-          var size = xhr.response ? xhr.response.byteLength : 0;
-          console.info('[WASM] XHR loaded, status:', xhr.status, 'size:', size);
-          if (xhr.status === 200 || xhr.status === 0) {
-            resolve(new Response(xhr.response, {
-              status: 200,
-              headers: { 'Content-Type': 'application/wasm' }
-            }));
-          } else {
-            console.error('[WASM] XHR failed with status:', xhr.status);
-            reject(new Error('XHR failed: ' + xhr.status));
-          }
-        };
-        xhr.onerror = function() {
-          console.error('[WASM] XHR network error for', url);
-          reject(new Error('XHR network error for ' + url));
-        };
-        xhr.ontimeout = function() {
-          console.error('[WASM] XHR timeout for', url);
-          reject(new Error('XHR timeout for ' + url));
-        };
-        xhr.send();
+      return _fetch.apply(this, arguments).then(function(response) {
+        var ct = response.headers.get('Content-Type');
+        if (ct === 'application/wasm') {
+          return response;
+        }
+        // Force correct Content-Type for instantiateStreaming()
+        return response.arrayBuffer().then(function(buffer) {
+          return new Response(buffer, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: { 'Content-Type': 'application/wasm' }
+          });
+        });
+      }).catch(function(err) {
+        console.error('[WASM] Fetch failed for', url, err);
+        throw err;
       });
     }
     return _fetch.apply(this, arguments);
@@ -117,16 +107,21 @@
 window.addEventListener('error', function(e) {
   console.error('[PAGE ERROR]', e.message, 'at', e.filename + ':' + e.lineno + ':' + e.colno);
   if (e.error) console.error('[PAGE ERROR] Stack:', e.error.stack);
-  var el = document.getElementById('wasm-loading-error');
-  if (el) el.textContent = 'Error: ' + e.message;
+  showOverlayError('Error: ' + e.message + ' at ' + (e.filename || '') + ':' + e.lineno);
 });
 window.addEventListener('unhandledrejection', function(e) {
   var reason = e.reason;
   console.error('[UNHANDLED REJECTION]', reason && reason.message || reason);
   if (reason && reason.stack) console.error('[UNHANDLED REJECTION] Stack:', reason.stack);
-  var el = document.getElementById('wasm-loading-error');
-  if (el) el.textContent = 'Promise error: ' + (reason && reason.message || String(reason));
+  showOverlayError('Promise error: ' + (reason && reason.message || String(reason)));
 });
+// Monitor the module script for load errors
+var _entryScript = document.querySelector('script[src^=\"__FRONTEND_ENTRY__\"]');
+if (_entryScript) {
+  _entryScript.onerror = function(e) {
+    showOverlayError('Failed to load entry script: ' + e);
+  };
+}
 
 // Dismiss loading overlay once Dioxus mounts
 function dismissOverlay() {
@@ -136,6 +131,13 @@ function dismissOverlay() {
     loader.classList.add('done');
   }
   console.info('[MOUNT] Overlay dismissed');
+}
+function showOverlayError(msg) {
+  console.error('[MOUNT] Fatal error:', msg);
+  var errEl = document.getElementById('wasm-loading-error');
+  if (errEl) {
+    errEl.textContent = msg;
+  }
 }
 var _checkCount = 0;
 var _checkInterval = setInterval(function() {

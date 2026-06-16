@@ -27,6 +27,7 @@ pub struct TauriEventSender {
     /// Lazily-cached tokio runtime handle so we can spawn async work from
     /// sync trait methods (e.g. when called from spawn_blocking).
     runtime_handle: Arc<parking_lot::Mutex<Option<tokio::runtime::Handle>>>,
+    output_buffer: Arc<athena_core::output_buffer::OutputBuffer>,
 }
 
 impl TauriEventSender {
@@ -36,6 +37,7 @@ impl TauriEventSender {
             parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
         >,
         session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
+        output_buffer: Arc<athena_core::output_buffer::OutputBuffer>,
     ) -> Self {
         Self {
             app_handle,
@@ -43,6 +45,7 @@ impl TauriEventSender {
             session_manager,
             active_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             runtime_handle: Arc::new(parking_lot::Mutex::new(None)),
+            output_buffer,
         }
     }
 
@@ -78,6 +81,7 @@ impl ToolEventSender for TauriEventSender {
         let app_handle = self.app_handle.lock().clone();
         let id = id.to_string();
         let agent_cmd = agent_cmd.to_string();
+        let output_buffer = Arc::clone(&self.output_buffer);
 
         let handle = match self.get_runtime_handle() {
             Some(h) => h,
@@ -108,7 +112,7 @@ impl ToolEventSender for TauriEventSender {
                         let session_id_for_loop = id.clone();
                         let handle = handle.clone();
                         tokio::spawn(async move {
-                            crate::commands::pty_read_loop(handle, session_id_for_loop, session)
+                            crate::commands::pty_read_loop(handle, session_id_for_loop, session, output_buffer)
                                 .await;
                         });
                     }
@@ -179,17 +183,24 @@ impl ToolEventSender for TauriEventSender {
                 return true;
             }
         }
-        // Fallback: ask the real session manager via a cached tokio handle.
-        let handle = match self.get_runtime_handle() {
-            Some(h) => h,
-            None => return false,
-        };
+        // Fallback: ask the real session manager.
+        //
+        // We must NOT use `handle.block_on(...)` or `blocking_lock()` here:
+        // both panic with "Cannot start a runtime from within a runtime" when
+        // this method is invoked from a tokio worker thread (which it is —
+        // `execute_tool` dispatch runs via `spawn_blocking`, and the orchestrator
+        // calls `has_session` synchronously from there).
+        //
+        // `try_lock()` is non-blocking: if the SessionManager is contended it
+        // returns `Err`, which we treat as "session not confirmed" (false) —
+        // safe because the cache fast-path above handles the common case, and
+        // callers only use this to decide whether to write to a PTY.
         let session_manager = Arc::clone(&self.session_manager);
-        let pane_id = pane_id.to_string();
-        handle.block_on(async move {
-            let sm = session_manager.lock().await;
-            sm.has_session(&pane_id).await
-        })
+        let lock_result = session_manager.try_lock();
+        match lock_result {
+            Ok(sm) => sm.has_session_sync(pane_id),
+            Err(_) => false,
+        }
     }
 
     fn ask_user(&self, request_id: &str, question: &str, options: &[serde_json::Value]) -> String {
@@ -380,6 +391,7 @@ impl AppState {
             Arc::clone(&app_handle),
             Arc::clone(&pending_questions),
             Arc::clone(&session_manager),
+            Arc::clone(&output_buffer),
         ));
 
         // -- Build ToolExecutor with the SAME Arc<T> instances ---------

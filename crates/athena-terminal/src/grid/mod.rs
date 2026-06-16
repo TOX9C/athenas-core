@@ -426,6 +426,13 @@ impl Grid {
                     } else if i < params.len() && params[i] == 5 && i + 1 < params.len() {
                         self.current_fg = Color::Indexed(params[i + 1] as u8);
                         i += 1;
+                    } else {
+                        // Truncated/ malformed extended-color sequence. Consume
+                        // whatever params remain so the trailing values are
+                        // NOT re-interpreted as fresh SGR codes (e.g. a
+                        // truncated `38;2;10` must not treat the `10` as a new
+                        // SGR selector). Best-effort: skip to the end.
+                        i = params.len();
                     }
                 }
                 39 => self.current_fg = Color::Named(colors::NamedColor::Foreground),
@@ -445,6 +452,9 @@ impl Grid {
                     } else if i < params.len() && params[i] == 5 && i + 1 < params.len() {
                         self.current_bg = Color::Indexed(params[i + 1] as u8);
                         i += 1;
+                    } else {
+                        // Truncated/malformed: skip to end (see 38 above).
+                        i = params.len();
                     }
                 }
                 49 => self.current_bg = Color::Named(colors::NamedColor::Background),
@@ -508,6 +518,12 @@ impl Grid {
     /// Get all dirty cells as deltas. If dirty_cells exceeds
     /// `MAX_DIRTY_CELLS_PER_READ`, truncate with a warning — this is a safety
     /// net against runaway accumulation. The next read will catch the rest.
+    ///
+    /// Duplicates are removed: a single `erase_display(2)`/`clear()` can push
+    /// `rows*cols` entries, and repeated clears within one parse batch push
+    /// that many *again*. Without dedup the frontend would re-render the same
+    /// cell N times per cycle. We sort+dedup the (row, col) pairs in a local
+    /// buffer (the field is `&self`, so we can't mutate it in place).
     pub fn dirty_deltas(&self) -> Vec<CellDelta> {
         let truncated = self.dirty_cells.len() > MAX_DIRTY_CELLS_PER_READ;
         if truncated {
@@ -517,12 +533,17 @@ impl Grid {
                 self.dirty_cells.len()
             );
         }
-        let mut deltas = Vec::with_capacity(self.dirty_cells.len().min(MAX_DIRTY_CELLS_PER_READ));
-        for (row, col) in self.dirty_cells.iter().take(MAX_DIRTY_CELLS_PER_READ) {
-            if let Some(cell) = self.rows.get(*row).and_then(|r| r.get_cell(*col)) {
+        let mut unique: Vec<(usize, usize)> =
+            self.dirty_cells.iter().copied().take(MAX_DIRTY_CELLS_PER_READ).collect();
+        unique.sort_unstable();
+        unique.dedup();
+
+        let mut deltas = Vec::with_capacity(unique.len());
+        for (row, col) in unique {
+            if let Some(cell) = self.rows.get(row).and_then(|r| r.get_cell(col)) {
                 deltas.push(CellDelta {
-                    row: *row,
-                    col: *col,
+                    row,
+                    col,
                     c: cell.c,
                     fg: cell.fg.clone(),
                     bg: cell.bg.clone(),
