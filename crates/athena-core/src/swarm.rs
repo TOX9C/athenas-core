@@ -142,17 +142,6 @@ impl SwarmCoordinator {
         }
     }
 
-    #[allow(dead_code)]
-    fn emit_event(&self, channel: &str, data: &serde_json::Value) {
-        if let Ok(guard) = self.event_emitter.lock() {
-            if let Some(ref emitter) = *guard {
-                emitter(channel, data);
-                return;
-            }
-        }
-        log::debug!("[swarm] {} -> {}", channel, data);
-    }
-
     // -----------------------------------------------------------------------
     // State read / write (atomic)
     // -----------------------------------------------------------------------

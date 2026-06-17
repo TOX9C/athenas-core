@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workspace-list-trusted-roots"
+description = "Enables the workspace_list_trusted_roots command without any pre-configured scope."
+commands.allow = ["workspace_list_trusted_roots"]
+
+[[permission]]
+identifier = "deny-workspace-list-trusted-roots"
+description = "Denies the workspace_list_trusted_roots command without any pre-configured scope."
+commands.deny = ["workspace_list_trusted_roots"]

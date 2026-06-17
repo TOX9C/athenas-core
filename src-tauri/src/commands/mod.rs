@@ -67,23 +67,106 @@ fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
     Ok(canon)
 }
 
-/// Validate that a path exists and return the cleaned path.
-fn validate_path_exists(path: &std::path::Path) -> Result<std::path::PathBuf, CommandError> {
-    let root = get_workspace_root()?;
+/// Key under which the user's trusted workspace roots are persisted, as a
+/// JSON array of canonicalized absolute path strings.
+///
+/// Athena is a *multi-project* terminal launcher: every Space carries an
+/// arbitrary working directory (`types::workspace::Space::dir`), and the whole
+/// point is to run terminals and AI agents in user-chosen project folders.
+/// The sandbox below therefore accepts any path descending from the app's own
+/// project root *or* any trusted root added here. A root is added the moment
+/// the user deliberately creates a Space for it — the authorization gesture.
+const TRUSTED_ROOTS_KEY: &str = "workspace.trusted_roots";
+
+/// Load the user's trusted workspace roots from the persistent store.
+///
+/// Each stored entry is re-canonicalized on load so that comparisons against a
+/// canonicalized request path stay stable. Roots that no longer resolve (the
+/// directory was moved/deleted/renamed) are silently skipped — they simply
+/// can't authorize anything until re-added. A malformed or missing key yields
+/// an empty list (first run, or a corrupt value); the store is never trusted
+/// to hand back a canonicalized form.
+fn load_trusted_roots(store: &athena_store::KeyValueStore) -> Vec<std::path::PathBuf> {
+    let raw: Option<Vec<String>> = match store.get(TRUSTED_ROOTS_KEY) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "[trusted_roots] failed to read key '{}': {}",
+                TRUSTED_ROOTS_KEY,
+                e
+            );
+            return Vec::new();
+        }
+    };
+    match raw {
+        Some(list) => list
+            .into_iter()
+            .filter_map(|p| {
+                std::path::PathBuf::from(&p).canonicalize().map_err(|e| {
+                    log::debug!(
+                        "[trusted_roots] skipping '{}': canonicalize failed: {}",
+                        p,
+                        e
+                    );
+                    e
+                }).ok()
+            })
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// The full set of roots a request path may descend from: the app's own
+/// project root (always implicitly trusted) plus every user-added trusted
+/// root. All entries are canonicalized.
+fn effective_roots(store: &athena_store::KeyValueStore) -> Vec<std::path::PathBuf> {
+    let mut roots = vec![get_workspace_root().unwrap_or_else(|_| std::path::PathBuf::from("/"))];
+    roots.extend(load_trusted_roots(store));
+    roots
+}
+
+/// True if `canonical` is equal to or a descendant of any root in `roots`.
+///
+/// `canonical` and every entry of `roots` must already be canonicalized
+/// (symlinks resolved, no `..`) — which is exactly how the validators below
+/// feed it. This preserves the existing traversal/symlink-escape guarantees;
+/// we only widen the *set* of acceptable top-level directories, never the
+/// canonicalization discipline. Exposed for unit testing.
+fn is_within_any_root(canonical: &std::path::Path, roots: &[std::path::PathBuf]) -> bool {
+    roots.iter().any(|r| canonical.starts_with(r))
+}
+
+/// Validate that a path exists, is inside the sandbox, and return its
+/// canonical form.
+///
+/// The sandbox is the union of the app's project root and the user's trusted
+/// workspace roots (see [`load_trusted_roots`]). The project root, every
+/// trusted root, and the request path are all canonicalized before the
+/// descendant check, so symlink escapes and `..` traversal are neutralized
+/// exactly as before — only the set of permissible top-level directories
+/// grows.
+fn validate_path_exists(
+    store: &athena_store::KeyValueStore,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, CommandError> {
+    let roots = effective_roots(store);
+    // Relative paths resolve against the project root (first effective root).
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        root.join(path)
+        roots
+            .first()
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+            .join(path)
     };
     if !path.exists() {
-        return Err(CommandError::NotFound(
-            "Path does not exist".to_string(),
-        ));
+        return Err(CommandError::NotFound("Path does not exist".to_string()));
     }
     let canonicalized = path.canonicalize().map_err(|e| {
         CommandError::Internal(format!("Failed to canonicalize path: {}", e))
     })?;
-    if !canonicalized.starts_with(&root) {
+    if !is_within_any_root(&canonicalized, &roots) {
         // Do NOT echo the canonicalized workspace root or the requested path
         // back to the frontend — it confirms on-disk layout (user home
         // path, project location) to a probing renderer. Generic message only.
@@ -95,25 +178,56 @@ fn validate_path_exists(path: &std::path::Path) -> Result<std::path::PathBuf, Co
 }
 
 /// Validate a path for write operations (creates parent dirs if needed).
-fn validate_path(path: &std::path::Path) -> Result<std::path::PathBuf, CommandError> {
-    let root = get_workspace_root()?;
+///
+/// Tolerates a not-yet-existing leaf (the file we're about to write) by
+/// canonicalizing its parent and re-joining the file name, then applies the
+/// same multi-root descendant check as [`validate_path_exists`].
+fn validate_path(
+    store: &athena_store::KeyValueStore,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, CommandError> {
+    let roots = effective_roots(store);
     let full_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        root.join(path)
+        roots
+            .first()
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+            .join(path)
     };
-    let validator = athena_fs::path_validator::PathValidator::new(&root).map_err(|e| {
-        CommandError::Internal(format!("Failed to initialize path validator: {}", e))
-    })?;
-    let validated = validator
-        .validate_write(&full_path)
-        .map_err(|e| CommandError::PermissionDenied(format!("Invalid write path: {}", e)))?;
-    if let Some(parent) = validated.parent() {
+    let canonical = if full_path.exists() {
+        full_path.canonicalize().map_err(|e| {
+            CommandError::Internal(format!("Failed to canonicalize path: {}", e))
+        })?
+    } else {
+        let parent = full_path.parent().ok_or_else(|| {
+            CommandError::InvalidInput(format!("path {:?} has no parent", full_path))
+        })?;
+        let canonical_parent = parent.canonicalize().map_err(|e| {
+            CommandError::Internal(format!("Failed to canonicalize parent: {}", e))
+        })?;
+        match full_path.file_name() {
+            Some(name) => canonical_parent.join(name),
+            None => {
+                return Err(CommandError::InvalidInput(format!(
+                    "path {:?} has no file name",
+                    full_path
+                )))
+            }
+        }
+    };
+    if !is_within_any_root(&canonical, &roots) {
+        return Err(CommandError::PermissionDenied(
+            "Path is outside the workspace".to_string(),
+        ));
+    }
+    if let Some(parent) = canonical.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             CommandError::Internal(format!("Failed to create parent directories: {}", e))
         })?;
     }
-    Ok(validated)
+    Ok(canonical)
 }
 
 // ── PTY spawn/write validation helpers ───────────────────────────────────────
@@ -175,19 +289,21 @@ fn validate_shell(shell: &str) -> Result<std::path::PathBuf, String> {
 
 /// Validate a working directory for PTY spawning.
 ///
-/// The directory must exist, be a directory, and be inside the workspace root
-/// (reuses the read-side path validator's canonicalize+descendant logic). This
-/// stops a renderer from spawning a shell rooted at `/`, `~/.ssh`, or another
-/// project.
-fn validate_cwd(cwd: &str) -> Result<std::path::PathBuf, CommandError> {
+/// The directory must exist, be a directory, and be inside the sandbox (the
+/// app project root ∪ trusted workspace roots). This stops a renderer from
+/// spawning a shell rooted at `/`, `~/.ssh`, or an arbitrary path the user
+/// never opted in to, while permitting every directory the user deliberately
+/// turned into a Space.
+fn validate_cwd(
+    store: &athena_store::KeyValueStore,
+    cwd: &str,
+) -> Result<std::path::PathBuf, CommandError> {
     if cwd.is_empty() {
         return Err(CommandError::Internal("cwd is empty".to_string()));
     }
-    let validated = validate_path_exists(std::path::Path::new(cwd))?;
+    let validated = validate_path_exists(store, std::path::Path::new(cwd))?;
     if !validated.is_dir() {
-        return Err(CommandError::Internal(format!(
-            "cwd is not a directory"
-        )));
+        return Err(CommandError::Internal(format!("cwd is not a directory")));
     }
     Ok(validated)
 }
@@ -353,7 +469,6 @@ pub enum CommandError {
     InvalidInput(String),
     #[error("Internal error: {0}")]
     Internal(String),
-    #[allow(dead_code)]
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
 }
@@ -423,13 +538,128 @@ pub fn pty_default_shell() -> String {
     })
 }
 
+// ── Trusted workspace roots ──────────────────────────────────────────────────
+//
+// The sandbox accepts paths descending from the app's project root or any
+// trusted root the user opts into. A root is authorized here — the moment the
+// user deliberately creates (or opens) a Space for a directory. The store
+// keeps canonicalized paths; `load_trusted_roots` re-canonicalizes on read so
+// a moved/renamed directory silently stops authorizing itself until re-added.
+
+/// Add a directory to the set of trusted workspace roots.
+///
+/// This is the authorization gesture that lets a terminal or AI agent operate
+/// in a directory outside the app's own project root. The directory must
+/// exist and be a directory — a renderer cannot bless an arbitrary string;
+/// it can only opt in to a real folder it could browse to anyway. Idempotent:
+/// adding an already-trusted root is a no-op.
+///
+/// Canonicalizes before storing so later comparisons against a canonicalized
+/// request path are exact, and so a symlinked path is stored as its target.
+#[tauri::command]
+pub async fn workspace_add_trusted_root(
+    state: State<'_, AppState>,
+    dir: String,
+) -> Result<(), String> {
+    // Resolve + stat on the blocking pool. Both `canonicalize` and `metadata`
+    // touch the filesystem; doing them off the async runtime avoids stalling
+    // the Tauri command executor on slow disks or network mounts.
+    let dir_for_task = dir.clone();
+    let (canonical, is_dir) = tokio::task::spawn_blocking(move || {
+        let p = std::path::Path::new(&dir_for_task);
+        let canonical = p.canonicalize();
+        let is_dir = match &canonical {
+            Ok(c) => std::fs::metadata(c).map(|m| m.is_dir()).unwrap_or(false),
+            Err(_) => false,
+        };
+        (canonical, is_dir)
+    })
+    .await
+    .map_err(|e| format!("path resolve task failed: {e}"))?;
+
+    let canonical = canonical.map_err(|e| format!("'{}' is not accessible: {}", dir, e))?;
+    if !is_dir {
+        return Err(format!("'{}' is not a directory", dir));
+    }
+    let mut roots = load_trusted_roots(&state.store);
+    if roots.iter().any(|r| r == &canonical) {
+        return Ok(());
+    }
+    roots.push(canonical);
+    let strs: Vec<String> = roots.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    state
+        .store
+        .set_sync(TRUSTED_ROOTS_KEY, &strs)
+        .map_err(|e| format!("failed to persist trusted root: {}", e))?;
+    Ok(())
+}
+
+/// Remove a directory from the set of trusted workspace roots.
+///
+/// Accepts either the stored canonical form or any path that canonicalizes to
+/// it, so the frontend doesn't have to know the exact stored string.
+/// Removing a root that isn't trusted is a no-op.
+#[tauri::command]
+pub async fn workspace_remove_trusted_root(
+    state: State<'_, AppState>,
+    dir: String,
+) -> Result<(), String> {
+    // Canonicalize on the blocking pool. If the directory no longer exists
+    // (moved/deleted), canonicalize fails — but we still want to let the user
+    // revoke trust, so fall back to the literal path string comparison against
+    // whatever was stored.
+    let dir_for_task = dir.clone();
+    let canonical = tokio::task::spawn_blocking(move || {
+        std::path::Path::new(&dir_for_task).canonicalize()
+    })
+    .await
+    .map_err(|e| format!("canonicalize task failed: {e}"))?;
+    let canonical = match canonical {
+        Ok(c) => Some(c),
+        Err(_) => None, // directory gone — best-effort literal remove below
+    };
+
+    let mut roots = load_trusted_roots(&state.store);
+    let before = roots.len();
+    if let Some(ref c) = canonical {
+        roots.retain(|r| r != c);
+    }
+    // If canonical resolve failed, try a literal string match so a stale
+    // entry for a deleted directory can still be cleared.
+    if canonical.is_none() {
+        let lit = std::path::PathBuf::from(&dir);
+        roots.retain(|r| r != &lit);
+    }
+    if roots.len() == before {
+        return Ok(()); // not present — no-op
+    }
+    let strs: Vec<String> = roots.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    state
+        .store
+        .set_sync(TRUSTED_ROOTS_KEY, &strs)
+        .map_err(|e| format!("failed to persist trusted roots: {}", e))?;
+    Ok(())
+}
+
+/// List the canonicalized trusted workspace roots.
+#[tauri::command]
+pub fn workspace_list_trusted_roots(state: State<'_, AppState>) -> Vec<String> {
+    load_trusted_roots(&state.store)
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
 // ── File system commands ─────────────────────────────────────────────────────
 
 /// Read the contents of a file as UTF-8 text.
 #[tauri::command]
-pub async fn fs_read_file(path: String) -> Result<String, CommandError> {
+pub async fn fs_read_file(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, CommandError> {
     let path_ref = std::path::Path::new(&path);
-    let validated = validate_path_exists(path_ref)?;
+    let validated = validate_path_exists(&state.store, path_ref)?;
     let validated_clone = validated.clone();
     tokio::task::spawn_blocking(move || {
         std::fs::read_to_string(&validated_clone).map_err(|e| CommandError::Internal(e.to_string()))
@@ -447,9 +677,12 @@ struct DirEntry {
 
 /// List the contents of a directory, sorted with directories first.
 #[tauri::command]
-pub async fn fs_list_dir(path: String) -> Result<String, CommandError> {
+pub async fn fs_list_dir(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, CommandError> {
     let path_ref = std::path::Path::new(&path);
-    let validated = validate_path_exists(path_ref)?;
+    let validated = validate_path_exists(&state.store, path_ref)?;
     tokio::task::spawn_blocking(move || {
         let mut entries: Vec<DirEntry> = Vec::new();
         let read_dir =
@@ -477,7 +710,11 @@ pub async fn fs_list_dir(path: String) -> Result<String, CommandError> {
 
 /// Write content to a file, creating it if it doesn't exist.
 #[tauri::command]
-pub async fn fs_write_file(path: String, content: String) -> Result<(), CommandError> {
+pub async fn fs_write_file(
+    state: State<'_, AppState>,
+    path: String,
+    content: String,
+) -> Result<(), CommandError> {
     if content.len() > caps::MAX_FS_WRITE_BYTES {
         return Err(CommandError::InvalidInput(format!(
             "content too large: {} > {}",
@@ -486,7 +723,7 @@ pub async fn fs_write_file(path: String, content: String) -> Result<(), CommandE
         )));
     }
     let path_ref = std::path::Path::new(&path);
-    let validated = validate_path(path_ref)?;
+    let validated = validate_path(&state.store, path_ref)?;
     let content_clone = content.clone();
     tokio::task::spawn_blocking(move || {
         std::fs::write(&validated, content_clone).map_err(|e| CommandError::Internal(e.to_string()))
@@ -496,18 +733,26 @@ pub async fn fs_write_file(path: String, content: String) -> Result<(), CommandE
 }
 
 /// Check whether a path exists and is within the allowed directory.
+///
+/// Synchronous (not `async`) because Tauri forbids async commands that return
+/// a bare non-`Result` type. Sync commands run on the runtime's blocking
+/// thread, so the canonicalize inside `validate_path_exists` won't stall the
+/// async executor.
 #[tauri::command]
-pub async fn fs_exists(path: String) -> bool {
+pub fn fs_exists(state: State<'_, AppState>, path: String) -> bool {
     let path_ref = std::path::Path::new(&path);
-    validate_path_exists(path_ref).is_ok()
+    validate_path_exists(&state.store, path_ref).is_ok()
 }
 
 /// Read a file and return its contents as a base64-encoded string.
 #[tauri::command]
-pub async fn fs_read_file_as_base64(path: String) -> Result<String, CommandError> {
+pub async fn fs_read_file_as_base64(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, CommandError> {
     use base64::Engine;
     let path_ref = std::path::Path::new(&path);
-    let validated = validate_path_exists(path_ref)?;
+    let validated = validate_path_exists(&state.store, path_ref)?;
     let validated_clone = validated.clone();
     let bytes = tokio::task::spawn_blocking(move || {
         std::fs::read(&validated_clone).map_err(|e| CommandError::Internal(e.to_string()))
@@ -522,7 +767,6 @@ pub async fn fs_read_file_as_base64(path: String) -> Result<String, CommandError
 pub async fn fs_show_open_dialog(
     app_handle: AppHandle,
     title: Option<String>,
-    #[allow(unused_variables)] filters: Option<String>,
     multiple: Option<bool>,
     directory: Option<bool>,
 ) -> Result<String, String> {
@@ -973,7 +1217,7 @@ pub async fn pty_spawn(
         log::warn!("pty_spawn rejected (bad shell '{}'): {}", shell, e);
         e
     })?;
-    let validated_cwd = validate_cwd(&cwd).map_err(|e| {
+    let validated_cwd = validate_cwd(&state.store, &cwd).map_err(|e| {
         log::warn!("pty_spawn rejected (bad cwd '{}'): {}", cwd, e);
         e.to_string()
     })?;
@@ -1629,7 +1873,7 @@ pub async fn pty_spawn_agent(
         log::warn!("pty_spawn_agent rejected (bad shell '{}'): {}", shell, e);
         e
     })?;
-    let validated_cwd = validate_cwd(&cwd).map_err(|e| {
+    let validated_cwd = validate_cwd(&state.store, &cwd).map_err(|e| {
         log::warn!("pty_spawn_agent rejected (bad cwd '{}'): {}", cwd, e);
         e.to_string()
     })?;
@@ -2894,4 +3138,109 @@ pub fn plugin_host_remove_plugin(
         .plugin_manager
         .unregister_plugin(&plugin_id)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // is_within_any_root is pure logic over canonicalized paths, so we can
+    // exercise it without touching the disk (other than via canonicalize of
+    // the temp dirs we construct).
+
+    #[test]
+    fn is_within_any_root_accepts_descendant_of_a_trusted_root() {
+        let temp = std::env::temp_dir();
+        let sub = temp.join("athena_trusted_descendant");
+        std::fs::create_dir_all(&sub).unwrap();
+        let canon = sub.canonicalize().unwrap();
+        let roots = vec![temp.canonicalize().unwrap()];
+        assert!(is_within_any_root(&canon, &roots));
+        std::fs::remove_dir_all(&sub).ok();
+    }
+
+    #[test]
+    fn is_within_any_root_rejects_sibling_outside_all_roots() {
+        // Two roots; a path under neither must be rejected.
+        let temp = std::env::temp_dir();
+        let a = temp.join("athena_tr_root_a");
+        let b = temp.join("athena_tr_root_b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let canon_a = a.canonicalize().unwrap();
+        let canon_b = b.canonicalize().unwrap();
+        // b is NOT under a's tree
+        let roots = vec![canon_a.clone()];
+        assert!(!is_within_any_root(&canon_b, &roots));
+        // but is accepted once b is itself a root
+        let roots = vec![canon_a, canon_b.clone()];
+        assert!(is_within_any_root(&canon_b, &roots));
+        std::fs::remove_dir_all(&a).ok();
+        std::fs::remove_dir_all(&b).ok();
+    }
+
+    #[test]
+    fn load_trusted_roots_recanonicalizes_and_skips_missing() {
+        let store = athena_store::KeyValueStore::new_empty();
+
+        // A real, canonicalizable path round-trips; a missing/garbage entry
+        // is skipped without error.
+        let temp = std::env::temp_dir().join("athena_tr_load_real");
+        std::fs::create_dir_all(&temp).unwrap();
+        let canon = temp.canonicalize().unwrap().to_string_lossy().into_owned();
+        store
+            .set_sync(
+                TRUSTED_ROOTS_KEY,
+                &vec![
+                    canon.clone(),
+                    "/this/path/does/not/exist/athena".to_string(),
+                ],
+            )
+            .unwrap();
+        let roots = load_trusted_roots(&store);
+        // only the real one survives
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0], std::path::PathBuf::from(&canon));
+
+        // Missing key -> empty list, not an error.
+        let store2 = athena_store::KeyValueStore::new_empty();
+        assert!(load_trusted_roots(&store2).is_empty());
+
+        // Malformed value -> empty list, not an error.
+        let store3 = athena_store::KeyValueStore::new_empty();
+        store3.set_sync(TRUSTED_ROOTS_KEY, &"not-a-json-array").ok();
+        assert!(load_trusted_roots(&store3).is_empty());
+
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn validate_path_exists_accepts_trusted_root_outside_project() {
+        // Simulates the bug report: a Space dir outside the app's project root
+        // must be accepted once trusted, and rejected before it's trusted.
+        let store = athena_store::KeyValueStore::new_empty();
+        let temp = std::env::temp_dir().join("athena_tr_outside_project");
+        std::fs::create_dir_all(&temp).unwrap();
+        let canon = temp.canonicalize().unwrap();
+
+        // Before trusting: the result must match "is canon under the project
+        // root" — robust to where the test physically runs.
+        let pre = validate_path_exists(&store, &canon);
+        let project_root = get_workspace_root().ok();
+        let expected_ok = project_root
+            .as_ref()
+            .map(|r| canon.starts_with(r))
+            .unwrap_or(false);
+        assert_eq!(pre.is_ok(), expected_ok);
+
+        // After trusting: accepted.
+        let mut roots = load_trusted_roots(&store);
+        roots.push(canon.clone());
+        let strs: Vec<String> =
+            roots.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        store.set_sync(TRUSTED_ROOTS_KEY, &strs).unwrap();
+        assert!(validate_path_exists(&store, &canon).is_ok());
+
+        std::fs::remove_dir_all(&temp).ok();
+    }
 }

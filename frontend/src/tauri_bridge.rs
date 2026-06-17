@@ -553,6 +553,42 @@ pub async fn pty_foreground_process(id: &str) -> TauriResult<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Trusted workspace roots
+// ---------------------------------------------------------------------------
+
+/// Add a directory to the backend's trusted-roots set. Called when the user
+/// launches a Space (the authorization gesture that lets a terminal / agent
+/// operate in a directory outside the app's own project root). Idempotent.
+pub async fn workspace_add_trusted_root(dir: &str) -> TauriResult<()> {
+    invoke(
+        "workspace_add_trusted_root",
+        &serde_json::json!({ "dir": dir }).to_string(),
+    )
+    .await
+}
+
+/// Remove a directory from the backend's trusted-roots set.
+pub async fn workspace_remove_trusted_root(dir: &str) -> TauriResult<()> {
+    invoke(
+        "workspace_remove_trusted_root",
+        &serde_json::json!({ "dir": dir }).to_string(),
+    )
+    .await
+}
+
+/// List the canonicalized trusted workspace roots.
+pub async fn workspace_list_trusted_roots() -> TauriResult<Vec<String>> {
+    let raw: String = invoke(
+        "workspace_list_trusted_roots",
+        &serde_json::json!({}).to_string(),
+    )
+    .await?;
+    serde_json::from_str(&raw).map_err(|e| {
+        js_sys::Error::new(&format!("failed to parse trusted roots: {}", e)).into()
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Pane history operations
 // ---------------------------------------------------------------------------
 

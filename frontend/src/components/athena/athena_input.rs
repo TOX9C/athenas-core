@@ -182,8 +182,6 @@ pub fn AthenaInput() -> Element {
     let mut input_text = use_signal(String::new);
     let mut input_history = use_signal(Vec::<String>::new);
     let mut history_idx = use_signal(|| None::<usize>);
-    let mut show_file_picker = use_signal(|| false);
-
     let is_loading = athena_state.read().is_loading;
     // Block sending until we've confirmed a key is set. This is what makes
     // the failure mode loud-and-clear ("set your key") instead of the old

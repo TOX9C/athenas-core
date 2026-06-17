@@ -1095,6 +1095,24 @@
           "markdownDescription": "Enables the window_platform command without any pre-configured scope."
         },
         {
+          "description": "Enables the workspace_add_trusted_root command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-workspace-add-trusted-root",
+          "markdownDescription": "Enables the workspace_add_trusted_root command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the workspace_list_trusted_roots command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-workspace-list-trusted-roots",
+          "markdownDescription": "Enables the workspace_list_trusted_roots command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the workspace_remove_trusted_root command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-workspace-remove-trusted-root",
+          "markdownDescription": "Enables the workspace_remove_trusted_root command without any pre-configured scope."
+        },
+        {
           "description": "Denies the agent_cancel_input command without any pre-configured scope.",
           "type": "string",
           "const": "deny-agent-cancel-input",
@@ -1801,6 +1819,24 @@
           "type": "string",
           "const": "deny-window-platform",
           "markdownDescription": "Denies the window_platform command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the workspace_add_trusted_root command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-workspace-add-trusted-root",
+          "markdownDescription": "Denies the workspace_add_trusted_root command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the workspace_list_trusted_roots command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-workspace-list-trusted-roots",
+          "markdownDescription": "Denies the workspace_list_trusted_roots command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the workspace_remove_trusted_root command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-workspace-remove-trusted-root",
+          "markdownDescription": "Denies the workspace_remove_trusted_root command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

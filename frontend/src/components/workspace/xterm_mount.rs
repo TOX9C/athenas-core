@@ -78,7 +78,7 @@ pub fn XtermMount(
         };
 
         // Guard: if container already has .xterm children, clear stale DOM first
-        if let Some(existing) = container.query_selector(".xterm").ok().flatten() {
+        if let Some(_existing) = container.query_selector(".xterm").ok().flatten() {
             web_sys::console::warn_1(
                 &format!(
                     "[XtermMount] Found existing .xterm in #{}; clearing stale DOM before open",

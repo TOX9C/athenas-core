@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workspace-remove-trusted-root"
+description = "Enables the workspace_remove_trusted_root command without any pre-configured scope."
+commands.allow = ["workspace_remove_trusted_root"]
+
+[[permission]]
+identifier = "deny-workspace-remove-trusted-root"
+description = "Denies the workspace_remove_trusted_root command without any pre-configured scope."
+commands.deny = ["workspace_remove_trusted_root"]

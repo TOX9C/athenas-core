@@ -146,8 +146,8 @@ fn GeneralSettings() -> Element {
                             let theme_colors = get_theme(ui.theme.name());
                             let theme_accent = theme_colors.accent.clone();
                             let theme_bg_tertiary = theme_colors.bg_tertiary.clone();
-                            let theme_text = theme_colors.text.clone();
-                            let theme_text_muted = theme_colors.text_muted.clone();
+                            let _theme_text = theme_colors.text.clone();
+                            let _theme_text_muted = theme_colors.text_muted.clone();
                             drop(ui);
                             rsx! {
                                 for font in AVAILABLE_FONTS {
