@@ -71,6 +71,10 @@ fn main() {
             pty_default_shell,
             pty_foreground_process,
             pty_agent_info,
+            // Trusted workspace roots
+            workspace_add_trusted_root,
+            workspace_remove_trusted_root,
+            workspace_list_trusted_roots,
             // Athena / LLM
             athena_chat,
             athena_chat_with_session,

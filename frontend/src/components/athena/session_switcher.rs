@@ -143,7 +143,7 @@ fn format_time_ago(timestamp_ms: u64) -> String {
 
 #[component]
 pub fn SessionSwitcher() -> Element {
-    let mut athena_state = use_athena_store();
+    let athena_state = use_athena_store();
     let mut is_open = use_signal(|| false);
     let mut sessions: Signal<Vec<SessionListItem>> = use_signal(Vec::new);
     let mut is_loading = use_signal(|| false);

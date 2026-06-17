@@ -34,14 +34,14 @@ pub enum EmptyArt {
 
 fn art_for(kind: EmptyArt) -> Element {
     match kind {
-        EmptyArt::Workspace | EmptyArt::Generic => IlloOwlBranch(),
-        EmptyArt::Sessions => IlloScroll(),
-        EmptyArt::Kanban => IlloTemple(),
-        EmptyArt::Swarm => IlloConstellation(),
-        EmptyArt::Notifications => IlloSleepingOwl(),
-        EmptyArt::Plugins => IlloLaurelWreath(),
-        EmptyArt::Files => IlloAmphora(),
-        EmptyArt::Agents => IlloHelmet(),
+        EmptyArt::Workspace | EmptyArt::Generic => illo_owl_branch(),
+        EmptyArt::Sessions => illo_scroll(),
+        EmptyArt::Kanban => illo_temple(),
+        EmptyArt::Swarm => illo_constellation(),
+        EmptyArt::Notifications => illo_sleeping_owl(),
+        EmptyArt::Plugins => illo_laurel_wreath(),
+        EmptyArt::Files => illo_amphora(),
+        EmptyArt::Agents => illo_helmet(),
     }
 }
 
@@ -112,7 +112,7 @@ pub fn OwlMark(size: Option<u16>) -> Element {
 // ── Individual illustrations ────────────────────────────────────────────────
 
 /// Owl perched on a branch — workspaces / generic.
-pub fn IlloOwlBranch() -> Element {
+fn illo_owl_branch() -> Element {
     illo(rsx! {
         // branch
         path { d: "M14 72h92", stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.6" }
@@ -134,7 +134,7 @@ pub fn IlloOwlBranch() -> Element {
 }
 
 /// Unrolled scroll — sessions / history.
-pub fn IlloScroll() -> Element {
+fn illo_scroll() -> Element {
     illo(rsx! {
         g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.75",
             path { d: "M34 26h46a6 6 0 0 1 6 6v34" }
@@ -150,7 +150,7 @@ pub fn IlloScroll() -> Element {
 }
 
 /// Temple façade columns — kanban board.
-pub fn IlloTemple() -> Element {
+fn illo_temple() -> Element {
     illo(rsx! {
         g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.7",
             path { d: "M28 30l32-12 32 12" }
@@ -168,7 +168,7 @@ pub fn IlloTemple() -> Element {
 }
 
 /// Constellation network — swarm.
-pub fn IlloConstellation() -> Element {
+fn illo_constellation() -> Element {
     illo(rsx! {
         g { stroke: "var(--textDim)", stroke_width: "1.2", opacity: "0.55",
             line { x1: "60", y1: "48", x2: "60", y2: "24" }
@@ -192,7 +192,7 @@ pub fn IlloConstellation() -> Element {
 }
 
 /// Sleeping owl — no notifications.
-pub fn IlloSleepingOwl() -> Element {
+fn illo_sleeping_owl() -> Element {
     illo(rsx! {
         g { stroke: "var(--textDim)", stroke_width: "1.6",
             path { d: "M44 38c0-9 7-16 16-16s16 7 16 16v12a16 16 0 0 1-32 0z" }
@@ -213,7 +213,7 @@ pub fn IlloSleepingOwl() -> Element {
 }
 
 /// Laurel wreath — plugins.
-pub fn IlloLaurelWreath() -> Element {
+fn illo_laurel_wreath() -> Element {
     illo(rsx! {
         g { stroke: "var(--accent)", stroke_width: "1.5",
             path { d: "M60 78c-16 0-26-12-26-28 0-8 3-15 7-19" }
@@ -232,7 +232,7 @@ pub fn IlloLaurelWreath() -> Element {
 }
 
 /// Amphora — files.
-pub fn IlloAmphora() -> Element {
+fn illo_amphora() -> Element {
     illo(rsx! {
         g { stroke: "var(--accent)", stroke_width: "1.6",
             path { d: "M50 24h20M53 24c0 7-10 10-10 20a17 17 0 0 0 34 0c0-10-10-13-10-20" }
@@ -247,7 +247,7 @@ pub fn IlloAmphora() -> Element {
 }
 
 /// Corinthian helmet — agents.
-pub fn IlloHelmet() -> Element {
+fn illo_helmet() -> Element {
     illo(rsx! {
         g { stroke: "var(--accent)", stroke_width: "1.6",
             // dome + outer sides

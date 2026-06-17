@@ -1,4 +1,3 @@
-use crate::components::shared::icon::IconHelmet;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
 use dioxus::prelude::*;

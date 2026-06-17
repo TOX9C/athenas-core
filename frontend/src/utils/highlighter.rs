@@ -83,7 +83,7 @@ fn highlight_rust(code: &str) -> String {
 fn highlight_rust_line(line: &str, in_block_comment: &mut bool) -> String {
     let mut output = String::new();
     let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let _len = chars.len();
 
     // Check for line number prefix (format: "   N ")
     let line_num_end = strip_line_number_prefix(line);
@@ -480,7 +480,7 @@ fn highlight_js_line(
 ) -> String {
     let mut output = String::new();
     let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let _len = chars.len();
 
     // Line number prefix
     let line_num_end = strip_line_number_prefix(line);
@@ -764,7 +764,7 @@ fn highlight_python(code: &str) -> String {
 fn highlight_python_line(line: &str) -> String {
     let mut output = String::new();
     let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let _len = chars.len();
 
     // Line number prefix
     let line_num_end = strip_line_number_prefix(line);
@@ -1015,7 +1015,7 @@ fn highlight_toml(code: &str) -> String {
 fn highlight_toml_line(line: &str) -> String {
     let mut output = String::new();
     let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let _len = chars.len();
 
     // Line number prefix
     let line_num_end = strip_line_number_prefix(line);
@@ -1168,7 +1168,7 @@ fn highlight_json(code: &str) -> String {
 fn highlight_json_line(line: &str) -> String {
     let mut output = String::new();
     let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let _len = chars.len();
 
     // Line number prefix
     let line_num_end = strip_line_number_prefix(line);
@@ -1290,7 +1290,7 @@ fn highlight_css(code: &str) -> String {
 fn highlight_css_line(line: &str) -> String {
     let mut output = String::new();
     let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let _len = chars.len();
 
     // Line number prefix
     let line_num_end = strip_line_number_prefix(line);
@@ -1482,7 +1482,7 @@ fn highlight_html(code: &str) -> String {
 fn highlight_html_line(line: &str) -> String {
     let mut output = String::new();
     let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let _len = chars.len();
 
     // Line number prefix
     let line_num_end = strip_line_number_prefix(line);
@@ -1611,7 +1611,7 @@ fn highlight_bash(code: &str) -> String {
 fn highlight_bash_line(line: &str) -> String {
     let mut output = String::new();
     let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let _len = chars.len();
 
     // Line number prefix
     let line_num_end = strip_line_number_prefix(line);

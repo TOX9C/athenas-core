@@ -41,7 +41,13 @@ Each request ends with a STATE SNAPSHOT showing the active workspace, the curren
 Proceed autonomously for read-only actions and for launching/dispatching agents the user requested. Confirm with the user first ONLY for destructive actions: close_terminals and kanban_delete_task.
 
 ## Asking the user
-Use ask_user when you need a decision to proceed. Each option must have a short `label` (shown on the button) and may include a longer `description`."#;
+Use ask_user when you need a decision to proceed. Each option must have a short `label` (shown on the button) and may include a longer `description`.
+
+## Reporting on agents
+The snapshot only lists agents in the user's CURRENT space — report on those, never agents from other spaces. When asked what the agents/terminals are doing, read each one's recent output (read_agent_output) and reply with ONE short line per agent: its name/type and a few-word summary of what it's doing right now (e.g. "Shell 1 (claude): cleaning up dead code", "Shell 2: idle at prompt"). Do not paste raw terminal output.
+
+## Response style
+Be terse. Lead with the answer — no preamble, no recap of the question. Prefer a short bullet list or a few sentences. Never produce multi-paragraph walls of text unless the user explicitly asks for detail."#;
 
 /// Configuration for a specific LLM provider.
 ///
@@ -385,6 +391,9 @@ pub struct AthenaOrchestrator {
     workspace_name: Arc<parking_lot::Mutex<Option<String>>>,
     /// Optional session store for persisting conversations.
     session_store: Option<Arc<athena_store::SessionStore>>,
+    /// Optional key-value store, used to resolve the active space and its
+    /// panes so the state snapshot can be scoped to the current workspace.
+    kv_store: Option<Arc<athena_store::KeyValueStore>>,
 }
 
 impl Default for AthenaOrchestrator {
@@ -415,6 +424,7 @@ impl AthenaOrchestrator {
             agent_comms: None,
             workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store: None,
+            kv_store: None,
         }
     }
 
@@ -426,6 +436,7 @@ impl AthenaOrchestrator {
         plan_manager: Arc<crate::plan_manager::PlanManager>,
         agent_comms: Arc<crate::agent_comms::AgentComms>,
         session_store: Option<Arc<athena_store::SessionStore>>,
+        kv_store: Option<Arc<athena_store::KeyValueStore>>,
     ) -> Self {
         Self {
             anthropic_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -443,6 +454,7 @@ impl AthenaOrchestrator {
             agent_comms: Some(agent_comms),
             workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store,
+            kv_store,
         }
     }
 
@@ -468,6 +480,7 @@ impl AthenaOrchestrator {
             agent_comms: None,
             workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store: None,
+            kv_store: None,
         }
     }
 
@@ -653,45 +666,83 @@ impl AthenaOrchestrator {
         }
     }
 
+    /// Resolve the active space's display name and the set of pane IDs that
+    /// belong to it, from the persisted workspace store. Returns `None` when
+    /// the store is unavailable or unparseable — callers then fall back to
+    /// showing all panes rather than hiding everything.
+    fn active_space_scope(&self) -> Option<(String, std::collections::HashSet<String>)> {
+        let store = self.kv_store.as_ref()?;
+        let json = store.get::<String>("workspaces").ok()??;
+        let val: serde_json::Value = serde_json::from_str(&json).ok()?;
+        let active_id = val.get("active_space_id")?.as_str()?;
+        let spaces = val.get("spaces")?.as_array()?;
+        let space = spaces
+            .iter()
+            .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(active_id))?;
+        let name = space
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        let pane_ids = space
+            .get("panes")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some((name, pane_ids))
+    }
+
     /// Build a snapshot of the current app state for context injection.
     fn build_app_state_snapshot(&self) -> String {
         let mut lines: Vec<String> = Vec::new();
         lines.push("====== ATHENA STATE SNAPSHOT ======".to_string());
         lines.push(String::new());
 
-        // Active workspace
-        let workspace = self
-            .workspace_name
-            .lock()
-            .clone()
+        // Resolve the active space. When available, the running-agents list is
+        // filtered to only the panes that belong to it, so Athena never reports
+        // on agents from other spaces.
+        let scope = self.active_space_scope();
+        let workspace = scope
+            .as_ref()
+            .map(|(name, _)| name.clone())
+            .or_else(|| self.workspace_name.lock().clone())
             .unwrap_or_else(|| "Unknown".to_string());
+        let pane_filter = scope.as_ref().map(|(_, ids)| ids);
+        let in_scope = |id: &str| pane_filter.map_or(true, |ids| ids.contains(id));
+
         lines.push(format!("Active Workspace: {}", workspace));
         lines.push(String::new());
 
-        // Running agents from output buffer
-        lines.push("--- Running Agents ---".to_string());
+        // Running agents from output buffer (scoped to the active space)
+        lines.push("--- Running Agents (this space) ---".to_string());
         let mut has_agents = false;
         if let Some(ref ob) = self.output_buffer {
             let panes = ob.get_agent_list();
-            if !panes.is_empty() {
+            for pane in panes.iter().filter(|p| in_scope(&p.pane_id)) {
                 has_agents = true;
-                for pane in &panes {
-                    let activity =
-                        chrono::DateTime::from_timestamp_millis(pane.last_activity_at as i64)
-                            .map(|dt| dt.to_rfc3339())
-                            .unwrap_or_else(|| "unknown".to_string());
-                    lines.push(format!(
-                        "  {} | type={} | lines={} | last_activity={}",
-                        pane.pane_id, pane.agent_type, pane.line_count, activity
-                    ));
-                }
+                let activity =
+                    chrono::DateTime::from_timestamp_millis(pane.last_activity_at as i64)
+                        .map(|dt| dt.to_rfc3339())
+                        .unwrap_or_else(|| "unknown".to_string());
+                lines.push(format!(
+                    "  {} | type={} | lines={} | last_activity={}",
+                    pane.pane_id, pane.agent_type, pane.line_count, activity
+                ));
             }
         }
         if let Some(ref ac) = self.agent_comms {
             let sessions = ac.get_agent_sessions();
-            if !sessions.is_empty() {
+            let scoped: Vec<_> = sessions
+                .iter()
+                .filter(|s| in_scope(&s.agent_id))
+                .collect();
+            if !scoped.is_empty() {
                 has_agents = true;
-                for s in &sessions {
+                for s in scoped {
                     let connected = chrono::DateTime::from_timestamp_millis(s.connected_at as i64)
                         .map(|dt| dt.to_rfc3339())
                         .unwrap_or_else(|| "unknown".to_string());
@@ -1387,7 +1438,7 @@ mod tests {
     use crate::notification::NotificationService;
     use crate::output_buffer::OutputBuffer;
     use crate::plan_manager::PlanManager;
-    use crate::tool_executor::{ToolEventSender, ToolExecutor, ToolInput};
+    use crate::tool_executor::{ToolEventSender, ToolExecutor};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1431,7 +1482,6 @@ mod tests {
     fn build_orchestrator_with_blocking_executor() -> AthenaOrchestrator {
         let executor = ToolExecutor::new(
             Arc::new(OutputBuffer::new()),
-            Arc::new(NotificationService::new()),
             Arc::new(PlanManager::new()),
             Arc::new(AgentComms::new()),
             Arc::new(BlockingEventSender),
@@ -1530,10 +1580,6 @@ mod tests {
         );
     }
 
-    // Reference ToolInput to silence unused import warnings if all tests
-    // are stripped at compile time.
-    #[allow(dead_code)]
-    fn _tool_input_ref(_t: &ToolInput) {}
 
     /// The first call to a fresh limiter must not block — it acquires the
     /// single permit immediately and proceeds. Subsequent calls arriving

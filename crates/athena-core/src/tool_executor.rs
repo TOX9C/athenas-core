@@ -5,7 +5,6 @@
 
 use crate::agent_comms::AgentComms;
 use crate::kanban::{KanbanBackend, KanbanBackendStatus, KanbanBackendTask};
-use crate::notification::NotificationService;
 use crate::output_buffer::OutputBuffer;
 use crate::plan_manager::{
     ExecutionPlan, PlanInput, PlanManager, PlanStatus, PlanStepInput, StepStatus,
@@ -530,8 +529,6 @@ pub trait ToolEventSender: Send + Sync {
 /// The tool executor — dispatches tool calls to the appropriate service.
 pub struct ToolExecutor {
     output_buffer: Arc<OutputBuffer>,
-    #[allow(dead_code)]
-    notification_service: Arc<NotificationService>,
     plan_manager: Arc<PlanManager>,
     agent_comms: Arc<AgentComms>,
     event_sender: Arc<dyn ToolEventSender>,
@@ -547,7 +544,6 @@ impl std::fmt::Debug for ToolExecutor {
 impl ToolExecutor {
     pub fn new(
         output_buffer: Arc<OutputBuffer>,
-        notification_service: Arc<NotificationService>,
         plan_manager: Arc<PlanManager>,
         agent_comms: Arc<AgentComms>,
         event_sender: Arc<dyn ToolEventSender>,
@@ -556,7 +552,6 @@ impl ToolExecutor {
         let kanban_backend = KanbanBackend::new(Arc::clone(&store));
         Self {
             output_buffer,
-            notification_service,
             plan_manager,
             agent_comms,
             event_sender,
@@ -1487,7 +1482,6 @@ mod tests {
     fn create_executor() -> ToolExecutor {
         ToolExecutor::new(
             Arc::new(OutputBuffer::new()),
-            Arc::new(NotificationService::new()),
             Arc::new(PlanManager::new()),
             Arc::new(AgentComms::new()),
             Arc::new(MockEventSender),

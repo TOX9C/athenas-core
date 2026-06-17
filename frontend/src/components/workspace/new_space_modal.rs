@@ -325,6 +325,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         }
 
                                         let grid = grid_for_pane_count(panes.len());
+                                        // Capture the dir for trust authorization before it is
+                                        // moved into the Space struct below.
+                                        let trust_dir = dir.clone();
                                         let space = Space {
                                             id: generate_id(),
                                             name,
@@ -340,6 +343,27 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         // in onclick. Dioxus 0.7 has known wasm panics when
                                         // large closures write multiple signals.
                                         workspace_state.write().add_space(space);
+                                        // Authorize the Space's directory so PTY spawns and
+                                        // agent file tools aren't rejected by the sandbox.
+                                        // Best-effort: a failure only means the backend will
+                                        // reject the dir later with a clear "outside the
+                                        // workspace" message, it doesn't break Space creation.
+                                        spawn(async move {
+                                            if let Err(e) =
+                                                crate::tauri_bridge::workspace_add_trusted_root(
+                                                    &trust_dir,
+                                                )
+                                                .await
+                                            {
+                                                web_sys::console::warn_1(
+                                                    &format!(
+                                                        "[NewSpaceModal] trust-on-launch failed for '{}': {:?}",
+                                                        trust_dir, e
+                                                    )
+                                                    .into(),
+                                                );
+                                            }
+                                        });
                                         props.on_close.call(());
                                     },
                                     "Launch Space"
@@ -405,6 +429,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         }
 
                                         let grid = grid_for_pane_count(pane_configs.len());
+                                        // Capture the dir for trust authorization before it is
+                                        // moved into the Space struct below.
+                                        let trust_dir = dir.clone();
                                         let space = Space {
                                             id: generate_id(),
                                             name,
@@ -417,6 +444,24 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         };
 
                                         workspace_state.write().add_space(space);
+                                        // Authorize the Swarm mission's shared directory (see
+                                        // the terminal Launch handler for rationale).
+                                        spawn(async move {
+                                            if let Err(e) =
+                                                crate::tauri_bridge::workspace_add_trusted_root(
+                                                    &trust_dir,
+                                                )
+                                                .await
+                                            {
+                                                web_sys::console::warn_1(
+                                                    &format!(
+                                                        "[NewSpaceModal] trust-on-launch (swarm) failed for '{}': {:?}",
+                                                        trust_dir, e
+                                                    )
+                                                    .into(),
+                                                );
+                                            }
+                                        });
                                         ui_state.write().panel = crate::stores::ui::Panel::Swarm;
                                         props.on_close.call(());
                                     },

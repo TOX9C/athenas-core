@@ -7,7 +7,6 @@ pub mod utils;
 
 use components::agents::agent_inspector::AgentInspector;
 use components::agents::output_event_bus::OutputEventBus;
-use components::athena::athena_panel::AthenaPanelMode;
 use components::command_palette::CommandPalette;
 use components::kanban::kanban_board::KanbanBoard;
 use components::notifications::notification_bell::NotificationBell;
@@ -76,7 +75,7 @@ pub fn App() -> Element {
     // workspace state on every render so it stays bounded — entries for
     // spaces that no longer exist are dropped, preventing unbounded growth
     // across long sessions that create and destroy many workspaces.
-    let mut mounted_spaces = use_signal(std::collections::HashSet::<String>::new);
+    let mounted_spaces = use_signal(std::collections::HashSet::<String>::new);
     let mut platform = use_signal(|| {
         crate::utils::platform_utils::is_mac()
             .then_some("MacIntel")
@@ -138,7 +137,7 @@ pub fn App() -> Element {
 
     // Apply theme and font on mount (load persisted values from store)
     {
-        let mut ui_state_for_load = ui_state.clone();
+        let ui_state_for_load = ui_state.clone();
         use_effect(move || {
             let mut ui = ui_state_for_load.clone();
             spawn(async move {
@@ -204,6 +203,29 @@ pub fn App() -> Element {
         use_effect(move || {
             spawn(async move {
                 let loaded = WorkspaceState::load().await;
+                // Re-authorize every persisted Space's directory before
+                // exposing the state, so PTY spawns in pre-existing spaces
+                // (e.g. `football-predictor`) aren't rejected by the sandbox
+                // on the next launch. Trust-on-launch covers spaces created
+                // after this feature shipped; this covers the ones before.
+                // Best-effort and idempotent — safe to run every startup.
+                for space in &loaded.spaces {
+                    let dir = space.dir.trim();
+                    if dir.is_empty() {
+                        continue;
+                    }
+                    if let Err(e) =
+                        crate::tauri_bridge::workspace_add_trusted_root(dir).await
+                    {
+                        web_sys::console::warn_1(
+                            &format!(
+                                "[startup] failed to re-trust space dir '{}': {:?}",
+                                dir, e
+                            )
+                            .into(),
+                        );
+                    }
+                }
                 let mut ws = ws.write();
                 // Only apply loaded state if workspace hasn't been modified since
                 // mount (prevents async load from clobbering user mutations).

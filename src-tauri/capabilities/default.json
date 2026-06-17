@@ -134,6 +134,9 @@
     "allow-plugin-host-remove-plugin",
     "allow-store-api-key",
     "allow-clear-api-key",
-    "allow-test-llm-api-key"
+    "allow-test-llm-api-key",
+    "allow-workspace-add-trusted-root",
+    "allow-workspace-remove-trusted-root",
+    "allow-workspace-list-trusted-roots"
   ]
 }

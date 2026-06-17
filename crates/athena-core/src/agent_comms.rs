@@ -194,7 +194,6 @@ fn generate_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-#[allow(dead_code)]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -268,17 +267,6 @@ impl AgentComms {
         }
     }
 
-    #[allow(dead_code)]
-    fn emit_event(&self, channel: &str, data: &serde_json::Value) {
-        if let Ok(guard) = self.event_emitter.lock() {
-            if let Some(ref emitter) = *guard {
-                emitter(channel, data);
-                return;
-            }
-        }
-        log::debug!("[agent-comms] {} -> {}", channel, data);
-    }
-
     /// Returns the session authentication token.
     ///
     /// Agents must include this token in their `initialize` request.
@@ -296,22 +284,6 @@ impl AgentComms {
             }
         };
         sessions.values().map(|s| s.session.clone()).collect()
-    }
-
-    /// Find a session by agent ID.
-    #[allow(dead_code)]
-    fn find_session_by_agent_id(&self, agent_id: &str) -> Option<AgentSession> {
-        let sessions = match self.sessions.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("AgentComms: lock poisoned while finding session by agent_id");
-                return None;
-            }
-        };
-        sessions
-            .values()
-            .find(|s| s.session.agent_id == agent_id)
-            .map(|s| s.session.clone())
     }
 
     /// Send a message to a specific agent by its ID.

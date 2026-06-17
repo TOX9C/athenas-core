@@ -248,21 +248,60 @@ impl ToolEventSender for TauriEventSender {
         }
     }
 
-    fn plan_update(&self, _plan: &ExecutionPlan) {
-        // TODO: Emit a Tauri event so the frontend can update the plan UI.
-        // No-op for now to avoid silent drops; the plan_manager state is
-        // already persisted internally.
+    fn plan_update(&self, plan: &ExecutionPlan) {
+        let handle_guard = self.app_handle.lock();
+        if let Some(ref handle) = *handle_guard {
+            let payload = serde_json::json!({
+                "plan_id": plan.id,
+                "goal": plan.goal,
+                "steps": plan.steps.iter().map(|s| serde_json::json!({
+                    "id": s.id,
+                    "title": s.description,
+                    "description": s.description,
+                    "status": match s.status {
+                        athena_core::plan_manager::StepStatus::Pending => "pending",
+                        athena_core::plan_manager::StepStatus::InProgress => "in_progress",
+                        athena_core::plan_manager::StepStatus::Completed => "completed",
+                        athena_core::plan_manager::StepStatus::Failed => "failed",
+                        athena_core::plan_manager::StepStatus::Cancelled => "cancelled",
+                    },
+                    "assignedPaneId": s.assigned_pane_id,
+                })).collect::<Vec<_>>(),
+                "status": match plan.status {
+                    athena_core::plan_manager::PlanStatus::Pending => "pending",
+                    athena_core::plan_manager::PlanStatus::InProgress => "in_progress",
+                    athena_core::plan_manager::PlanStatus::Completed => "completed",
+                    athena_core::plan_manager::PlanStatus::Failed => "failed",
+                    athena_core::plan_manager::PlanStatus::Cancelled => "cancelled",
+                },
+            });
+            if let Err(e) = handle.emit("athena:planUpdate", payload.to_string()) {
+                log::warn!("failed to emit athena:planUpdate event: {}", e);
+            }
+        }
     }
 
     fn plan_evaluated(
         &self,
-        _plan_id: &str,
-        _overall_status: &str,
-        _step_evaluations: &[serde_json::Value],
-        _next_action: &str,
-        _reasoning: &str,
+        plan_id: &str,
+        overall_status: &str,
+        step_evaluations: &[serde_json::Value],
+        next_action: &str,
+        reasoning: &str,
     ) {
-        // TODO: Emit a Tauri event so the frontend can display evaluation results.
+        let handle_guard = self.app_handle.lock();
+        if let Some(ref handle) = *handle_guard {
+            let payload = serde_json::json!({
+                "planId": plan_id,
+                "overallStatus": overall_status,
+                "stepEvaluations": step_evaluations,
+                "nextAction": next_action,
+                "reasoning": reasoning,
+            });
+            if let Err(e) = handle.emit("athena:planEvaluated", payload.to_string()) {
+                log::warn!("failed to emit athena:planEvaluated event: {}", e);
+            }
+        }
     }
 }
 // ---------------------------------------------------------------------------
@@ -288,11 +327,9 @@ pub struct AppState {
     /// Set once after the Tauri app is built via `set_app_handle`.
     pub app_handle: Arc<parking_lot::Mutex<Option<AppHandle>>>,
 
-    #[allow(dead_code)]
     pub browser_manager: athena_browser::BrowserManager,
     /// Labels of active child webviews managed in-browser (right sidebar).
     pub child_webview_labels: parking_lot::Mutex<std::collections::HashSet<String>>,
-    #[allow(dead_code)]
     pub plugin_manager: athena_plugins::PluginManager,
 
     /// Internally synchronized -- no outer `Mutex` needed.
@@ -399,7 +436,6 @@ impl AppState {
         let tool_executor = Arc::new(parking_lot::Mutex::new(
             athena_core::tool_executor::ToolExecutor::new(
                 Arc::clone(&output_buffer),
-                Arc::clone(&notification_service),
                 Arc::clone(&plan_manager),
                 Arc::clone(&agent_comms),
                 event_sender,
@@ -423,6 +459,7 @@ impl AppState {
                 Arc::clone(&plan_manager),
                 Arc::clone(&agent_comms),
                 Some(Arc::clone(&session_store)),
+                Some(Arc::clone(&store)),
             );
 
             // Try to restore the active workspace name from the store
