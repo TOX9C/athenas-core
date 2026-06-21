@@ -3,183 +3,153 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Athena's Core — Design Direction</title>
+<title>Athena's Core — Redesign Prototype</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html { scroll-behavior: smooth; min-width: 100vw; }
-  body {
-    background: #08080A; color: #F0EBE3;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    font-size: 14px; line-height: 1.6;
-    min-height: 100vh; width: 100%; overflow-x: hidden;
-  }
-  .atmosphere {
-    position: fixed; inset: 0; z-index: 0; pointer-events: none;
-    background:
-      radial-gradient(ellipse 800px 400px at 50% 0%, rgba(201,161,74,0.06) 0%, transparent 60%),
-      radial-gradient(ellipse 600px 300px at 70% 20%, rgba(74,143,138,0.04) 0%, transparent 55%),
-      linear-gradient(180deg, #08080A 0%, #0D0D10 40%, #141418 100%);
-  }
-  .wrap { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 80px 24px 120px; width: 100%; }
-  .hero { text-align: center; padding: 60px 0 80px; border-bottom: 1px solid rgba(201,161,74,0.12); margin-bottom: 80px; }
-  .hero-badge { display: inline-block; font-size: 11px; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #8C7538; border: 1px solid rgba(201,161,74,0.2); padding: 6px 16px; border-radius: 999px; margin-bottom: 32px; }
-  .hero h1 { font-family: 'Cormorant', Georgia, serif; font-size: clamp(42px, 8vw, 72px); font-weight: 300; line-height: 1.05; color: #F4F1EA; margin-bottom: 20px; }
-  .hero h1 em { font-style: italic; font-weight: 400; color: #E8C97A; }
-  .hero p { font-size: 16px; font-weight: 300; color: #A19B8F; max-width: 560px; margin: 0 auto; line-height: 1.7; }
-  .hero-meta { margin-top: 40px; display: inline-flex; align-items: center; gap: 16px; }
-  .hero-dot { width: 6px; height: 6px; border-radius: 50%; background: #4A8F8A; box-shadow: 0 0 8px rgba(74,143,138,0.08); }
-  .hero-meta span { font-size: 12px; color: #5C5850; letter-spacing: 0.08em; }
-  .sec-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 40px; padding-top: 60px; }
-  .sec-num { font-family: 'Cormorant', Georgia, serif; font-size: 11px; font-weight: 600; color: #8C7538; letter-spacing: 0.1em; }
-  .sec-title { font-family: 'Cormorant', Georgia, serif; font-size: 28px; font-weight: 400; color: #F0EBE3; }
-  .sec-title span { color: #C9A14A; }
-  .pal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 20px; margin-bottom: 24px; }
-  .pal-card { background: #141418; border: 1px solid rgba(255,255,255,0.04); border-radius: 8px; overflow: hidden; transition: transform .3s, box-shadow .3s; }
-  .pal-card:hover { transform: translateY(-2px); box-shadow: 0 12px 40px rgba(0,0,0,0.3); }
-  .pal-swatch { height: 80px; position: relative; }
-  .pal-swatch::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, transparent 40%); }
-  .pal-info { padding: 16px; }
-  .pal-name { font-size: 13px; font-weight: 500; color: #F0EBE3; margin-bottom: 4px; }
-  .pal-hex { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5C5850; }
-  .ic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
-  .ic-card { display: flex; align-items: center; gap: 16px; background: #141418; border: 1px solid rgba(255,255,255,0.04); border-radius: 8px; padding: 20px 24px; transition: border-color .25s, background .25s; }
-  .ic-card:hover { border-color: rgba(201,161,74,0.15); background: #1C1C22; }
-  .ic-preview { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: #1C1C22; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05); }
-  .ic-label { font-size: 13px; font-weight: 500; color: #F0EBE3; margin-bottom: 2px; }
-  .ic-desc { font-size: 11px; color: #5C5850; }
-  .row { display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 32px; }
-  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 20px; font-size: 13px; font-weight: 500; border-radius: 8px; border: none; cursor: pointer; transition: all .25s; position: relative; overflow: hidden; }
-  .btn::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(255,255,255,0.15) 0%, transparent 40%); opacity: 0; transition: opacity .25s; }
-  .btn:hover::after { opacity: 1; }
-  .btn-pri { background: linear-gradient(180deg, #C9A14A 0%, #B08A3A 100%); color: #08080A; }
-  .btn-sec { background: #1C1C22; color: #F0EBE3; border: 1px solid rgba(255,255,255,0.08); }
-  .btn-gst { background: transparent; color: #A19B8F; border: 1px solid transparent; }
-  .btn-gst:hover { color: #F0EBE3; background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.06); }
-  .btn-pat { background: linear-gradient(180deg, rgba(74,143,138,0.15) 0%, rgba(74,143,138,0.05) 100%); color: #4A8F8A; border: 1px solid rgba(74,143,138,0.2); }
-  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: 11px; font-weight: 500; border-radius: 999px; }
-  .badge-gold { background: rgba(201,161,74,0.1); color: #E8C97A; border: 1px solid rgba(201,161,74,0.15); }
-  .badge-pat { background: rgba(74,143,138,0.08); color: #4A8F8A; border: 1px solid rgba(74,143,138,0.12); }
-  .badge-surf { background: rgba(255,255,255,0.03); color: #A19B8F; border: 1px solid rgba(255,255,255,0.05); }
-  .card { background: #141418; border: 1px solid rgba(255,255,255,0.04); border-radius: 12px; padding: 24px; transition: border-color .25s; }
-  .card:hover { border-color: rgba(255,255,255,0.08); }
-  .card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-  .card-icon { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; background: #1C1C22; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05); }
-  .card-icon svg { stroke: #C9A14A; }
-  .card-title { font-size: 15px; font-weight: 500; color: #F0EBE3; }
-  .card-text { font-size: 13px; color: #A19B8F; line-height: 1.7; }
-  .scene { background: #0D0D10; border: 1px solid rgba(255,255,255,0.04); border-radius: 12px; overflow: hidden; }
-  .scene-body { display: flex; height: 320px; }
-  .scene-rail { width: 52px; background: #141418; border-right: 1px solid rgba(255,255,255,0.04); display: flex; flex-direction: column; align-items: center; padding: 16px 0; gap: 8px; }
-  .rail-item { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; transition: background .15s; color: #5C5850; }
-  .rail-item:hover { background: rgba(255,255,255,0.04); }
-  .rail-item.on { background: rgba(201,161,74,0.1); box-shadow: 0 0 0 1px rgba(201,161,74,0.2); color: #C9A14A; }
-  .scene-sidebar { width: 220px; background: #141418; border-right: 1px solid rgba(255,255,255,0.04); padding: 16px; }
-  .scene-main { flex: 1; background: #1C1C22; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; color: #5C5850; }
-  .scene-right { width: 280px; background: #141418; border-left: 1px solid rgba(255,255,255,0.04); display: flex; flex-direction: column; }
-  .scene-tabs { display: flex; border-bottom: 1px solid rgba(255,255,255,0.04); }
-  .scene-tab { flex: 1; padding: 10px 4px; text-align: center; font-size: 10px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: #5C5850; border-bottom: 2px solid transparent; cursor: pointer; transition: all .2s; }
-  .scene-tab:hover { color: #A19B8F; }
-  .scene-tab.on { color: #E8C97A; border-bottom-color: #C9A14A; }
-  .part { margin-top: 80px; padding: 40px 0; border-top: 1px solid rgba(201,161,74,0.1); text-align: center; }
-  .part p { font-family: 'Cormorant', Georgia, serif; font-size: 22px; font-weight: 300; font-style: italic; color: #3A3833; }
-  .part span { color: #8C7538; }
-  @media (max-width: 640px) { .wrap { padding: 40px 16px 80px; } .pal-grid { grid-template-columns: repeat(2, 1fr); } .ic-grid { grid-template-columns: 1fr; } .scene-body { flex-direction: column; height: auto; } .scene-sidebar, .scene-right { width: 100%; border: none; border-bottom: 1px solid rgba(255,255,255,0.04); } .scene-rail { flex-direction: row; width: 100%; padding: 8px 16px; overflow-x: auto; } }
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px;color:#E0DBD1}
+body{display:flex;flex-direction:column}
+.titlebar{height:38px;background:linear-gradient(180deg,#141418,#111113);border-bottom:1px solid rgba(255,255,255,0.04);display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0}
+.traffic{flex:0}
+.traffic span{display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,0.1)}
+.titlebar h2{flex:1;text-align:center;font-family:"Cormorant",Georgia,serif;font-size:14px;font-weight:400;color:#8C7538;letter-spacing:0.06em}
+.titlebar .actions{display:flex;gap:8px}
+.tbtn{padding:4px 12px;font-size:11px;border-radius:6px;border:none;cursor:pointer;background:rgba(255,255,255,0.03);color:#5C5850;transition:all .2s}
+.tbtn:hover{background:rgba(255,255,255,0.06);color:#A19B8F}
+.tbtn.on{background:rgba(201,161,74,0.12);color:#E8C97A;box-shadow:0 0 0 1px rgba(201,161,74,0.25) inset}
+.main{flex:1;display:flex;overflow:hidden}
+.left-rail{width:52px;background:#0C0C0F;border-right:1px solid rgba(255,255,255,0.04);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:6px;flex-shrink:0}
+.rail{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:8px;cursor:pointer;transition:all .2s;color:#3A3833;position:relative}
+.rail:hover{background:rgba(255,255,255,0.03);color:#5C5850}
+.rail.on{background:rgba(201,161,74,0.08);color:#C9A14A;box-shadow:0 0 0 1px rgba(201,161,74,0.2)}
+.rail.on .tip{display:block}
+.rail svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.tip{position:absolute;left:44px;top:50%;transform:translateY(-50%);background:#1C1C22;border:1px solid rgba(255,255,255,0.06);padding:4px 10px;border-radius:6px;font-size:11px;color:#A19B8F;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s;z-index:10}
+.rail:hover .tip{opacity:1}
+.sidebar{width:240px;background:#0C0C0F;border-right:1px solid rgba(255,255,255,0.04);display:flex;flex-direction:column;flex-shrink:0}
+.sb-head{padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.04);display:flex;align-items:center;gap:8px}
+.sb-head svg{stroke:#C9A14A}
+.sb-head h3{font-family:"Cormorant",Georgia,serif;font-size:15px;font-weight:500;color:#F4F1EA}
+.sb-body{flex:1;padding:8px}
+.sb-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;font-size:13px;color:#5C5850;cursor:pointer;transition:all .15s}
+.sb-item:hover{background:rgba(255,255,255,0.03);color:#A19B8F}
+.sb-item.on{background:rgba(201,161,74,0.06);color:#E8C97A}
+.sb-item.on svg{stroke:#E8C97A}
+.sb-item svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.center{flex:1;background:#08080A;display:flex;flex-direction:column;position:relative}
+.term-grid{display:flex;flex:1;flex-wrap:wrap;padding:8px;gap:8px}
+.term{background:#0E0E11;border:1px solid rgba(255,255,255,0.03);border-radius:8px;flex:1;min-width:200px;display:flex;flex-direction:column;overflow:hidden}
+.term-head{padding:6px 10px;font-size:11px;color:#3A3833;border-bottom:1px solid rgba(255,255,255,0.03);display:flex;justify-content:space-between;align-items:center}
+.term-term{padding:12px;font-family:"JetBrains Mono",monospace;font-size:12px;color:#5C5850;flex:1}
+.term-term .prompt{color:#4A8F8A}
+.term-term .cmd{color:#A19B8F}
+.right{width:340px;background:#0C0C0F;border-left:1px solid rgba(255,255,255,0.04);display:flex;flex-direction:column;flex-shrink:0}
+.rp-tabs{display:flex;border-bottom:1px solid rgba(255,255,255,0.04)}
+.rp-tab{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:10px 4px;font-size:10px;font-weight:500;letter-spacing:0.06em;text-transform:uppercase;color:#3A3833;border-bottom:2px solid transparent;cursor:pointer;transition:all .2s;white-space:nowrap}
+.rp-tab:hover{color:#5C5850}
+.rp-tab.on{color:#E8C97A;border-bottom-color:#C9A14A}
+.rp-tab svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.rp-body{flex:1;padding:16px;overflow-y:auto}
+.rp-msg{margin-bottom:12px}
+.rp-msg .who{font-size:11px;color:#4A8F8A;margin-bottom:4px}
+.rp-msg .txt{font-size:13px;color:#A19B8F;line-height:1.6;padding:10px 14px;background:#141418;border-radius:8px;border:1px solid rgba(255,255,255,0.03)}
+.statusbar{height:24px;background:#0C0C0F;border-top:1px solid rgba(255,255,255,0.04);display:flex;align-items:center;padding:0 12px;font-size:11px;color:#3A3833;flex-shrink:0}
+.statusbar .sep{margin:0 8px;color:rgba(255,255,255,0.05)}
+#pov{position:fixed;bottom:16px;right:16px;display:flex;gap:4px;background:#0C0C0F;border:1px solid rgba(255,255,255,0.06);padding:4px;border-radius:8px;z-index:100}
+#pov button{padding:6px 12px;font-size:12px;border:none;border-radius:6px;background:transparent;color:#5C5850;cursor:pointer;transition:all .2s}
+#pov button.on{background:rgba(201,161,74,0.12);color:#E8C97A;box-shadow:0 0 0 1px rgba(201,161,74,0.25) inset}
+.alt .titlebar{background:linear-gradient(180deg,#101014,#0A0A0C);border-bottom-color:rgba(74,143,138,0.1)}
+.alt .left-rail{background:#08080A;border-right-color:rgba(74,143,138,0.08)}
+.alt .sidebar{background:#08080A;border-right-color:rgba(74,143,138,0.08)}
+.alt .center{background:#050505}
+.alt .right{background:#08080A;border-left-color:rgba(74,143,138,0.08)}
+.alt .statusbar{background:#08080A;border-top-color:rgba(74,143,138,0.08)}
+.alt .rail.on{background:rgba(74,143,138,0.1);color:#4A8F8A;box-shadow:0 0 0 1px rgba(74,143,138,0.25)}
+.alt .sb-item.on{background:rgba(74,143,138,0.06);color:#6BC4BF}
+.alt .rp-tab.on{color:#62D3CE;border-bottom-color:#4A8F8A}
+.alt .tbtn.on{background:rgba(74,143,138,0.12);color:#6BC4BF;box-shadow:0 0 0 1px rgba(74,143,138,0.25) inset}
 </style>
 </head>
-<body>
-  <div class="atmosphere"></div>
-  <div class="wrap">
-
-    <header class="hero">
-      <div class="hero-badge">Design Direction v1.0</div>
-      <h1>Athena's <em>Core</em></h1>
-      <p>An evolved visual language for a developer's temple. Richer atmosphere, refined iconography, and a palette drawn from ancient marble and aged bronze.</p>
-      <div class="hero-meta"><div class="hero-dot"></div><span>Greek / Mythology / Developer Tool</span></div>
-    </header>
-
-    <div class="sec-head"><span class="sec-num">01</span><h2 class="sec-title">Color <span>Palette</span></h2></div>
-    <div class="pal-grid">
-      <div class="pal-card"><div class="pal-swatch" style="background:#08080A"></div><div class="pal-info"><div class="pal-name">Abyss</div><div class="pal-hex">#08080A</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#0D0D10"></div><div class="pal-info"><div class="pal-name">Obsidian</div><div class="pal-hex">#0D0D10</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#141418"></div><div class="pal-info"><div class="pal-name">Charcoal</div><div class="pal-hex">#141418</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#1C1C22"></div><div class="pal-info"><div class="pal-name">Slate</div><div class="pal-hex">#1C1C22</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#24242B"></div><div class="pal-info"><div class="pal-name">Stone</div><div class="pal-hex">#24242B</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#F0EBE3"></div><div class="pal-info"><div class="pal-name">Primary Text</div><div class="pal-hex">#F0EBE3</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#A19B8F"></div><div class="pal-info"><div class="pal-name">Secondary Text</div><div class="pal-hex">#A19B8F</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#C9A14A"></div><div class="pal-info"><div class="pal-name">Gold</div><div class="pal-hex">#C9A14A</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#E8C97A"></div><div class="pal-info"><div class="pal-name">Gold Bright</div><div class="pal-hex">#E8C97A</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#4A8F8A"></div><div class="pal-info"><div class="pal-name">Patina</div><div class="pal-hex">#4A8F8A</div></div></div>
-      <div class="pal-card"><div class="pal-swatch" style="background:#2E5A56"></div><div class="pal-info"><div class="pal-name">Patina Dim</div><div class="pal-hex">#2E5A56</div></div></div>
-    </div>
-
-    <div class="sec-head"><span class="sec-num">02</span><h2 class="sec-title">Icon <span>Language</span></h2></div>
-    <div class="ic-grid">
-      <div class="ic-card"><div class="ic-preview"><svg viewBox="0 0 24 24" width="24" fill="none" stroke="#C9A14A" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div><div><div class="ic-label">Spaces</div><div class="ic-desc">2x2 meander tiles</div></div></div>
-      <div class="ic-card"><div class="ic-preview"><svg viewBox="0 0 24 24" width="24" fill="none" stroke="#C9A14A" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/></svg></div><div><div class="ic-label">Files</div><div class="ic-desc">Papyrus scroll</div></div></div>
-      <div class="ic-card"><div class="ic-preview"><svg viewBox="0 0 24 24" width="24" fill="none" stroke="#C9A14A" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div><div><div class="ic-label">Agents</div><div class="ic-desc">Corinthian layers</div></div></div>
-      <div class="ic-card"><div class="ic-preview"><svg viewBox="0 0 24 24" width="24" fill="none" stroke="#C9A14A" stroke-width="1.5"><path d="M12 2l3 6 6 1-4.5 4.3 1 6.2L12 16.5l-5.5 3.1 1-6.2L3 9l6-1 3-6z"/></svg></div><div><div class="ic-label">Plugins</div><div class="ic-desc">Greek star</div></div></div>
-      <div class="ic-card"><div class="ic-preview"><svg viewBox="0 0 24 24" width="24" fill="none" stroke="#C9A14A" stroke-width="1.5"><path d="M6 4h14"/><path d="M6 9h7"/><path d="M6 14h5"/><path d="M11 20l-5-5"/></svg></div><div><div class="ic-label">Athena</div><div class="ic-desc">Stylus &amp; scroll</div></div></div>
-      <div class="ic-card"><div class="ic-preview"><svg viewBox="0 0 24 24" width="24" fill="none" stroke="#C9A14A" stroke-width="1.5"><path d="M16.5 4a2.121 2.121 0 0 1 3 3L8 18.5l-3.5 1 1-3.5L16.5 4z"/></svg></div><div><div class="ic-label">Editor</div><div class="ic-desc">Tablet &amp; stylus</div></div></div>
-      <div class="ic-card"><div class="ic-preview"><svg viewBox="0 0 24 24" width="24" fill="none" stroke="#C9A14A" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10A15.3 15.3 0 0 1 8 12a15.3 15.3 0 0 1 4-10z"/></svg></div><div><div class="ic-label">Browser</div><div class="ic-desc">Celestial sphere</div></div></div>
-      <div class="ic-card"><div class="ic-preview"><svg viewBox="0 0 24 24" width="24" fill="none" stroke="#C9A14A" stroke-width="1.5"><path d="M8 22V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v18"/><path d="M3 22h18"/><path d="M6 10h12"/><path d="M6 14h12"/></svg></div><div><div class="ic-label">Skills</div><div class="ic-desc">Doric column</div></div></div>
-    </div>
-
-    <div class="sec-head"><span class="sec-num">03</span><h2 class="sec-title">Component <span>Language</span></h2></div>
-    <h3 style="font-size:13px;color:#8C7538;margin:32px 0 16px;text-transform:uppercase">Buttons</h3>
-    <div class="row"><button class="btn btn-pri">Primary Action</button><button class="btn btn-sec">Secondary</button><button class="btn btn-gst">Ghost</button><button class="btn btn-pat">Patina</button></div>
-    <h3 style="font-size:13px;color:#8C7538;margin-bottom:16px;text-transform:uppercase">Badges</h3>
-    <div class="row"><span class="badge badge-gold">Active</span><span class="badge badge-pat">Running</span><span class="badge badge-surf">Agent</span></div>
-    <h3 style="font-size:13px;color:#8C7538;margin-bottom:16px;text-transform:uppercase">Cards</h3>
-    <div class="row" style="align-items:stretch">
-      <div class="card" style="max-width:300px;flex:1"><div class="card-head"><div class="card-icon"><svg viewBox="0 0 24 24" width="20" fill="none" stroke="#C9A14A" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/></svg></div><div class="card-title">Agent Status</div></div><p class="card-text">Monitor AI agents in real-time with live output streams and status indicators.</p></div>
-      <div class="card" style="max-width:300px;flex:1"><div class="card-head"><div class="card-icon"><svg viewBox="0 0 24 24" width="20" fill="none" stroke="#C9A14A" stroke-width="1.5"><path d="M16.5 4a2.121 2.121 0 0 1 3 3L8 18.5l-3.5 1 1-3.5L16.5 4z"/></svg></div><div class="card-title">File Editor</div></div><p class="card-text">Edit files with syntax highlighting and multi-tab support.</p></div>
-    </div>
-    <h3 style="font-size:13px;color:#8C7538;margin-bottom:16px;text-transform:uppercase">Input Fields</h3>
-    <div class="row">
-      <div style="display:flex;flex-direction:column;gap:6px;max-width:400px"><label style="font-size:11px;color:#5C5850;text-transform:uppercase">Search Query</label><input style="background:#141418;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:10px 14px;font-size:13px;color:#F0EBE3;outline:none;width:100%;min-width:250px" type="text" placeholder="Search files, agents..."></div>
-      <div style="display:flex;flex-direction:column;gap:6px;max-width:400px"><label style="font-size:11px;color:#5C5850;text-transform:uppercase">Command</label><input style="background:#141418;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:10px 14px;font-size:13px;color:#F0EBE3;outline:none;width:100%;min-width:250px" type="text" placeholder="Type a shell command..."></div>
-    </div>
-
-    <div class="sec-head"><span class="sec-num">04</span><h2 class="sec-title">Layout <span>Scene</span></h2></div>
-    <div class="scene">
-      <div class="scene-body">
-        <div class="scene-rail">
-          <div class="rail-item on"><svg viewBox="0 0 24 24" width="16" fill="none" stroke="#C9A14A" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
-          <div class="rail-item"><svg viewBox="0 0 24 24" width="16" fill="none" stroke="#5C5850" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/></svg></div>
-          <div class="rail-item"><svg viewBox="0 0 24 24" width="16" fill="none" stroke="#5C5850" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/></svg></div>
-        </div>
-        <div class="scene-sidebar">
-          <div style="font-size:12px;font-weight:600;color:#8C7538;margin-bottom:12px;letter-spacing:0.1em;text-transform:uppercase">Project Files</div>
-          <div style="display:flex;flex-direction:column;gap:4px">
-            <div style="padding:6px 8px;font-size:12px;color:#E8C97A;background:rgba(201,161,74,0.06);border-radius:4px">src/</div>
-            <div style="padding:6px 8px;font-size:12px;color:#5C5850;padding-left:20px">components/</div>
-            <div style="padding:6px 8px;font-size:12px;color:#5C5850;padding-left:20px">stores/</div>
-            <div style="padding:6px 8px;font-size:12px;color:#3A3833;padding-left:20px">lib.rs</div>
-          </div>
-        </div>
-        <div class="scene-main">
-          <svg viewBox="0 0 24 24" width="48" fill="none" stroke="#3A3833" stroke-width="1"><rect x="2" y="2" width="20" height="20" rx="2"/><path d="M2 8h20"/><path d="M8 2v20"/><path d="M14 2v20"/><path d="M2 14h20"/></svg>
-          <span style="font-size:13px">Terminal workspace grid</span>
-        </div>
-        <div class="scene-right">
-          <div class="scene-tabs">
-            <div class="scene-tab">Browser</div>
-            <div class="scene-tab on">Athena</div>
-            <div class="scene-tab">Editor</div>
-            <div class="scene-tab">Skills</div>
-          </div>
-          <div style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:#3A3833 manifested as dialog; font-size:13px">
-            <svg viewBox="0 0 24 24" width="32" fill="none" stroke="#3A3833" stroke-width="1.5"><path d="M12 2l3 6 6 1-4.5 4.3 1 6.2L12 16.5l-5.5 3.1 1-6.2L3 9l6-1 3-6z"/></svg>
-            <span>AI Assistant</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="part">
-      <p>The design is not what it looks like.<br>The design is <span>how it feels</span> to use.</p>
-    </div>
-
-  </div>
+<body class="alt">
+<div class="titlebar">
+<div class="traffic"><span></span><span></span><span></span></div>
+<h2>Athena's Core</h2>
+<div class="actions">
+<button class="tbtn on">Workspace</button>
+<button class="tbtn">Kanban</button>
+<button class="tbtn">Swarm</button>
+</div>
+</div>
+<div class="main">
+<div class="left-rail">
+<div class="rail on"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><div class="tip">Spaces</div></div>
+<div class="rail"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/></svg><div class="tip">Files</div></div>
+<div class="rail"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><div class="tip">Agents</div></div>
+<div class="rail"><svg viewBox="0 0 24 24"><path d="M12 2l3 6 6 1-4.5 4.3 1 6.2L12 16.5l-5.5 3.1 1-6.2L3 9l6-1 3-6z"/></svg><div class="tip">Plugins</div></div>
+</div>
+<div class="sidebar">
+<div class="sb-head"><svg viewBox="0 0 24 24" width="18" fill="none" stroke="#C9A14A" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><h3>Explorer</h3></div>
+<div class="sb-body">
+<div class="sb-item on"><svg viewBox="0 0 24 24"><path d="M3 7v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-4l-2-3H8a2 2 0 0 0-2 2z"/></svg> Files</div>
+<div class="sb-item"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/></svg> Agents</div>
+<div class="sb-item"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/></svg> Settings</div>
+</div>
+</div>
+<div class="center">
+<div class="term-grid">
+<div class="term">
+<div class="term-head">bash — zsh <span style="color:#3A3833">●</span></div>
+<div class="term-term">
+<span class="prompt">~/athenas-core$</span><br/>
+<span class="cmd">cargo build --release</span><br/>
+<span style="color:#3A3833">Compiling athena-core v0.1.0</span>
+</div>
+</div>
+<div class="term">
+<div class="term-head">bash — zsh <span style="color:#3A3833"></span></div>
+<div class="term-term">
+<span class="prompt">~/athenas-core$</span><br/>
+<span class="cmd">cargo build --release</span><br/>
+<span style="color:#3A3833">Compiling athena-core v0.1.0</span>
+</div>
+</div>
+<div class="term">
+<div class="term-head">bash — zsh <span style="color:#3A3833"></span></div>
+<div class="term-term">
+<span class="prompt">~/athenas-core$</span><br/>
+<span class="cmd">cargo build --release</span><br/>
+<span style="color:#3A3833">Compiling athena-core v0.1.0</span>
+</div>
+</div>
+<div class="term">
+<div class="term-head">bash — zsh <span style="color:#3A3833"></span></div>
+<div class="term-term">
+<span class="prompt">~/athenas-core$</span><br/>
+<span class="cmd">cargo build --release</span><br/>
+<span style="color:#3A3833">Compiling athena-core v0.1.0</span>
+</div>
+</div>
+</div>
+</div>
+<div class="right">
+<div class="rp-tabs">
+<div class="rp-tab">Browser</div>
+<div class="rp-tab on">Athena</div>
+<div class="rp-tab">Editor</div>
+<div class="rp-tab">Skills</div>
+</div>
+<div class="rp-body">
+<div class="rp-msg"><div class="who">You</div><div class="txt">Analyze the codebase for security vulnerabilities.</div></div>
+<div class="rp-msg"><div class="who">Athena</div><div class="txt">Launching security review across 47 modules. I'll cross-reference OWASP patterns and scan for hardcoded secrets.</div></div>
+<div class="rp-msg"><div class="who">Athena</div><div class="txt">Found 3 potential issues: unvalidated user input in tool_executor.rs, missing rate limiting on the MCP endpoint, and a debug log that may leak session tokens.</div></div>
+</div>
+</div>
+</div>
+<div class="statusbar">
+<span>athenas-core</span><span class="sep">|</span><span>4 panes</span><span class="sep">|</span><span>athena-panel</span><span class="sep">|</span><span style="color:#C9A14A">Shattered Obsidian</span>
+</div>
+<div id="pov">
+<button class="on" onclick="document.body.className=''">Temple Gold</button>
+<button onclick="document.body.className='alt'">Shattered Obsidian</button>
+</div>
 </body>
 </html>

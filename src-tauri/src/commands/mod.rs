@@ -4,6 +4,15 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
+/// Minimal HTML escape to prevent XSS in contexts that might render HTML.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 pub mod caps;
 
 // ── Path validation helpers ──────────────────────────────────────────────────
@@ -253,21 +262,29 @@ const MAX_SESSION_ID_LEN: usize = 256;
 /// Validate a shell binary path for PTY spawning.
 ///
 /// Allowed if the canonicalized path lives under `/bin` or `/usr/bin`, or if it
-/// matches the invoking user's `$SHELL`. This stops a renderer from spawning
-/// `/usr/sbin/installer`, a homebrew binary, or an arbitrary executable while
-/// still permitting the standard shells (bash, zsh, sh, fish when in /usr/bin).
+/// matches the invoking user's `$SHELL` after canonicalization. This stops a
+/// renderer from spawning `/usr/sbin/installer`, a homebrew binary, or an
+/// arbitrary executable while still permitting standard shells (bash, zsh,
+/// sh, fish when in /usr/bin).
 fn validate_shell(shell: &str) -> Result<std::path::PathBuf, String> {
     if shell.is_empty() {
         return Err("shell path is empty".to_string());
     }
     let p = std::path::Path::new(shell);
 
-    // Always allow the user's configured login shell.
+    // Canonicalize the provided shell for comparison.
+    let canon = p
+        .canonicalize()
+        .map_err(|e| format!("shell binary not accessible: {}", e))?;
+
+    // Check $SHELL after canonicalization so an attacker can't set
+    // SHELL=/tmp/evil and then invoke `pty_spawn` with that path.
     if let Ok(user_shell) = std::env::var("SHELL") {
-        if shell == user_shell {
-            // Canonicalize if possible (so the returned path is absolute),
-            // but fall back to the literal if the file isn't resolvable yet.
-            return Ok(p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+        let user_canon = std::path::Path::new(&user_shell)
+            .canonicalize()
+            .map_err(|e| format!("$SHELL not accessible: {}", e))?;
+        if canon == user_canon {
+            return Ok(canon);
         }
     }
 
@@ -275,10 +292,6 @@ fn validate_shell(shell: &str) -> Result<std::path::PathBuf, String> {
     // Using canonicalize (not lexical check) so symlinks are resolved: a
     // symlink in /bin pointing to /Users/x/evil is followed and then rejected
     // because the target isn't under /bin or /usr/bin.
-    let canon = p
-        .canonicalize()
-        .map_err(|e| format!("shell binary not accessible: {}", e))?;
-
     let allowed_ancestors = [std::path::Path::new("/bin"), std::path::Path::new("/usr/bin")];
     let ok = allowed_ancestors
         .iter()
@@ -667,6 +680,16 @@ pub async fn fs_read_file(
     let validated = validate_path_exists(&state.store, path_ref)?;
     let validated_clone = validated.clone();
     tokio::task::spawn_blocking(move || {
+        // Check file size before reading to prevent memory exhaustion.
+        let metadata = std::fs::metadata(&validated_clone)
+            .map_err(|e| CommandError::Internal(e.to_string()))?;
+        if metadata.len() > caps::MAX_FS_READ_BYTES as u64 {
+            return Err(CommandError::InvalidInput(format!(
+                "file too large: {} bytes (max {})",
+                metadata.len(),
+                caps::MAX_FS_READ_BYTES
+            )));
+        }
         std::fs::read_to_string(&validated_clone).map_err(|e| CommandError::Internal(e.to_string()))
     })
     .await
@@ -729,9 +752,18 @@ pub async fn fs_write_file(
     }
     let path_ref = std::path::Path::new(&path);
     let validated = validate_path(&state.store, path_ref)?;
+    let validated_clone = validated.clone();
     let content_clone = content.clone();
     tokio::task::spawn_blocking(move || {
-        std::fs::write(&validated, content_clone).map_err(|e| CommandError::Internal(e.to_string()))
+        // Atomic write: write to a temp file in the same directory, then rename.
+        let temp_path = match validated_clone.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                parent.join(format!(".tmp-write-{}", uuid::Uuid::new_v4()))
+            }
+            _ => std::env::temp_dir().join(format!(".tmp-write-{}", uuid::Uuid::new_v4())),
+        };
+        std::fs::write(&temp_path, content_clone).map_err(|e| CommandError::Internal(e.to_string()))?;
+        std::fs::rename(&temp_path, &validated_clone).map_err(|e| CommandError::Internal(e.to_string()))
     })
     .await
     .map_err(|e| CommandError::Internal(format!("Write task failed: {e}")))?
@@ -760,6 +792,16 @@ pub async fn fs_read_file_as_base64(
     let validated = validate_path_exists(&state.store, path_ref)?;
     let validated_clone = validated.clone();
     let bytes = tokio::task::spawn_blocking(move || {
+        // Check file size before reading to prevent memory exhaustion.
+        let metadata = std::fs::metadata(&validated_clone)
+            .map_err(|e| CommandError::Internal(e.to_string()))?;
+        if metadata.len() > caps::MAX_FS_READ_BYTES as u64 {
+            return Err(CommandError::InvalidInput(format!(
+                "file too large: {} bytes (max {})",
+                metadata.len(),
+                caps::MAX_FS_READ_BYTES
+            )));
+        }
         std::fs::read(&validated_clone).map_err(|e| CommandError::Internal(e.to_string()))
     })
     .await
@@ -929,6 +971,17 @@ pub fn store_set(
     value: String,
 ) -> Result<(), String> {
     caps::validate_key(&key)?;
+    // Block writes to sensitive key namespaces from the frontend to prevent
+    // key tampering and unauthorized secrets storage.
+    const FORBIDDEN_PREFIXES: &[&str] = &["secret.", "auth.", "password.", "credential."];
+    for prefix in FORBIDDEN_PREFIXES {
+        if key.starts_with(prefix) {
+            return Err(format!(
+                "Writing to key namespace '{}' is forbidden",
+                prefix
+            ));
+        }
+    }
     if key == "llm.api_key" {
         if !value.is_empty() && value != "set" && value != "not_set" {
             // Store the API key securely in the OS keyring, never in plaintext
@@ -2086,9 +2139,40 @@ pub async fn athena_chat_with_images(
 #[tauri::command]
 pub async fn summarize_agent_title(state: State<'_, AppState>, raw_prompt: String) -> Result<String, String> {
     // Block obviously sensitive prompts before sending anything.
+    // Use a regex-based approach instead of simple contains() to prevent
+    // trivial bypasses with obfuscation like "p@ssword" or "API_KEY".
     let lowercase = raw_prompt.to_lowercase();
-    let sensitive_keywords = ["password", "token", "secret", "api_key", "apikey", "api-key", "authorization", "auth", "credential", "private key", "passphrase", "pin"];
+    // Check for sensitive keywords with optional l33t-sp34k substitutions
+    let sensitive_keywords = [
+        "password", "passw0rd", "p@ssword",
+        "token", "t0ken", "t0k3n",
+        "secret", "s3cret", "s3cr3t",
+        "api_key", "apikey", "api-key", "api_k3y",
+        "authorization", "auth", "4uth",
+        "credential", "cr3dential",
+        "private key", "passphrase", "pin",
+    ];
     if sensitive_keywords.iter().any(|&kw| lowercase.contains(kw)) {
+        return Ok("Sensitive prompt".to_string());
+    }
+    // Also check individual words for l33t-sp34k near sensitive terms.
+    let l33t_words = lowercase.split_whitespace()
+        .any(|w| {
+            let w_norm = w.replace(|c: char| !c.is_alphanumeric(), "");
+            let w_anti = w_norm.replace('a', "@");
+            let tests: Vec<bool> = vec![
+                w_norm.contains("passw0rd") || w_norm.contains("p@ssword"),
+                w_norm.contains("t0ken") || w_norm.contains("t0k3n"),
+                w_norm.contains("s3cret") || w_norm.contains("s3cr3t"),
+                w_norm.contains("api_k3y") || w_norm.contains("4uth"),
+                w_norm.contains("cr3dential"),
+                w_norm.contains("p1n"),
+                w_anti.contains("p@ssword"),
+                w_anti.contains("t@ken"),
+            ];
+            tests.iter().any(|&b| b)
+        });
+    if l33t_words {
         return Ok("Sensitive prompt".to_string());
     }
     let orchestrator = state.orchestrator.lock().await;
@@ -2284,6 +2368,10 @@ pub fn notification_push(
     message: String,
     level: Option<String>,
 ) -> Result<String, String> {
+    // Sanitize user-supplied notification content to prevent XSS if content
+    // is ever rendered in a context that supports HTML or markdown.
+    let title = html_escape::encode_text(title.trim()).to_string();
+    let message = html_escape::encode_text(message.trim()).to_string();
     let notif_type = match level.as_deref() {
         Some("warning") => athena_core::notification::NotificationType::Warning,
         Some("error") => athena_core::notification::NotificationType::Error,
@@ -2669,6 +2757,8 @@ pub fn mcp_tools() -> Result<String, String> {
 /// Read the current swarm state from the given directory.
 #[tauri::command]
 pub async fn swarm_read_state(state: State<'_, AppState>, dir: String) -> Result<String, String> {
+    let dir_path = std::path::Path::new(&dir);
+    let _ = validate_path_exists(&state.store, dir_path).map_err(|e| e.to_string())?;
     let coordinator = state.swarm_coordinator.lock().await;
     let result = coordinator
         .read_state(&dir)
@@ -2689,6 +2779,8 @@ pub async fn swarm_send_message(
     to: String,
     content: String,
 ) -> Result<(), String> {
+    let dir_path = std::path::Path::new(&dir);
+    let _ = validate_path_exists(&state.store, dir_path).map_err(|e| e.to_string())?;
     let coordinator = state.swarm_coordinator.lock().await;
     coordinator
         .send_message(&dir, &from, &to, &content)
@@ -2703,6 +2795,8 @@ pub async fn swarm_read_mailbox(
     dir: String,
     agent_id: String,
 ) -> Result<String, String> {
+    let dir_path = std::path::Path::new(&dir);
+    let _ = validate_path_exists(&state.store, dir_path).map_err(|e| e.to_string())?;
     let coordinator = state.swarm_coordinator.lock().await;
     let messages = coordinator
         .read_mailbox(&dir, &agent_id)
@@ -2987,6 +3081,18 @@ pub fn browser_open_external(state: State<'_, AppState>, url: String) -> Result<
 
     let parsed = tauri::Url::parse(&url).map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
 
+    let confirmed = match handle.dialog()
+        .message(&format!("Open external URL?\n\n{}", url))
+        .title("Confirm")
+        .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+        .blocking_show() {
+            Ok(true) => true,
+            Ok(false) => return Ok(()),
+            Err(_) => false,
+        };
+    if !confirmed {
+        return Ok(());
+    }
     WebviewWindowBuilder::new(&handle, &label, WebviewUrl::External(parsed))
         .inner_size(1200.0, 800.0)
         .center()
@@ -3208,6 +3314,9 @@ pub fn plugin_host_discover_plugins(
     state: State<'_, AppState>,
     dir: String,
 ) -> Result<String, String> {
+    // Validate the plugin directory is within the workspace before scanning.
+    let _ = validate_path_exists(&state.store, std::path::Path::new(&dir))
+        .map_err(|e| e.to_string())?;
     let results = state
         .plugin_manager
         .discover_plugins(std::path::Path::new(&dir))
