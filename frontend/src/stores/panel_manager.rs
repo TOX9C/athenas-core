@@ -100,18 +100,22 @@ impl PanelManagerState {
         apply_activation(&self.active_panel)
     }
 
-    /// Toggle a right sidebar panel: activate if not current, close if current.
-    pub fn toggle_right_panel(&mut self, panel: RightPanel) {
-        if self.active_right_panel == panel {
-            self.active_right_panel = RightPanel::None;
+    /// Toggle a right sidebar panel. If the requested panel is already active
+    /// and the sidebar is open, close it. Otherwise switch to the panel and
+    /// ensure the sidebar is open. Returns the desired sidebar open state.
+    pub fn toggle_right_panel(&mut self, panel: RightPanel, currently_open: bool) -> bool {
+        if self.active_right_panel == panel && currently_open {
+            false
         } else {
             self.active_right_panel = panel;
+            true
         }
     }
 
-    /// Close the right sidebar.
-    pub fn close_right_panel(&mut self) {
-        self.active_right_panel = RightPanel::None;
+    /// Open a specific right sidebar panel. Unlike `toggle_right_panel`,
+    /// this unconditionally sets the active panel without ever closing it.
+    pub fn open_right_panel(&mut self, panel: RightPanel) {
+        self.active_right_panel = panel;
     }
 }
 

@@ -4,6 +4,8 @@ use std::rc::Rc;
 use super::file_tree_node::FileTreeNode;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::editor::{use_editor_store, EditorFile};
+use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
+use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
 use dioxus::prelude::*;
@@ -174,9 +176,14 @@ pub fn FileTree() -> Element {
         });
     }
 
+    let mut ui_state = use_ui_store();
+    let mut panel_manager = use_panel_manager_store();
+
     // Handler: open a file in the editor.
     let on_file_open = move |file_path: String| {
         let mut editor_for_open = editor;
+        let mut ui_for_open = ui_state;
+        let mut panel_for_open = panel_manager;
         spawn(async move {
             match tauri_bridge::fs_read_file(&file_path).await {
                 Ok(content) => {
@@ -189,6 +196,9 @@ pub fn FileTree() -> Element {
                         cursor_position: Default::default(),
                     };
                     editor_for_open.write().open_file(file);
+                    // Open the right sidebar and switch to the Editor panel
+                    ui_for_open.write().right_sidebar_open = true;
+                    panel_for_open.write().open_right_panel(RightPanel::Editor);
                 }
                 Err(e) => {
                     log::warn!("Failed to read file {}: {:?}", file_path, e);

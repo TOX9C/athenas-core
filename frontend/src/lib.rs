@@ -34,7 +34,7 @@ use stores::athena::{provide_athena_store, use_athena_store};
 use stores::command::{provide_command_store, use_command_store, CommandState};
 use stores::editor::provide_editor_store;
 use stores::notification::provide_notification_store;
-use stores::panel_manager::{provide_panel_manager_store, use_panel_manager_store, RightPanel};
+use stores::panel_manager::{provide_panel_manager_store, use_panel_manager_store};
 use stores::session::provide_session_store;
 use stores::swarm::provide_swarm_store;
 use stores::task::provide_task_store;
@@ -68,7 +68,7 @@ pub fn App() -> Element {
     let workspace = use_workspace_store();
     let mut workspace_mut = use_workspace_store();
     let mut athena_state = use_athena_store();
-    let mut panel_state = use_panel_manager_store();
+    let panel_state = use_panel_manager_store();
     let mut terminal_store = use_terminal_store();
 
     // Track mounted spaces. The set is reconciled against the current
@@ -382,15 +382,9 @@ pub fn App() -> Element {
                             let v = ui_state.read().command_palette_open; ui_state.write().command_palette_open = !v;
                         }
                         Key::Character(ref c) if c == "j" => {
-                            // Toggle right sidebar to Assistant (Athena) tab
-                            let sidebar_open = ui_state.read().right_sidebar_open;
-                            let active = panel_state.read().active_right_panel;
-                            if !sidebar_open || active != RightPanel::Assistant {
-                                panel_state.write().active_right_panel = RightPanel::Assistant;
-                                ui_state.write().right_sidebar_open = true;
-                            } else {
-                                ui_state.write().right_sidebar_open = false;
-                            }
+                            // Toggle right sidebar: close if open, open to last panel if closed
+                            let v = ui_state.read().right_sidebar_open;
+                            ui_state.write().right_sidebar_open = !v;
                         }
                         Key::Character(ref c) if c == "t" => {
                             ui_state.write().show_new_space_modal = true;
@@ -587,14 +581,8 @@ pub fn App() -> Element {
                         "data-athena-toggle": "",
                         title: "Athena (Cmd+J)",
                         onclick: move |_| {
-                            let sidebar_open = ui_state.read().right_sidebar_open;
-                            let active = panel_state.read().active_right_panel;
-                            if !sidebar_open || active != RightPanel::Assistant {
-                                panel_state.write().active_right_panel = RightPanel::Assistant;
-                                ui_state.write().right_sidebar_open = true;
-                            } else {
-                                ui_state.write().right_sidebar_open = false;
-                            }
+                            let v = ui_state.read().right_sidebar_open;
+                            ui_state.write().right_sidebar_open = !v;
                         },
                         IconTerminal { size: Some(16), color: Some("currentColor".to_string()) }
                     }
