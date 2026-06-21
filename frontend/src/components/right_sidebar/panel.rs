@@ -4,11 +4,13 @@ use super::skills_panel::SkillsPanel;
 use crate::components::athena::athena_panel::{AthenaPanel, AthenaPanelMode};
 use crate::components::shared::icon::{IconColumn, IconFile, IconGlobe, IconTerminal};
 use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
+use crate::stores::ui::use_ui_store;
 use dioxus::prelude::*;
 
 #[component]
 pub fn RightSidebar() -> Element {
     let mut panel_state = use_panel_manager_store();
+    let mut ui_state = use_ui_store();
     let active = panel_state.read().active_right_panel;
 
     let tab_btn = |is_active: bool| -> String {
@@ -37,28 +39,44 @@ pub fn RightSidebar() -> Element {
 
                 button {
                     style: "{tab_btn(active == RightPanel::Browser)}",
-                    onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Browser),
+                    onclick: move |_| {
+                        let sidebar_open = ui_state.read().right_sidebar_open;
+                        let should_be_open = panel_state.write().toggle_right_panel(RightPanel::Browser, sidebar_open);
+                        ui_state.write().right_sidebar_open = should_be_open;
+                    },
                     IconGlobe { size: Some(13), color: Some("currentColor".to_string()) }
                     "Browser"
                 }
 
                 button {
                     style: "{tab_btn(active == RightPanel::Assistant)}",
-                    onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Assistant),
+                    onclick: move |_| {
+                        let sidebar_open = ui_state.read().right_sidebar_open;
+                        let should_be_open = panel_state.write().toggle_right_panel(RightPanel::Assistant, sidebar_open);
+                        ui_state.write().right_sidebar_open = should_be_open;
+                    },
                     IconTerminal { size: Some(13), color: Some("currentColor".to_string()) }
                     "Athena"
                 }
 
                 button {
                     style: "{tab_btn(active == RightPanel::Editor)}",
-                    onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Editor),
+                    onclick: move |_| {
+                        let sidebar_open = ui_state.read().right_sidebar_open;
+                        let should_be_open = panel_state.write().toggle_right_panel(RightPanel::Editor, sidebar_open);
+                        ui_state.write().right_sidebar_open = should_be_open;
+                    },
                     IconFile { size: Some(13), color: Some("currentColor".to_string()) }
                     "Editor"
                 }
 
                 button {
                     style: "{tab_btn(active == RightPanel::Skills)}",
-                    onclick: move |_| panel_state.write().toggle_right_panel(RightPanel::Skills),
+                    onclick: move |_| {
+                        let sidebar_open = ui_state.read().right_sidebar_open;
+                        let should_be_open = panel_state.write().toggle_right_panel(RightPanel::Skills, sidebar_open);
+                        ui_state.write().right_sidebar_open = should_be_open;
+                    },
                     IconColumn { size: Some(13), color: Some("currentColor".to_string()) }
                     "Skills"
                 }
