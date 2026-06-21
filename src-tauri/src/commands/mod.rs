@@ -1,5 +1,6 @@
 use crate::state::AppState;
 use base64::Engine;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
@@ -1485,7 +1486,6 @@ pub async fn pty_write(state: State<'_, AppState>, id: String, data: String) -> 
         .write(&id, data.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
-    log::debug!("pty_write: id={} bytes={}", id, data_len);
     drop(session_manager);
     Ok(())
 }
@@ -1812,40 +1812,88 @@ pub async fn pty_foreground_process(
 
         match output {
             Ok(out) if out.status.success() => {
-                let shell_names: std::collections::HashSet<&str> = ["sh", "bash", "zsh", "fish", "csh", "tcsh"].iter().cloned().collect();
-                let lines: Vec<&str> = std::str::from_utf8(&out.stdout)
-                    .unwrap_or("")
-                    .lines()
-                    .collect();
-
-                let mut detected = "shell".to_string();
-                for line in lines {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() { continue; }
-                    let first_word = trimmed.split_whitespace().next().unwrap_or("");
-                    let comm_name = std::path::Path::new(first_word)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(first_word);
-                    if shell_names.contains(comm_name) { continue; }
-
-                    let lower = trimmed.to_lowercase();
-                    detected = if comm_name == "node" || comm_name.ends_with("node") {
-                        if lower.contains("claude") { "claude".to_string() }
-                        else if lower.contains("codex") { "codex".to_string() }
-                        else if lower.contains("opencode") { "opencode".to_string() }
-                        else { "node".to_string() }
-                    } else {
-                        comm_name.to_string()
-                    };
-                    break;
-                }
-                Ok(detected)
+                Ok(classify_foreground_ps(
+                    std::str::from_utf8(&out.stdout).unwrap_or(""),
+                ))
             }
             _ => Ok("shell".to_string()),
         }
     } else {
         Ok("shell".to_string())
+    }
+}
+
+/// Agent CLI labels that [`classify_foreground_ps`] can report. A session whose
+/// foreground process classifies to one of these is treated as an agent pane
+/// during app-exit resume capture.
+const AGENT_FG_NAMES: &[&str] = &["claude", "codex", "opencode", "gemini"];
+
+/// Classify the foreground command(s) reported by `ps -o command= -g <pgid>`
+/// into an agent/shell label. Returns `"shell"` when only a shell (or nothing
+/// recognizable) is running. Pure over the `ps` stdout so it is unit-testable.
+fn classify_foreground_ps(stdout: &str) -> String {
+    let shell_names: std::collections::HashSet<&str> =
+        ["sh", "bash", "zsh", "fish", "csh", "tcsh"].into_iter().collect();
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let first_word = trimmed.split_whitespace().next().unwrap_or("");
+        let comm_name = std::path::Path::new(first_word)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(first_word);
+        if shell_names.contains(comm_name) {
+            continue;
+        }
+        let lower = trimmed.to_lowercase();
+        return if comm_name == "node" || comm_name.ends_with("node") {
+            if lower.contains("claude") {
+                "claude".to_string()
+            } else if lower.contains("codex") {
+                "codex".to_string()
+            } else if lower.contains("opencode") {
+                "opencode".to_string()
+            } else {
+                "node".to_string()
+            }
+        } else {
+            comm_name.to_string()
+        };
+    }
+    "shell".to_string()
+}
+
+/// Best-effort classification of a single live session's controlling-terminal
+/// foreground process (covers `claude` typed inside a plain shell pane).
+/// Returns a label like `"claude"`/`"shell"`. Used by the app-exit capture to
+/// decide which panes are agents worth nudging with `/exit`.
+async fn session_foreground_label(
+    session: &Arc<athena_terminal::session::TerminalSession>,
+) -> String {
+    let mut pgid = session.pgid.as_raw();
+    let master_fd = session.master_fd.load(std::sync::atomic::Ordering::Acquire);
+    if master_fd >= 0 {
+        let fg_pgid = unsafe { libc::tcgetpgrp(master_fd) };
+        if fg_pgid > 0 {
+            pgid = fg_pgid;
+        }
+    }
+    if pgid <= 0 {
+        return "shell".to_string();
+    }
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("ps")
+            .args(["-o", "command=", "-g", &pgid.to_string()])
+            .output()
+    })
+    .await;
+    match output {
+        Ok(Ok(out)) if out.status.success() => {
+            classify_foreground_ps(std::str::from_utf8(&out.stdout).unwrap_or(""))
+        }
+        _ => "shell".to_string(),
     }
 }
 
@@ -3140,6 +3188,206 @@ pub fn plugin_host_remove_plugin(
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// App-exit resume capture
+// ---------------------------------------------------------------------------
+
+/// Merge captured `pane_id -> resume_id` pairs directly into the persisted
+/// `workspaces` JSON — the single source of truth the frontend loads on
+/// startup. For each matching pane this sets `resume_id`, clears `resume_cmd`,
+/// and resets `resume_dismissed = false` so the resume banner reappears on the
+/// next launch via the normal workspace-load path (no separate transient key
+/// for the frontend to reconcile, and no frontend startup changes).
+///
+/// Operates on `serde_json::Value` to avoid coupling the backend to the
+/// frontend's `WorkspaceState`/`PaneConfig` Rust types. Returns the number of
+/// panes updated. A missing/empty `workspaces` key (first run) yields `Ok(0)`.
+fn merge_resume_ids_into_workspaces(
+    store: &athena_store::KeyValueStore,
+    ids: &std::collections::HashMap<String, String>,
+    cmds: &std::collections::HashMap<String, String>,
+) -> Result<usize, String> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let json = match store.get::<String>("workspaces") {
+        Ok(Some(j)) if !j.trim().is_empty() => j,
+        Ok(_) => return Ok(0), // no workspace persisted yet — nothing to merge into
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut root: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+
+    let mut updated = 0usize;
+    if let Some(spaces) = root.get_mut("spaces").and_then(|v| v.as_array_mut()) {
+        for space in spaces.iter_mut() {
+            let Some(panes) = space.get_mut("panes").and_then(|v| v.as_array_mut()) else {
+                continue;
+            };
+            for pane in panes.iter_mut() {
+                let pane_id = pane
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let Some(pane_id) = pane_id else { continue };
+                let Some(resume_id) = ids.get(&pane_id) else {
+                    continue;
+                };
+                if let Some(obj) = pane.as_object_mut() {
+                    obj.insert(
+                        "resume_id".into(),
+                        serde_json::Value::String(resume_id.clone()),
+                    );
+                    // Prefer a captured resume_cmd ; fall back to one built from
+                    // the resume_id so Shell panes (whose agent_type can't be
+                    // synthesized) still get a displayable command.
+                    let resume_cmd = cmds
+                        .get(&pane_id)
+                        .cloned()
+                        .unwrap_or_else(|| resume_id.clone());
+                    obj.insert("resume_cmd".into(), serde_json::Value::String(resume_cmd));
+                    obj.insert("resume_dismissed".into(), serde_json::Value::Bool(false));
+                    updated += 1;
+                }
+            }
+        }
+    }
+
+    if updated > 0 {
+        let out = serde_json::to_string(&root).map_err(|e| e.to_string())?;
+        store
+            .set_sync("workspaces", &out)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(updated)
+}
+
+/// App-exit resume capture, invoked from `RunEvent::Exit` (the event macOS
+/// Cmd+Q reliably fires). Types `/exit` into every live PTY so agents (Claude,
+/// Codex, …) exit gracefully and print their `<cli> --resume <id>` line — the
+/// same line the live frontend scanner catches during a manual `/exit`. We then
+/// scan each pane's output buffer for that id and merge it straight into the
+/// persisted `workspaces` state, so the banner reappears on next launch. Plain
+/// shells just echo a harmless "not found" and yield no match.
+///
+/// Returns the number of panes whose resume id was captured + persisted.
+///
+/// Concurrency: the caller runs this on a DEDICATED runtime/thread during
+/// `RunEvent::Exit`, while the shared runtime's `pty_read_loop` tasks keep
+/// feeding the output buffer with the agents' exit output (see
+/// `capture_resume_on_exit` in main.rs).
+pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize {
+    let all_sessions = {
+        let sm = state.session_manager.lock().await;
+        sm.list_sessions().await
+    };
+    if all_sessions.is_empty() {
+        return 0;
+    }
+
+    // Classify each session's foreground process so we only nudge *agents*
+    // with `/exit`. Plain shells never produce a resume id, so sending to
+    // them would waste the entire wait budget. The classification costs a `ps`
+    // per session, but that is fast compared to the 4 s wait budget.
+    let agent_sessions: Vec<String> = {
+        let sm = state.session_manager.lock().await;
+        let mut agents = Vec::new();
+        for id in &all_sessions {
+            match sm.get_session(id).await {
+                Some(s) => {
+                    let label = session_foreground_label(&s).await;
+                    if AGENT_FG_NAMES.contains(&label.as_str()) {
+                        agents.push(id.clone());
+                    }
+                }
+                None => continue,
+            }
+        }
+        agents
+    };
+
+    if agent_sessions.is_empty() {
+        log::info!(
+            "capture_resume_ids_on_exit: {} live session(s), none are agents — nothing to do",
+            all_sessions.len()
+        );
+        return 0;
+    }
+
+    log::info!(
+        "capture_resume_ids_on_exit: {} live session(s), {} agent(s) — nudging with /exit",
+        all_sessions.len(),
+        agent_sessions.len()
+    );
+
+    // Send `/exit` + Enter to every agent PTY.
+    {
+        let sm = state.session_manager.lock().await;
+        for id in &agent_sessions {
+            if let Err(e) = sm.write(id, b"/exit\r").await {
+                log::warn!("capture_resume_ids_on_exit: write to {} failed: {}", id, e);
+            }
+        }
+    }
+
+    // Poll the output buffer until every agent pane yields a resume id or we
+    // hit the deadline. The PTY read loops populate the buffer on the shared
+    // runtime.
+    let step_ms = 150u64;
+    let mut elapsed = 0u64;
+    let mut found: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut found_cmds: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    while elapsed < wait_ms && found.len() < agent_sessions.len() {
+        tokio::time::sleep(std::time::Duration::from_millis(step_ms)).await;
+        elapsed += step_ms;
+        for id in &agent_sessions {
+            if found.contains_key(id) {
+                continue;
+            }
+            let lines = state.output_buffer.get_output(id, None);
+            if lines.is_empty() {
+                continue;
+            }
+            let text: String = lines
+                .iter()
+                .map(|l| l.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if let Some((prefix, rid)) =
+                athena_core::resume_scanner::scan_text_for_resume_id(&text)
+            {
+                log::info!("capture_resume_ids_on_exit: captured resume id for pane {}", id);
+                let cmd = format!("{} {}", prefix, rid);
+                found_cmds.insert(id.clone(), cmd);
+                found.insert(id.clone(), rid);
+            }
+        }
+    }
+
+    if found.is_empty() {
+        log::info!("capture_resume_ids_on_exit: no resume ids captured");
+        return 0;
+    }
+
+    match merge_resume_ids_into_workspaces(&state.store, &found, &found_cmds) {
+        Ok(n) => {
+            if let Err(e) = state.store.flush_if_dirty().await {
+                log::error!("capture_resume_ids_on_exit: KV flush failed: {}", e);
+            }
+            log::info!(
+                "capture_resume_ids_on_exit: merged {} resume id(s) into {} pane(s)",
+                found.len(),
+                n
+            );
+            n
+        }
+        Err(e) => {
+            log::error!("capture_resume_ids_on_exit: merge into workspaces failed: {}", e);
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3242,5 +3490,96 @@ mod tests {
         assert!(validate_path_exists(&store, &canon).is_ok());
 
         std::fs::remove_dir_all(&temp).ok();
+    }
+
+    fn ids(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn merge_resume_ids_sets_resume_fields_on_matching_pane() {
+        let store = athena_store::KeyValueStore::new_empty();
+        // A persisted workspace whose pane previously had its banner dismissed.
+        store
+            .set_sync(
+                "workspaces",
+                &serde_json::json!({
+                    "spaces": [{
+                        "id": "space-1",
+                        "panes": [
+                            { "id": "pane-a", "resume_id": "old", "resume_dismissed": true },
+                            { "id": "pane-b" }
+                        ]
+                    }],
+                    "active_space_id": "space-1"
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+        let updated =
+            merge_resume_ids_into_workspaces(&store, &ids(&[("pane-a", "new-resume-id")]), &ids(&[])).unwrap();
+        assert_eq!(updated, 1);
+
+        let json: String = store.get("workspaces").unwrap().unwrap();
+        let root: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let pane_a = &root["spaces"][0]["panes"][0];
+        assert_eq!(pane_a["resume_id"], "new-resume-id");
+        assert_eq!(pane_a["resume_dismissed"], false);
+        // When no explicit resume_cmd is captured, the fallback is the
+        // resume_id itself (so Shell panes can show the banner too).
+        assert_eq!(pane_a["resume_cmd"], "new-resume-id");
+        // Untouched pane keeps its shape (no resume id forced on it).
+        let pane_b = &root["spaces"][0]["panes"][1];
+        assert!(pane_b.get("resume_id").is_none());
+    }
+
+    #[test]
+    fn merge_resume_ids_is_noop_when_no_pane_matches() {
+        let store = athena_store::KeyValueStore::new_empty();
+        store
+            .set_sync(
+                "workspaces",
+                &serde_json::json!({
+                    "spaces": [{ "id": "s", "panes": [{ "id": "pane-x" }] }],
+                    "active_space_id": "s"
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+        let updated =
+            merge_resume_ids_into_workspaces(&store, &ids(&[("pane-unknown", "rid")]), &ids(&[])).unwrap();
+        assert_eq!(updated, 0);
+    }
+
+    #[test]
+    fn merge_resume_ids_handles_missing_or_empty_workspaces_key() {
+        let store = athena_store::KeyValueStore::new_empty();
+        // Missing key.
+        assert_eq!(
+            merge_resume_ids_into_workspaces(&store, &ids(&[("p", "r")]), &ids(&[])).unwrap(),
+            0
+        );
+        // Empty string value.
+        store.set_sync("workspaces", &"").unwrap();
+        assert_eq!(
+            merge_resume_ids_into_workspaces(&store, &ids(&[("p", "r")]), &ids(&[])).unwrap(),
+            0
+        );
+        // Empty ids map is a no-op even with a real workspace.
+        store
+            .set_sync(
+                "workspaces",
+                &serde_json::json!({ "spaces": [], "active_space_id": null }).to_string(),
+            )
+            .unwrap();
+        assert_eq!(
+            merge_resume_ids_into_workspaces(&store, &ids(&[]), &ids(&[])).unwrap(),
+            0
+        );
     }
 }

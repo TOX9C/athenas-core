@@ -230,7 +230,61 @@ fn main() {
 
                 log::info!("Graceful shutdown complete");
             }
+            tauri::RunEvent::Exit => {
+                // On macOS, Cmd+Q fires `Exit` (NOT `ExitRequested`), so this is
+                // the reliable last chance to let live agents print their
+                // `<cli> --resume <id>` line and persist it before the process
+                // dies. The PTYs are still alive here (on macOS no
+                // `ExitRequested` ran, so `shutdown_all` has not killed them).
+                capture_resume_on_exit(app_handle);
+            }
             _ => {}
         }
     });
+}
+
+static RESUME_CAPTURE_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Type `/exit` into every live PTY on app exit, scan each pane's output for the
+/// agent's `--resume` line, and persist it into the `workspaces` store so the
+/// resume banner reappears on next launch. Idempotent (runs at most once per
+/// process).
+///
+/// The async capture runs on a DEDICATED OS thread with its own current-thread
+/// runtime; the caller blocks on the thread join. This deliberately keeps the
+/// work OFF the shared multi-threaded runtime's worker threads, which must stay
+/// free to keep the `pty_read_loop` tasks feeding the output buffer with the
+/// agents' exit output while we poll for the resume line.
+fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+    if RESUME_CAPTURE_DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app_handle = app_handle.clone();
+    let worker = std::thread::Builder::new()
+        .name("athena-resume-capture".to_string())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("resume capture: failed to build runtime: {e}");
+                    return;
+                }
+            };
+            rt.block_on(async {
+                let state = app_handle.state::<state::AppState>();
+                let n = commands::capture_resume_ids_on_exit(&state, 4000).await;
+                log::info!("resume capture on exit: persisted {n} resume id(s)");
+            });
+        });
+    match worker {
+        Ok(w) => {
+            let _ = w.join();
+        }
+        Err(e) => log::error!("resume capture: failed to spawn worker thread: {e}"),
+    }
 }
