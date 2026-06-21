@@ -374,6 +374,9 @@ pub struct AppState {
     /// instances stored above, plus a `TauriEventSender` for real PTY
     /// side-effects.
     pub tool_executor: Arc<parking_lot::Mutex<athena_core::tool_executor::ToolExecutor>>,
+
+    /// Per-command rate limiter to prevent DoS from IPC spam.
+    pub rate_limiter: crate::commands::caps::RateLimiter,
 }
 
 impl Default for AppState {
@@ -505,6 +508,7 @@ impl AppState {
             shell_integration_parser,
             pending_questions,
             tool_executor,
+            rate_limiter: crate::commands::caps::global_rate_limiter(),
         }
     }
 
