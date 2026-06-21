@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use std::ffi::CString;
 use std::io;
 use std::os::unix::io::{IntoRawFd, RawFd};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use vte::Parser;
@@ -93,6 +93,10 @@ pub struct TerminalSession {
     pub shell: String,
     pub cwd: String,
     pub status: Mutex<PtyStatus>,
+    /// Whether this session is rendered by xterm.js on the frontend.
+    /// When true, the `terminal:data` event (cell deltas) is skipped
+    /// because xterm.js parses raw ANSI bytes itself.
+    pub is_xterm: AtomicBool,
     pub pending_writes: Mutex<VecDeque<Vec<u8>>>,
     /// Persistent VTE parser state.
     ///
@@ -140,6 +144,7 @@ impl TerminalSession {
             shell,
             cwd,
             status: Mutex::new(PtyStatus::Spawning),
+            is_xterm: AtomicBool::new(false),
             pending_writes: Mutex::new(VecDeque::new()),
             parser: Mutex::new(Parser::new()),
         }

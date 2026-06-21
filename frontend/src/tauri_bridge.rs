@@ -552,6 +552,17 @@ pub async fn pty_foreground_process(id: &str) -> TauriResult<String> {
     .await
 }
 
+/// Mark a PTY session as being rendered by xterm.js (or not).
+/// When true, the backend skips emitting `terminal:data` cell-delta
+/// events because xterm.js parses raw ANSI bytes itself.
+pub async fn pty_set_xterm(id: &str, is_xterm: bool) -> TauriResult<()> {
+    invoke(
+        "pty_set_xterm",
+        &serde_json::json!({ "id": id, "isXterm": is_xterm }).to_string(),
+    )
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Trusted workspace roots
 // ---------------------------------------------------------------------------

@@ -455,6 +455,50 @@ pub fn OutputEventBus() -> Element {
             output_unlistens.borrow_mut().push(u);
         }
 
+        // Listener for output-capture:batch (replaces per-line emission)
+        let dispatcher = dispatcher.clone();
+        let batch_unlistens = unlistens_effect.clone();
+        if let Ok(u) = tauri_bridge::listen("output-capture:batch", move |payload: String| {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+                let pane_id = val
+                    .get("paneId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(lines) = val.get("lines").and_then(|v| v.as_array()) {
+                    for line_val in lines {
+                        let text = line_val
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let line_num = line_val
+                            .get("lineNum")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        let timestamp = line_val
+                            .get("timestamp")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+
+                        if !pane_id.is_empty() {
+                            let is_stderr = is_stderr_like(&text);
+                            let line = crate::stores::agent_output::OutputLine {
+                                pane_id: pane_id.clone(),
+                                line_num,
+                                timestamp,
+                                text,
+                                is_stderr,
+                            };
+                            dispatcher.send(OutputBusEvent::OutputLine(line));
+                        }
+                    }
+                }
+            }
+        }) {
+            batch_unlistens.borrow_mut().push(u);
+        }
+
         // Listener for output-capture:paneRegistered
         let dispatcher = dispatcher.clone();
         let register_unlistens = unlistens_effect.clone();

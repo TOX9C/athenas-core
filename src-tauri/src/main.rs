@@ -69,6 +69,7 @@ fn main() {
             pty_get_cwd,
             pty_spawn_agent,
             pty_default_shell,
+            pty_set_xterm,
             pty_foreground_process,
             pty_agent_info,
             // Trusted workspace roots

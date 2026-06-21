@@ -3,7 +3,8 @@ use crate::stores::terminal::TerminalSession;
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
-    pty_default_shell_cached, pty_has_session, pty_listen_raw, pty_resize, pty_spawn, pty_write,
+    pty_default_shell_cached, pty_has_session, pty_listen_raw, pty_resize, pty_set_xterm,
+    pty_spawn, pty_write,
 };
 use crate::utils::resume_scanner::ResumeScanner;
 use dioxus::prelude::*;
@@ -184,6 +185,11 @@ pub fn XtermMount(
 
             let mount_id = mount_id_for_spawn;
             store.write().set_session_xterm(&mount_id, true);
+
+            // Tell the backend this session is xterm-managed so it can skip
+            // emitting `terminal:data` cell-delta events (xterm.js parses
+            // raw ANSI bytes itself).
+            let _ = pty_set_xterm(&mount_id, true).await;
 
             let term_ctor_val = js_sys::Reflect::get(&window, &JsValue::from_str("Terminal"))
                 .unwrap_or(JsValue::UNDEFINED);

@@ -319,13 +319,26 @@ impl OutputBuffer {
         Self::trim_buffer(buf);
         drop(buffers);
 
-        for (line_num, text) in emitted_lines {
+        // Batch lines into a single IPC event instead of emitting one
+        // event per line.  For a large output burst this can reduce IPC
+        // traffic by an order of magnitude.  Each line still carries its
+        // own lineNum and timestamp so ordering is preserved.
+        if !emitted_lines.is_empty() {
+            let batch: Vec<serde_json::Value> = emitted_lines
+                .into_iter()
+                .map(|(line_num, text)| {
+                    serde_json::json!({
+                        "lineNum": line_num,
+                        "text": text,
+                        "timestamp": Self::now(),
+                    })
+                })
+                .collect();
             self.emit_event(
-                "output-capture:line",
+                "output-capture:batch",
                 &serde_json::json!({
                     "paneId": pane_id,
-                    "lineNum": line_num,
-                    "text": text,
+                    "lines": batch,
                 }),
             );
         }
