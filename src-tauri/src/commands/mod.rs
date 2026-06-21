@@ -676,6 +676,12 @@ pub async fn fs_read_file(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<String, CommandError> {
+    if !state.rate_limiter.check("fs_read_file") {
+        return Err(CommandError::InvalidInput("Rate limit exceeded. Please wait a moment.".to_string()));
+    }
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, CommandError> {
     let path_ref = std::path::Path::new(&path);
     let validated = validate_path_exists(&state.store, path_ref)?;
     let validated_clone = validated.clone();
@@ -2066,6 +2072,9 @@ pub async fn pty_set_xterm(
 /// Send a text message to the configured LLM provider and return the response.
 #[tauri::command]
 pub async fn athena_chat(state: State<'_, AppState>, message: String) -> Result<String, String> {
+    if !state.rate_limiter.check("athena_chat") {
+        return Err("Rate limit exceeded. Please wait a moment.".to_string());
+    }
     // The orchestrator lock is held for the whole send_message call. This is
     // intentional, NOT a lock-across-await bug: send_message(&self) mutates
     // shared conversation state (the provider-config and per-provider message
@@ -2370,8 +2379,8 @@ pub fn notification_push(
 ) -> Result<String, String> {
     // Sanitize user-supplied notification content to prevent XSS if content
     // is ever rendered in a context that supports HTML or markdown.
-    let title = html_escape::encode_text(title.trim()).to_string();
-    let message = html_escape::encode_text(message.trim()).to_string();
+    let title = html_escape(title.trim());
+    let message = html_escape(message.trim());
     let notif_type = match level.as_deref() {
         Some("warning") => athena_core::notification::NotificationType::Warning,
         Some("error") => athena_core::notification::NotificationType::Error,
@@ -3081,15 +3090,12 @@ pub fn browser_open_external(state: State<'_, AppState>, url: String) -> Result<
 
     let parsed = tauri::Url::parse(&url).map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
 
-    let confirmed = match handle.dialog()
+    let confirmed = handle
+        .dialog()
         .message(&format!("Open external URL?\n\n{}", url))
         .title("Confirm")
         .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-        .blocking_show() {
-            Ok(true) => true,
-            Ok(false) => return Ok(()),
-            Err(_) => false,
-        };
+        .blocking_show();
     if !confirmed {
         return Ok(());
     }
