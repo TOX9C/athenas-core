@@ -28,9 +28,34 @@ fi
 
 ~/.cargo/bin/dx build $DX_FLAG
 
+# Optimize WASM with wasm-opt if available.
+# wasm-opt typically shaves 20-30% off release WASM size.
+# Fallback: if wasm-opt is not installed, log a warning and continue.
+wasm_opt_run() {
+  local input_wasm="$1"
+  if command -v wasm-opt &>/dev/null; then
+    tmpfile=$(mktemp)
+    if wasm-opt -Oz "$input_wasm" -o "$tmpfile" 2>/dev/null; then
+      mv "$tmpfile" "$input_wasm"
+      echo "wasm-opt: optimized $(basename "$input_wasm")"
+    else
+      rm -f "$tmpfile"
+      echo "wasm-opt: optimization failed for $(basename "$input_wasm")"
+    fi
+  fi
+}
+
 echo "Copying build output to dist..."
 rm -rf "$DIST_DIR"
 cp -r "$BUILD_DIR" "$DIST_DIR"
+
+# Optimize the main WASM file before creating stable aliases
+for wasm in "$DIST_DIR"/assets/athena-frontend_bg-dx*.wasm; do
+  [ -f "$wasm" ] && wasm_opt_run "$wasm"
+done
+for wasm in "$DIST_DIR"/wasm/athena-frontend_bg-dx*.wasm; do
+  [ -f "$wasm" ] && wasm_opt_run "$wasm"
+done
 
 # Tauri serves dist/ as static files, so vendored assets must be copied into it.
 VENDOR_DIR="$SCRIPT_DIR/vendor"
