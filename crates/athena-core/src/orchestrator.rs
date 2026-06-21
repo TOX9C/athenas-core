@@ -3,6 +3,7 @@ use crate::types::*;
 use secrecy::ExposeSecret;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 // Session persistence types
 use athena_store::MessageRole as StoreMessageRole;
@@ -394,6 +395,10 @@ pub struct AthenaOrchestrator {
     /// Optional key-value store, used to resolve the active space and its
     /// panes so the state snapshot can be scoped to the current workspace.
     kv_store: Option<Arc<athena_store::KeyValueStore>>,
+    /// TTL cache for the app-state snapshot. Rebuilding the snapshot touches
+    /// the output buffer, plan manager, agent comms, and active-space reads,
+    /// so caching for ~1 s avoids redundant work on back-to-back chat turns.
+    snapshot_cache: parking_lot::Mutex<Option<(String, Instant)>>,
 }
 
 impl Default for AthenaOrchestrator {
@@ -425,6 +430,7 @@ impl AthenaOrchestrator {
             workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store: None,
             kv_store: None,
+            snapshot_cache: parking_lot::Mutex::new(None),
         }
     }
 
@@ -455,6 +461,7 @@ impl AthenaOrchestrator {
             workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store,
             kv_store,
+            snapshot_cache: parking_lot::Mutex::new(None),
         }
     }
 
@@ -481,6 +488,7 @@ impl AthenaOrchestrator {
             workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store: None,
             kv_store: None,
+            snapshot_cache: parking_lot::Mutex::new(None),
         }
     }
 
@@ -698,6 +706,13 @@ impl AthenaOrchestrator {
 
     /// Build a snapshot of the current app state for context injection.
     fn build_app_state_snapshot(&self) -> String {
+        const SNAPSHOT_TTL: Duration = Duration::from_secs(1);
+        if let Some((cached, ts)) = self.snapshot_cache.lock().as_ref() {
+            if ts.elapsed() < SNAPSHOT_TTL {
+                return cached.clone();
+            }
+        }
+
         let mut lines: Vec<String> = Vec::new();
         lines.push("====== ATHENA STATE SNAPSHOT ======".to_string());
         lines.push(String::new());
@@ -794,7 +809,9 @@ impl AthenaOrchestrator {
         lines.push("=====================================".to_string());
         lines.push(String::new());
 
-        lines.join("\n")
+        let snapshot = lines.join("\n");
+        *self.snapshot_cache.lock() = Some((snapshot.clone(), Instant::now()));
+        snapshot
     }
 
     /// Send a message to the configured LLM provider.

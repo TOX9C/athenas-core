@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
@@ -436,7 +436,9 @@ pub struct OpenAIFunction {
 }
 
 /// Convert the orchestrator tools list into OpenAI function-calling format.
-pub fn to_openai_tools() -> Vec<OpenAITool> {
+/// Cached via LazyLock to avoid rebuilding the ~14-item vector on every
+/// LLM turn (hot path in `send_openai` / `send_anthropic`).
+static CACHED_OPENAI_TOOLS: LazyLock<Vec<OpenAITool>> = LazyLock::new(|| {
     orchestrator_tools()
         .into_iter()
         .map(|t| OpenAITool {
@@ -448,6 +450,10 @@ pub fn to_openai_tools() -> Vec<OpenAITool> {
             },
         })
         .collect()
+});
+
+pub fn to_openai_tools() -> Vec<OpenAITool> {
+    CACHED_OPENAI_TOOLS.clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -661,7 +667,10 @@ impl ToolExecutor {
 
         if !pane_ids.is_empty() && !command.is_empty() {
             for pane_id in pane_ids {
-                self.event_sender.pty_write(pane_id, command);
+                // Escape the command to prevent shell metacharacter injection.
+                // Raw commands from the LLM/tool layer should not be trusted.
+                let escaped = shell_escape(command);
+                self.event_sender.pty_write(pane_id, &escaped);
                 self.event_sender.pty_write(pane_id, "\r");
             }
         }

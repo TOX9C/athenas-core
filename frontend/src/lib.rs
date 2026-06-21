@@ -736,59 +736,39 @@ pub fn App() -> Element {
                             } else {
                                 div {
                                     style: "flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;",
-                                    div {
-                                        style: if active_panel == Panel::Workspace {
-                                            "flex: 1; display: flex; min-width: 0; min-height: 0; position: relative;"
-                                        } else {
-                                            "display: none;"
-                                        },
-
-                                        for space in mounted_workspaces.iter() {
-                                            div {
-                                                key: "workspace-view-{space.id}",
-                                                style: if active_space_id.as_deref() == Some(space.id.as_str()) {
-                                                    "position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0;"
-                                                } else {
-                                                    "position: absolute; inset: 0; display: none; min-width: 0; min-height: 0;"
-                                                },
-                                                WorkspaceGrid {
-                                                    key: "workspace-grid-{space.id}",
-                                                    active_space: Some(space.clone()),
-                                                    active_space_id: active_space_id.clone(),
+                                    // Panels rendered with true conditional mounting
+                                    // instead of display: none — inactive panels are
+                                    // never mounted, so they don't subscribe to
+                                    // stores or run their hooks.
+                                    if active_panel == Panel::Workspace {
+                                        div {
+                                            style: "flex: 1; display: flex; min-width: 0; min-height: 0; position: relative;",
+                                            for space in mounted_workspaces.iter() {
+                                                div {
+                                                    key: "workspace-view-{space.id}",
+                                                    style: if active_space_id.as_deref() == Some(space.id.as_str()) {
+                                                        "position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0;"
+                                                    } else {
+                                                        "position: absolute; inset: 0; display: none; min-width: 0; min-height: 0;"
+                                                    },
+                                                    WorkspaceGrid {
+                                                        key: "workspace-grid-{space.id}",
+                                                        active_space: Some(space.clone()),
+                                                        active_space_id: active_space_id.clone(),
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-                                    div {
-                                        style: if active_panel == Panel::Editor {
-                                            "flex: 1; display: flex; min-width: 0; min-height: 0;"
-                                        } else {
-                                            "display: none;"
-                                        },
-                                        div { style: "flex: 1; overflow: hidden;", "Editor panel" }
-                                    }
-                                    div {
-                                        style: if active_panel == Panel::Kanban {
-                                            "flex: 1; display: flex; min-width: 0; min-height: 0;"
-                                        } else {
-                                            "display: none;"
-                                        },
+                                    } else if active_panel == Panel::Editor {
+                                        div {
+                                            style: "flex: 1; display: flex; min-width: 0; min-height: 0;",
+                                            div { style: "flex: 1; overflow: hidden;", "Editor panel" }
+                                        }
+                                    } else if active_panel == Panel::Kanban {
                                         KanbanBoard {}
-                                    }
-                                    div {
-                                        style: if active_panel == Panel::Swarm {
-                                            "flex: 1; display: flex; min-width: 0; min-height: 0;"
-                                        } else {
-                                            "display: none;"
-                                        },
+                                    } else if active_panel == Panel::Swarm {
                                         SwarmBoard {}
-                                    }
-                                    div {
-                                        style: if active_panel == Panel::Settings {
-                                            "flex: 1; display: flex; min-width: 0; min-height: 0;"
-                                        } else {
-                                            "display: none;"
-                                        },
+                                    } else if active_panel == Panel::Settings {
                                         SettingsPanel {}
                                     }
                                 }

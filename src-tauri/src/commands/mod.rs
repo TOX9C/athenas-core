@@ -57,7 +57,11 @@ fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
         }
     }
 
-    let resolved = root_candidate.unwrap_or_else(|| raw.clone());
+    let resolved = root_candidate.ok_or_else(|| {
+        CommandError::Internal(
+            "Cannot locate workspace root: src-tauri/tauri.conf.json not found".into(),
+        )
+    })?;
     let canon = resolved.canonicalize().map_err(|e| {
         CommandError::Internal(format!("Failed to canonicalize workspace root: {}", e))
     })?;
@@ -836,7 +840,14 @@ pub async fn fs_show_image_dialog(app_handle: AppHandle) -> Result<String, Strin
 
 /// Search files in a directory using ripgrep with the given pattern.
 #[tauri::command]
-pub async fn fs_search_files(pattern: String, path: String) -> Result<String, String> {
+pub async fn fs_search_files(
+    state: State<'_, AppState>,
+    pattern: String,
+    path: String,
+) -> Result<String, String> {
+    let path_ref = std::path::Path::new(&path);
+    let _ = validate_path_exists(&state.store, path_ref)
+        .map_err(|e| e.to_string())?;
     let options = athena_core::SearchOptions {
         pattern,
         path,
@@ -1404,6 +1415,8 @@ pub(crate) async fn pty_read_loop(
         // Step 1: parse the same bytes for the legacy cell-grid frontend.
         // `parse_bytes` returns `None` when no cells changed, in which
         // case we skip the structured event entirely.
+        // For xterm.js sessions, we still parse (to keep VTE state fresh)
+        // but skip emitting `terminal:data` — xterm.js parses raw ANSI itself.
         match session.parse_bytes(&read_buf[..n]).await {
             Ok(Some(update)) => {
                 if !did_emit_ready {
@@ -1415,28 +1428,35 @@ pub(crate) async fn pty_read_loop(
                         log::warn!("Failed to emit terminal:ready event: {}", e);
                     }
                 }
-                let event_data = serde_json::json!({
-                    "sessionId": session_id,
-                    "deltas": update.deltas,
-                    "cursorRow": update.cursor_row,
-                    "cursorCol": update.cursor_col,
-                    "rows": update.rows,
-                    "cols": update.cols,
-                    "cursorVisible": update.cursor_visible,
-                });
-                let event_data_str = match serde_json::to_string(&event_data) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::error!(
-                            "pty_read_loop[{}]: failed to serialize event_data: {}",
-                            session_id,
-                            e
-                        );
-                        continue;
+
+                // Skip cell-delta emission for xterm sessions — they have their
+                // own ANSI parser and do not consume `terminal:data` events.
+                if session.is_xterm.load(std::sync::atomic::Ordering::Relaxed) {
+                    // still need to emit `terminal:ready` above, but skip data
+                } else {
+                    let event_data = serde_json::json!({
+                        "sessionId": session_id,
+                        "deltas": update.deltas,
+                        "cursorRow": update.cursor_row,
+                        "cursorCol": update.cursor_col,
+                        "rows": update.rows,
+                        "cols": update.cols,
+                        "cursorVisible": update.cursor_visible,
+                    });
+                    let event_data_str = match serde_json::to_string(&event_data) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            log::error!(
+                                "pty_read_loop[{}]: failed to serialize event_data: {}",
+                                session_id,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+                    if let Err(e) = app_handle.emit("terminal:data", event_data_str) {
+                        log::warn!("Failed to emit terminal:data event: {}", e);
                     }
-                };
-                if let Err(e) = app_handle.emit("terminal:data", event_data_str) {
-                    log::warn!("Failed to emit terminal:data event: {}", e);
                 }
             }
             Ok(None) => {}
@@ -1964,6 +1984,30 @@ pub async fn pty_spawn_agent(
     }
 }
 
+/// Mark a PTY session as being rendered by xterm.js.
+///
+/// When a session is xterm-backed, the backend skips emitting the
+/// `terminal:data` cell-delta events because xterm.js parses raw ANSI
+/// bytes itself.  This eliminates wasted VTE work, JSON serialization,
+/// and IPC for those sessions.
+#[tauri::command]
+pub async fn pty_set_xterm(
+    state: State<'_, AppState>,
+    id: String,
+    is_xterm: bool,
+) -> Result<(), String> {
+    let sm = state.session_manager.lock().await;
+    if let Some(session) = sm.get_session(&id).await {
+        session
+            .is_xterm
+            .store(is_xterm, std::sync::atomic::Ordering::Relaxed);
+        log::debug!("pty_set_xterm: {} -> {}", id, is_xterm);
+        Ok(())
+    } else {
+        Err(format!("Session {} not found", id))
+    }
+}
+
 // ── Athena / Orchestrator commands ───────────────────────────────────────────
 
 /// Send a text message to the configured LLM provider and return the response.
@@ -2388,9 +2432,13 @@ pub fn plan_update_step(
 // ── Agent comms commands ─────────────────────────────────────────────────────
 
 /// Get the agent comms session token for authenticating agent connections.
+///
+/// ⚠️ SECURITY: The raw token is NEVER exposed to the frontend. It is only
+/// provided to trusted spawned agent processes via environment variables.
+/// Corresponding capability `allow-agent-comms-token` has also been removed.
 #[tauri::command]
-pub fn agent_comms_token(state: State<'_, AppState>) -> Result<String, String> {
-    Ok(state.agent_comms.get_comms_token().to_string())
+pub fn agent_comms_token() -> Result<String, String> {
+    Err("Direct token access is not permitted from the frontend".into())
 }
 
 /// Get a list of all active agent sessions.
@@ -2487,16 +2535,25 @@ pub fn agent_disconnect(state: State<'_, AppState>, agent_id: String) -> Result<
 }
 
 /// Get the agent comms session token (alias for agent_comms_token).
+///
+/// ⚠️ SECURITY: The raw token is NEVER exposed to the frontend.
 #[tauri::command]
-pub fn agent_get_token(state: State<'_, AppState>) -> Result<String, String> {
-    Ok(state.agent_comms.get_comms_token().to_string())
+pub fn agent_get_token() -> Result<String, String> {
+    Err("Direct token access is not permitted from the frontend".into())
 }
 
 // ── Search commands ──────────────────────────────────────────────────────────
 
 /// Search the codebase for a pattern using ripgrep.
 #[tauri::command]
-pub async fn search_code(pattern: String, path: String) -> Result<String, String> {
+pub async fn search_code(
+    state: State<'_, AppState>,
+    pattern: String,
+    path: String,
+) -> Result<String, String> {
+    let path_ref = std::path::Path::new(&path);
+    let _ = validate_path_exists(&state.store, path_ref)
+        .map_err(|e| e.to_string())?;
     let options = athena_core::SearchOptions {
         pattern,
         path,
@@ -2513,8 +2570,12 @@ pub async fn search_code(pattern: String, path: String) -> Result<String, String
 
 /// Search the codebase using ripgrep (alias for search_code).
 #[tauri::command]
-pub async fn search_ripgrep(pattern: String, path: String) -> Result<String, String> {
-    search_code(pattern, path).await
+pub async fn search_ripgrep(
+    state: State<'_, AppState>,
+    pattern: String,
+    path: String,
+) -> Result<String, String> {
+    search_code(state, pattern, path).await
 }
 
 // ── MCP server commands ──────────────────────────────────────────────────────
@@ -2701,12 +2762,29 @@ pub fn shell_integration_strip(data: String) -> String {
 // ── Tool executor commands ───────────────────────────────────────────────────
 
 /// Execute a built-in tool by name with the given arguments.
+///
+/// Only a whitelist of safe tools may be invoked from the frontend to prevent
+/// arbitrary tool abuse. Destructive tools (shell execution, terminal control,
+/// file deletion, etc.) are rejected at the command boundary.
 #[tauri::command]
 pub async fn tool_execute(
     state: State<'_, AppState>,
     tool_name: String,
     arguments: String,
 ) -> Result<String, String> {
+    const ALLOWED: &[&str] = &[
+        "get_file_text",
+        "read_agent_output",
+        "search_codebase",
+        "get_terminal_list",
+        "get_active_terminal",
+    ];
+    if !ALLOWED.contains(&tool_name.as_str()) {
+        return Err(format!(
+            "Tool execution denied: '{}' is not in the allowed frontend tool whitelist",
+            tool_name
+        ));
+    }
     let tool_executor = state.tool_executor.clone();
     tokio::task::spawn_blocking(move || {
         let executor = tool_executor.lock();
