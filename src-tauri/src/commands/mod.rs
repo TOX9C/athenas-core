@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use base64::Engine;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 /// Minimal HTML escape to prevent XSS in contexts that might render HTML.
@@ -3067,31 +3067,36 @@ pub fn browser_reload(state: State<'_, AppState>, id: String) -> Result<(), Stri
     state.browser_manager.reload(&id).map_err(|e| e.to_string())
 }
 
-/// Open a URL in a native webview window (external fallback).
+/// Reposition/resize the browser child webview to match a frontend-measured rect.
+///
+/// The frontend owns a placeholder `<div>` and reports its on-screen bounds (in
+/// logical pixels) so the native child webview tracks the resizable sidebar, the
+/// main-area panel, and window resizes. No-op if the webview doesn't exist yet.
+/// Passing off-screen coordinates "parks" the webview (keeps the page alive while
+/// hidden) when its surface unmounts.
 #[tauri::command]
-pub fn browser_open_external(state: State<'_, AppState>, url: String) -> Result<(), String> {
+pub fn browser_set_bounds(
+    state: State<'_, AppState>,
+    id: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let label = child_label(&id);
     let handle = state.get_app_handle().ok_or("AppHandle not available")?;
-    let label = format!(
-        "browser-external-{}",
-        uuid::Uuid::new_v4().to_string()[..8].to_string()
-    );
 
-    let parsed = tauri::Url::parse(&url).map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
-
-    let confirmed = handle
-        .dialog()
-        .message(&format!("Open external URL?\n\n{}", url))
-        .title("Confirm")
-        .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-        .blocking_show();
-    if !confirmed {
-        return Ok(());
+    if let Some(webview) = handle.get_webview(&label) {
+        webview
+            .set_position(tauri_runtime::dpi::LogicalPosition::new(x, y))
+            .map_err(|e| e.to_string())?;
+        webview
+            .set_size(tauri_runtime::dpi::LogicalSize::new(
+                width.max(0.0),
+                height.max(0.0),
+            ))
+            .map_err(|e| e.to_string())?;
     }
-    // Open in the OS default browser, never in a privileged Tauri webview.
-    let _ = std::process::Command::new("open")
-        .arg(&url)
-        .spawn()
-        .map_err(|e| format!("Failed to open URL: {}", e))?;
 
     Ok(())
 }

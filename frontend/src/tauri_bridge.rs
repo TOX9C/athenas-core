@@ -813,11 +813,26 @@ pub async fn browser_reload(id: &str) -> TauriResult<JsValue> {
     .await
 }
 
-/// Open a URL in a native webview window (fallback for iframe-blocked sites).
-pub async fn browser_open_external(url: &str) -> TauriResult<JsValue> {
+/// Reposition/resize the browser child webview to a frontend-measured rect
+/// (logical pixels). Off-screen coordinates "park" the webview while keeping the
+/// page alive.
+pub async fn browser_set_bounds(
+    id: &str,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> TauriResult<JsValue> {
     invoke(
-        "browser_open_external",
-        &serde_json::json!({"url": url}).to_string(),
+        "browser_set_bounds",
+        &serde_json::json!({
+            "id": id,
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+        })
+        .to_string(),
     )
     .await
 }

@@ -251,15 +251,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     if step() == 1 {
                         {
         let next_disabled = !is_e2e && (space_dir.read().trim().is_empty() || (is_swarm && space_goal.read().trim().is_empty()));
-        let next_btn_style = if next_disabled {
-            "opacity: 0.5;".to_string()
-        } else {
-            "".to_string()
-        };
         rsx! {
             button {
                 class: "btn-primary",
-                style: next_btn_style ,
                 disabled: next_disabled,
                 onclick: move |_| {
                     let disabled = space_dir.read().trim().is_empty() || (mode() == "swarm" && space_goal.read().trim().is_empty());
@@ -275,15 +269,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     if step() == 2 && mode() == "terminal" {
                         {
         let launch_disabled = total_panes == 0;
-        let launch_btn_style = if launch_disabled {
-            "opacity: 0.5;".to_string()
-        } else {
-            "".to_string()
-        };
                             rsx! {
                                 button {
                                     class: "btn-primary",
-                                    style: launch_btn_style ,
                                     disabled: launch_disabled,
                                     onclick: move |_| {
                                         web_sys::console::log_1(&"[NewSpaceModal] Launch Space clicked (sync)".into());
@@ -375,15 +363,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     if step() == 2 && mode() == "swarm" {
                         {
         let swarm_disabled = !can_launch_swarm;
-        let swarm_btn_style = if swarm_disabled {
-            "opacity: 0.5;".to_string()
-        } else {
-            "".to_string()
-        };
                             rsx! {
                                 button {
                                     class: "btn-primary",
-                                    style: swarm_btn_style ,
                                     disabled: swarm_disabled,
                                     onclick: move |_| {
                                         let dir = space_dir.read().trim().to_string();
@@ -667,8 +649,8 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                 let row_border = if has_any { "color-mix(in srgb, var(--accent) 50%, var(--border))" } else { "var(--border)" };
                                 let dot_bg = if has_any { color } else { "var(--textDim)" };
                                 let text_color = if has_any { "var(--text)" } else { "var(--textMuted)" };
-                                let minus_btn_style = if count_val == 0 { "opacity: 0.3; cursor: default;" } else { "" };
-                                let plus_btn_style = if total_panes >= 16 { "opacity: 0.3; pointer-events: none;" } else { "" };
+                                let minus_disabled_class = if count_val == 0 { "btn-disabled" } else { "" };
+                                let plus_disabled_class = if total_panes >= 16 { "btn-disabled" } else { "" };
                                 let plus_testid = format!("add-{}", row.label.to_lowercase().replace(' ', "-"));
 
                                 rsx! {
@@ -691,8 +673,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             style: "display: flex; align-items: center; gap: 8px;",
 
                                             button {
-                                                class: "icon-btn",
-                                                style: minus_btn_style,
+                                                class: "icon-btn {minus_disabled_class}",
                                                 "aria-label": "Remove agent",
                                                 onclick: move |_: dioxus::events::MouseEvent| {
                                                     web_sys::console::log_1(&"[NewSpaceModal] - clicked".into());
@@ -720,8 +701,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             }
 
                                             button {
-                                                class: "icon-btn",
-                                                style: plus_btn_style,
+                                                class: "icon-btn {plus_disabled_class}",
                                                 id: "{plus_testid}",
                                                 "aria-label": "Add agent",
                                                 onclick: move |_: dioxus::events::MouseEvent| {
@@ -776,7 +756,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
             if step() == 2 && mode() == "swarm" {
                 {
                     let slots_count = slots.read().len();
-                    let add_btn_style = if slots_count >= 10 { "opacity: 0.5; pointer-events: none;" } else { "" };
+                    let add_disabled_class = if slots_count >= 10 { "btn-disabled" } else { "" };
                     let team_label = format!("Team ({} agents)", slots_count);
                     rsx! {
                         div {
@@ -789,8 +769,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     "{team_label}"
                                 }
                                 button {
-                                    class: "btn-secondary btn-sm",
-                                    style: add_btn_style ,
+                                    class: "btn-secondary btn-sm {add_disabled_class}",
                                     onclick: move |_| {
                                         if slots.read().len() < 10 {
                                             slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude, custom_id: None, custom_cmd: None, label: None });
@@ -806,7 +785,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     let slot_agent_val = slot_value(&slot);
                                     let dot_c = role_color(&slot.role);
                                     let cur_slots_len = slots.read().len();
-                                    let remove_btn_style = if cur_slots_len <= 2 { "opacity: 0.3; cursor: default;" } else { "" };
+                                    let remove_disabled_class = if cur_slots_len <= 2 { "btn-disabled" } else { "" };
                                     rsx! {
                                         div {
                                             key: "{idx}",
@@ -856,8 +835,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             div { style: "flex: 1;" }
 
                                             button {
-                                                class: "icon-btn",
-                                                style: remove_btn_style ,
+                                                class: "icon-btn {remove_disabled_class}",
                                                 "aria-label": "Remove agent",
                                                 onclick: move |_| {
                                                     if slots.read().len() > 2 {

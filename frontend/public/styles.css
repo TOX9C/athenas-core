@@ -392,6 +392,14 @@ body::after {
 .icon-btn:active { transform: translateY(1px); }
 .icon-btn.is-active { color: var(--accent); background: var(--accentSubtle); }
 
+/* Class-based disabled state for icon-btn / btn-secondary that drive their
+   disabled visual via `class:` (no `disabled:` HTML attribute). */
+.icon-btn.btn-disabled, .btn-secondary.btn-disabled, .btn-primary.btn-disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+  pointer-events: none;
+}
+
 /* Token-driven form field. */
 .field {
   width: 100%;

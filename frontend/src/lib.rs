@@ -14,6 +14,7 @@ use components::notifications::notification_toast::NotificationToast;
 use components::plugin::input_request_modal::InputRequestModal;
 use components::plugin::plugin_event_bus::{provide_plugin_bus_store, PluginEventBus};
 use components::right_sidebar::panel::RightSidebar;
+use components::right_sidebar::BrowserSurface;
 use components::settings::settings_modal::SettingsModal;
 use components::settings::SettingsPanel;
 use components::shared::icon::{
@@ -777,6 +778,11 @@ pub fn App() -> Element {
                                         SwarmBoard {}
                                     } else if active_panel == Panel::Settings {
                                         SettingsPanel {}
+                                    } else if active_panel == Panel::Browser {
+                                        // Embedded browser popped out to the main
+                                        // content area (expanded mode). The native
+                                        // child webview is overlaid on this surface.
+                                        BrowserSurface { expanded: true }
                                     }
                                 }
                             }
