@@ -65,6 +65,25 @@ pub enum SearchError {
     RgExit { code: i32, stderr: String },
     #[error("JSON parse error: {0}")]
     JsonParseError(#[from] serde_json::Error),
+    #[error("Invalid search pattern: {0}")]
+    InvalidPattern(String),
+}
+
+/// Validate that a regex/search pattern is safe to pass to ripgrep and won't
+/// cause catastrophic backtracking (CPU-based DoS).
+fn validate_pattern(pattern: &str) -> Result<(), SearchError> {
+    if pattern.len() > 1024 {
+        return Err(SearchError::InvalidPattern(
+            "pattern too long (max 1024 chars)".to_string(),
+        ));
+    }
+    let repeat_ops = pattern.matches('{').count() + pattern.matches('*').count();
+    if repeat_ops > 10 {
+        return Err(SearchError::InvalidPattern(
+            "pattern contains too many repetition operators".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Search code using ripgrep.
@@ -74,6 +93,8 @@ pub enum SearchError {
 pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, SearchError> {
     let mut options = options.clone();
     options.validate();
+    // Prevent CPU-DoS via pathological regexes (catastrophic backtracking).
+    validate_pattern(&options.pattern)?;
     let rg_bin = find_rg_binary().await?;
 
     let mut args: Vec<String> = vec![
@@ -308,6 +329,8 @@ pub fn find_rg_binary_sync() -> Result<PathBuf, SearchError> {
 pub fn search_code_sync(options: &SearchOptions) -> Result<SearchResult, SearchError> {
     let mut options = options.clone();
     options.validate();
+    // Prevent CPU-DoS via pathological regexes (catastrophic backtracking).
+    validate_pattern(&options.pattern)?;
     #[allow(deprecated)]
     let rg_bin = find_rg_binary_sync()?;
 

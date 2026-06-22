@@ -118,11 +118,18 @@ pub fn App() -> Element {
 
     use_effect(move || {
         spawn(async move {
+            // Debounce timer state — last time the backend was called.
+            let last_call = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
             // Capture unlisten for cleanup. The closure runs for the app
             // lifetime if unlisten is dropped without being called.
             let _unlisten = crate::tauri_bridge::listen(
                 "tauri://resize",
                 move |_payload| {
+                    let now = js_sys::Date::now();
+                    if now - last_call.get() < 150.0 {
+                        return;
+                    }
+                    last_call.set(now);
                     spawn(async move {
                         if let Ok(maximized) =
                             crate::tauri_bridge::window_is_maximized().await

@@ -13,6 +13,11 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+/// Default scrollback buffer size for xterm.js sessions.
+/// Previously hardcoded to 2500; raised to 10000 to
+/// accommodate long-running build/logs without truncation.
+const XTERM_SCROLLBACK: f64 = 10000.0;
+
 /// Holds the resources needed to tear down an xterm.js mount on unmount.
 struct XtermCleanup {
     /// The Terminal instance; calling .dispose() releases internal
@@ -258,7 +263,7 @@ pub fn XtermMount(
             let _ = js_sys::Reflect::set(
                 &options,
                 &JsValue::from_str("scrollback"),
-                &JsValue::from_f64(2500.0),
+                &JsValue::from_f64(XTERM_SCROLLBACK),
             );
 
             let term_val =
