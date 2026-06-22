@@ -746,6 +746,9 @@ pub async fn fs_write_file(
     path: String,
     content: String,
 ) -> Result<(), CommandError> {
+    if !state.rate_limiter.check("fs_write_file") {
+        return Err(CommandError::InvalidInput("Rate limit exceeded. Please wait a moment.".to_string()));
+    }
     if content.len() > caps::MAX_FS_WRITE_BYTES {
         return Err(CommandError::InvalidInput(format!(
             "content too large: {} > {}",
@@ -790,6 +793,9 @@ pub async fn fs_read_file_as_base64(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<String, CommandError> {
+    if !state.rate_limiter.check("fs_read_file_as_base64") {
+        return Err(CommandError::InvalidInput("Rate limit exceeded. Please wait a moment.".to_string()));
+    }
     use base64::Engine;
     let path_ref = std::path::Path::new(&path);
     let validated = validate_path_exists(&state.store, path_ref)?;
@@ -891,11 +897,11 @@ pub async fn fs_search_files(
     path: String,
 ) -> Result<String, String> {
     let path_ref = std::path::Path::new(&path);
-    let _ = validate_path_exists(&state.store, path_ref)
+    let validated = validate_path_exists(&state.store, path_ref)
         .map_err(|e| e.to_string())?;
     let options = athena_core::SearchOptions {
         pattern,
-        path,
+        path: validated.to_string_lossy().to_string(),
         glob: None,
         case_sensitive: false,
         max_results: Some(50),
@@ -2161,24 +2167,19 @@ pub async fn summarize_agent_title(state: State<'_, AppState>, raw_prompt: Strin
     if sensitive_keywords.iter().any(|&kw| lowercase.contains(kw)) {
         return Ok("Sensitive prompt".to_string());
     }
-    // Also check individual words for l33t-sp34k near sensitive terms.
-    let l33t_words = lowercase.split_whitespace()
-        .any(|w| {
-            let w_norm = w.replace(|c: char| !c.is_alphanumeric(), "");
-            let w_anti = w_norm.replace('a', "@");
-            let tests: Vec<bool> = vec![
-                w_norm.contains("passw0rd") || w_norm.contains("p@ssword"),
-                w_norm.contains("t0ken") || w_norm.contains("t0k3n"),
-                w_norm.contains("s3cret") || w_norm.contains("s3cr3t"),
-                w_norm.contains("api_k3y") || w_norm.contains("4uth"),
-                w_norm.contains("cr3dential"),
-                w_norm.contains("p1n"),
-                w_anti.contains("p@ssword"),
-                w_anti.contains("t@ken"),
-            ];
-            tests.iter().any(|&b| b)
-        });
-    if l33t_words {
+    // Normalize common 1337-5p34k substitutions before checking.
+    let normalized = lowercase
+        .replace('@', "a")
+        .replace('0', "o")
+        .replace('3', "e")
+        .replace('1', "i")
+        .replace('!', "i")
+        .replace('$', "s");
+    let normalized_keywords = [
+        "password", "token", "secret", "api_key", "apikey", "api-key",
+        "authorization", "auth", "credential", "private key", "passphrase", "pin",
+    ];
+    if normalized_keywords.iter().any(|&kw| normalized.contains(kw)) {
         return Ok("Sensitive prompt".to_string());
     }
     let orchestrator = state.orchestrator.lock().await;
@@ -2646,11 +2647,11 @@ pub async fn search_code(
     path: String,
 ) -> Result<String, String> {
     let path_ref = std::path::Path::new(&path);
-    let _ = validate_path_exists(&state.store, path_ref)
+    let validated = validate_path_exists(&state.store, path_ref)
         .map_err(|e| e.to_string())?;
     let options = athena_core::SearchOptions {
         pattern,
-        path,
+        path: validated.to_string_lossy().to_string(),
         glob: None,
         case_sensitive: false,
         max_results: Some(50),
@@ -2873,11 +2874,13 @@ pub async fn tool_execute(
     arguments: String,
 ) -> Result<String, String> {
     const ALLOWED: &[&str] = &[
-        "get_file_text",
         "read_agent_output",
-        "search_codebase",
-        "get_terminal_list",
-        "get_active_terminal",
+        "list_agents",
+        "check_agent_status",
+        "kanban_list_tasks",
+        "fs_read_file",
+        "fs_list_dir",
+        "fs_search",
     ];
     if !ALLOWED.contains(&tool_name.as_str()) {
         return Err(format!(
