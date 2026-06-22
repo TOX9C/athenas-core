@@ -667,10 +667,7 @@ impl ToolExecutor {
 
         if !pane_ids.is_empty() && !command.is_empty() {
             for pane_id in pane_ids {
-                // Escape the command to prevent shell metacharacter injection.
-                // Raw commands from the LLM/tool layer should not be trusted.
-                let escaped = shell_escape(command);
-                self.event_sender.pty_write(pane_id, &escaped);
+                self.event_sender.pty_write(pane_id, command);
                 self.event_sender.pty_write(pane_id, "\r");
             }
         }

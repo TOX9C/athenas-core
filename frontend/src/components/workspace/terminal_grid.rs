@@ -439,7 +439,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
                     // agent exits we want the resume banner to reappear quickly
                     // (the scanner already captured the id the instant it was
                     // printed; this only gates the "not running" reveal).
-                    gloo::timers::future::TimeoutFuture::new(750).await;
+                    gloo::timers::future::TimeoutFuture::new(2000).await;
                 }
             }
         });

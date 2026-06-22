@@ -3096,12 +3096,11 @@ pub fn browser_open_external(state: State<'_, AppState>, url: String) -> Result<
     if !confirmed {
         return Ok(());
     }
-    WebviewWindowBuilder::new(&handle, &label, WebviewUrl::External(parsed))
-        .inner_size(1200.0, 800.0)
-        .center()
-        .title(format!("Browser: {}", url))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // Open in the OS default browser, never in a privileged Tauri webview.
+    let _ = std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| format!("Failed to open URL: {}", e))?;
 
     Ok(())
 }
