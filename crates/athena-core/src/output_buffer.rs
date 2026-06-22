@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 /// Represents the state of an agent session.
@@ -225,25 +225,72 @@ impl OutputBuffer {
         }
     }
 
+    /// Fast byte-scanner that strips ANSI escape sequences in a single pass.
+    /// Replaces the previous 5-regex pipeline to avoid CPU cost in the hot
+    /// PTY read loop.
     fn strip_ansi(text: &str) -> String {
-        static RE_OSC_BEL: LazyLock<regex::Regex> =
-            LazyLock::new(|| regex::Regex::new(r"\x1b\][^\x07]*\x07").unwrap());
-        static RE_OSC_ESC: LazyLock<regex::Regex> =
-            LazyLock::new(|| regex::Regex::new(r"\x1b\][^\x1b]*\x1b\\").unwrap());
-        static RE_CSI: LazyLock<regex::Regex> =
-            LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;?]*[A-Za-z]").unwrap());
-        static RE_CHARSET: LazyLock<regex::Regex> =
-            LazyLock::new(|| regex::Regex::new(r"\x1b[()][0-9A-B]").unwrap());
-        static RE_MODE: LazyLock<regex::Regex> =
-            LazyLock::new(|| regex::Regex::new(r"\x1b\[\?[0-9]+[hl]").unwrap());
-
-        let result = RE_OSC_BEL.replace_all(text, "");
-        let result = RE_OSC_ESC.replace_all(&result, "");
-        let result = RE_CSI.replace_all(&result, "");
-        let result = RE_CHARSET.replace_all(&result, "");
-        let result = RE_MODE.replace_all(&result, "");
-        let result = result.replace("\r\n", "\n");
-        result.replace('\r', "")
+        let bytes = text.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'\x1b' && i + 1 < bytes.len() {
+                let next = bytes[i + 1];
+                match next {
+                    // ESC [  → CSI sequence
+                    b'[' => {
+                        i += 2;
+                        // Skip parameter bytes (0x30–0x3F)
+                        while i < bytes.len() && bytes[i] >= 0x30 && bytes[i] <= 0x3F {
+                            i += 1;
+                        }
+                        // Skip intermediate bytes (0x20–0x2F)
+                        while i < bytes.len() && bytes[i] >= 0x20 && bytes[i] <= 0x2F {
+                            i += 1;
+                        }
+                        // Skip final byte (0x40–0x7E)
+                        if i < bytes.len() {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    // ESC ]  → OSC sequence
+                    b']' => {
+                        i += 2;
+                        while i < bytes.len() {
+                            if bytes[i] == b'\x07' {
+                                i += 1;
+                                break;
+                            }
+                            if bytes[i] == b'\x1b' && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                                i += 2;
+                                break;
+                            }
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    // ESC ( or ESC )  → charset select
+                    b'(' | b')' => {
+                        if i + 2 < bytes.len() {
+                            i += 3; // skip ESC, (, and the charset code
+                        } else {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    // Other single-char ESC sequences
+                    _ => {
+                        // Skip the ESC and the following byte as a simple escape
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+            out.push(b);
+            i += 1;
+        }
+        String::from_utf8(out).unwrap_or_else(|_| text.replace('\r', ""))
     }
 
     /// Append output to a pane buffer.
