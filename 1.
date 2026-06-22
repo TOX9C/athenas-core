@@ -1,0 +1,66 @@
+warning: /Users/apollo/Documents/athenas-core/src-tauri/Cargo.toml: Found `debug_assertions` in `target.'cfg(...)'.dependencies`. This value is not supported for selecting dependencies and will not work as expected. To learn more visit https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#platform-specific-dependencies
+warning: /Users/apollo/Documents/athenas-core/src-tauri/Cargo.toml: Found `debug_assertions` in `target.'cfg(...)'.dependencies`. This value is not supported for selecting dependencies and will not work as expected. To learn more visit https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#platform-specific-dependencies
+warning: fields `selection`, `reverse_video`, `bracketed_paste`, and `mouse_mode` are never read
+  --> crates/athena-terminal/src/grid/mod.rs:53:5
+   |
+45 | pub struct Grid {
+   |            ---- fields in this structwarning: fields `selection`, `reverse_video`, `bracketed_paste`, and `mouse_mode` are never read
+  --> crates/athena-terminal/src/grid/mod.rs:53:5
+   |
+45 | pub struct Grid {
+   |            ---- fields in this struct
+...
+53 |     selection: Option<(Point, Point)>,
+   |     ^^^^^^^^^
+...
+75 |     reverse_video: bool,
+   |     ^^^^^^^^^^^^^
+76 |     /// Bracketed paste mode enabled
+77 |     bracketed_paste: bool,
+   |     ^^^^^^^^^^^^^^^
+78 |     /// Mouse tracking mode (0 = off, 1000 = normal, 1002 = motion, 1003 = all motion)
+79 |     mouse_mode: u16,
+   |     ^^^^^^^^^^
+   
+...
+53 |     selection: Option<(Point, Point)>,
+   |     ^^^^^^^^^
+...
+75 |     reverse_video: bool,
+   |     ^^^^^^^^^^^^^
+76 |     /// Bracketed paste mode enabled
+77 |     bracketed_paste: bool,
+   |     ^^^^^^^^^^^^^^^
+78 |     /// Mouse tracking mode (0 = off, 1000 = normal, 1002 = motion, 1003 = all motion)
+79 |     mouse_mode: u16,
+   |     ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+|
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `athena-terminal` (lib) generated 1 warning
+warning: `athena-terminal` (lib) generated 1 warning
+    Checking athenas-core v0.1.0 (/Users/apollo/Documents/athenas-core/src-tauri)
+    Checking athenas-core v0.1.0 (/Users/apollo/Documents/athenas-core/src-tauri)
+warning: unused variable: `data_len`
+    --> src-tauri/src/commands/mod.rs:1558:9
+     |
+1558 |     let data_len = data.len();
+     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_data_len`
+     |
+     = warning: unused variable: `data_len`
+    --> src-tauri/src/commands/mod.rs:1558:9
+     |
+1558 |     let data_len = data.len();
+     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_data_len`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `athenas-core` (bin "athenas-core") generated 1 warning (run `cargo fix --bin "athenas-core" -p athenas-core` to apply 1 suggestion)
+warning: `athenas-core` (bin "athenas-core") generated 1 warning (run `cargo fix --bin "athenas-core" -p athenas-core` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.87s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.87s
