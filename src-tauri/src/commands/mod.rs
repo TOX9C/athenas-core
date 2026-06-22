@@ -679,9 +679,6 @@ pub async fn fs_read_file(
     if !state.rate_limiter.check("fs_read_file") {
         return Err(CommandError::InvalidInput("Rate limit exceeded. Please wait a moment.".to_string()));
     }
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<String, CommandError> {
     let path_ref = std::path::Path::new(&path);
     let validated = validate_path_exists(&state.store, path_ref)?;
     let validated_clone = validated.clone();

@@ -12,7 +12,7 @@ tauri-plugin-log = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { version = "1.43", features = ["full"] }
+tokio = { version = "1.43", features = ["rt", "sync", "time", "fs", "macros"] }
 log = { workspace = true }
 base64 = "0.22"
 path-clean = "1.0"

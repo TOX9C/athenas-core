@@ -1512,6 +1512,10 @@ mod tests {
     fn path_validation_security() {
         let temp_dir = tempfile::tempdir().unwrap();
         let original_dir = std::env::current_dir().unwrap();
+        // Create the workspace marker so get_workspace_root() can find a root.
+        let marker = temp_dir.path().join("src-tauri").join("tauri.conf.json");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, r##"{ "build": { "beforeBuildCommand": "echo" } }"##).unwrap();
         std::env::set_current_dir(&temp_dir).unwrap();
         let _guard = CurrentDirGuard {
             original: original_dir,
