@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Type of notification.
@@ -90,13 +90,12 @@ const MAX_HISTORY: usize = 500;
 pub enum NotificationError {
     #[error("Notification not found: {0}")]
     NotFound(String),
-    #[error("Lock poisoned")]
-    LockPoisoned,
+
 }
 
 /// Thread-safe notification service.
 pub struct NotificationService {
-    history: Arc<RwLock<Vec<NotificationRecord>>>,
+    history: Arc<parking_lot::RwLock<Vec<NotificationRecord>>>,
     event_emitter:
         Arc<parking_lot::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 }
@@ -128,7 +127,7 @@ impl Default for NotificationService {
 impl NotificationService {
     pub fn new() -> Self {
         Self {
-            history: Arc::new(RwLock::new(Vec::new())),
+            history: Arc::new(parking_lot::RwLock::new(Vec::new())),
             event_emitter: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
@@ -186,13 +185,7 @@ impl NotificationService {
             dismissed_at: None,
         };
 
-        let mut history = match self.history.write() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("NotificationService: lock poisoned while pushing notification");
-                return record;
-            }
-        };
+        let mut history = self.history.write();
         history.push(record.clone());
 
         // Trim to max history
@@ -221,13 +214,7 @@ impl NotificationService {
 
     /// Get notification history with optional filtering.
     pub fn get_history(&self, options: Option<&HistoryOptions>) -> Vec<NotificationRecord> {
-        let history = match self.history.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("NotificationService: lock poisoned while reading history");
-                return Vec::new();
-            }
-        };
+        let history = self.history.read();
         let mut results: Vec<NotificationRecord> = history.clone();
         drop(history);
 
@@ -259,8 +246,7 @@ impl NotificationService {
     pub fn mark_read(&self, notification_id: &str) -> Result<bool, NotificationError> {
         let mut history = self
             .history
-            .write()
-            .map_err(|_| NotificationError::LockPoisoned)?;
+            .write();
         let record = history
             .iter_mut()
             .find(|n| n.id == notification_id)
@@ -283,13 +269,7 @@ impl NotificationService {
 
     /// Mark all notifications as read.
     pub fn mark_all_read(&self) -> usize {
-        let mut history = match self.history.write() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("NotificationService: lock poisoned while marking all read");
-                return 0;
-            }
-        };
+        let mut history = self.history.write();
         let mut count = 0;
         for n in history.iter_mut() {
             if !n.read {
@@ -304,8 +284,7 @@ impl NotificationService {
     pub fn dismiss(&self, notification_id: &str) -> Result<bool, NotificationError> {
         let mut history = self
             .history
-            .write()
-            .map_err(|_| NotificationError::LockPoisoned)?;
+            .write();
         let idx = history
             .iter()
             .position(|n| n.id == notification_id)
@@ -327,13 +306,7 @@ impl NotificationService {
 
     /// Clear all notifications.
     pub fn clear_all(&self) -> usize {
-        let mut history = match self.history.write() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("NotificationService: lock poisoned while clearing all");
-                return 0;
-            }
-        };
+        let mut history = self.history.write();
         let count = history.len();
         history.clear();
         count
@@ -341,37 +314,13 @@ impl NotificationService {
 
     /// Get the count of unread notifications.
     pub fn get_unread_count(&self) -> usize {
-        let history = match self.history.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("NotificationService: lock poisoned while getting unread count");
-                return 0;
-            }
-        };
+        let history = self.history.read();
         history.iter().filter(|n| !n.read).count()
     }
 
     /// Get notification count summary.
     pub fn get_counts(&self) -> NotificationCounts {
-        let history = match self.history.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("NotificationService: lock poisoned while getting counts");
-                return NotificationCounts {
-                    total: 0,
-                    unread: 0,
-                    by_type: NotificationTypeCounts {
-                        info: 0,
-                        warning: 0,
-                        error: 0,
-                        success: 0,
-                        needs_input: 0,
-                        task_complete: 0,
-                        task_error: 0,
-                    },
-                };
-            }
-        };
+        let history = self.history.read();
         let total = history.len();
         let mut unread = 0;
         let mut by_type = NotificationTypeCounts {
@@ -397,23 +346,6 @@ impl NotificationService {
                 NotificationType::TaskError => by_type.task_error += 1,
             }
         }
-
-        NotificationCounts {
-            total,
-            unread,
-            by_type,
-        }
-    }
-
-    /// Get all history (clone).
-    pub fn get_all_history(&self) -> Vec<NotificationRecord> {
-        let history = match self.history.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("NotificationService: lock poisoned while getting all history");
-                return Vec::new();
-            }
-        };
-        history.clone()
+        NotificationCounts { total, unread, by_type }
     }
 }
