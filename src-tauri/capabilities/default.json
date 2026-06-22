@@ -110,7 +110,7 @@
     "allow-browser-back",
     "allow-browser-forward",
     "allow-browser-reload",
-    "allow-browser-open-external",
+    "allow-browser-set-bounds",
     "allow-plugin-list",
     "allow-plugin-get",
     "allow-plugin-register",

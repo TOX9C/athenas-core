@@ -507,16 +507,16 @@
           "markdownDescription": "Enables the browser_navigate command without any pre-configured scope."
         },
         {
-          "description": "Enables the browser_open_external command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-browser-open-external",
-          "markdownDescription": "Enables the browser_open_external command without any pre-configured scope."
-        },
-        {
           "description": "Enables the browser_reload command without any pre-configured scope.",
           "type": "string",
           "const": "allow-browser-reload",
           "markdownDescription": "Enables the browser_reload command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the browser_set_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-browser-set-bounds",
+          "markdownDescription": "Enables the browser_set_bounds command without any pre-configured scope."
         },
         {
           "description": "Enables the browser_show command without any pre-configured scope.",
@@ -1233,16 +1233,16 @@
           "markdownDescription": "Denies the browser_navigate command without any pre-configured scope."
         },
         {
-          "description": "Denies the browser_open_external command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-browser-open-external",
-          "markdownDescription": "Denies the browser_open_external command without any pre-configured scope."
-        },
-        {
           "description": "Denies the browser_reload command without any pre-configured scope.",
           "type": "string",
           "const": "deny-browser-reload",
           "markdownDescription": "Denies the browser_reload command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the browser_set_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-browser-set-bounds",
+          "markdownDescription": "Denies the browser_set_bounds command without any pre-configured scope."
         },
         {
           "description": "Denies the browser_show command without any pre-configured scope.",

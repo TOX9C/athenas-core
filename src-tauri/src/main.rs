@@ -21,9 +21,17 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init());
 
-    // WebDriver automation — debug builds only (crate is cfg(debug_assertions)-gated)
+    // WebDriver automation — debug builds only, and only when explicitly
+    // requested via TAURI_WEBVIEW_AUTOMATION (set by the `tauri-wd` e2e runner).
+    //
+    // The plugin's `on_webview_ready` hook calls `get_webview_window(label)` and
+    // panics on `None`. That returns `None` for *child* webviews (e.g. the
+    // embedded browser created via `add_child`), so registering it
+    // unconditionally aborts the app the moment the in-app browser opens. Gating
+    // it behind the env var keeps normal `cargo tauri dev` runs crash-free while
+    // preserving e2e, which launches the app with the var set.
     #[cfg(debug_assertions)]
-    {
+    if std::env::var("TAURI_WEBVIEW_AUTOMATION").is_ok() {
         builder = builder.plugin(tauri_plugin_webdriver_automation::init());
     }
 
@@ -148,7 +156,7 @@ fn main() {
             browser_back,
             browser_forward,
             browser_reload,
-            browser_open_external,
+            browser_set_bounds,
             // Plugins
             plugin_list,
             plugin_get,

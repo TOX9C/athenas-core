@@ -4,7 +4,7 @@ use super::skills_panel::SkillsPanel;
 use crate::components::athena::athena_panel::{AthenaPanel, AthenaPanelMode};
 use crate::components::shared::icon::{IconColumn, IconFile, IconGlobe, IconTerminal};
 use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
-use crate::stores::ui::use_ui_store;
+use crate::stores::ui::{use_ui_store, Panel};
 use dioxus::prelude::*;
 
 #[component]
@@ -87,7 +87,28 @@ pub fn RightSidebar() -> Element {
                 style: "flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column;",
 
                 match active {
-                    RightPanel::Browser => rsx! { RightBrowserPanel {} },
+                    // The embedded browser is a single shared surface. When it
+                    // is popped out to the main content area
+                    // (`ui_state.panel == Panel::Browser`), the sidebar yields
+                    // ownership and shows a dock hint instead of mounting a
+                    // second surface.
+                    RightPanel::Browser => if ui_state.read().panel == Panel::Browser {
+                        rsx! {
+                            div {
+                                style: "flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; color: var(--textMuted);",
+                                div {
+                                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; color: var(--text);",
+                                    "Browser is in the main area"
+                                }
+                                div {
+                                    style: "font-size: 11px; max-width: 220px;",
+                                    "Use the dock button in the browser toolbar to bring it back here."
+                                }
+                            }
+                        }
+                    } else {
+                        rsx! { RightBrowserPanel {} }
+                    },
                     RightPanel::Assistant => rsx! { AthenaPanel { mode: AthenaPanelMode::Compact } },
                     RightPanel::Editor => rsx! { RightEditorPanel {} },
                     RightPanel::Skills => rsx! { SkillsPanel {} },
