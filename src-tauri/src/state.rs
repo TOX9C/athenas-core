@@ -351,7 +351,7 @@ pub struct AppState {
     /// Internally synchronized -- no outer `Mutex` needed.
     /// Wired to the tool executor so LLM tool calls are dispatched
     /// through the same service instances and real PTY side-effects.
-    pub orchestrator: Arc<tokio::sync::Mutex<athena_core::AthenaOrchestrator>>,
+    pub orchestrator: Arc<athena_core::AthenaOrchestrator>,
 
     /// Async services that require `tokio::sync::Mutex` for use across
     /// `.await` boundaries.
@@ -487,7 +487,7 @@ impl AppState {
                 }
             }
 
-            Arc::new(tokio::sync::Mutex::new(orch))
+            Arc::new(orch)
         };
 
         Self {

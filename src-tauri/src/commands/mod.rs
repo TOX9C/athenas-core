@@ -2078,21 +2078,9 @@ pub async fn athena_chat(state: State<'_, AppState>, message: String) -> Result<
     if !state.rate_limiter.check("athena_chat") {
         return Err("Rate limit exceeded. Please wait a moment.".to_string());
     }
-    // The orchestrator lock is held for the whole send_message call. This is
-    // intentional, NOT a lock-across-await bug: send_message(&self) mutates
-    // shared conversation state (the provider-config and per-provider message
-    // vectors) via interior mutability, so two concurrent calls would interleave
-    // their message pushes and corrupt the conversation. The inner
-    // parking_lot mutexes inside send_anthropic/send_openai no longer hold
-    // across tool-execution awaits (see H2a fix in orchestrator.rs), so a
-    // long tool call no longer stalls unrelated runtime work — but the outer
-    // serialization of distinct chat turns is required for correctness.
-    let orchestrator = state.orchestrator.lock().await;
+    let orchestrator = Arc::clone(&state.orchestrator);
     match build_provider_config_from_store(&state) {
         Ok(config) => orchestrator.set_provider_config(config),
-        // Surface the missing-key case as an actionable error instead of
-        // letting send_message fall through to the ANTHROPIC_API_KEY env-var
-        // branch (which fails with a confusing message on a normal machine).
         Err(ProviderConfigError::MissingApiKey) => {
             return Err("API key is required. Please set it in Settings → Athena.".to_string());
         }
@@ -2110,7 +2098,7 @@ pub async fn athena_chat_with_session(
     message: String,
     session_id: String,
 ) -> Result<String, String> {
-    let orchestrator = state.orchestrator.lock().await;
+    let orchestrator = Arc::clone(&state.orchestrator);
     match build_provider_config_from_store(&state) {
         Ok(config) => orchestrator.set_provider_config(config),
         Err(ProviderConfigError::MissingApiKey) => {
@@ -2133,7 +2121,7 @@ pub async fn athena_chat_with_images(
 ) -> Result<String, String> {
     let image_data: Vec<athena_core::types::ImageData> =
         serde_json::from_str(&images).map_err(|e| e.to_string())?;
-    let orchestrator = state.orchestrator.lock().await;
+    let orchestrator = Arc::clone(&state.orchestrator);
     match build_provider_config_from_store(&state) {
         Ok(config) => orchestrator.set_provider_config(config),
         Err(ProviderConfigError::MissingApiKey) => {
@@ -2182,7 +2170,7 @@ pub async fn summarize_agent_title(state: State<'_, AppState>, raw_prompt: Strin
     if normalized_keywords.iter().any(|&kw| normalized.contains(kw)) {
         return Ok("Sensitive prompt".to_string());
     }
-    let orchestrator = state.orchestrator.lock().await;
+    let orchestrator = Arc::clone(&state.orchestrator);
     match build_provider_config_from_store(&state) {
         Ok(config) => orchestrator.set_provider_config(config),
         // Title summarization is best-effort — if the user hasn't configured
@@ -2202,7 +2190,7 @@ pub async fn summarize_agent_title(state: State<'_, AppState>, raw_prompt: Strin
 /// Clear all conversation history from the orchestrator.
 #[tauri::command]
 pub async fn athena_clear_context(state: State<'_, AppState>) -> Result<(), String> {
-    let orchestrator = state.orchestrator.lock().await;
+    let orchestrator = Arc::clone(&state.orchestrator);
     orchestrator.clear_context();
     Ok(())
 }
@@ -2215,7 +2203,7 @@ pub async fn athena_set_session_context(
 ) -> Result<(), String> {
     let entries: Vec<athena_core::types::SessionHistoryEntry> =
         serde_json::from_str(&history).map_err(|e| e.to_string())?;
-    let orchestrator = state.orchestrator.lock().await;
+    let orchestrator = Arc::clone(&state.orchestrator);
     orchestrator.set_session_context(entries);
     Ok(())
 }
