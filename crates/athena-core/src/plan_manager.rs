@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Status of an execution plan.
@@ -65,13 +65,12 @@ pub enum PlanManagerError {
     NoActivePlan,
     #[error("Step not found: {0}")]
     StepNotFound(String),
-    #[error("Lock poisoned")]
-    LockPoisoned,
+
 }
 
 /// Thread-safe plan manager.
 pub struct PlanManager {
-    active_plan: Arc<RwLock<Option<ExecutionPlan>>>,
+    active_plan: Arc<parking_lot::RwLock<Option<ExecutionPlan>>>,
     event_emitter:
         Arc<parking_lot::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
 }
@@ -103,7 +102,7 @@ impl Default for PlanManager {
 impl PlanManager {
     pub fn new() -> Self {
         Self {
-            active_plan: Arc::new(RwLock::new(None)),
+            active_plan: Arc::new(parking_lot::RwLock::new(None)),
             event_emitter: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
@@ -144,8 +143,7 @@ impl PlanManager {
     pub fn set_active_plan(&self, input: PlanInput) -> Result<ExecutionPlan, PlanManagerError> {
         let mut lock = self
             .active_plan
-            .write()
-            .map_err(|_| PlanManagerError::LockPoisoned)?;
+            .write();
         let plan = ExecutionPlan {
             id: Self::generate_id(),
             goal: input.goal,
@@ -177,13 +175,7 @@ impl PlanManager {
 
     /// Get the current active plan.
     pub fn get_active_plan(&self) -> Option<ExecutionPlan> {
-        let lock = match self.active_plan.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("PlanManager: lock poisoned while reading active plan");
-                return None;
-            }
-        };
+        let lock = self.active_plan.read();
         lock.clone()
     }
 
@@ -196,8 +188,7 @@ impl PlanManager {
     ) -> Result<bool, PlanManagerError> {
         let mut lock = self
             .active_plan
-            .write()
-            .map_err(|_| PlanManagerError::LockPoisoned)?;
+            .write();
         let plan = lock.as_mut().ok_or(PlanManagerError::NoActivePlan)?;
         let step = plan
             .steps
@@ -234,8 +225,7 @@ impl PlanManager {
     pub fn update_plan_status(&self, status: PlanStatus) -> Result<bool, PlanManagerError> {
         let mut lock = self
             .active_plan
-            .write()
-            .map_err(|_| PlanManagerError::LockPoisoned)?;
+            .write();
         let plan = lock.as_mut().ok_or(PlanManagerError::NoActivePlan)?;
         plan.status = status;
         let plan_clone = plan.clone();
@@ -253,8 +243,7 @@ impl PlanManager {
     pub fn clear_active_plan(&self) -> Result<(), PlanManagerError> {
         let mut lock = self
             .active_plan
-            .write()
-            .map_err(|_| PlanManagerError::LockPoisoned)?;
+            .write();
         *lock = None;
         drop(lock);
 
