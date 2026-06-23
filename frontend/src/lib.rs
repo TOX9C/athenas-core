@@ -45,6 +45,26 @@ use stores::workspace::{
     provide_workspace_store, use_workspace_store, AgentType, PaneConfig, Space, WorkspaceState,
 };
 
+/// Migrate old separate pane-title settings into the unified `smart_pane_titles` key.
+async fn migrate_smart_pane_titles() -> bool {
+    if let Ok(v) = crate::tauri_bridge::store_get("smart_pane_titles").await {
+        return v == "true";
+    }
+    let auto_gen = crate::tauri_bridge::store_get("auto_generate_titles")
+        .await
+        .map(|v| v == "true")
+        .unwrap_or(true);
+    let summarize = crate::tauri_bridge::store_get("summarize_agent_titles")
+        .await
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let merged = auto_gen || summarize;
+    let _ =
+        crate::tauri_bridge::store_set("smart_pane_titles", if merged { "true" } else { "false" })
+            .await;
+    merged
+}
+
 /// Root application component — faithful port of App.tsx.
 #[component]
 pub fn App() -> Element {
@@ -178,13 +198,8 @@ pub fn App() -> Element {
                         }
                     }
                 }
-                // Load auto-generate-titles setting from persist
-                if let Ok(v) = crate::tauri_bridge::store_get("auto_generate_titles").await {
-                    ui.write().auto_generate_titles = v == "true";
-                }
-                if let Ok(v) = crate::tauri_bridge::store_get("summarize_agent_titles").await {
-                    ui.write().summarize_agent_titles = v == "true";
-                }
+                // Migrate old separate settings to unified smart_pane_titles
+                ui.write().smart_pane_titles = migrate_smart_pane_titles().await;
             });
         });
     }

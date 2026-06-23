@@ -460,10 +460,10 @@ fn PaneItem(props: PaneItemProps) -> Element {
     //   1. user-edited label (explicit rename) >
     //   2. LLM-generated summary (if feature enabled) >
     //   3. agent-scraped task title (raw prompt) >
-    //   4. idle-Shell random name (auto_generate_titles) >
+    //   4. idle-Shell random name (smart_pane_titles) >
     //   5. static agent label ("Shell"/"Claude Code"/…)
     let left_label = {
-        let summarize_active = ui_state.read().summarize_agent_titles;
+        let summarize_active = ui_state.read().smart_pane_titles;
         if let Some(label) = props.label.clone() {
             // 1. User-edited label always wins
             label
@@ -475,7 +475,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
                 title
             } else if props.agent_type == AgentType::Shell
                 && fg_process.as_deref().map_or(true, |p| p == "shell")
-                && ui_state.read().auto_generate_titles
+                && ui_state.read().smart_pane_titles
             {
                 crate::utils::pane_names::name_for_pane(&props.pane_id)
             } else {
@@ -486,7 +486,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
             // Show static label for all pane types.
             if props.agent_type == AgentType::Shell
                 && fg_process.as_deref().map_or(true, |p| p == "shell")
-                && ui_state.read().auto_generate_titles
+                && ui_state.read().smart_pane_titles
             {
                 crate::utils::pane_names::name_for_pane(&props.pane_id)
             } else {

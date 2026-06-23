@@ -239,65 +239,26 @@ fn GeneralSettings() -> Element {
                     style: "display: flex; flex-direction: column; gap: 4px; min-width: 0;",
                     div {
                         style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
-                        "Auto-generate pane titles"
+                        "Smart pane titles"
                     }
                     div {
                         style: "font-size: var(--text-xs); color: var(--textMuted);",
-                        "Show scraped task titles for Claude/Codex and a random name for idle shells."
+                        "Auto-generate names for idle shells and summarize agent titles via LLM."
                     }
                 }
                 {
-                    let enabled = ui_state.read().auto_generate_titles;
+                    let enabled = ui_state.read().smart_pane_titles;
                     let bg = if enabled { "var(--accent)" } else { "var(--bgTertiary)" };
                     let knob = if enabled { "translateX(20px)" } else { "translateX(0px)" };
                     rsx! {
                         button {
                             style: "position: relative; width: 44px; height: 24px; border-radius: 999px; border: 1px solid var(--border); background: {bg}; cursor: pointer; padding: 0; flex-shrink: 0; transition: background 0.15s ease;",
                             onclick: move |_| {
-                                let next = !ui_state.read().auto_generate_titles;
-                                ui_state.write().auto_generate_titles = next;
+                                let next = !ui_state.read().smart_pane_titles;
+                                ui_state.write().smart_pane_titles = next;
                                 spawn(async move {
                                     let _ = crate::tauri_bridge::store_set(
-                                        "auto_generate_titles",
-                                        if next { "true" } else { "false" },
-                                    )
-                                    .await;
-                                });
-                            },
-                            div {
-                                style: "position: absolute; top: 1px; left: 1px; width: 20px; height: 20px; border-radius: 50%; background: var(--bg); transform: {knob}; transition: transform 0.15s ease;",
-                            }
-                        }
-                    }
-                }
-            }
-            /* Summarize Agent Titles */
-            div {
-                style: "display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0;",
-                div {
-                    style: "display: flex; flex-direction: column; gap: 4px; min-width: 0;",
-                    div {
-                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
-                        "Summarize agent titles via LLM"
-                    }
-                    div {
-                        style: "font-size: var(--text-xs); color: var(--textMuted);",
-                        "Send first prompt to the configured LLM to get a 2-3 word summary. One API call per new session."
-                    }
-                }
-                {
-                    let enabled = ui_state.read().summarize_agent_titles;
-                    let bg = if enabled { "var(--accent)" } else { "var(--bgTertiary)" };
-                    let knob = if enabled { "translateX(20px)" } else { "translateX(0px)" };
-                    rsx! {
-                        button {
-                            style: "position: relative; width: 44px; height: 24px; border-radius: 999px; border: 1px solid var(--border); background: {bg}; cursor: pointer; padding: 0; flex-shrink: 0; transition: background 0.15s ease;",
-                            onclick: move |_| {
-                                let next = !ui_state.read().summarize_agent_titles;
-                                ui_state.write().summarize_agent_titles = next;
-                                spawn(async move {
-                                    let _ = crate::tauri_bridge::store_set(
-                                        "summarize_agent_titles",
+                                        "smart_pane_titles",
                                         if next { "true" } else { "false" },
                                     )
                                     .await;
