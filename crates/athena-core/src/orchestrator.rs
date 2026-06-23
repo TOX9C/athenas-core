@@ -253,9 +253,11 @@ fn validate_base_url(url: &str) -> Result<(), OrchestratorError> {
     // loopback / private address, so an API key is never sent in cleartext
     // over the public internet — but local LLM servers (LM Studio, Ollama,
     // vLLM, …) documented as `http://localhost:1234/v1` still work.
-    let (scheme, _rest) = url
-        .split_once("://")
-        .ok_or_else(|| OrchestratorError::Generic("Base URL must include a scheme (https:// or http://)".to_string()))?;
+    let (scheme, _rest) = url.split_once("://").ok_or_else(|| {
+        OrchestratorError::Generic(
+            "Base URL must include a scheme (https:// or http://)".to_string(),
+        )
+    })?;
     let scheme = scheme.to_ascii_lowercase();
     if scheme != "https" && scheme != "http" {
         return Err(OrchestratorError::Generic(format!(
@@ -380,6 +382,9 @@ pub struct AthenaOrchestrator {
     current_session_id: Arc<parking_lot::Mutex<Option<String>>>,
     tool_executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>,
     http_client: reqwest::Client,
+    /// Base URL for the Anthropic Messages API. Overridable in tests so the
+    /// LLM calls can be mocked with wiremock.
+    anthropic_base_url: String,
     provider_config: Arc<parking_lot::Mutex<Option<ProviderConfig>>>,
     rate_limiter: RateLimiter,
     /// Reference to the output buffer for reading agent pane state.
@@ -422,6 +427,7 @@ impl AthenaOrchestrator {
                 .timeout(Duration::from_secs(120))
                 .build()
                 .expect("Failed to build HTTP client"),
+            anthropic_base_url: "https://api.anthropic.com/v1".to_string(),
             provider_config: Arc::new(parking_lot::Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
             output_buffer: None,
@@ -432,6 +438,16 @@ impl AthenaOrchestrator {
             kv_store: None,
             snapshot_cache: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Test-only constructor that points the Anthropic base URL at a mock
+    /// server (e.g. wiremock). Not compiled into release paths that matter,
+    /// but available to `#[cfg(test)]` callers.
+    #[cfg(test)]
+    pub fn new_for_test(anthropic_base_url: String) -> Self {
+        let mut orch = Self::new();
+        orch.anthropic_base_url = anthropic_base_url;
+        orch
     }
 
     /// Create an orchestrator with service references for building
@@ -453,6 +469,7 @@ impl AthenaOrchestrator {
                 .timeout(Duration::from_secs(120))
                 .build()
                 .expect("Failed to build HTTP client"),
+            anthropic_base_url: "https://api.anthropic.com/v1".to_string(),
             provider_config: Arc::new(parking_lot::Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000),
             output_buffer: Some(output_buffer),
@@ -480,6 +497,7 @@ impl AthenaOrchestrator {
                 .timeout(Duration::from_secs(120))
                 .build()
                 .expect("Failed to build HTTP client"),
+            anthropic_base_url: "https://api.anthropic.com/v1".to_string(),
             provider_config: Arc::new(parking_lot::Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
             output_buffer: None,
@@ -751,10 +769,7 @@ impl AthenaOrchestrator {
         }
         if let Some(ref ac) = self.agent_comms {
             let sessions = ac.get_agent_sessions();
-            let scoped: Vec<_> = sessions
-                .iter()
-                .filter(|s| in_scope(&s.agent_id))
-                .collect();
+            let scoped: Vec<_> = sessions.iter().filter(|s| in_scope(&s.agent_id)).collect();
             if !scoped.is_empty() {
                 has_agents = true;
                 for s in scoped {
@@ -908,18 +923,29 @@ impl AthenaOrchestrator {
     /// Send a one-shot request to the configured LLM to summarize a prompt
     /// into a short (2–3 word) title. Does NOT touch conversation history.
     pub async fn summarize_title(&self, raw_prompt: &str) -> Result<String, OrchestratorError> {
-        const SYSTEM: &str = "You summarize prompts into 2-3 word titles. Output ONLY the title, no quotes.";
+        const SYSTEM: &str =
+            "You summarize prompts into 2-3 word titles. Output ONLY the title, no quotes.";
         let prompt = format!("Summarize in 2-3 words: {}", raw_prompt);
 
         let config = { self.provider_config.lock().as_ref().cloned() };
 
         let (provider, api_key, model, base_url) = match config {
-            Some(c) => (c.provider.clone(), c.api_key().clone(), c.model.clone(), c.base_url.clone()),
+            Some(c) => (
+                c.provider.clone(),
+                c.api_key().clone(),
+                c.model.clone(),
+                c.base_url.clone(),
+            ),
             None => {
                 let api_key = std::env::var("ANTHROPIC_API_KEY")
                     .ok()
                     .ok_or(OrchestratorError::MissingApiKey)?;
-                (LLMProvider::Anthropic, secrecy::SecretString::from(api_key), DEFAULT_ANTHROPIC_MODEL.to_string(), None)
+                (
+                    LLMProvider::Anthropic,
+                    secrecy::SecretString::from(api_key),
+                    DEFAULT_ANTHROPIC_MODEL.to_string(),
+                    None,
+                )
             }
         };
 
@@ -934,7 +960,7 @@ impl AthenaOrchestrator {
                     "messages": [{"role": "user", "content": prompt}]
                 });
                 let response = client
-                    .post("https://api.anthropic.com/v1/messages")
+                    .post(format!("{}/messages", self.anthropic_base_url))
                     .header("x-api-key", api_key.expose_secret())
                     .header("anthropic-version", ANTHROPIC_VERSION)
                     .header("Content-Type", "application/json")
@@ -945,11 +971,19 @@ impl AthenaOrchestrator {
                 if !response.status().is_success() {
                     let status = response.status();
                     let err_text = response.text().await.unwrap_or_default();
-                    return Err(OrchestratorError::Generic(format!("Anthropic API error {}: {}", status, err_text)));
+                    return Err(OrchestratorError::Generic(format!(
+                        "Anthropic API error {}: {}",
+                        status, err_text
+                    )));
                 }
                 let json: serde_json::Value = response.json().await?;
-                let content = json["content"].as_array().ok_or_else(|| OrchestratorError::Generic("Invalid Anthropic response: no content array".to_string()))?;
-                let summary = content.iter()
+                let content = json["content"].as_array().ok_or_else(|| {
+                    OrchestratorError::Generic(
+                        "Invalid Anthropic response: no content array".to_string(),
+                    )
+                })?;
+                let summary = content
+                    .iter()
                     .filter(|b| b["type"].as_str() == Some("text"))
                     .map(|b| b["text"].as_str().unwrap_or(""))
                     .collect::<Vec<_>>()
@@ -962,7 +996,9 @@ impl AthenaOrchestrator {
                 let url = match &provider {
                     LLMProvider::NvidiaNim => "https://integrate.api.nvidia.com/v1".to_string(),
                     LLMProvider::OpenAI => "https://api.openai.com/v1".to_string(),
-                    LLMProvider::Lmstudio => base_url.unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
+                    LLMProvider::Lmstudio => {
+                        base_url.unwrap_or_else(|| "http://localhost:1234/v1".to_string())
+                    }
                     _ => unreachable!(),
                 };
                 let body = serde_json::json!({
@@ -976,7 +1012,10 @@ impl AthenaOrchestrator {
                 });
                 let response = client
                     .post(format!("{}/chat/completions", url))
-                    .header("Authorization", format!("Bearer {}", api_key.expose_secret()))
+                    .header(
+                        "Authorization",
+                        format!("Bearer {}", api_key.expose_secret()),
+                    )
                     .header("Content-Type", "application/json")
                     .json(&body)
                     .send()
@@ -985,7 +1024,10 @@ impl AthenaOrchestrator {
                 if !response.status().is_success() {
                     let status = response.status();
                     let err_text = response.text().await.unwrap_or_default();
-                    return Err(OrchestratorError::Generic(format!("OpenAI API error {}: {}", status, err_text)));
+                    return Err(OrchestratorError::Generic(format!(
+                        "OpenAI API error {}: {}",
+                        status, err_text
+                    )));
                 }
                 let json: serde_json::Value = response.json().await?;
                 let summary = json["choices"][0]["message"]["content"]
@@ -1597,7 +1639,6 @@ mod tests {
         );
     }
 
-
     /// The first call to a fresh limiter must not block — it acquires the
     /// single permit immediately and proceeds. Subsequent calls arriving
     /// within the interval must wait for the spawned refiller task to
@@ -1761,7 +1802,7 @@ mod tests {
         assert!(validate_base_url("ftp://api.openai.com/v1").is_err());
         assert!(validate_base_url("api.openai.com").is_err()); // no scheme
         assert!(validate_base_url("https://").is_err()); // no host
-        // Single-label non-loopback host: almost certainly a typo.
+                                                         // Single-label non-loopback host: almost certainly a typo.
         assert!(validate_base_url("https://internalhost/v1").is_err());
     }
 }
