@@ -71,17 +71,31 @@ pub fn custom_agent_process_name(is_claude: bool) -> Option<&'static str> {
 
 /// Build the set of resume commands available for a captured Claude session id.
 ///
-/// Always includes the plain `claude --resume <id>`. For each custom agent
-/// marked `is_claude`, also appends `<agent.command> --resume <id>` — the
-/// agent's extra flags (e.g. `--model sonnet`) are preserved and `--resume
-/// <id>` appended, since the user wants to choose which variant to resume
-/// with. Deduped; returns at least one entry when called with a real id.
+/// The priority agent (if any) is placed first so it appears as the default
+/// selection in the dropdown. Then the plain `claude --resume <id>` is
+/// included, followed by all other non-priority `is_claude` aliases. For each
+/// custom agent marked `is_claude`, the command's extra flags (e.g. `--model
+/// sonnet`) are preserved and `--resume <id>` appended. Deduped; returns at
+/// least one entry when called with a real id.
 pub fn claude_resume_variants(resume_id: &str, claude_aliases: &[CustomAgent]) -> Vec<String> {
-    let mut variants: Vec<String> = vec![format!("claude --resume {}", resume_id)];
-    for agent in claude_aliases.iter().filter(|a| a.is_claude) {
-        // The command already includes `claude` plus any extra flags; just
-        // append `--resume <id>`. Strip a trailing `;` (the capture path adds
-        // one) so we don't end up with `claude ...; --resume <id>`.
+    let mut variants: Vec<String> = vec![];
+
+    // 1. Priority agent first (default selection)
+    if let Some(agent) = claude_aliases.iter().find(|a| a.is_claude && a.priority) {
+        let base = agent.command.trim().trim_end_matches(';').trim();
+        if !base.is_empty() {
+            variants.push(format!("{} --resume {}", base, resume_id));
+        }
+    }
+
+    // 2. Plain claude ( deduplicated against priority if same )
+    let plain = format!("claude --resume {}", resume_id);
+    if !variants.contains(&plain) {
+        variants.push(plain);
+    }
+
+    // 3. Remaining non-priority is_claude aliases
+    for agent in claude_aliases.iter().filter(|a| a.is_claude && !a.priority) {
         let base = agent.command.trim().trim_end_matches(';').trim();
         if base.is_empty() {
             continue;
@@ -91,6 +105,7 @@ pub fn claude_resume_variants(resume_id: &str, claude_aliases: &[CustomAgent]) -
             variants.push(variant);
         }
     }
+
     variants
 }
 
@@ -131,6 +146,7 @@ mod tests {
             alias: alias.to_string(),
             command: command.to_string(),
             is_claude,
+            priority: false,
         }
     }
 
@@ -187,5 +203,59 @@ mod tests {
     fn custom_agent_process_name_reflects_is_claude() {
         assert_eq!(custom_agent_process_name(true), Some("claude"));
         assert_eq!(custom_agent_process_name(false), None);
+    }
+
+    #[test]
+    fn priority_agent_appears_first() {
+        let aliases = [
+            agent("a1", "Sonnet", "claude --model sonnet", true),
+            agent("a2", "Opus", "claude --model opus", true),
+        ];
+        // Mark Sonnet as priority
+        let mut aliases = aliases;
+        aliases[0].priority = true;
+
+        let v = claude_resume_variants(ID, &aliases);
+        assert_eq!(v[0], format!("claude --model sonnet --resume {}", ID));
+        assert_eq!(v[1], format!("claude --resume {}", ID));
+        assert_eq!(v[2], format!("claude --model opus --resume {}", ID));
+    }
+
+    #[test]
+    fn priority_agent_deduped_when_same_as_plain_claude() {
+        // Plain claude command as priority — should not duplicate
+        let aliases = [agent("a1", "Plain", "claude", true)];
+        let mut aliases = aliases;
+        aliases[0].priority = true;
+
+        let v = claude_resume_variants(ID, &aliases);
+        assert_eq!(v, vec![format!("claude --resume {}", ID)]);
+    }
+
+    #[test]
+    fn non_priority_agents_appear_after_priority_and_plain() {
+        let aliases = [
+            agent("a1", "Sonnet", "claude --model sonnet", true), // not priority
+            agent("a2", "Opus", "claude --model opus", true),     // priority
+        ];
+        let mut aliases = aliases;
+        aliases[1].priority = true;
+
+        let v = claude_resume_variants(ID, &aliases);
+        assert_eq!(v[0], format!("claude --model opus --resume {}", ID));
+        assert_eq!(v[1], format!("claude --resume {}", ID));
+        assert_eq!(v[2], format!("claude --model sonnet --resume {}", ID));
+    }
+
+    #[test]
+    fn no_priority_agent_falls_back_to_plain_claude_first() {
+        let aliases = [
+            agent("a1", "Sonnet", "claude --model sonnet", true),
+            agent("a2", "Opus", "claude --model opus", true),
+        ];
+        let v = claude_resume_variants(ID, &aliases);
+        assert_eq!(v[0], format!("claude --resume {}", ID));
+        assert!(v.contains(&format!("claude --model sonnet --resume {}", ID)));
+        assert!(v.contains(&format!("claude --model opus --resume {}", ID)));
     }
 }

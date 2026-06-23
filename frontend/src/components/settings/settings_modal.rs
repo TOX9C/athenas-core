@@ -608,6 +608,7 @@ fn AgentsSettings() -> Element {
     let mut new_alias = use_signal(String::new);
     let mut new_command = use_signal(String::new);
     let mut new_is_claude = use_signal(|| false);
+    let mut new_priority = use_signal(|| false);
     let mut show_form = use_signal(|| false);
 
     // Read agents into local variable for the render
@@ -644,7 +645,7 @@ fn AgentsSettings() -> Element {
                     }
                     button {
                         class: "btn-secondary btn-sm",
-                        onclick: move |_| { show_form.set(true); new_alias.set(String::new()); new_command.set(String::new()); new_is_claude.set(false); },
+                        onclick: move |_| { show_form.set(true); new_alias.set(String::new()); new_command.set(String::new()); new_is_claude.set(false); new_priority.set(false); },
                         "+ Add Agent"
                     }
                 }
@@ -707,6 +708,37 @@ fn AgentsSettings() -> Element {
                                 }
                             }
                         }
+                        // Set as Priority — only relevant when the agent is treated as Claude.
+                        if new_is_claude() {
+                            div {
+                                style: "display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; user-select: none; padding: 10px 0 2px 0; margin-top: 4px; border-top: 1px solid var(--border);",
+                                onclick: move |_| new_priority.set(!new_priority()),
+                                div {
+                                    style: "display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-right: 8px;",
+                                    span {
+                                        style: "font-family: var(--font-ui); font-size: var(--text-sm); font-weight: 600; color: var(--text);",
+                                        "Set as Priority"
+                                    }
+                                    span {
+                                        style: "font-family: var(--font-ui); font-size: var(--text-xs); color: var(--textDim);",
+                                        "Default resume option for Claude sessions"
+                                    }
+                                }
+                                div {
+                                    style: format!(
+                                        "flex-shrink: 0; width: 48px; height: 28px; border-radius: var(--radius-pill); background: {}; border: 1px solid var(--border); position: relative; box-shadow: inset 0 1px 2px rgba(0,0,0,0.12); transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);",
+                                        if new_priority() { "var(--accent)" } else { "var(--bgTertiary)" },
+                                    ),
+                                    div {
+                                        style: format!(
+                                            "position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: {}; transform: translateX({}); box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); will-change: transform;",
+                                            if new_priority() { "var(--text)" } else { "var(--textDim)" },
+                                            if new_priority() { "22px" } else { "0px" },
+                                        ),
+                                    }
+                                }
+                            }
+                        }
                         div {
                             style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;",
                             button {
@@ -726,13 +758,21 @@ fn AgentsSettings() -> Element {
                                     let cmd = new_command.read().trim().to_string();
                                     if alias.is_empty() || cmd.is_empty() { return; }
                                     let is_claude = new_is_claude();
+                                    let priority = new_priority();
                                     let new_agent = crate::types::workspace::CustomAgent {
                                         id: format!("custom-{}", js_sys::Date::now() as u64),
                                         alias: alias,
                                         command: cmd,
                                         is_claude,
+                                        priority,
                                     };
                                     let mut ag = ui_state.read().custom_agents.clone();
+                                    // Only one agent can be priority at a time
+                                    if priority {
+                                        for a in &mut ag {
+                                            a.priority = false;
+                                        }
+                                    }
                                     ag.push(new_agent);
                                     let agc = ag.clone();
                                     ui_state.write().custom_agents = ag;
@@ -850,21 +890,61 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
                             "Claude"
                         }
                     }
+                    // Priority badge — shown when this agent is the default resume option.
+                    if props.agent.priority {
+                        span {
+                            class: "badge",
+                            style: "background: var(--accent); color: var(--bg); border: 1px solid var(--accent); font-weight: 700;",
+                            title: "Default option in the resume banner",
+                            "★ Priority"
+                        }
+                    }
                 }
-                button {
-                    class: "btn-ghost btn-sm",
-                    onclick: move |_| {
-                        let mut ag = ui_state.read().custom_agents.clone();
-                        ag.retain(|a| a.id != agent_id_for_delete);
-                        let agc = ag.clone();
-                        ui_state.write().custom_agents = ag;
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(json) = serde_json::to_string(&agc) {
-                                let _ = crate::tauri_bridge::store_set("custom_agents", &json).await;
+                div {
+                    style: "display: flex; align-items: center; gap: 6px;",
+                    if props.agent.is_claude {
+                        button {
+                            class: "btn-ghost btn-sm",
+                            onclick: move |_| {
+                                let mut ag = ui_state.read().custom_agents.clone();
+                                let target_id = id.clone();
+                                for a in &mut ag {
+                                    if a.id == target_id {
+                                        a.priority = !a.priority;
+                                    } else if a.priority {
+                                        a.priority = false;
+                                    }
+                                }
+                                let agc = ag.clone();
+                                ui_state.write().custom_agents = ag;
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(json) = serde_json::to_string(&agc) {
+                                        let _ = crate::tauri_bridge::store_set("custom_agents", &json).await;
+                                    }
+                                });
+                            },
+                            if props.agent.priority {
+                                "Remove Priority"
+                            } else {
+                                "Make Priority"
                             }
-                        });
-                    },
-                    "Delete"
+                        }
+                    }
+                    button {
+                        class: "btn-ghost btn-sm",
+                        onclick: move |_| {
+                            let mut ag = ui_state.read().custom_agents.clone();
+                            ag.retain(|a| a.id != agent_id_for_delete);
+                            let agc = ag.clone();
+                            ui_state.write().custom_agents = ag;
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(json) = serde_json::to_string(&agc) {
+                                    let _ = crate::tauri_bridge::store_set("custom_agents", &json).await;
+                                }
+                            });
+                        },
+                        "Delete"
+                    }
                 }
             }
             div {

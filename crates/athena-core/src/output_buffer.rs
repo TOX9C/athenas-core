@@ -90,7 +90,8 @@ pub enum OutputBufferError {
 pub struct OutputBuffer {
     buffers: Arc<RwLock<HashMap<String, PaneBuffer>>>,
     event_emitter:
-        Arc<parking_lot::Mutex<Option<Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,    exit_snapshots: Arc<RwLock<HashMap<String, Vec<OutputLine>>>>,
+        Arc<parking_lot::Mutex<Option<Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    exit_snapshots: Arc<RwLock<HashMap<String, Vec<OutputLine>>>>,
 }
 
 impl std::fmt::Debug for OutputBuffer {
@@ -119,7 +120,9 @@ impl Default for OutputBuffer {
 }
 
 impl OutputBuffer {
-    pub fn new() -> Self {        Self {            buffers: Arc::new(RwLock::new(HashMap::new())),
+    pub fn new() -> Self {
+        Self {
+            buffers: Arc::new(RwLock::new(HashMap::new())),
             event_emitter: Arc::new(parking_lot::Mutex::new(None)),
             exit_snapshots: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -211,9 +214,7 @@ impl OutputBuffer {
         if buf.total_bytes > MAX_TOTAL_BYTES_PER_PANE {
             let mut drop_count = 0usize;
             let mut projected = buf.total_bytes;
-            while drop_count < buf.lines.len()
-                && projected > MAX_TOTAL_BYTES_PER_PANE
-            {
+            while drop_count < buf.lines.len() && projected > MAX_TOTAL_BYTES_PER_PANE {
                 projected = projected.saturating_sub(buf.lines[drop_count].text.len());
                 drop_count += 1;
             }
@@ -573,22 +574,17 @@ impl OutputBuffer {
         let buffers = match self.buffers.read() {
             Ok(guard) => guard,
             Err(_) => {
-                log::error!(
-                    "OutputBuffer: lock poisoned while capturing exit snapshot"
-                );
+                log::error!("OutputBuffer: lock poisoned while capturing exit snapshot");
                 return;
             }
         };
         if let Some(buf) = buffers.get(pane_id) {
-            let snapshot: Vec<OutputLine> =
-                buf.lines.iter().rev().take(n).rev().cloned().collect();
+            let snapshot: Vec<OutputLine> = buf.lines.iter().rev().take(n).rev().cloned().collect();
             drop(buffers);
             let mut exit_snapshots = match self.exit_snapshots.write() {
                 Ok(guard) => guard,
                 Err(_) => {
-                    log::error!(
-                        "OutputBuffer: lock poisoned while storing exit snapshot"
-                    );
+                    log::error!("OutputBuffer: lock poisoned while storing exit snapshot");
                     return;
                 }
             };
@@ -601,9 +597,7 @@ impl OutputBuffer {
         let exit_snapshots = match self.exit_snapshots.read() {
             Ok(guard) => guard,
             Err(_) => {
-                log::error!(
-                    "OutputBuffer: lock poisoned while getting exit snapshot"
-                );
+                log::error!("OutputBuffer: lock poisoned while getting exit snapshot");
                 return Vec::new();
             }
         };

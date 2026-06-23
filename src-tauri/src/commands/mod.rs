@@ -76,7 +76,10 @@ fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
     })?;
     log::debug!(
         "[workspace_root] current_dir={:?} exe={:?} resolved={:?} canonicalized={:?}",
-        raw, exe, resolved, canon
+        raw,
+        exe,
+        resolved,
+        canon
     );
     Ok(canon)
 }
@@ -116,14 +119,17 @@ fn load_trusted_roots(store: &athena_store::KeyValueStore) -> Vec<std::path::Pat
         Some(list) => list
             .into_iter()
             .filter_map(|p| {
-                std::path::PathBuf::from(&p).canonicalize().map_err(|e| {
-                    log::debug!(
-                        "[trusted_roots] skipping '{}': canonicalize failed: {}",
-                        p,
+                std::path::PathBuf::from(&p)
+                    .canonicalize()
+                    .map_err(|e| {
+                        log::debug!(
+                            "[trusted_roots] skipping '{}': canonicalize failed: {}",
+                            p,
+                            e
+                        );
                         e
-                    );
-                    e
-                }).ok()
+                    })
+                    .ok()
             })
             .collect(),
         None => Vec::new(),
@@ -177,9 +183,9 @@ fn validate_path_exists(
     if !path.exists() {
         return Err(CommandError::NotFound("Path does not exist".to_string()));
     }
-    let canonicalized = path.canonicalize().map_err(|e| {
-        CommandError::Internal(format!("Failed to canonicalize path: {}", e))
-    })?;
+    let canonicalized = path
+        .canonicalize()
+        .map_err(|e| CommandError::Internal(format!("Failed to canonicalize path: {}", e)))?;
     if !is_within_any_root(&canonicalized, &roots) {
         // Do NOT echo the canonicalized workspace root or the requested path
         // back to the frontend — it confirms on-disk layout (user home
@@ -211,16 +217,16 @@ fn validate_path(
             .join(path)
     };
     let canonical = if full_path.exists() {
-        full_path.canonicalize().map_err(|e| {
-            CommandError::Internal(format!("Failed to canonicalize path: {}", e))
-        })?
+        full_path
+            .canonicalize()
+            .map_err(|e| CommandError::Internal(format!("Failed to canonicalize path: {}", e)))?
     } else {
         let parent = full_path.parent().ok_or_else(|| {
             CommandError::InvalidInput(format!("path {:?} has no parent", full_path))
         })?;
-        let canonical_parent = parent.canonicalize().map_err(|e| {
-            CommandError::Internal(format!("Failed to canonicalize parent: {}", e))
-        })?;
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|e| CommandError::Internal(format!("Failed to canonicalize parent: {}", e)))?;
         match full_path.file_name() {
             Some(name) => canonical_parent.join(name),
             None => {
@@ -292,7 +298,10 @@ fn validate_shell(shell: &str) -> Result<std::path::PathBuf, String> {
     // Using canonicalize (not lexical check) so symlinks are resolved: a
     // symlink in /bin pointing to /Users/x/evil is followed and then rejected
     // because the target isn't under /bin or /usr/bin.
-    let allowed_ancestors = [std::path::Path::new("/bin"), std::path::Path::new("/usr/bin")];
+    let allowed_ancestors = [
+        std::path::Path::new("/bin"),
+        std::path::Path::new("/usr/bin"),
+    ];
     let ok = allowed_ancestors
         .iter()
         .any(|allowed| canon.starts_with(allowed));
@@ -604,7 +613,10 @@ pub async fn workspace_add_trusted_root(
         return Ok(());
     }
     roots.push(canonical);
-    let strs: Vec<String> = roots.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let strs: Vec<String> = roots
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     state
         .store
         .set_sync(TRUSTED_ROOTS_KEY, &strs)
@@ -627,11 +639,10 @@ pub async fn workspace_remove_trusted_root(
     // revoke trust, so fall back to the literal path string comparison against
     // whatever was stored.
     let dir_for_task = dir.clone();
-    let canonical = tokio::task::spawn_blocking(move || {
-        std::path::Path::new(&dir_for_task).canonicalize()
-    })
-    .await
-    .map_err(|e| format!("canonicalize task failed: {e}"))?;
+    let canonical =
+        tokio::task::spawn_blocking(move || std::path::Path::new(&dir_for_task).canonicalize())
+            .await
+            .map_err(|e| format!("canonicalize task failed: {e}"))?;
     let canonical = match canonical {
         Ok(c) => Some(c),
         Err(_) => None, // directory gone — best-effort literal remove below
@@ -651,7 +662,10 @@ pub async fn workspace_remove_trusted_root(
     if roots.len() == before {
         return Ok(()); // not present — no-op
     }
-    let strs: Vec<String> = roots.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let strs: Vec<String> = roots
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     state
         .store
         .set_sync(TRUSTED_ROOTS_KEY, &strs)
@@ -677,7 +691,9 @@ pub async fn fs_read_file(
     path: String,
 ) -> Result<String, CommandError> {
     if !state.rate_limiter.check("fs_read_file") {
-        return Err(CommandError::InvalidInput("Rate limit exceeded. Please wait a moment.".to_string()));
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
     }
     let path_ref = std::path::Path::new(&path);
     let validated = validate_path_exists(&state.store, path_ref)?;
@@ -708,10 +724,7 @@ struct DirEntry {
 
 /// List the contents of a directory, sorted with directories first.
 #[tauri::command]
-pub async fn fs_list_dir(
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<String, CommandError> {
+pub async fn fs_list_dir(state: State<'_, AppState>, path: String) -> Result<String, CommandError> {
     let path_ref = std::path::Path::new(&path);
     let validated = validate_path_exists(&state.store, path_ref)?;
     tokio::task::spawn_blocking(move || {
@@ -747,7 +760,9 @@ pub async fn fs_write_file(
     content: String,
 ) -> Result<(), CommandError> {
     if !state.rate_limiter.check("fs_write_file") {
-        return Err(CommandError::InvalidInput("Rate limit exceeded. Please wait a moment.".to_string()));
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
     }
     if content.len() > caps::MAX_FS_WRITE_BYTES {
         return Err(CommandError::InvalidInput(format!(
@@ -768,8 +783,10 @@ pub async fn fs_write_file(
             }
             _ => std::env::temp_dir().join(format!(".tmp-write-{}", uuid::Uuid::new_v4())),
         };
-        std::fs::write(&temp_path, content_clone).map_err(|e| CommandError::Internal(e.to_string()))?;
-        std::fs::rename(&temp_path, &validated_clone).map_err(|e| CommandError::Internal(e.to_string()))
+        std::fs::write(&temp_path, content_clone)
+            .map_err(|e| CommandError::Internal(e.to_string()))?;
+        std::fs::rename(&temp_path, &validated_clone)
+            .map_err(|e| CommandError::Internal(e.to_string()))
     })
     .await
     .map_err(|e| CommandError::Internal(format!("Write task failed: {e}")))?
@@ -794,7 +811,9 @@ pub async fn fs_read_file_as_base64(
     path: String,
 ) -> Result<String, CommandError> {
     if !state.rate_limiter.check("fs_read_file_as_base64") {
-        return Err(CommandError::InvalidInput("Rate limit exceeded. Please wait a moment.".to_string()));
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
     }
     use base64::Engine;
     let path_ref = std::path::Path::new(&path);
@@ -897,8 +916,7 @@ pub async fn fs_search_files(
     path: String,
 ) -> Result<String, String> {
     let path_ref = std::path::Path::new(&path);
-    let validated = validate_path_exists(&state.store, path_ref)
-        .map_err(|e| e.to_string())?;
+    let validated = validate_path_exists(&state.store, path_ref).map_err(|e| e.to_string())?;
     let options = athena_core::SearchOptions {
         pattern,
         path: validated.to_string_lossy().to_string(),
@@ -974,11 +992,7 @@ pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, Comm
 
 /// Set a value in the persistent key-value store.
 #[tauri::command]
-pub fn store_set(
-    state: State<'_, AppState>,
-    key: String,
-    value: String,
-) -> Result<(), String> {
+pub fn store_set(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
     caps::validate_key(&key)?;
     // Block writes to sensitive key namespaces from the frontend to prevent
     // key tampering and unauthorized secrets storage.
@@ -999,7 +1013,9 @@ pub fn store_set(
             entry
                 .set_password(&value)
                 .map_err(|e| format!("Failed to store API key in keyring: {}", e))?;
-            log::info!("[store_set] API key saved to OS keyring (service='athena', account='api_key')");
+            log::info!(
+                "[store_set] API key saved to OS keyring (service='athena', account='api_key')"
+            );
             // Remove any legacy plaintext key from the store
             let _ = state.store.delete_sync(&key);
             // Write a lightweight confirmation flag so the frontend can
@@ -1011,14 +1027,19 @@ pub fn store_set(
             let entry = keyring::Entry::new("athena", "api_key")
                 .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
             let _ = entry.delete_credential();
-            log::info!("[store_set] API key removed from OS keyring (service='athena', account='api_key')");
+            log::info!(
+                "[store_set] API key removed from OS keyring (service='athena', account='api_key')"
+            );
             let _ = state.store.delete_sync(&key);
             let _ = state.store.delete_sync("llm.api_key_status");
         }
         return Ok(());
     }
 
-    state.store.set_sync(&key, &value).map_err(|e| e.to_string())
+    state
+        .store
+        .set_sync(&key, &value)
+        .map_err(|e| e.to_string())
 }
 
 /// Check whether a key exists in the persistent key-value store.
@@ -1726,10 +1747,7 @@ fn scrape_codex_task() -> Option<String> {
 /// Get the active foreground process and, if it's a known agent, try to
 /// extract its current task title from the agent's own state files.
 #[tauri::command]
-pub async fn pty_agent_info(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<String, String> {
+pub async fn pty_agent_info(state: State<'_, AppState>, id: String) -> Result<String, String> {
     let session_manager = state.session_manager.lock().await;
     let session = session_manager.get_session(&id).await;
     drop(session_manager);
@@ -1780,7 +1798,10 @@ pub async fn pty_agent_info(
     let process = match output {
         Ok(out) if out.status.success() => {
             let shell_names: std::collections::HashSet<&str> =
-                ["sh", "bash", "zsh", "fish", "csh", "tcsh"].iter().cloned().collect();
+                ["sh", "bash", "zsh", "fish", "csh", "tcsh"]
+                    .iter()
+                    .cloned()
+                    .collect();
 
             let lines: Vec<&str> = std::str::from_utf8(&out.stdout)
                 .unwrap_or("")
@@ -1831,15 +1852,18 @@ pub async fn pty_agent_info(
     // Try to extract the task title and session metadata from the agent's
     // own state files.
     let (task_title, session_id, timestamp, raw_prompt) = match process.as_str() {
-        "claude" => {
-            match scrape_claude_task() {
-                Some(entry) => {
-                    let raw = entry.display.clone();
-                    (Some(entry.display), Some(entry.session_id), Some(entry.timestamp), Some(raw))
-                }
-                None => (None, None, None, None),
+        "claude" => match scrape_claude_task() {
+            Some(entry) => {
+                let raw = entry.display.clone();
+                (
+                    Some(entry.display),
+                    Some(entry.session_id),
+                    Some(entry.timestamp),
+                    Some(raw),
+                )
             }
-        }
+            None => (None, None, None, None),
+        },
         "codex" => (scrape_codex_task(), None, None, None),
         _ => (None, None, None, None),
     };
@@ -1883,21 +1907,16 @@ pub async fn pty_foreground_process(
 
         let output = tokio::task::spawn_blocking(move || {
             std::process::Command::new("ps")
-                .args(&[
-                    "-o", "command=",
-                    "-g", &pgid.to_string(),
-                ])
+                .args(&["-o", "command=", "-g", &pgid.to_string()])
                 .output()
         })
         .await
         .map_err(|e| e.to_string())?;
 
         match output {
-            Ok(out) if out.status.success() => {
-                Ok(classify_foreground_ps(
-                    std::str::from_utf8(&out.stdout).unwrap_or(""),
-                ))
-            }
+            Ok(out) if out.status.success() => Ok(classify_foreground_ps(
+                std::str::from_utf8(&out.stdout).unwrap_or(""),
+            )),
             _ => Ok("shell".to_string()),
         }
     } else {
@@ -1914,8 +1933,9 @@ const AGENT_FG_NAMES: &[&str] = &["claude", "codex", "opencode", "gemini"];
 /// into an agent/shell label. Returns `"shell"` when only a shell (or nothing
 /// recognizable) is running. Pure over the `ps` stdout so it is unit-testable.
 fn classify_foreground_ps(stdout: &str) -> String {
-    let shell_names: std::collections::HashSet<&str> =
-        ["sh", "bash", "zsh", "fish", "csh", "tcsh"].into_iter().collect();
+    let shell_names: std::collections::HashSet<&str> = ["sh", "bash", "zsh", "fish", "csh", "tcsh"]
+        .into_iter()
+        .collect();
     for line in stdout.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -2134,28 +2154,38 @@ pub async fn athena_chat_with_images(
         .map_err(|e| e.to_string())
 }
 
-/// Summarize a prompt into a short (2–3 word) title using the configured LLM.
-/// Does NOT touch conversation history.
-#[tauri::command]
-pub async fn summarize_agent_title(state: State<'_, AppState>, raw_prompt: String) -> Result<String, String> {
-    // Block obviously sensitive prompts before sending anything.
-    // Use a regex-based approach instead of simple contains() to prevent
-    // trivial bypasses with obfuscation like "p@ssword" or "API_KEY".
+/// Returns true if `raw_prompt` looks like it contains a secret we must not
+/// send to the LLM. Checks plaintext keywords and common l33t-sp34k
+/// substitutions (a=@, o=0, e=3, i=1/!, s=$) so trivial obfuscation does not
+/// bypass it.
+fn prompt_is_sensitive(raw_prompt: &str) -> bool {
     let lowercase = raw_prompt.to_lowercase();
-    // Check for sensitive keywords with optional l33t-sp34k substitutions
-    let sensitive_keywords = [
-        "password", "passw0rd", "p@ssword",
-        "token", "t0ken", "t0k3n",
-        "secret", "s3cret", "s3cr3t",
-        "api_key", "apikey", "api-key", "api_k3y",
-        "authorization", "auth", "4uth",
-        "credential", "cr3dential",
-        "private key", "passphrase", "pin",
+    let plaintext = [
+        "password",
+        "passw0rd",
+        "p@ssword",
+        "token",
+        "t0ken",
+        "t0k3n",
+        "secret",
+        "s3cret",
+        "s3cr3t",
+        "api_key",
+        "apikey",
+        "api-key",
+        "api_k3y",
+        "authorization",
+        "auth",
+        "4uth",
+        "credential",
+        "cr3dential",
+        "private key",
+        "passphrase",
+        "pin",
     ];
-    if sensitive_keywords.iter().any(|&kw| lowercase.contains(kw)) {
-        return Ok("Sensitive prompt".to_string());
+    if plaintext.iter().any(|&kw| lowercase.contains(kw)) {
+        return true;
     }
-    // Normalize common 1337-5p34k substitutions before checking.
     let normalized = lowercase
         .replace('@', "a")
         .replace('0', "o")
@@ -2164,20 +2194,42 @@ pub async fn summarize_agent_title(state: State<'_, AppState>, raw_prompt: Strin
         .replace('!', "i")
         .replace('$', "s");
     let normalized_keywords = [
-        "password", "token", "secret", "api_key", "apikey", "api-key",
-        "authorization", "auth", "credential", "private key", "passphrase", "pin",
+        "password",
+        "token",
+        "secret",
+        "api_key",
+        "apikey",
+        "api-key",
+        "authorization",
+        "auth",
+        "credential",
+        "private key",
+        "passphrase",
+        "pin",
     ];
-    if normalized_keywords.iter().any(|&kw| normalized.contains(kw)) {
+    normalized_keywords.iter().any(|&kw| normalized.contains(kw))
+}
+
+/// Summarize a prompt into a short title using the configured LLM.
+/// Contract:
+/// - `Ok("Sensitive prompt")` — prompt matched the sensitive filter (no LLM call).
+/// - `Ok(title)` — the LLM produced a title.
+/// - `Err(_)` — missing API key OR retries exhausted. The frontend maps this
+///   to a `Failed` title state (empty pill).
+#[tauri::command]
+pub async fn summarize_agent_title(
+    state: State<'_, AppState>,
+    raw_prompt: String,
+) -> Result<String, String> {
+    if prompt_is_sensitive(&raw_prompt) {
         return Ok("Sensitive prompt".to_string());
     }
+
     let orchestrator = Arc::clone(&state.orchestrator);
     match build_provider_config_from_store(&state) {
         Ok(config) => orchestrator.set_provider_config(config),
-        // Title summarization is best-effort — if the user hasn't configured
-        // an API key yet, fall back to a placeholder rather than erroring
-        // (this command runs on every new agent pane and must not block).
         Err(ProviderConfigError::MissingApiKey) => {
-            return Ok("Untitled".to_string());
+            return Err("no api key configured".to_string());
         }
     }
     orchestrator
@@ -2635,8 +2687,7 @@ pub async fn search_code(
     path: String,
 ) -> Result<String, String> {
     let path_ref = std::path::Path::new(&path);
-    let validated = validate_path_exists(&state.store, path_ref)
-        .map_err(|e| e.to_string())?;
+    let validated = validate_path_exists(&state.store, path_ref).map_err(|e| e.to_string())?;
     let options = athena_core::SearchOptions {
         pattern,
         path: validated.to_string_lossy().to_string(),
@@ -2710,7 +2761,10 @@ pub async fn mcp_handle_request(
     {
         Ok(resp) => resp,
         Err(_) => {
-            log::warn!("MCP handle_request timed out after 60s for method {}", req.method);
+            log::warn!(
+                "MCP handle_request timed out after 60s for method {}",
+                req.method
+            );
             athena_core::mcp::JsonRpcResponse {
                 jsonrpc: "2.0".into(),
                 id: req.id.clone(),
@@ -3538,10 +3592,12 @@ pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize
                 .map(|l| l.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            if let Some((prefix, rid)) =
-                athena_core::resume_scanner::scan_text_for_resume_id(&text)
+            if let Some((prefix, rid)) = athena_core::resume_scanner::scan_text_for_resume_id(&text)
             {
-                log::info!("capture_resume_ids_on_exit: captured resume id for pane {}", id);
+                log::info!(
+                    "capture_resume_ids_on_exit: captured resume id for pane {}",
+                    id
+                );
                 let cmd = format!("{} {}", prefix, rid);
                 found_cmds.insert(id.clone(), cmd);
                 found.insert(id.clone(), rid);
@@ -3567,7 +3623,10 @@ pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize
             n
         }
         Err(e) => {
-            log::error!("capture_resume_ids_on_exit: merge into workspaces failed: {}", e);
+            log::error!(
+                "capture_resume_ids_on_exit: merge into workspaces failed: {}",
+                e
+            );
             0
         }
     }
@@ -3669,8 +3728,10 @@ mod tests {
         // After trusting: accepted.
         let mut roots = load_trusted_roots(&store);
         roots.push(canon.clone());
-        let strs: Vec<String> =
-            roots.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let strs: Vec<String> = roots
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         store.set_sync(TRUSTED_ROOTS_KEY, &strs).unwrap();
         assert!(validate_path_exists(&store, &canon).is_ok());
 
@@ -3705,8 +3766,12 @@ mod tests {
             )
             .unwrap();
 
-        let updated =
-            merge_resume_ids_into_workspaces(&store, &ids(&[("pane-a", "new-resume-id")]), &ids(&[])).unwrap();
+        let updated = merge_resume_ids_into_workspaces(
+            &store,
+            &ids(&[("pane-a", "new-resume-id")]),
+            &ids(&[]),
+        )
+        .unwrap();
         assert_eq!(updated, 1);
 
         let json: String = store.get("workspaces").unwrap().unwrap();
@@ -3737,7 +3802,8 @@ mod tests {
             .unwrap();
 
         let updated =
-            merge_resume_ids_into_workspaces(&store, &ids(&[("pane-unknown", "rid")]), &ids(&[])).unwrap();
+            merge_resume_ids_into_workspaces(&store, &ids(&[("pane-unknown", "rid")]), &ids(&[]))
+                .unwrap();
         assert_eq!(updated, 0);
     }
 
@@ -3766,5 +3832,39 @@ mod tests {
             merge_resume_ids_into_workspaces(&store, &ids(&[]), &ids(&[])).unwrap(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod title_command_tests {
+    use super::prompt_is_sensitive;
+
+    #[test]
+    fn sensitive_prompt_blocks_plaintext_variants() {
+        let cases = [
+            "my password is x",
+            "set the API_KEY=..",
+            "a secret token",
+            "auth header here",
+            "credential leak",
+        ];
+        for kw in cases {
+            assert!(prompt_is_sensitive(kw), "expected sensitive: {kw}");
+        }
+    }
+
+    #[test]
+    fn sensitive_prompt_blocks_l33t_variants() {
+        let cases = ["p@ssword", "t0k3n", "API_K3Y", "s3cret"];
+        for kw in cases {
+            assert!(prompt_is_sensitive(kw), "expected l33t-sensitive: {kw}");
+        }
+    }
+
+    #[test]
+    fn normal_prompt_passes_filter() {
+        assert!(!prompt_is_sensitive("analyze the codebase"));
+        assert!(!prompt_is_sensitive("what rust version is this"));
+        assert!(!prompt_is_sensitive("hi"));
     }
 }

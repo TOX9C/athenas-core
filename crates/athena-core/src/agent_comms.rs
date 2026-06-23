@@ -665,13 +665,7 @@ fn handle_connection(
             continue;
         }
 
-        handle_incoming_message(
-            &stream,
-            msg,
-            &sessions,
-            &pending_input,
-            &event_emitter,
-        );
+        handle_incoming_message(&stream, msg, &sessions, &pending_input, &event_emitter);
     }
 
     cleanup_connection(&stream, &sessions, &pending_input, &event_emitter);
@@ -1487,9 +1481,7 @@ mod tests {
             "method": "initialize",
             "params": { "data": { "token": token, "agentId": "legit-agent" } }
         });
-        client
-            .write_all(format!("{}\n", init).as_bytes())
-            .unwrap();
+        client.write_all(format!("{}\n", init).as_bytes()).unwrap();
         client.flush().unwrap();
 
         let mut reader = BufReader::new(client.try_clone().unwrap());

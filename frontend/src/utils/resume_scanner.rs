@@ -32,7 +32,9 @@ pub struct ResumeScanner {
 }
 
 impl Default for ResumeScanner {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ResumeScanner {
@@ -200,8 +202,12 @@ mod tests {
     #[test]
     fn plain_line() {
         let mut s = ResumeScanner::new();
-        assert_eq!(s.feed(&format!("Resume this session with:\nclaude --resume {UUID}\n")),
-                   Some(("claude --resume".to_string(), UUID.to_string())));
+        assert_eq!(
+            s.feed(&format!(
+                "Resume this session with:\nclaude --resume {UUID}\n"
+            )),
+            Some(("claude --resume".to_string(), UUID.to_string()))
+        );
     }
 
     #[test]
@@ -212,19 +218,22 @@ mod tests {
         // scan would silently miss the resume id.
         let mut s = ResumeScanner::new();
         let text = format!("\x1b[1mclaude\x1b[0m \x1b[36m--resume\x1b[0m {UUID}\n");
-        assert_eq!(s.feed(&text),
-                   Some(("claude --resume".to_string(), UUID.to_string())));
+        assert_eq!(
+            s.feed(&text),
+            Some(("claude --resume".to_string(), UUID.to_string()))
+        );
     }
 
     #[test]
     fn ansi_around_the_whole_line() {
         // OSC title sequence + colored wrapper — still matches.
         let mut s = ResumeScanner::new();
-        let text = format!(
-            "\x1b]0;claude\x07some preamble\n\x1b[32mclaude --resume {UUID}\x1b[0m\n",
+        let text =
+            format!("\x1b]0;claude\x07some preamble\n\x1b[32mclaude --resume {UUID}\x1b[0m\n",);
+        assert_eq!(
+            s.feed(&text),
+            Some(("claude --resume".to_string(), UUID.to_string()))
         );
-        assert_eq!(s.feed(&text),
-                   Some(("claude --resume".to_string(), UUID.to_string())));
     }
 
     #[test]
@@ -244,8 +253,10 @@ mod tests {
     fn split_across_two_chunks() {
         let mut s = ResumeScanner::new();
         assert_eq!(s.feed("claude --re"), None);
-        assert_eq!(s.feed(&format!("sume {UUID}\n")),
-                   Some(("claude --resume".to_string(), UUID.to_string())));
+        assert_eq!(
+            s.feed(&format!("sume {UUID}\n")),
+            Some(("claude --resume".to_string(), UUID.to_string()))
+        );
     }
 
     #[test]
@@ -253,7 +264,10 @@ mod tests {
         let mut s = ResumeScanner::new();
         let box_chars = "─".repeat(120);
         let text = format!("claude --resume {UUID}\n{box_chars}\n  /help for help\n");
-        assert_eq!(s.feed(&text), Some(("claude --resume".to_string(), UUID.to_string())));
+        assert_eq!(
+            s.feed(&text),
+            Some(("claude --resume".to_string(), UUID.to_string()))
+        );
     }
 
     #[test]
@@ -263,12 +277,16 @@ mod tests {
         let id2 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 
         // First session
-        assert_eq!(s.feed(&format!("claude --resume {id1}\n")),
-                   Some(("claude --resume".to_string(), id1.to_string())));
+        assert_eq!(
+            s.feed(&format!("claude --resume {id1}\n")),
+            Some(("claude --resume".to_string(), id1.to_string()))
+        );
 
         // Second session started later — should overwrite
-        assert_eq!(s.feed(&format!("claude --resume {id2}\n")),
-                   Some(("claude --resume".to_string(), id2.to_string())));
+        assert_eq!(
+            s.feed(&format!("claude --resume {id2}\n")),
+            Some(("claude --resume".to_string(), id2.to_string()))
+        );
     }
 
     #[test]
@@ -278,8 +296,10 @@ mod tests {
         // re-write the store on every PTY chunk for the rest of the
         // session).
         let mut s = ResumeScanner::new();
-        assert_eq!(s.feed(&format!("claude --resume {UUID}\n")),
-                   Some(("claude --resume".to_string(), UUID.to_string())));
+        assert_eq!(
+            s.feed(&format!("claude --resume {UUID}\n")),
+            Some(("claude --resume".to_string(), UUID.to_string()))
+        );
         // Same line still in buffer + more output streaming:
         assert_eq!(s.feed("more output, shell prompt returns\n"), None);
         assert_eq!(s.feed("even more\n"), None);
@@ -295,8 +315,10 @@ mod tests {
     #[test]
     fn codex_variant() {
         let mut s = ResumeScanner::new();
-        assert_eq!(s.feed("codex --resume abc123\n"),
-                   Some(("codex --resume".to_string(), "abc123".to_string())));
+        assert_eq!(
+            s.feed("codex --resume abc123\n"),
+            Some(("codex --resume".to_string(), "abc123".to_string()))
+        );
     }
 
     #[test]
@@ -306,8 +328,10 @@ mod tests {
         let big = "x".repeat(MAX_SCAN_BUFFER + 100);
         s.feed(&big);
         // Old data is dropped, but this just tests it doesn't crash.
-        assert_eq!(s.feed(&format!("claude --resume {UUID}")),
-                   Some(("claude --resume".to_string(), UUID.to_string())));
+        assert_eq!(
+            s.feed(&format!("claude --resume {UUID}")),
+            Some(("claude --resume".to_string(), UUID.to_string()))
+        );
     }
 
     /// Realistic end-to-end simulation of a Claude Code exit, fed as the

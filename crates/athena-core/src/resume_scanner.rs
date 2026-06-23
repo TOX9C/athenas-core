@@ -237,9 +237,8 @@ mod tests {
         let mut s = ResumeScanner::new();
         // OSC title-set sequence before the resume line, plus a colored
         // resume line — both must not confuse the scanner.
-        let text = format!(
-            "\x1b]0;claude\x07some preamble\n\x1b[32mclaude --resume {UUID}\x1b[0m\n",
-        );
+        let text =
+            format!("\x1b]0;claude\x07some preamble\n\x1b[32mclaude --resume {UUID}\x1b[0m\n",);
         assert_eq!(
             s.feed(&text),
             Some(("claude --resume".to_string(), UUID.to_string()))
@@ -296,9 +295,7 @@ mod tests {
 
     #[test]
     fn newest_match_wins_when_multiple_present() {
-        let text = format!(
-            "claude --resume older-id-aaaa\nsome mid text\ncodex --resume {UUID}\n"
-        );
+        let text = format!("claude --resume older-id-aaaa\nsome mid text\ncodex --resume {UUID}\n");
         // codex appears last, so it should win regardless of preference order.
         assert_eq!(
             scan_text_for_resume_id(&text),
@@ -312,6 +309,9 @@ mod tests {
         // the scanner accumulates a rolling buffer.
         let mut s = ResumeScanner::new();
         assert_eq!(s.feed("Resume this session with:\nclau"), None);
-        assert_eq!(s.feed(&format!("de --resume {UUID}\n")), Some(("claude --resume".to_string(), UUID.to_string())));
+        assert_eq!(
+            s.feed(&format!("de --resume {UUID}\n")),
+            Some(("claude --resume".to_string(), UUID.to_string()))
+        );
     }
 }

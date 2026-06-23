@@ -18,7 +18,7 @@ use components::right_sidebar::BrowserSurface;
 use components::settings::settings_modal::SettingsModal;
 use components::settings::SettingsPanel;
 use components::shared::icon::{
-    IconAgents, IconFiles, IconGrid, IconPlugins, IconPlus, IconSettings, IconSwarm, IconTerminal,
+    IconAgents, IconAthena, IconFiles, IconGrid, IconPlugins, IconPlus, IconSettings, IconSwarm,
 };
 use components::shared::illustration::OwlMark;
 use components::shared::toast::{provide_toast_store, ToastContainer};
@@ -123,23 +123,18 @@ pub fn App() -> Element {
             let last_call = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
             // Capture unlisten for cleanup. The closure runs for the app
             // lifetime if unlisten is dropped without being called.
-            let _unlisten = crate::tauri_bridge::listen(
-                "tauri://resize",
-                move |_payload| {
-                    let now = js_sys::Date::now();
-                    if now - last_call.get() < 150.0 {
-                        return;
+            let _unlisten = crate::tauri_bridge::listen("tauri://resize", move |_payload| {
+                let now = js_sys::Date::now();
+                if now - last_call.get() < 150.0 {
+                    return;
+                }
+                last_call.set(now);
+                spawn(async move {
+                    if let Ok(maximized) = crate::tauri_bridge::window_is_maximized().await {
+                        is_maximized.set(maximized);
                     }
-                    last_call.set(now);
-                    spawn(async move {
-                        if let Ok(maximized) =
-                            crate::tauri_bridge::window_is_maximized().await
-                        {
-                            is_maximized.set(maximized);
-                        }
-                    });
-                },
-            );
+                });
+            });
         });
     });
 
@@ -222,15 +217,10 @@ pub fn App() -> Element {
                     if dir.is_empty() {
                         continue;
                     }
-                    if let Err(e) =
-                        crate::tauri_bridge::workspace_add_trusted_root(dir).await
-                    {
+                    if let Err(e) = crate::tauri_bridge::workspace_add_trusted_root(dir).await {
                         web_sys::console::warn_1(
-                            &format!(
-                                "[startup] failed to re-trust space dir '{}': {:?}",
-                                dir, e
-                            )
-                            .into(),
+                            &format!("[startup] failed to re-trust space dir '{}': {:?}", dir, e)
+                                .into(),
                         );
                     }
                 }
@@ -260,7 +250,9 @@ pub fn App() -> Element {
     {
         let final_ws = workspace.clone();
         use_effect(move || {
-            let Some(window) = web_sys::window() else { return; };
+            let Some(window) = web_sys::window() else {
+                return;
+            };
             let ws_signal = final_ws.clone();
             let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
                 ws_signal.read().save();
@@ -592,7 +584,7 @@ pub fn App() -> Element {
                             let v = ui_state.read().right_sidebar_open;
                             ui_state.write().right_sidebar_open = !v;
                         },
-                        IconTerminal { size: Some(16), color: Some("currentColor".to_string()) }
+                        IconAthena { size: Some(16), color: Some("currentColor".to_string()) }
                     }
 
                     // Swarm launch

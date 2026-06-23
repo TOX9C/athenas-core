@@ -1,17 +1,19 @@
 use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::components::shared::icon::{
+    IconCheck, IconClose, IconCopy, IconFullscreen, IconMinimize,
+};
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::terminal::{use_terminal_store, TerminalCell, TerminalColor};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType, Space};
 use crate::tauri_bridge::{pty_agent_info, pty_kill, pty_write};
 use crate::types::workspace::CustomAgent;
 use crate::utils::agent_commands::{
-    claude_resume_variants, custom_agent_process_name, agent_process_name, get_agent_color,
+    agent_process_name, claude_resume_variants, custom_agent_process_name, get_agent_color,
     get_agent_label, get_agent_resume_command,
 };
-use crate::components::shared::icon::{IconCheck, IconClose, IconCopy, IconFullscreen, IconMinimize};
-use crate::components::shared::illustration::{EmptyState, EmptyArt};
 
 #[cfg(feature = "xterm")]
 use crate::components::workspace::xterm_mount::XtermMount;
@@ -325,15 +327,12 @@ fn PaneItem(props: PaneItemProps) -> Element {
     // panes, or from resume_id + agent type for agent panes), show a banner
     // so the user can choose to resume the session. The banner auto-hides
     // while the agent is running (only for detectable agent types).
-    let display_resume_cmd = props
-        .resume_cmd
-        .as_ref()
-        .cloned()
-        .or_else(|| {
-            props.resume_id.as_deref().and_then(|id| {
-                get_agent_resume_command(&props.agent_type, id)
-            })
-        });
+    let display_resume_cmd = props.resume_cmd.as_ref().cloned().or_else(|| {
+        props
+            .resume_id
+            .as_deref()
+            .and_then(|id| get_agent_resume_command(&props.agent_type, id))
+    });
 
     // Resolve the custom agent config for a Custom pane — used to decide
     // running-detection and whether this pane is a Claude alias.
@@ -426,8 +425,12 @@ fn PaneItem(props: PaneItemProps) -> Element {
             let poll_pane_id = poll_pane_id.clone();
             let want_process = want_process.clone();
             async move {
-                let Some(want) = want_process else { return; };
-                if !has_resume { return; }
+                let Some(want) = want_process else {
+                    return;
+                };
+                if !has_resume {
+                    return;
+                }
                 loop {
                     if let Ok(info) = pty_agent_info(&poll_pane_id).await {
                         let running = info.foreground_process == want;
@@ -472,7 +475,8 @@ fn PaneItem(props: PaneItemProps) -> Element {
                 title
             } else if props.agent_type == AgentType::Shell
                 && fg_process.as_deref().map_or(true, |p| p == "shell")
-                && ui_state.read().auto_generate_titles {
+                && ui_state.read().auto_generate_titles
+            {
                 crate::utils::pane_names::name_for_pane(&props.pane_id)
             } else {
                 agent_label.to_string()
@@ -491,8 +495,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
         }
     };
     // Show the detected foreground process as a subtle badge when it's meaningful
-    let right_badge = fg_process
-        .filter(|p| p != "shell" && p != &left_label && !p.is_empty());
+    let right_badge = fg_process.filter(|p| p != "shell" && p != &left_label && !p.is_empty());
     let pane_id_for_rename = props.pane_id.clone();
     let space_id_for_rename = props.space_id.clone();
 

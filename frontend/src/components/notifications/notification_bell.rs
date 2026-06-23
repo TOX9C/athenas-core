@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::components::shared::icon::{IconBell, IconClose};
 use crate::stores::notification::{
     add_notification, mark_notification_dismissed, set_notifications, use_notification_store,
     NotificationRecord, NotificationType,
 };
-use crate::components::shared::icon::{IconBell, IconClose};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 

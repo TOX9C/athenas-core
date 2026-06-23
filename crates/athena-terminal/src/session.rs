@@ -39,9 +39,9 @@ fn reap_process_group(pid: nix::unistd::Pid, pgid: nix::unistd::Pid) {
             std::thread::sleep(std::time::Duration::from_millis(10));
             false
         }
-        Ok(_) => true, // Exited / Signaled / etc. — reaped.
+        Ok(_) => true,                   // Exited / Signaled / etc. — reaped.
         Err(nix::Error::ECHILD) => true, // Already reaped elsewhere.
-        Err(_) => true, // Treat other errors as "nothing more to do".
+        Err(_) => true,                  // Treat other errors as "nothing more to do".
     });
     if reaped {
         return;

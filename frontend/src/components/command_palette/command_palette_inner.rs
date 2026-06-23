@@ -459,6 +459,8 @@ mod tests {
         let commands = vec![cmd("term", "New Terminal"), cmd("save", "Save")];
         // "trm" is a subsequence of "new terminal".
         let groups = filter_and_group(&commands, &[], "trm");
-        assert!(groups.iter().any(|g| g.commands.iter().any(|c| c.id == "term")));
+        assert!(groups
+            .iter()
+            .any(|g| g.commands.iter().any(|c| c.id == "term")));
     }
 }

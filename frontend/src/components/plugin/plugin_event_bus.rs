@@ -87,10 +87,21 @@ pub fn provide_plugin_bus_store() {
 #[derive(Debug)]
 enum PluginBusEvent {
     RegistryUpdated(Vec<PluginEntry>),
-    Registered { id: String, name: String, version: String },
-    Enabled { id: String },
-    Disabled { id: String },
-    Error { id: String, error: String },
+    Registered {
+        id: String,
+        name: String,
+        version: String,
+    },
+    Enabled {
+        id: String,
+    },
+    Disabled {
+        id: String,
+    },
+    Error {
+        id: String,
+        error: String,
+    },
     AddEvent(String),
 }
 
@@ -107,69 +118,74 @@ pub fn PluginEventBus() -> Element {
 
     // Dispatcher coroutine: receives events from the Tauri listen callbacks
     // and performs all signal writes inside the reactive runtime.
-    let dispatcher = use_coroutine(move |mut rx: UnboundedReceiver<PluginBusEvent>| async move {
-        let mut plugin_store = plugin_store;
-        let mut toast_store = toast_store;
-        let mut notif_store = notif_store;
-        while let Ok(event) = rx.recv().await {
-            match event {
-                PluginBusEvent::RegistryUpdated(entries) => {
-                    for entry in entries {
+    let dispatcher = use_coroutine(
+        move |mut rx: UnboundedReceiver<PluginBusEvent>| async move {
+            let mut plugin_store = plugin_store;
+            let mut toast_store = toast_store;
+            let mut notif_store = notif_store;
+            while let Ok(event) = rx.recv().await {
+                match event {
+                    PluginBusEvent::RegistryUpdated(entries) => {
+                        for entry in entries {
+                            plugin_store.write().upsert_plugin(
+                                entry.id,
+                                entry.name,
+                                entry.version,
+                                entry.enabled,
+                            );
+                        }
+                    }
+                    PluginBusEvent::Registered { id, name, version } => {
                         plugin_store
                             .write()
-                            .upsert_plugin(entry.id, entry.name, entry.version, entry.enabled);
+                            .upsert_plugin(id.clone(), name.clone(), version, true);
+
+                        let toast = Toast {
+                            id: format!("toast-plugin-{}", chrono::Utc::now().timestamp_millis()),
+                            toast_type: ToastType::Success,
+                            title: "Plugin Connected".to_string(),
+                            message: format!("{} is now connected", name),
+                            duration_ms: 3000,
+                        };
+                        toast_store.write().push(toast);
+
+                        let notif = NotificationRecord {
+                            id: format!("notif-plugin-{}", chrono::Utc::now().timestamp_millis()),
+                            r#type: NotificationType::Success,
+                            title: "Plugin Connected".to_string(),
+                            message: format!("{} is now connected", name),
+                            source: "plugin".to_string(),
+                            read: false,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                            count: 1,
+                        };
+                        add_notification(&mut notif_store, notif);
+                    }
+                    PluginBusEvent::Enabled { id } => {
+                        plugin_store.write().set_plugin_enabled(&id, true);
+                    }
+                    PluginBusEvent::Disabled { id } => {
+                        plugin_store.write().set_plugin_enabled(&id, false);
+                    }
+                    PluginBusEvent::Error { id, error } => {
+                        plugin_store.write().set_plugin_error(&id, error.clone());
+
+                        let toast = Toast {
+                            id: format!("toast-error-{}", chrono::Utc::now().timestamp_millis()),
+                            toast_type: ToastType::Error,
+                            title: "Plugin Error".to_string(),
+                            message: format!("{}: {}", id, error),
+                            duration_ms: 5000,
+                        };
+                        toast_store.write().push(toast);
+                    }
+                    PluginBusEvent::AddEvent(payload) => {
+                        plugin_store.write().add_event(payload);
                     }
                 }
-                PluginBusEvent::Registered { id, name, version } => {
-                    plugin_store
-                        .write()
-                        .upsert_plugin(id.clone(), name.clone(), version, true);
-
-                    let toast = Toast {
-                        id: format!("toast-plugin-{}", chrono::Utc::now().timestamp_millis()),
-                        toast_type: ToastType::Success,
-                        title: "Plugin Connected".to_string(),
-                        message: format!("{} is now connected", name),
-                        duration_ms: 3000,
-                    };
-                    toast_store.write().push(toast);
-
-                    let notif = NotificationRecord {
-                        id: format!("notif-plugin-{}", chrono::Utc::now().timestamp_millis()),
-                        r#type: NotificationType::Success,
-                        title: "Plugin Connected".to_string(),
-                        message: format!("{} is now connected", name),
-                        source: "plugin".to_string(),
-                        read: false,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                        count: 1,
-                    };
-                    add_notification(&mut notif_store, notif);
-                }
-                PluginBusEvent::Enabled { id } => {
-                    plugin_store.write().set_plugin_enabled(&id, true);
-                }
-                PluginBusEvent::Disabled { id } => {
-                    plugin_store.write().set_plugin_enabled(&id, false);
-                }
-                PluginBusEvent::Error { id, error } => {
-                    plugin_store.write().set_plugin_error(&id, error.clone());
-
-                    let toast = Toast {
-                        id: format!("toast-error-{}", chrono::Utc::now().timestamp_millis()),
-                        toast_type: ToastType::Error,
-                        title: "Plugin Error".to_string(),
-                        message: format!("{}: {}", id, error),
-                        duration_ms: 5000,
-                    };
-                    toast_store.write().push(toast);
-                }
-                PluginBusEvent::AddEvent(payload) => {
-                    plugin_store.write().add_event(payload);
-                }
             }
-        }
-    });
+        },
+    );
 
     let unlistens_effect = unlistens.clone();
     use_effect(move || {

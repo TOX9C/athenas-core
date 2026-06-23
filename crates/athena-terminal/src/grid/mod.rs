@@ -533,8 +533,12 @@ impl Grid {
                 self.dirty_cells.len()
             );
         }
-        let mut unique: Vec<(usize, usize)> =
-            self.dirty_cells.iter().copied().take(MAX_DIRTY_CELLS_PER_READ).collect();
+        let mut unique: Vec<(usize, usize)> = self
+            .dirty_cells
+            .iter()
+            .copied()
+            .take(MAX_DIRTY_CELLS_PER_READ)
+            .collect();
         unique.sort_unstable();
         unique.dedup();
 

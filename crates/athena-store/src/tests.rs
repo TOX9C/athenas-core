@@ -184,7 +184,10 @@ async fn test_drop_flushes_pending_writes() {
     let name = unique_name();
     {
         let store = KeyValueStore::with_name_sync(&name).unwrap();
-        store.set("drop_key", &"drop_value".to_string()).await.unwrap();
+        store
+            .set("drop_key", &"drop_value".to_string())
+            .await
+            .unwrap();
         assert!(store.is_dirty());
         // Intentionally NO explicit flush — Drop should persist.
     }
@@ -206,7 +209,10 @@ async fn test_is_dirty_false_for_fresh_store() {
 fn test_new_empty_is_in_memory_and_has_no_path() {
     let store = KeyValueStore::new_empty();
     assert!(store.is_in_memory(), "new_empty must report in-memory mode");
-    assert!(store.path().is_none(), "new_empty must have no on-disk path");
+    assert!(
+        store.path().is_none(),
+        "new_empty must have no on-disk path"
+    );
     assert!(!store.is_dirty(), "fresh in-memory store is not dirty");
 }
 
@@ -251,7 +257,10 @@ async fn test_new_empty_drop_does_not_write() {
 
     {
         let store = KeyValueStore::new_empty();
-        store.set("drop_key", &"drop_value".to_string()).await.unwrap();
+        store
+            .set("drop_key", &"drop_value".to_string())
+            .await
+            .unwrap();
         assert!(store.is_dirty());
         // Intentionally NO explicit flush — Drop must not write to disk.
     }
@@ -270,7 +279,10 @@ fn test_persistent_store_is_not_in_memory() {
         !store.is_in_memory(),
         "stores opened with a real path must report non-fallback"
     );
-    assert!(store.path().is_some(), "real store must have an on-disk path");
+    assert!(
+        store.path().is_some(),
+        "real store must have an on-disk path"
+    );
 }
 
 #[tokio::test]
@@ -282,4 +294,3 @@ async fn test_new_empty_delete_sync_is_noop() {
     let v: Option<String> = store.get("k").unwrap();
     assert_eq!(v, None, "in-memory delete_sync removes the in-memory key");
 }
-

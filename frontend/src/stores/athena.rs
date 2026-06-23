@@ -595,7 +595,10 @@ mod tests {
         assert_eq!(s.messages.len(), MAX_MESSAGES);
         // First five (0..5) should be evicted - 5 is the new front.
         assert_eq!(s.messages.front().unwrap().id, "5");
-        assert_eq!(s.messages.back().unwrap().id, (MAX_MESSAGES + 4).to_string());
+        assert_eq!(
+            s.messages.back().unwrap().id,
+            (MAX_MESSAGES + 4).to_string()
+        );
     }
 
     #[test]
