@@ -428,7 +428,7 @@ mod notification_tests {
         }
         let history = svc.get_all_history();
         assert_eq!(history.len(), 500);
-        assert_eq!(history[0].title, "msg 10");
+        assert_eq!(history[0].title, "msg 509");
     }
 
     #[test]

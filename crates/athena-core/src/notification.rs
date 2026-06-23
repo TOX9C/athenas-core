@@ -90,7 +90,6 @@ const MAX_HISTORY: usize = 500;
 pub enum NotificationError {
     #[error("Notification not found: {0}")]
     NotFound(String),
-
 }
 
 /// Thread-safe notification service.
@@ -242,11 +241,14 @@ impl NotificationService {
         results
     }
 
+    /// Return all notification history, unfiltered. Equivalent to `get_history(None)`.
+    pub fn get_all_history(&self) -> Vec<NotificationRecord> {
+        self.get_history(None)
+    }
+
     /// Mark a notification as read by its ID.
     pub fn mark_read(&self, notification_id: &str) -> Result<bool, NotificationError> {
-        let mut history = self
-            .history
-            .write();
+        let mut history = self.history.write();
         let record = history
             .iter_mut()
             .find(|n| n.id == notification_id)
@@ -282,9 +284,7 @@ impl NotificationService {
 
     /// Dismiss (remove) a notification by its ID.
     pub fn dismiss(&self, notification_id: &str) -> Result<bool, NotificationError> {
-        let mut history = self
-            .history
-            .write();
+        let mut history = self.history.write();
         let idx = history
             .iter()
             .position(|n| n.id == notification_id)
@@ -346,6 +346,10 @@ impl NotificationService {
                 NotificationType::TaskError => by_type.task_error += 1,
             }
         }
-        NotificationCounts { total, unread, by_type }
+        NotificationCounts {
+            total,
+            unread,
+            by_type,
+        }
     }
 }
