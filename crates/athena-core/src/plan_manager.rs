@@ -65,7 +65,6 @@ pub enum PlanManagerError {
     NoActivePlan,
     #[error("Step not found: {0}")]
     StepNotFound(String),
-
 }
 
 /// Thread-safe plan manager.
@@ -141,9 +140,7 @@ impl PlanManager {
 
     /// Set the active plan. Overwrites any existing plan.
     pub fn set_active_plan(&self, input: PlanInput) -> Result<ExecutionPlan, PlanManagerError> {
-        let mut lock = self
-            .active_plan
-            .write();
+        let mut lock = self.active_plan.write();
         let plan = ExecutionPlan {
             id: Self::generate_id(),
             goal: input.goal,
@@ -186,9 +183,7 @@ impl PlanManager {
         status: StepStatus,
         pane_id: Option<&str>,
     ) -> Result<bool, PlanManagerError> {
-        let mut lock = self
-            .active_plan
-            .write();
+        let mut lock = self.active_plan.write();
         let plan = lock.as_mut().ok_or(PlanManagerError::NoActivePlan)?;
         let step = plan
             .steps
@@ -223,9 +218,7 @@ impl PlanManager {
 
     /// Update the overall plan status.
     pub fn update_plan_status(&self, status: PlanStatus) -> Result<bool, PlanManagerError> {
-        let mut lock = self
-            .active_plan
-            .write();
+        let mut lock = self.active_plan.write();
         let plan = lock.as_mut().ok_or(PlanManagerError::NoActivePlan)?;
         plan.status = status;
         let plan_clone = plan.clone();
@@ -241,9 +234,7 @@ impl PlanManager {
 
     /// Clear the active plan.
     pub fn clear_active_plan(&self) -> Result<(), PlanManagerError> {
-        let mut lock = self
-            .active_plan
-            .write();
+        let mut lock = self.active_plan.write();
         *lock = None;
         drop(lock);
 

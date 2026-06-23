@@ -61,7 +61,8 @@ impl OutputCapture {
     /// Called when a new PTY is spawned.
     pub fn on_pty_spawn(&self, pane_id: &str, agent_type: Option<&str>) {
         self.shell_hooks.on_pty_spawn(pane_id, agent_type);
-        self.output_buffer.mark_pane_state(pane_id, AgentSessionState::Running);
+        self.output_buffer
+            .mark_pane_state(pane_id, AgentSessionState::Running);
     }
 
     /// Called when data is received from a running PTY.
@@ -73,7 +74,8 @@ impl OutputCapture {
     pub fn on_pty_exit(&self, pane_id: &str) {
         self.shell_hooks.on_pty_exit(pane_id);
         self.output_buffer.capture_exit_snapshot(pane_id, 20);
-        self.output_buffer.mark_pane_state(pane_id, AgentSessionState::Exited);
+        self.output_buffer
+            .mark_pane_state(pane_id, AgentSessionState::Exited);
     }
 
     /// Capture stderr output from a child pane.

@@ -112,8 +112,13 @@ impl ToolEventSender for TauriEventSender {
                         let session_id_for_loop = id.clone();
                         let handle = handle.clone();
                         tokio::spawn(async move {
-                            crate::commands::pty_read_loop(handle, session_id_for_loop, session, output_buffer)
-                                .await;
+                            crate::commands::pty_read_loop(
+                                handle,
+                                session_id_for_loop,
+                                session,
+                                output_buffer,
+                            )
+                            .await;
                         });
                     }
 

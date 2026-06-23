@@ -1425,8 +1425,8 @@ impl ToolExecutor {
         // available in practice (Tauri main + MCP server are both async),
         // and this replaces a `std::process::Command` that would block
         // the worker thread.
-        let search_result = tokio::runtime::Handle::current()
-            .block_on(crate::search::search_code(&options));
+        let search_result =
+            tokio::runtime::Handle::current().block_on(crate::search::search_code(&options));
 
         match search_result {
             Ok(result) => {
@@ -1512,7 +1512,11 @@ mod tests {
         // Create the workspace marker so get_workspace_root() can find a root.
         let marker = temp_dir.path().join("src-tauri").join("tauri.conf.json");
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-        std::fs::write(&marker, r##"{ "build": { "beforeBuildCommand": "echo" } }"##).unwrap();
+        std::fs::write(
+            &marker,
+            r##"{ "build": { "beforeBuildCommand": "echo" } }"##,
+        )
+        .unwrap();
         std::env::set_current_dir(&temp_dir).unwrap();
         let _guard = CurrentDirGuard {
             original: original_dir,
@@ -1595,14 +1599,10 @@ mod tests {
                         panic!("fs_search returned unexpected error: {msg}");
                     }
                 } else {
-                    let parsed: serde_json::Value = serde_json::from_str(&call.text)
-                        .expect("fs_search result should be JSON");
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&call.text).expect("fs_search result should be JSON");
                     let total = parsed["stats"]["total_matches"].as_u64().unwrap_or(0);
-                    assert!(
-                        total >= 1,
-                        "expected at least one match, got {}",
-                        total
-                    );
+                    assert!(total >= 1, "expected at least one match, got {}", total);
                 }
             }
             Err(e) => panic!("fs_search should not propagate Err to callers: {e}"),

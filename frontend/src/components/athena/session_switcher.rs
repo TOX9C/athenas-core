@@ -26,7 +26,9 @@ async fn do_fetch_sessions() -> Vec<SessionListItem> {
             let parsed: Vec<serde_json::Value> = match serde_json::from_str(&json) {
                 Ok(v) => v,
                 Err(e) => {
-                    web_sys::console::error_1(&format!("[SessionSwitcher] JSON parse error: {:?}", e).into());
+                    web_sys::console::error_1(
+                        &format!("[SessionSwitcher] JSON parse error: {:?}", e).into(),
+                    );
                     return Vec::new();
                 }
             };
@@ -48,7 +50,9 @@ async fn do_fetch_sessions() -> Vec<SessionListItem> {
                 .collect()
         }
         Err(e) => {
-            web_sys::console::error_1(&format!("[SessionSwitcher] Failed to fetch sessions: {:?}", e).into());
+            web_sys::console::error_1(
+                &format!("[SessionSwitcher] Failed to fetch sessions: {:?}", e).into(),
+            );
             Vec::new()
         }
     }
@@ -103,7 +107,9 @@ async fn do_load_session(
                         .to_string();
 
                     athena_state.write().set_messages(loaded);
-                    athena_state.write().set_session_id(Some(session_id.to_string()));
+                    athena_state
+                        .write()
+                        .set_session_id(Some(session_id.to_string()));
                     athena_state.write().set_session_title(title);
                     return Ok(());
                 }
@@ -112,15 +118,17 @@ async fn do_load_session(
                 Err("Failed to parse session data".to_string())
             }
         }
-        Err(e) => {
-            Err(format!("Failed to load session: {:?}", e))
-        }
+        Err(e) => Err(format!("Failed to load session: {:?}", e)),
     }
 }
 
 fn format_time_ago(timestamp_ms: u64) -> String {
-    let now = js_sys::Date::now() as u64;  // milliseconds
-    let diff = if now > timestamp_ms { now - timestamp_ms } else { 0 };
+    let now = js_sys::Date::now() as u64; // milliseconds
+    let diff = if now > timestamp_ms {
+        now - timestamp_ms
+    } else {
+        0
+    };
     let seconds = diff / 1000;
     let minutes = seconds / 60;
     let hours = minutes / 60;

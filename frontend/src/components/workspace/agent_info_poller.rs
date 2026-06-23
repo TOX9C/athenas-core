@@ -17,8 +17,8 @@
 
 use dioxus::prelude::*;
 
-use crate::stores::ui::use_ui_store;
 use crate::stores::terminal::use_terminal_store;
+use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge::{pty_agent_info, summarize_agent_title};
 
@@ -69,7 +69,10 @@ pub fn AgentInfoPoller() -> Element {
                             // the feature is enabled AND we haven't seen this session yet.
                             let sid = info.session_id.as_deref().unwrap_or_default();
                             let feature_enabled = ui_state.read().summarize_agent_titles;
-                            if feature_enabled && !sid.is_empty() && !summarized_sessions.read().contains(sid) {
+                            if feature_enabled
+                                && !sid.is_empty()
+                                && !summarized_sessions.read().contains(sid)
+                            {
                                 summarized_sessions.write().insert(sid.to_string());
                                 if let Some(raw_prompt) = info.raw_prompt.as_ref() {
                                     let raw_prompt = raw_prompt.clone();
@@ -89,9 +92,12 @@ pub fn AgentInfoPoller() -> Element {
                                                 );
                                                 // Write summarized title into the session.
                                                 let mut store_guard = store.write();
-                                                if let Some(session) = store_guard.sessions.get_mut(&pane) {
+                                                if let Some(session) =
+                                                    store_guard.sessions.get_mut(&pane)
+                                                {
                                                     session.summarized_title = Some(cleaned);
-                                                    session.generation = session.generation.wrapping_add(1);
+                                                    session.generation =
+                                                        session.generation.wrapping_add(1);
                                                 }
                                             }
                                             Err(e) => {

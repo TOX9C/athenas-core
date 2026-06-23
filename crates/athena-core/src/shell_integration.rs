@@ -684,4 +684,3 @@ mod get_shell_integration_script_tests {
         }
     }
 }
-

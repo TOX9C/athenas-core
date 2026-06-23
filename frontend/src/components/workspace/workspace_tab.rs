@@ -38,10 +38,10 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
             .map(|(_, s)| &s.status)
         {
             match status {
-                AgentRunStatus::Error |
-                AgentRunStatus::Working |
-                AgentRunStatus::Thinking |
-                AgentRunStatus::WaitingForInput => {
+                AgentRunStatus::Error
+                | AgentRunStatus::Working
+                | AgentRunStatus::Thinking
+                | AgentRunStatus::WaitingForInput => {
                     running_count += 1;
                 }
                 _ => {

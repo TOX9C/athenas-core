@@ -261,7 +261,11 @@ pub fn apply_theme_to_dom(theme_name: &str) {
     let c = get_theme(theme_name);
     set_data_theme(theme_name);
 
-    let derived_ring = c.accent_subtle.replace("0.12", "0.55").replace("0.13", "0.55").replace("0.14", "0.55");
+    let derived_ring = c
+        .accent_subtle
+        .replace("0.12", "0.55")
+        .replace("0.13", "0.55")
+        .replace("0.14", "0.55");
     let props: [(&str, &str); 23] = [
         ("--bg", &c.bg),
         ("--bgSecondary", &c.bg_secondary),
@@ -304,12 +308,20 @@ pub fn apply_theme_to_dom(theme_name: &str) {
 /// `CssStyleDeclaration::set_property` performs the identical DOM mutation but
 /// never invokes the JS parser, so it needs no CSP relaxation.
 fn set_css_property(property: &str, value: &str) {
-    let Some(window) = web_sys::window() else { return };
-    let Some(document) = window.document() else { return };
-    let Some(html_el) = document.document_element() else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(html_el) = document.document_element() else {
+        return;
+    };
     // `style` is defined on `HtmlElement`, not `Element`; `document_element`
     // returns the latter, so downcast before accessing the inline style.
-    let Some(html) = html_el.dyn_ref::<web_sys::HtmlElement>() else { return };
+    let Some(html) = html_el.dyn_ref::<web_sys::HtmlElement>() else {
+        return;
+    };
     let style = html.style();
     let _ = style.set_property(property, value);
 }
@@ -317,9 +329,15 @@ fn set_css_property(property: &str, value: &str) {
 /// Set `data-theme` on the document root. Same reasoning as `set_css_property`:
 /// use `Element::set_attribute` instead of `eval`-ing a JS string.
 fn set_data_theme(value: &str) {
-    let Some(window) = web_sys::window() else { return };
-    let Some(document) = window.document() else { return };
-    let Some(html) = document.document_element() else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(html) = document.document_element() else {
+        return;
+    };
     let _ = html.set_attribute("data-theme", value);
 }
 
@@ -328,7 +346,10 @@ fn set_data_theme(value: &str) {
 pub fn apply_font_to_dom(font_family: &str, font_size: u8) {
     set_css_property(
         "--fontFamily",
-        &format!("'{}', 'Monaspace Neon', ui-monospace, monospace", font_family),
+        &format!(
+            "'{}', 'Monaspace Neon', ui-monospace, monospace",
+            font_family
+        ),
     );
     set_css_property("--fontSize", &format!("{}px", font_size));
 }

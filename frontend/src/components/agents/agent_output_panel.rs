@@ -1,8 +1,8 @@
 use super::agent_output_line::AgentOutputLine;
 use super::agent_selector::AgentSelector;
-use crate::stores::agent_output::{use_agent_output_store, OutputLine as StoreLine};
 use crate::components::shared::icon::{IconChevronDown, IconTrash};
-use crate::components::shared::illustration::{EmptyState, EmptyArt};
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
+use crate::stores::agent_output::{use_agent_output_store, OutputLine as StoreLine};
 use dioxus::prelude::*;
 
 /// Convert a store OutputLine to the component-level OutputLine.

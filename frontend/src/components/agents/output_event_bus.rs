@@ -92,105 +92,118 @@ pub fn OutputEventBus() -> Element {
 
     // Dispatcher coroutine: receives parsed events from the Tauri listen
     // callbacks and performs all signal writes inside the reactive runtime.
-    let dispatcher = use_coroutine(move |mut rx: UnboundedReceiver<OutputBusEvent>| async move {
-        let mut agent_status = agent_status;
-        let mut agent_output = agent_output;
-        let mut notifications = notifications;
-        while let Ok(event) = rx.recv().await {
-            match event {
-                OutputBusEvent::AgentStatus {
-                    pane_id,
-                    status,
-                    message,
-                    progress,
-                    now,
-                } => {
-                    agent_status.write().update_status(
+    let dispatcher = use_coroutine(
+        move |mut rx: UnboundedReceiver<OutputBusEvent>| async move {
+            let mut agent_status = agent_status;
+            let mut agent_output = agent_output;
+            let mut notifications = notifications;
+            while let Ok(event) = rx.recv().await {
+                match event {
+                    OutputBusEvent::AgentStatus {
                         pane_id,
-                        AgentStatusUpdate {
-                            status: Some(status),
-                            message,
-                            progress,
-                        },
-                        now,
-                    );
-                }
-                OutputBusEvent::TerminalExit { pane_id, now } => {
-                    agent_status.write().update_status(
-                        pane_id,
-                        AgentStatusUpdate {
-                            status: Some(AgentRunStatus::Disconnected),
-                            message: Some("PTY exited".to_string()),
-                            progress: None,
-                        },
-                        now,
-                    );
-                }
-                OutputBusEvent::TerminalPrompt { pane_id, now } => {
-                    agent_status.write().update_status(
-                        pane_id,
-                        AgentStatusUpdate {
-                            status: Some(AgentRunStatus::Idle),
-                            message: None,
-                            progress: None,
-                        },
-                        now,
-                    );
-                }
-                OutputBusEvent::TerminalData { session_id, payload } => {
-                    use_terminal_store().write().on_data(&session_id, &payload);
-                }
-                OutputBusEvent::AgentConnected { pane_id, now } => {
-                    agent_status.write().connect_agent(pane_id, now);
-                }
-                OutputBusEvent::AgentDisconnected { pane_id, now } => {
-                    agent_status.write().disconnect_agent(&pane_id, now);
-                }
-                OutputBusEvent::AgentStatusUpdate {
-                    pane_id,
-                    status,
-                    message,
-                    now,
-                } => {
-                    agent_status.write().update_status(
-                        pane_id,
-                        AgentStatusUpdate {
-                            status: Some(status),
-                            message,
-                            progress: None,
-                        },
-                        now,
-                    );
-                }
-                OutputBusEvent::InputRequested { pane_id, message, now } => {
-                    agent_status
-                        .write()
-                        .request_input(pane_id, message.clone(), now);
-
-                    let notif = NotificationRecord {
-                        id: format!("input-{}", chrono::Utc::now().timestamp_millis()),
-                        r#type: NotificationType::NeedsInput,
-                        title: "Agent Input Requested".to_string(),
+                        status,
                         message,
-                        source: "agent".to_string(),
-                        read: false,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                        count: 1,
-                    };
-                    add_notification(&mut notifications, notif);
-                }
-                OutputBusEvent::OutputLine(line) => {
-                    agent_output.write().append_line(line);
-                }
-                OutputBusEvent::PaneRegistered { pane_id, agent_type, now } => {
-                    agent_output.write().register_pane(pane_id, agent_type, now);
-                }
-                OutputBusEvent::PaneUnregistered { pane_id } => {
-                    agent_output.write().unregister_pane(&pane_id);
+                        progress,
+                        now,
+                    } => {
+                        agent_status.write().update_status(
+                            pane_id,
+                            AgentStatusUpdate {
+                                status: Some(status),
+                                message,
+                                progress,
+                            },
+                            now,
+                        );
+                    }
+                    OutputBusEvent::TerminalExit { pane_id, now } => {
+                        agent_status.write().update_status(
+                            pane_id,
+                            AgentStatusUpdate {
+                                status: Some(AgentRunStatus::Disconnected),
+                                message: Some("PTY exited".to_string()),
+                                progress: None,
+                            },
+                            now,
+                        );
+                    }
+                    OutputBusEvent::TerminalPrompt { pane_id, now } => {
+                        agent_status.write().update_status(
+                            pane_id,
+                            AgentStatusUpdate {
+                                status: Some(AgentRunStatus::Idle),
+                                message: None,
+                                progress: None,
+                            },
+                            now,
+                        );
+                    }
+                    OutputBusEvent::TerminalData {
+                        session_id,
+                        payload,
+                    } => {
+                        use_terminal_store().write().on_data(&session_id, &payload);
+                    }
+                    OutputBusEvent::AgentConnected { pane_id, now } => {
+                        agent_status.write().connect_agent(pane_id, now);
+                    }
+                    OutputBusEvent::AgentDisconnected { pane_id, now } => {
+                        agent_status.write().disconnect_agent(&pane_id, now);
+                    }
+                    OutputBusEvent::AgentStatusUpdate {
+                        pane_id,
+                        status,
+                        message,
+                        now,
+                    } => {
+                        agent_status.write().update_status(
+                            pane_id,
+                            AgentStatusUpdate {
+                                status: Some(status),
+                                message,
+                                progress: None,
+                            },
+                            now,
+                        );
+                    }
+                    OutputBusEvent::InputRequested {
+                        pane_id,
+                        message,
+                        now,
+                    } => {
+                        agent_status
+                            .write()
+                            .request_input(pane_id, message.clone(), now);
+
+                        let notif = NotificationRecord {
+                            id: format!("input-{}", chrono::Utc::now().timestamp_millis()),
+                            r#type: NotificationType::NeedsInput,
+                            title: "Agent Input Requested".to_string(),
+                            message,
+                            source: "agent".to_string(),
+                            read: false,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                            count: 1,
+                        };
+                        add_notification(&mut notifications, notif);
+                    }
+                    OutputBusEvent::OutputLine(line) => {
+                        agent_output.write().append_line(line);
+                    }
+                    OutputBusEvent::PaneRegistered {
+                        pane_id,
+                        agent_type,
+                        now,
+                    } => {
+                        agent_output.write().register_pane(pane_id, agent_type, now);
+                    }
+                    OutputBusEvent::PaneUnregistered { pane_id } => {
+                        agent_output.write().unregister_pane(&pane_id);
+                    }
                 }
             }
-        }
-    });
+        },
+    );
 
     // One-time mount effect: register global Tauri event listeners.
     let unlistens_effect = unlistens.clone();
@@ -310,7 +323,10 @@ pub fn OutputEventBus() -> Element {
                     .unwrap_or("")
                     .to_string();
                 if !session_id.is_empty() {
-                    dispatcher.send(OutputBusEvent::TerminalData { session_id, payload });
+                    dispatcher.send(OutputBusEvent::TerminalData {
+                        session_id,
+                        payload,
+                    });
                 }
             }
         }) {
@@ -412,7 +428,11 @@ pub fn OutputEventBus() -> Element {
                     .to_string();
                 if !pane_id.is_empty() {
                     let now = js_sys::Date::now() as i64;
-                    dispatcher.send(OutputBusEvent::InputRequested { pane_id, message, now });
+                    dispatcher.send(OutputBusEvent::InputRequested {
+                        pane_id,
+                        message,
+                        now,
+                    });
                 }
             }
         }) {

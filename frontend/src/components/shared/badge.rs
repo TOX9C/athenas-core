@@ -23,10 +23,7 @@ pub fn Badge(props: BadgeProps) -> Element {
         .clone()
         .unwrap_or_else(|| props.color.clone());
     let style = if props.solid {
-        format!(
-            "background: {c}; color: var(--bg);",
-            c = props.color
-        )
+        format!("background: {c}; color: var(--bg);", c = props.color)
     } else {
         format!(
             "background: color-mix(in srgb, {c} 15%, transparent); color: {fg}; border: 1px solid color-mix(in srgb, {c} 28%, transparent);",

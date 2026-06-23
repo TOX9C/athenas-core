@@ -127,9 +127,7 @@ impl CommandState {
         let json = match serde_json::to_string(&self.recent_ids) {
             Ok(j) => j,
             Err(e) => {
-                web_sys::console::error_1(
-                    &format!("[CommandState] serialize error: {}", e).into(),
-                );
+                web_sys::console::error_1(&format!("[CommandState] serialize error: {}", e).into());
                 return;
             }
         };
