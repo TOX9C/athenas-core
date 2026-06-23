@@ -15,6 +15,9 @@ pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
 /// Stable Anthropic API version header value.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Backoff schedule (ms) between title-summarization retries. ~7s ceiling.
+const DEFAULT_BACKOFF_DELAYS_MS: &[u64] = &[1000, 2000, 4000];
+
 /// Maximum output tokens per LLM request. The orchestrator reads agent
 /// terminal output and writes multi-step plans, so this needs headroom.
 pub const MAX_OUTPUT_TOKENS: u32 = 8192;
@@ -921,11 +924,34 @@ impl AthenaOrchestrator {
     }
 
     /// Send a one-shot request to the configured LLM to summarize a prompt
-    /// into a short (2–3 word) title. Does NOT touch conversation history.
+    /// into a short title. Does NOT touch conversation history.
+    ///
+    /// Retries transient failures (network / 5xx / parse) with backoff up to
+    /// `MAX_ATTEMPTS` times, then returns `Err`. A missing API key is
+    /// non-retryable (returns `Err(MissingApiKey)` immediately).
     pub async fn summarize_title(&self, raw_prompt: &str) -> Result<String, OrchestratorError> {
-        const SYSTEM: &str =
-            "You summarize prompts into 2-3 word titles. Output ONLY the title, no quotes.";
-        let prompt = format!("Summarize in 2-3 words: {}", raw_prompt);
+        self.summarize_title_with_backoff(raw_prompt, DEFAULT_BACKOFF_DELAYS_MS)
+            .await
+    }
+
+    /// Test seam: same as `summarize_title` but with a (near-zero) backoff
+    /// schedule so retry tests don't sleep for seconds.
+    #[cfg(test)]
+    pub async fn summarize_title_for_test(
+        &self,
+        raw_prompt: &str,
+    ) -> Result<String, OrchestratorError> {
+        self.summarize_title_with_backoff(raw_prompt, &[1u64, 1, 1])
+            .await
+    }
+
+    async fn summarize_title_with_backoff(
+        &self,
+        raw_prompt: &str,
+        backoff_delays_ms: &[u64],
+    ) -> Result<String, OrchestratorError> {
+        const SYSTEM: &str = "You write short, descriptive titles for coding sessions based on the user's first prompt.\nWrite a short sentence in sentence case describing what the agent is doing, 1-6 words.\nUse the imperative or -ing form (e.g. \"analyzing the codebase\", \"checking rust version\", \"fixing the login bug\").\nNo quotes, no trailing punctuation, no preamble - output only the title.";
+        let prompt = raw_prompt.to_string();
 
         let config = { self.provider_config.lock().as_ref().cloned() };
 
@@ -951,12 +977,58 @@ impl AthenaOrchestrator {
 
         let client = &self.http_client;
 
+        let mut last_err: Option<OrchestratorError> = None;
+        for (attempt, &delay_ms) in backoff_delays_ms.iter().enumerate() {
+            match self
+                .one_title_call(
+                    client,
+                    provider.clone(),
+                    api_key.clone(),
+                    model.clone(),
+                    base_url.clone(),
+                    SYSTEM,
+                    &prompt,
+                )
+                .await
+            {
+                Ok(title) => return Ok(title),
+                Err(e) => {
+                    // MissingApiKey is non-retryable; propagate immediately.
+                    if matches!(e, OrchestratorError::MissingApiKey) {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                }
+            }
+            // Back off before the next attempt (skip after the last attempt).
+            if attempt + 1 < backoff_delays_ms.len() {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            OrchestratorError::Generic("title generation failed with no attempts".to_string())
+        }))
+    }
+
+    /// Single LLM call for title summarization. Returns the parsed title on
+    /// success, or an error the caller decides whether to retry.
+    #[allow(clippy::too_many_arguments)]
+    async fn one_title_call(
+        &self,
+        client: &reqwest::Client,
+        provider: LLMProvider,
+        api_key: secrecy::SecretString,
+        model: String,
+        base_url: Option<String>,
+        system: &str,
+        prompt: &str,
+    ) -> Result<String, OrchestratorError> {
         match provider {
             LLMProvider::Anthropic => {
                 let body = serde_json::json!({
                     "model": model,
-                    "max_tokens": 20,
-                    "system": SYSTEM,
+                    "max_tokens": 48,
+                    "system": system,
                     "messages": [{"role": "user", "content": prompt}]
                 });
                 let response = client
@@ -1003,9 +1075,9 @@ impl AthenaOrchestrator {
                 };
                 let body = serde_json::json!({
                     "model": model,
-                    "max_tokens": 20,
+                    "max_tokens": 48,
                     "messages": [
-                        {"role": "system", "content": SYSTEM},
+                        {"role": "system", "content": system},
                         {"role": "user", "content": prompt}
                     ],
                     "stream": false,
@@ -1804,5 +1876,115 @@ mod tests {
         assert!(validate_base_url("https://").is_err()); // no host
                                                          // Single-label non-loopback host: almost certainly a typo.
         assert!(validate_base_url("https://internalhost/v1").is_err());
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // A tiny provider config so summarize_title finds a key without env vars.
+    fn test_provider_config(mock_server_url: String) -> ProviderConfig {
+        ProviderConfig::new(
+            LLMProvider::Anthropic,
+            "test-key",
+            "claude-3-5-sonnet-20241022".to_string(),
+            String::new(),
+            Some(mock_server_url),
+        )
+    }
+
+    #[tokio::test]
+    async fn summarize_title_retries_on_5xx_then_succeeds() {
+        let server = MockServer::start().await;
+        let orch = AthenaOrchestrator::new_for_test(server.uri());
+        orch.set_provider_config(test_provider_config(server.uri()));
+
+        // First two calls fail 500, third succeeds.
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": [{ "type": "text", "text": "analyzing the codebase" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let title = orch
+            .summarize_title_for_test("analyze the codebase")
+            .await
+            .unwrap();
+        assert_eq!(title, "analyzing the codebase");
+    }
+
+    #[tokio::test]
+    async fn summarize_title_fails_after_max_attempts() {
+        let server = MockServer::start().await;
+        let orch = AthenaOrchestrator::new_for_test(server.uri());
+        orch.set_provider_config(test_provider_config(server.uri()));
+
+        // Every call fails 500.
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let result = orch.summarize_title_for_test("analyze the codebase").await;
+        assert!(result.is_err());
+        // 3 attempts made (test backoff = [1,1,1]).
+        // wiremock records request count:
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(
+            received.len(),
+            3,
+            "expected exactly 3 attempts, got {}",
+            received.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn summarize_title_missing_key_is_non_retryable() {
+        // No provider config AND no ANTHROPIC_API_KEY env (tests run without it).
+        let orch = AthenaOrchestrator::new_for_test("http://unused.invalid".to_string());
+        // provider_config stays None.
+        // SAFETY: tests run single-threaded within a process; we save & restore.
+        let prev = std::env::var("ANTHROPIC_API_KEY").ok();
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        let result = orch.summarize_title_for_test("analyze the codebase").await;
+        // Restore.
+        if let Some(v) = prev {
+            std::env::set_var("ANTHROPIC_API_KEY", v);
+        }
+
+        assert!(matches!(result, Err(OrchestratorError::MissingApiKey)));
+    }
+
+    #[tokio::test]
+    async fn summarize_title_trims_output() {
+        let server = MockServer::start().await;
+        let orch = AthenaOrchestrator::new_for_test(server.uri());
+        orch.set_provider_config(test_provider_config(server.uri()));
+
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": [{ "type": "text", "text": "  analyzing the codebase  " }]
+            })))
+            .mount(&server)
+            .await;
+
+        let title = orch
+            .summarize_title_for_test("analyze the codebase")
+            .await
+            .unwrap();
+        assert_eq!(title, "analyzing the codebase");
     }
 }
