@@ -68,7 +68,7 @@ pub fn AgentInfoPoller() -> Element {
                             // Trigger LLM summarization for a new session if:
                             // the feature is enabled AND we haven't seen this session yet.
                             let sid = info.session_id.as_deref().unwrap_or_default();
-                            let feature_enabled = ui_state.read().summarize_agent_titles;
+                            let feature_enabled = ui_state.read().smart_pane_titles;
                             if feature_enabled
                                 && !sid.is_empty()
                                 && !summarized_sessions.read().contains(sid)
