@@ -1712,13 +1712,24 @@ struct ClaudeHistoryEntry {
     timestamp: u64,
 }
 
-/// Scrape the last session entry from Claude's history file.
-/// Reads `~/.claude/history.jsonl` and returns the `display`, `sessionId`
-/// and `timestamp` fields of the last line.
-fn scrape_claude_task() -> Option<ClaudeHistoryEntry> {
-    let home = std::env::var("HOME").ok()?;
-    let path = std::path::Path::new(&home).join(".claude/history.jsonl");
-    let content = std::fs::read_to_string(path).ok()?;
+/// Metadata scraped from the last entry in Codex's history file.
+/// Mirrors `ClaudeHistoryEntry` so both agents feed the title pipeline
+/// uniformly. (Previously Codex read `session_index.jsonl`'s `thread_name`,
+/// which is a thread name — not a prompt — and carried no session id, so
+/// Codex panes were never summarized.)
+#[derive(Debug, Clone)]
+struct CodexHistoryEntry {
+    /// The raw prompt text the user typed (`text` field).
+    display: String,
+    /// The session id (`session_id` field).
+    session_id: String,
+    /// Unix timestamp (s) from the `ts` field.
+    timestamp: u64,
+}
+
+/// Parse the last line of Claude's `~/.claude/history.jsonl` into an entry.
+/// Pure (no I/O) so it is unit-testable.
+fn parse_claude_history(content: &str) -> Option<ClaudeHistoryEntry> {
     let last_line = content.lines().last()?;
     let json: serde_json::Value = serde_json::from_str(last_line).ok()?;
     let display = json.get("display")?.as_str()?.trim().to_string();
@@ -1731,17 +1742,35 @@ fn scrape_claude_task() -> Option<ClaudeHistoryEntry> {
     })
 }
 
-/// Scrape the latest thread name from Codex's session index.
-/// Reads `~/.codex/session_index.jsonl` and returns the `thread_name` of the last line.
-fn scrape_codex_task() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let path = std::path::Path::new(&home).join(".codex/session_index.jsonl");
-    let content = std::fs::read_to_string(path).ok()?;
+/// Parse the last line of Codex's `~/.codex/history.jsonl` into an entry.
+/// Pure (no I/O) so it is unit-testable.
+fn parse_codex_history(content: &str) -> Option<CodexHistoryEntry> {
     let last_line = content.lines().last()?;
     let json: serde_json::Value = serde_json::from_str(last_line).ok()?;
-    json.get("thread_name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
+    let display = json.get("text")?.as_str()?.trim().to_string();
+    let session_id = json.get("session_id")?.as_str()?.to_string();
+    let timestamp = json.get("ts")?.as_u64()?;
+    Some(CodexHistoryEntry {
+        display,
+        session_id,
+        timestamp,
+    })
+}
+
+/// Scrape the last session entry from Claude's history file.
+fn scrape_claude_task() -> Option<ClaudeHistoryEntry> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::Path::new(&home).join(".claude/history.jsonl");
+    let content = std::fs::read_to_string(path).ok()?;
+    parse_claude_history(&content)
+}
+
+/// Scrape the last session entry from Codex's history file.
+fn scrape_codex_task() -> Option<CodexHistoryEntry> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::Path::new(&home).join(".codex/history.jsonl");
+    let content = std::fs::read_to_string(path).ok()?;
+    parse_codex_history(&content)
 }
 
 /// Get the active foreground process and, if it's a known agent, try to
@@ -1864,7 +1893,18 @@ pub async fn pty_agent_info(state: State<'_, AppState>, id: String) -> Result<St
             }
             None => (None, None, None, None),
         },
-        "codex" => (scrape_codex_task(), None, None, None),
+        "codex" => match scrape_codex_task() {
+            Some(entry) => {
+                let raw = entry.display.clone();
+                (
+                    Some(entry.display),
+                    Some(entry.session_id),
+                    Some(entry.timestamp),
+                    Some(raw),
+                )
+            }
+            None => (None, None, None, None),
+        },
         _ => (None, None, None, None),
     };
 
@@ -2207,7 +2247,9 @@ fn prompt_is_sensitive(raw_prompt: &str) -> bool {
         "passphrase",
         "pin",
     ];
-    normalized_keywords.iter().any(|&kw| normalized.contains(kw))
+    normalized_keywords
+        .iter()
+        .any(|&kw| normalized.contains(kw))
 }
 
 /// Summarize a prompt into a short title using the configured LLM.
@@ -3866,5 +3908,35 @@ mod title_command_tests {
         assert!(!prompt_is_sensitive("analyze the codebase"));
         assert!(!prompt_is_sensitive("what rust version is this"));
         assert!(!prompt_is_sensitive("hi"));
+    }
+}
+
+#[cfg(test)]
+mod scraper_tests {
+    use super::{parse_claude_history, parse_codex_history};
+
+    #[test]
+    fn parse_codex_history_extracts_session_and_prompt() {
+        let line = r#"{"session_id":"019e0ec8-7793-77a3-b52c-c153ed517b64","ts":1778364486,"text":"yo what is up"}"#;
+        let entry = parse_codex_history(line).expect("should parse");
+        assert_eq!(entry.display, "yo what is up");
+        assert_eq!(entry.session_id, "019e0ec8-7793-77a3-b52c-c153ed517b64");
+        assert_eq!(entry.timestamp, 1778364486);
+    }
+
+    #[test]
+    fn parse_codex_history_returns_none_on_malformed() {
+        assert!(parse_codex_history("not json").is_none());
+        assert!(parse_codex_history(r#"{"no_text":"here"}"#).is_none());
+    }
+
+    #[test]
+    fn parse_claude_history_parses_display_session_timestamp() {
+        let line =
+            r#"{"display":"analyze the codebase","sessionId":"abc-123","timestamp":1700000000000}"#;
+        let entry = parse_claude_history(line).expect("should parse");
+        assert_eq!(entry.display, "analyze the codebase");
+        assert_eq!(entry.session_id, "abc-123");
+        assert_eq!(entry.timestamp, 1700000000000);
     }
 }
