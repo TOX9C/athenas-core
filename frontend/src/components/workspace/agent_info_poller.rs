@@ -17,8 +17,8 @@
 
 use dioxus::prelude::*;
 
-use crate::stores::ui::use_ui_store;
 use crate::stores::terminal::use_terminal_store;
+use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge::{pty_agent_info, summarize_agent_title};
 
@@ -65,49 +65,70 @@ pub fn AgentInfoPoller() -> Element {
                                 Some(info.foreground_process.clone())
                             };
 
-                            // Trigger LLM summarization for a new session if:
-                            // the feature is enabled AND we haven't seen this session yet.
+                            // Drive the title state machine for a new session.
                             let sid = info.session_id.as_deref().unwrap_or_default();
-                            let feature_enabled = ui_state.read().summarize_agent_titles;
-                            if feature_enabled && !sid.is_empty() && !summarized_sessions.read().contains(sid) {
-                                summarized_sessions.write().insert(sid.to_string());
-                                if let Some(raw_prompt) = info.raw_prompt.as_ref() {
-                                    let raw_prompt = raw_prompt.clone();
-                                    let mut store = terminal_store.clone();
-                                    let pane = pane_id.clone();
-                                    // Fire-and-forget; latency does not matter.
-                                    wasm_bindgen_futures::spawn_local(async move {
-                                        match summarize_agent_title(&raw_prompt).await {
-                                            Ok(summary) => {
-                                                let cleaned = summary.trim().to_string();
-                                                web_sys::console::log_1(
-                                                    &format!(
-                                                        "[AgentInfoPoller] summary for pane={}: {}",
-                                                        pane, cleaned
-                                                    )
-                                                    .into(),
-                                                );
-                                                // Write summarized title into the session.
-                                                let mut store_guard = store.write();
-                                                if let Some(session) = store_guard.sessions.get_mut(&pane) {
-                                                    session.summarized_title = Some(cleaned);
-                                                    session.generation = session.generation.wrapping_add(1);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                web_sys::console::warn_1(
-                                                    &format!(
-                                                        "[AgentInfoPoller] summarize error: {:?}",
-                                                        e
-                                                    )
-                                                    .into(),
-                                                );
-                                            }
-                                        }
-                                    });
-                                }
-                            }
+                            let feature_enabled = ui_state.read().smart_pane_titles;
+                            let raw = info.raw_prompt.as_deref().unwrap_or_default();
+                            let prompt_ready = !sid.is_empty() && !raw.trim().is_empty();
 
+                            if feature_enabled
+                                && prompt_ready
+                                && !summarized_sessions.read().contains(sid)
+                            {
+                                // Mark this session as in-flight so we never re-trigger it.
+                                summarized_sessions.write().insert(sid.to_string());
+                                let raw_prompt = raw.to_string();
+                                let mut store = terminal_store.clone();
+                                let pane = pane_id.clone();
+
+                                // Idle -> Pending. The pill renders empty while waiting.
+                                {
+                                    let mut g = store.write();
+                                    if let Some(session) = g.sessions.get_mut(&pane) {
+                                        session.title_state =
+                                            crate::utils::pane_label::TitleState::Pending;
+                                        session.generation = session.generation.wrapping_add(1);
+                                    }
+                                }
+
+                                // Fire-and-forget. The backend command retries transient
+                                // failures internally, so this single await yields a final
+                                // result (title, "Sensitive prompt", or Err).
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let result = summarize_agent_title(&raw_prompt).await;
+                                    let mut g = store.write();
+                                    let Some(session) = g.sessions.get_mut(&pane) else {
+                                        return;
+                                    };
+                                    match result {
+                                        Ok(summary) => {
+                                            let cleaned = summary.trim().to_string();
+                                            web_sys::console::log_1(
+                                                &format!(
+                                                    "[AgentInfoPoller] title for pane={}: {}",
+                                                    pane, cleaned
+                                                )
+                                                .into(),
+                                            );
+                                            session.title_state =
+                                                crate::utils::pane_label::TitleState::Done(cleaned);
+                                        }
+                                        Err(e) => {
+                                            web_sys::console::warn_1(
+                                                &format!(
+                                                    "[AgentInfoPoller] title failed for pane={}: {:?}",
+                                                    pane, e
+                                                )
+                                                .into(),
+                                            );
+                                            // Failed is terminal: the pill stays empty.
+                                            session.title_state =
+                                                crate::utils::pane_label::TitleState::Failed;
+                                        }
+                                    }
+                                    session.generation = session.generation.wrapping_add(1);
+                                });
+                            }
                             terminal_store.write().update_agent_info(
                                 pane_id,
                                 fg,

@@ -24,7 +24,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::components::shared::icon::{
-    IconArrowLeft, IconArrowRight, IconFullscreen, IconGlobe, IconMinimize, IconRefresh,
+    IconArrowLeft, IconArrowRight, IconChevronDown, IconFullscreen, IconGlobe, IconMinimize,
+    IconRefresh,
 };
 use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
 use crate::stores::ui::{use_ui_store, Panel};
@@ -85,7 +86,8 @@ fn schedule_push_bounds() {
 /// Move the webview far off-screen, keeping the page alive while hidden.
 fn park_offscreen() {
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = tauri_bridge::browser_set_bounds(BROWSER_ID, -20000.0, -20000.0, 800.0, 600.0).await;
+        let _ =
+            tauri_bridge::browser_set_bounds(BROWSER_ID, -20000.0, -20000.0, 800.0, 600.0).await;
     });
 }
 
@@ -113,10 +115,9 @@ fn request_park() {
         });
         park_offscreen();
     });
-    if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-        cb.as_ref().unchecked_ref(),
-        80,
-    ) {
+    if let Ok(id) = window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 80)
+    {
         PARK_TIMER.with(|t| {
             *t.borrow_mut() = Some(id);
         });
@@ -133,6 +134,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
     let mut panel_state = use_panel_manager_store();
     let mut cleanup: Signal<Option<SurfaceCleanup>> = use_signal(|| None);
     let initialized = use_hook(|| Rc::new(RefCell::new(false)));
+    let mut show_quick_menu = use_signal(|| false);
 
     let quick_urls: Vec<(&str, &str)> = vec![
         ("Google", "https://www.google.com"),
@@ -184,10 +186,10 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     .ok()
                     .and_then(|c| c.dyn_into::<js_sys::Function>().ok())
                     .and_then(|c| {
-                        js_sys::Reflect::construct(&c, &js_sys::Array::of1(ro_closure.as_ref())).ok()
+                        js_sys::Reflect::construct(&c, &js_sys::Array::of1(ro_closure.as_ref()))
+                            .ok()
                     });
-            if let (Some(observer), Some(document)) =
-                (resize_observer.as_ref(), window.document())
+            if let (Some(observer), Some(document)) = (resize_observer.as_ref(), window.document())
             {
                 if let Some(el) = document.get_element_by_id(VIEWPORT_ID) {
                     if let Ok(observe_fn) =
@@ -232,25 +234,69 @@ pub fn BrowserSurface(expanded: bool) -> Element {
     use_drop(move || {
         if let Some(mut c) = cleanup.take() {
             if let Some(observer) = c.resize_observer.take() {
-                if let Ok(disc) =
-                    js_sys::Reflect::get(&observer, &JsValue::from_str("disconnect"))
+                if let Ok(disc) = js_sys::Reflect::get(&observer, &JsValue::from_str("disconnect"))
                 {
                     if let Ok(disc) = disc.dyn_into::<js_sys::Function>() {
                         let _ = disc.call0(&observer);
                     }
                 }
             }
-            if let (Some(window), Some(cl)) =
-                (web_sys::window(), c.window_resize_closure.take())
-            {
-                let _ = window.remove_event_listener_with_callback(
-                    "resize",
-                    cl.as_ref().unchecked_ref(),
-                );
+            if let (Some(window), Some(cl)) = (web_sys::window(), c.window_resize_closure.take()) {
+                let _ = window
+                    .remove_event_listener_with_callback("resize", cl.as_ref().unchecked_ref());
             }
         }
         request_park();
     });
+
+    // ── Click-away for the quick-links dropdown ───────────────────────────────
+    // While the menu is open, listen for any mousedown; if it lands outside the
+    // popover, close the menu. The listener is registered when the menu opens and
+    // removed when it closes (or the surface unmounts) so it never leaks.
+    {
+        let mut menu = show_quick_menu;
+        use_effect(move || {
+            if !menu() {
+                return;
+            }
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let window_for_cb = window.clone();
+            let cb: Closure<dyn FnMut(web_sys::MouseEvent)> =
+                Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
+                    let target = e.target();
+                    let node = target.and_then(|t| t.dyn_into::<web_sys::Node>().ok());
+                    let outside = match node {
+                        Some(node) => match window_for_cb.document() {
+                            Some(document) => {
+                                match document.get_element_by_id("browser-quick-menu") {
+                                    Some(popover) => !popover.contains(Some(&node)),
+                                    None => true,
+                                }
+                            }
+                            None => true,
+                        },
+                        None => true,
+                    };
+                    if outside {
+                        menu.set(false);
+                    }
+                }));
+            let _ =
+                window.add_event_listener_with_callback("mousedown", cb.as_ref().unchecked_ref());
+            // Keep the closure alive for the effect's duration and remove the
+            // listener when the effect re-runs (menu toggled) or unmounts.
+            let window_for_cleanup = window.clone();
+            let cleanup_cb = cb;
+            use_drop(move || {
+                let _ = window_for_cleanup.remove_event_listener_with_callback(
+                    "mousedown",
+                    cleanup_cb.as_ref().unchecked_ref(),
+                );
+            });
+        });
+    }
 
     let toggle_title = if expanded {
         "Dock to sidebar"
@@ -374,23 +420,44 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                 }
             }
 
-            // ── Quick access ────────────────────────────────────────────────
+            // ── Quick links (collapsed dropdown) ─────────────────────────────
+            // Quick Access + Localhost entries collapsed into a single button
+            // that opens a popover menu, restoring viewport height.
             div {
-                style: "border-top: 1px solid var(--border); padding: 8px 12px; background: var(--bgSecondary); flex-shrink: 0; display: flex; flex-direction: column; gap: 8px;",
+                style: "position: relative; border-top: 1px solid var(--border); padding: 8px 12px; background: var(--bgSecondary); flex-shrink: 0;",
 
-                div {
-                    style: "display: flex; align-items: center; gap: 6px;",
-                    div {
-                        style: "font-family: var(--font-display); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: var(--textDim); white-space: nowrap; min-width: 70px;",
-                        "Quick Access"
+                button {
+                    class: "icon-btn",
+                    style: "width: 100%; justify-content: space-between; padding: 5px 10px; font-size: 12px; color: var(--text);",
+                    title: "Quick links",
+                    onclick: move |_| show_quick_menu.toggle(),
+                    span {
+                        style: "display: flex; align-items: center; gap: 6px;",
+                        IconGlobe { size: Some(13), color: Some("currentColor".to_string()) }
+                        "Quick links"
                     }
+                    IconChevronDown {
+                        size: Some(13),
+                        color: Some("currentColor".to_string()),
+                        // flip the chevron when open for a touch of motion
+                        // (no extra deps — style-only transform)
+                    }
+                }
+
+                if show_quick_menu() {
                     div {
-                        style: "display: flex; flex-wrap: wrap; gap: 4px; flex: 1;",
+                        id: "browser-quick-menu",
+                        class: "quick-menu",
+                        style: "position: absolute; left: 8px; right: 8px; bottom: calc(100% + 4px);",
+                        div {
+                            class: "quick-menu-section",
+                            "Quick Access"
+                        }
                         for (name, url_str) in quick_urls.iter().cloned() {
                             button {
-                                class: "card is-interactive",
-                                style: "padding: 3px 8px; font-size: 10px; cursor: pointer; white-space: nowrap;",
+                                class: "quick-menu-row",
                                 onclick: move |_| {
+                                    show_quick_menu.set(false);
                                     let target = url_str.to_string();
                                     let mut url_clone = url;
                                     let mut input_clone = url_input;
@@ -407,22 +474,15 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                                 "{name}"
                             }
                         }
-                    }
-                }
-
-                div {
-                    style: "display: flex; align-items: center; gap: 6px;",
-                    div {
-                        style: "font-family: var(--font-display); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: var(--textDim); white-space: nowrap; min-width: 70px;",
-                        "Localhost"
-                    }
-                    div {
-                        style: "display: flex; flex-wrap: wrap; gap: 4px; flex: 1;",
+                        div {
+                            class: "quick-menu-section",
+                            "Localhost"
+                        }
                         for (label, url_str) in localhost_urls.iter().cloned() {
                             button {
-                                class: "card is-interactive",
-                                style: "padding: 3px 8px; font-size: 10px; cursor: pointer; white-space: nowrap;",
+                                class: "quick-menu-row",
                                 onclick: move |_| {
+                                    show_quick_menu.set(false);
                                     let target = url_str.to_string();
                                     let mut url_clone = url;
                                     let mut input_clone = url_input;

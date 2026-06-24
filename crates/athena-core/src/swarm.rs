@@ -229,11 +229,11 @@ impl SwarmCoordinator {
             // Lock held: do the read-modify-write. `lock_file` stays in scope
             // and is dropped (releasing the lock) at the end of this closure.
             let result = (|| -> Result<(), SwarmError> {
-                let mut messages: Vec<MailboxMessage> =
-                    match std::fs::read_to_string(&mailbox_path) {
-                        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-                        Err(_) => Vec::new(),
-                    };
+                let mut messages: Vec<MailboxMessage> = match std::fs::read_to_string(&mailbox_path)
+                {
+                    Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                };
 
                 messages.push(MailboxMessage {
                     id: generate_msg_id(),

@@ -9,11 +9,11 @@
 /// the source and title-cased on output. ~50 entries balances variety against
 /// collision probability for typical (≤16) pane counts.
 const FIRST_NAMES: &[&str] = &[
-    "Theo", "Cole", "Maya", "Leo", "Zara", "Finn", "Iris", "Kai", "Nova", "Ezra",
-    "Luna", "Jude", "Sage", "Rowan", "Wren", "Otto", "Enzo", "Cleo", "Juno", "Reza",
-    "Milo", "Nori", "Asa", "Dax", "Eve", "Fern", "Gus", "Hana", "Ivo", "Jett",
-    "Knox", "Lyra", "Mira", "Nico", "Onyx", "Pax", "Quinn", "Remy", "Soren", "Tova",
-    "Uma", "Vida", "Wells", "Xan", "Yael", "Zane", "Arlo", "Bram", "Coda", "Dune",
+    "Theo", "Cole", "Maya", "Leo", "Zara", "Finn", "Iris", "Kai", "Nova", "Ezra", "Luna", "Jude",
+    "Sage", "Rowan", "Wren", "Otto", "Enzo", "Cleo", "Juno", "Reza", "Milo", "Nori", "Asa", "Dax",
+    "Eve", "Fern", "Gus", "Hana", "Ivo", "Jett", "Knox", "Lyra", "Mira", "Nico", "Onyx", "Pax",
+    "Quinn", "Remy", "Soren", "Tova", "Uma", "Vida", "Wells", "Xan", "Yael", "Zane", "Arlo",
+    "Bram", "Coda", "Dune",
 ];
 
 /// Deterministically map a pane id to a stable name.
@@ -54,8 +54,9 @@ mod tests {
         // With ~50 names and distinct ids, we expect spread. Not a hard
         // guarantee (collisions are valid), so just assert a reasonable number
         // of unique names out of a batch.
-        let names: std::collections::HashSet<String> =
-            (0..40).map(|i| name_for_pane(&format!("pane-{i}"))).collect();
+        let names: std::collections::HashSet<String> = (0..40)
+            .map(|i| name_for_pane(&format!("pane-{i}")))
+            .collect();
         assert!(
             names.len() >= 10,
             "expected >=10 distinct names across 40 ids, got {}: {names:?}",
@@ -73,10 +74,7 @@ mod tests {
     fn all_entries_are_from_wordlist() {
         for i in 0..64 {
             let n = name_for_pane(&format!("id-{i}"));
-            assert!(
-                FIRST_NAMES.contains(&n.as_str()),
-                "{n:?} not in wordlist"
-            );
+            assert!(FIRST_NAMES.contains(&n.as_str()), "{n:?} not in wordlist");
         }
     }
 }

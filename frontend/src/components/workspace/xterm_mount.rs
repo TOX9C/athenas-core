@@ -92,7 +92,7 @@ pub fn XtermMount(
                 )
                 .into(),
             );
-            container.set_inner_html("");  // clear any stale xterm DOM
+            container.set_inner_html(""); // clear any stale xterm DOM
         }
 
         *is_initialized.borrow_mut() = true;
@@ -132,7 +132,8 @@ pub fn XtermMount(
                         )
                         .into(),
                     );
-                    if let Err(e) = pty_spawn(&mount_id_for_spawn, &spawn_cwd, &shell, 80, 24).await {
+                    if let Err(e) = pty_spawn(&mount_id_for_spawn, &spawn_cwd, &shell, 80, 24).await
+                    {
                         web_sys::console::error_1(
                             &format!(
                                 "XtermMount: pty_spawn failed for id={} cwd={} shell={}: {e:?}",
@@ -167,11 +168,15 @@ pub fn XtermMount(
                             let cmd_with_newline = format!("{}\n", cmd_str);
                             let mount_id_for_custom = mount_id_for_spawn.clone();
                             spawn(async move {
-                                if let Err(e) = pty_write(&mount_id_for_custom, &cmd_with_newline).await
+                                if let Err(e) =
+                                    pty_write(&mount_id_for_custom, &cmd_with_newline).await
                                 {
                                     web_sys::console::error_1(
-                                        &format!("XtermMount: custom command write failed: {:?}", e)
-                                            .into(),
+                                        &format!(
+                                            "XtermMount: custom command write failed: {:?}",
+                                            e
+                                        )
+                                        .into(),
                                     );
                                 }
                             });
@@ -400,8 +405,11 @@ pub fn XtermMount(
                     // Reconstruct the full command for Shell→manual-claude case
                     let full_cmd = format!("{} {};", prefix, &id);
                     web_sys::console::log_1(
-                        &format!("[XtermMount] capture resume id={} cmd={} for pane={}",
-                                 id, full_cmd, mount_id_for_scan).into(),
+                        &format!(
+                            "[XtermMount] capture resume id={} cmd={} for pane={}",
+                            id, full_cmd, mount_id_for_scan
+                        )
+                        .into(),
                     );
                     let mid = mount_id_for_scan.clone();
                     let mut ws = workspace_for_scan.clone();
@@ -433,7 +441,11 @@ pub fn XtermMount(
                                         // banner reappears for this new id.
                                         pane.resume_dismissed = Some(false);
                                         web_sys::console::log_1(
-                                            &format!("[XtermMount] persisted resume_id for pane={}", mid).into(),
+                                            &format!(
+                                                "[XtermMount] persisted resume_id for pane={}",
+                                                mid
+                                            )
+                                            .into(),
                                         );
                                         break;
                                     }
@@ -527,12 +539,11 @@ pub fn XtermMount(
                         // Single-fire timer closure — once_into_js auto-frees
                         // after the timeout fires, so this no longer leaks one
                         // Closure per resize tick.
-                        let timer =
-                            wasm_bindgen::closure::Closure::once_into_js(move || {
-                                if let Some(win) = web_sys::window() {
-                                    schedule_fit(&win, &fit_for_cb, &container_for_cb);
-                                }
-                            });
+                        let timer = wasm_bindgen::closure::Closure::once_into_js(move || {
+                            if let Some(win) = web_sys::window() {
+                                schedule_fit(&win, &fit_for_cb, &container_for_cb);
+                            }
+                        });
                         let handle = w.set_timeout_with_callback_and_timeout_and_arguments_0(
                             timer.as_ref().unchecked_ref(),
                             50,
@@ -894,10 +905,9 @@ fn schedule_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &we
     // RAF callbacks fire exactly once, so use once_into_js which auto-frees
     // the closure after invocation. The previous Closure::wrap + forget()
     // leaked one closure per call (per resize tick).
-    let raf_closure =
-        wasm_bindgen::closure::Closure::once_into_js(move || {
-            call_fit(&fit_for_raf, &container_for_raf);
-        });
+    let raf_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
+        call_fit(&fit_for_raf, &container_for_raf);
+    });
     let _ = window.request_animation_frame(raf_closure.as_ref().unchecked_ref());
     // raf_closure is a JsValue here; keep it alive in this scope until the
     // RAF fires by... actually once_into_js hands ownership to JS. The RAF

@@ -1,8 +1,8 @@
+use crate::components::shared::icon::IconClose;
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::notification::{
     mark_notification_dismissed, use_notification_store, NotificationType,
 };
-use crate::components::shared::icon::IconClose;
-use crate::components::shared::illustration::{EmptyState, EmptyArt};
 use dioxus::prelude::*;
 
 #[component]

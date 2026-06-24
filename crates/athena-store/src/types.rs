@@ -186,10 +186,7 @@ mod tests {
 
         // The two newest messages are at the tail.
         assert_eq!(session.messages.last().unwrap().id, "new-2");
-        assert_eq!(
-            session.messages[session.messages.len() - 2].id,
-            "new-1"
-        );
+        assert_eq!(session.messages[session.messages.len() - 2].id, "new-1");
     }
 
     #[test]

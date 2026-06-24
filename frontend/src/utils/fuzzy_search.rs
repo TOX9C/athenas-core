@@ -121,13 +121,13 @@ mod tests {
         // by ascending length; non-prefix matches after.
         let mut items: Vec<String> = (0..1000).map(|i| format!("item_{i}")).collect();
         // Inject prefix matches and substring-only matches.
-        items[2] = "abacus".to_string();         // prefix, len 6
-        items[4] = "absolute".to_string();       // prefix, len 8
-        items[7] = "abstract".to_string();       // prefix, len 8
-        items[100] = "z_ab_extra".to_string();   // substring only, len 9
-        items[101] = "z_ab".to_string();         // substring only, len 4
-        items[500] = "xabx".to_string();         // substring only, len 4
-        items[501] = "xaby".to_string();         // substring only, len 4
+        items[2] = "abacus".to_string(); // prefix, len 6
+        items[4] = "absolute".to_string(); // prefix, len 8
+        items[7] = "abstract".to_string(); // prefix, len 8
+        items[100] = "z_ab_extra".to_string(); // substring only, len 9
+        items[101] = "z_ab".to_string(); // substring only, len 4
+        items[500] = "xabx".to_string(); // substring only, len 4
+        items[501] = "xaby".to_string(); // substring only, len 4
 
         let result = fuzzy_search("ab", &items);
 

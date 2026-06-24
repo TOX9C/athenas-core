@@ -1,11 +1,11 @@
 use super::agent_output_panel::AgentOutputPanel;
 use super::agent_selector::AgentSelector;
 use super::agent_status_bar::AgentPaneStatus;
+use crate::components::shared::icon::{IconBell, IconClose, IconHelmet, IconSearch, IconTerminal};
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::agent_output::use_agent_output_store;
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatus};
 use crate::stores::notification::{use_notification_store, NotificationRecord, NotificationType};
-use crate::components::shared::icon::{IconBell, IconClose, IconHelmet, IconSearch, IconTerminal};
-use crate::components::shared::illustration::{EmptyState, EmptyArt};
 use dioxus::prelude::*;
 
 /// Inspector tab types.

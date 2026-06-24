@@ -180,7 +180,14 @@ pub async fn store_get(key: &str) -> TauriResult<String> {
 }
 
 pub async fn store_set(key: &str, value: &str) -> TauriResult<()> {
-    web_sys::console::log_1(&format!("[tauri_bridge] store_set key={:?} value_len={}", key, value.len()).into());
+    web_sys::console::log_1(
+        &format!(
+            "[tauri_bridge] store_set key={:?} value_len={}",
+            key,
+            value.len()
+        )
+        .into(),
+    );
     let result = invoke(
         "store_set",
         &serde_json::json!({ "key": key, "value": value }).to_string(),
@@ -594,9 +601,8 @@ pub async fn workspace_list_trusted_roots() -> TauriResult<Vec<String>> {
         &serde_json::json!({}).to_string(),
     )
     .await?;
-    serde_json::from_str(&raw).map_err(|e| {
-        js_sys::Error::new(&format!("failed to parse trusted roots: {}", e)).into()
-    })
+    serde_json::from_str(&raw)
+        .map_err(|e| js_sys::Error::new(&format!("failed to parse trusted roots: {}", e)).into())
 }
 
 // ---------------------------------------------------------------------------
@@ -619,9 +625,8 @@ pub async fn get_pane_history(pane_id: &str) -> TauriResult<Vec<OutputLine>> {
         &serde_json::json!({ "pane_id": pane_id }).to_string(),
     )
     .await?;
-    serde_json::from_str(&raw).map_err(|e| {
-        js_sys::Error::new(&format!("failed to parse output history: {}", e)).into()
-    })
+    serde_json::from_str(&raw)
+        .map_err(|e| js_sys::Error::new(&format!("failed to parse output history: {}", e)).into())
 }
 ///
 /// The backend emits `pty:raw` events with a JSON payload of the form
