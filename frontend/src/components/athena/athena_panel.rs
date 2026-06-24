@@ -2,12 +2,12 @@ use super::athena_input::AthenaInput;
 use super::chat_message::AthenaChatMessage;
 use super::session_switcher::SessionSwitcher;
 use super::thinking::AthenaThinkingIndicator;
+use crate::components::shared::icon::IconClose;
+use crate::components::shared::illustration::OwlMark;
 use crate::stores::athena::{
     use_athena_store, AskUserOption, AthenaMessage, MessageRole, PlanStatus, PlanStepStatus,
     StepEvaluation,
 };
-use crate::components::shared::icon::IconClose;
-use crate::components::shared::illustration::OwlMark;
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 use std::cell::RefCell;
@@ -271,7 +271,9 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     web_sys::console::warn_1(
                         &format!("[AthenaPanel] Keyring probe failed: {:?}. Leaving api_configured as-is.", e).into(),
                     );
-                    athena.write().set_api_keyring_error(Some(format!("Keychain access failed: {:?}", e)));
+                    athena
+                        .write()
+                        .set_api_keyring_error(Some(format!("Keychain access failed: {:?}", e)));
                 }
             }
             match tauri_bridge::store_get("llm.model").await {

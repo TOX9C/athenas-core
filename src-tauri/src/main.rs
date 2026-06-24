@@ -222,7 +222,9 @@ fn main() {
                         if let Ok(manager) = sm.try_lock() {
                             rt.block_on(manager.shutdown_all());
                         } else {
-                            log::warn!("session_manager lock contended during exit; PTYs may be orphaned");
+                            log::warn!(
+                                "session_manager lock contended during exit; PTYs may be orphaned"
+                            );
                         }
                     }
                 }

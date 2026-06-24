@@ -35,7 +35,11 @@ pub fn ResizeHandle(props: ResizeHandleProps) -> Element {
     } else {
         "width: 1px; height: 100%; cursor: col-resize;"
     };
-    let cls = if props.dragging { "resize-handle is-dragging" } else { "resize-handle" };
+    let cls = if props.dragging {
+        "resize-handle is-dragging"
+    } else {
+        "resize-handle"
+    };
     let hit = if props.vertical {
         "position: absolute; left: 0; right: 0; top: -4px; height: 9px;"
     } else {

@@ -28,6 +28,11 @@ pub struct CustomAgent {
     /// agents (without the field) deserialize to `false`.
     #[serde(default)]
     pub is_claude: bool,
+    /// When true, this `is_claude` agent is the default / priority option
+    /// in the resume banner dropdown. Only one agent should be priority
+    /// at a time. `#[serde(default)]` for backward compat.
+    #[serde(default)]
+    pub priority: bool,
 }
 
 /// Grid layout template for a space.

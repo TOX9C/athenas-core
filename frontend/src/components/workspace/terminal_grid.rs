@@ -1,17 +1,19 @@
 use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::components::shared::icon::{
+    IconCheck, IconClose, IconCopy, IconFullscreen, IconMinimize,
+};
+use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::terminal::{use_terminal_store, TerminalCell, TerminalColor};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType, Space};
 use crate::tauri_bridge::{pty_agent_info, pty_kill, pty_write};
 use crate::types::workspace::CustomAgent;
 use crate::utils::agent_commands::{
-    claude_resume_variants, custom_agent_process_name, agent_process_name, get_agent_color,
+    agent_process_name, claude_resume_variants, custom_agent_process_name, get_agent_color,
     get_agent_label, get_agent_resume_command,
 };
-use crate::components::shared::icon::{IconCheck, IconClose, IconCopy, IconFullscreen, IconMinimize};
-use crate::components::shared::illustration::{EmptyState, EmptyArt};
 
 #[cfg(feature = "xterm")]
 use crate::components::workspace::xterm_mount::XtermMount;
@@ -306,17 +308,16 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let mut editing_title = use_signal(|| false);
     let mut temp_title = use_signal(|| String::new());
 
-    // Read current foreground process, task title, and summarized title from terminal store
-    let (fg_process, task_title, summarized_title) = {
+    // Read current foreground process and title state from terminal store
+    let (fg_process, title_state) = {
         let ts = terminal_store.read();
         if let Some(session) = ts.sessions.get(&props.pane_id) {
             (
                 session.foreground_process.clone(),
-                session.task_title.clone(),
-                session.summarized_title.clone(),
+                session.title_state.clone(),
             )
         } else {
-            (None, None, None)
+            (None, crate::utils::pane_label::TitleState::default())
         }
     };
 
@@ -325,15 +326,12 @@ fn PaneItem(props: PaneItemProps) -> Element {
     // panes, or from resume_id + agent type for agent panes), show a banner
     // so the user can choose to resume the session. The banner auto-hides
     // while the agent is running (only for detectable agent types).
-    let display_resume_cmd = props
-        .resume_cmd
-        .as_ref()
-        .cloned()
-        .or_else(|| {
-            props.resume_id.as_deref().and_then(|id| {
-                get_agent_resume_command(&props.agent_type, id)
-            })
-        });
+    let display_resume_cmd = props.resume_cmd.as_ref().cloned().or_else(|| {
+        props
+            .resume_id
+            .as_deref()
+            .and_then(|id| get_agent_resume_command(&props.agent_type, id))
+    });
 
     // Resolve the custom agent config for a Custom pane — used to decide
     // running-detection and whether this pane is a Claude alias.
@@ -426,8 +424,12 @@ fn PaneItem(props: PaneItemProps) -> Element {
             let poll_pane_id = poll_pane_id.clone();
             let want_process = want_process.clone();
             async move {
-                let Some(want) = want_process else { return; };
-                if !has_resume { return; }
+                let Some(want) = want_process else {
+                    return;
+                };
+                if !has_resume {
+                    return;
+                }
                 loop {
                     if let Ok(info) = pty_agent_info(&poll_pane_id).await {
                         let running = info.foreground_process == want;
@@ -453,46 +455,27 @@ fn PaneItem(props: PaneItemProps) -> Element {
         && !banner_dismissed()
         && (!has_detectable_agent || !agent_running());
 
-    // Priority for the main label:
-    //   1. user-edited label (explicit rename) >
-    //   2. LLM-generated summary (if feature enabled) >
-    //   3. agent-scraped task title (raw prompt) >
-    //   4. idle-Shell random name (auto_generate_titles) >
-    //   5. static agent label ("Shell"/"Claude Code"/…)
-    let left_label = {
-        let summarize_active = ui_state.read().summarize_agent_titles;
-        if let Some(label) = props.label.clone() {
-            // 1. User-edited label always wins
-            label
-        } else if summarize_active {
-            // 2. Feature ON: prefer LLM summary, fall back through scraped title
-            if let Some(summary) = summarized_title {
-                summary
-            } else if let Some(title) = task_title {
-                title
-            } else if props.agent_type == AgentType::Shell
-                && fg_process.as_deref().map_or(true, |p| p == "shell")
-                && ui_state.read().auto_generate_titles {
-                crate::utils::pane_names::name_for_pane(&props.pane_id)
-            } else {
-                agent_label.to_string()
-            }
-        } else {
-            // Feature OFF: never use raw prompt as label.
-            // Show static label for all pane types.
-            if props.agent_type == AgentType::Shell
-                && fg_process.as_deref().map_or(true, |p| p == "shell")
-                && ui_state.read().auto_generate_titles
-            {
-                crate::utils::pane_names::name_for_pane(&props.pane_id)
-            } else {
-                agent_label.to_string()
-            }
-        }
+    let left_label = crate::utils::pane_label::resolve_pane_label(
+        props.label.as_deref(),
+        &title_state,
+        &props.agent_type,
+        fg_process.as_deref(),
+        ui_state.read().smart_pane_titles,
+        &agent_label,
+    );
+
+    // View-only truncation. The store keeps the full title; the pill shows
+    // up to ~24 chars with an ellipsis, full text on hover.
+    const LABEL_MAX_CHARS: usize = 24;
+    let (display_label, tooltip) = if left_label.chars().count() <= LABEL_MAX_CHARS {
+        (left_label.clone(), None)
+    } else {
+        let truncated: String = left_label.chars().take(LABEL_MAX_CHARS).collect();
+        (format!("{}…", truncated), Some(left_label.clone()))
     };
+    let title_text = tooltip.unwrap_or_else(|| display_label.clone());
     // Show the detected foreground process as a subtle badge when it's meaningful
-    let right_badge = fg_process
-        .filter(|p| p != "shell" && p != &left_label && !p.is_empty());
+    let right_badge = fg_process.filter(|p| p != "shell" && p != &left_label && !p.is_empty());
     let pane_id_for_rename = props.pane_id.clone();
     let space_id_for_rename = props.space_id.clone();
 
@@ -565,11 +548,12 @@ fn PaneItem(props: PaneItemProps) -> Element {
                             rsx! {
                                 span {
                                     style: "font-family: var(--font-ui); font-size: var(--text-xs); font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; cursor: text;",
+                                    title: "{title_text}",
                                     ondblclick: move |_| {
                                         temp_title.set(left_label.clone());
                                         editing_title.set(true);
                                     },
-                                    "{left_label}"
+                                    "{display_label}"
                                 }
                             }
                         };

@@ -261,8 +261,10 @@ pub struct TerminalSession {
     pub session_id: Option<String>,
     /// Raw prompt text (available for LLM summarization).
     pub raw_prompt: Option<String>,
-    /// LLM-generated short title (2-3 words). Only populated when the feature is enabled.
-    pub summarized_title: Option<String>,
+    /// Per-pane title state machine. Idle until a prompt is scraped, Pending
+    /// while the LLM call is in flight, Failed if it exhausted retries, Done
+    /// once a title (or "Sensitive prompt") is available. See utils/pane_label.
+    pub title_state: crate::utils::pane_label::TitleState,
 }
 
 impl TerminalSession {
@@ -291,7 +293,7 @@ impl TerminalSession {
             task_title: None,
             session_id: None,
             raw_prompt: None,
-            summarized_title: None,
+            title_state: crate::utils::pane_label::TitleState::default(),
         }
     }
 

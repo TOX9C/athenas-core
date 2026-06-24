@@ -134,7 +134,9 @@ pub fn IconFiles(size: Option<u8>, color: Option<String>) -> Element {
     )
 }
 
-/// Agents — Corinthian helmet.
+/// Agents — Corinthian helmet, simplified for legibility. Keeps the dome +
+/// nose guard + crest; cheek guards reduced to clean single strokes so the
+/// helmet silhouette reads at 18px.
 #[component]
 pub fn IconAgents(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(18);
@@ -142,12 +144,12 @@ pub fn IconAgents(size: Option<u8>, color: Option<String>) -> Element {
     inline_svg(
         rsx! {
             // dome
-            path { d: "M6 14 V12 C6 8 8.5 5 12 5 C15.5 5 18 8 18 12 V14" }
-            // cheek guards curling inward
-            path { d: "M6 14 C6 16.5 7.5 18 9.5 18 V13" }
-            path { d: "M18 14 C18 16.5 16.5 18 14.5 18 V13" }
+            path { d: "M6 13 V11.5 C6 8 8.5 5.5 12 5.5 C15.5 5.5 18 8 18 11.5 V13" }
+            // cheek guards — single clean strokes down each side
+            path { d: "M6 13 V16 H9 V13" }
+            path { d: "M18 13 V16 H15 V13" }
             // nose guard (the T of the Corinthian)
-            path { d: "M12 9 V17" }
+            path { d: "M12 9 V16" }
             // crest plume
             path { d: "M8 6 C9 3.5 15 3.5 16 6" }
         },
@@ -171,15 +173,21 @@ pub fn IconPlugins(size: Option<u8>, color: Option<String>) -> Element {
     )
 }
 
-/// Settings — gear (universal affordance).
+/// Settings — toothed gear (universal affordance). A continuous 8-tooth cog
+/// body (curved teeth on the rim, no radial spokes) + a center bore ring, so
+/// it reads unambiguously as "settings" at 12px instead of a sun/asterisk.
 #[component]
 pub fn IconSettings(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(16);
     let c = color.as_deref().unwrap_or("currentColor");
     inline_svg(
         rsx! {
+            // 8-tooth cog body: teeth are curved bumps on a continuous rim.
+            path {
+                d: "M10.325 4.317 C10.751 2.561 13.249 2.561 13.675 4.317 A1.724 1.724 0 0 0 16.248 5.383 C17.791 4.443 19.557 6.209 18.617 7.752 A1.724 1.724 0 0 0 19.682 10.325 C21.438 10.751 21.438 13.249 19.682 13.675 A1.724 1.724 0 0 0 18.617 16.248 C19.557 17.791 17.791 19.557 16.248 18.617 A1.724 1.724 0 0 0 13.675 19.682 C13.249 21.438 10.751 21.438 10.325 19.682 A1.724 1.724 0 0 0 7.752 18.617 C6.209 19.557 4.443 17.791 5.383 16.248 A1.724 1.724 0 0 0 4.318 13.675 C2.562 13.249 2.562 10.751 4.318 10.325 A1.724 1.724 0 0 0 5.383 7.752 C4.443 6.209 6.209 4.443 7.752 5.383 A1.724 1.724 0 0 0 10.325 4.317 Z"
+            }
+            // center bore
             circle { cx: "12", cy: "12", r: "3" }
-            path { d: "M12 2 V5 M12 19 V22 M2 12 H5 M19 12 H22 M4.9 4.9 L7 7 M17 17 L19.1 19.1 M19.1 4.9 L17 7 M7 17 L4.9 19.1" }
         },
         s,
         c,
@@ -247,20 +255,27 @@ pub fn IconZap(size: Option<u8>, color: Option<String>) -> Element {
     )
 }
 
-/// Swarm — constellation of connected stars.
+/// Swarm — hub-and-spoke constellation: a central node connected to satellite
+/// nodes by lines. Reads as a coordinated network/swarm at 16px without the
+/// busy star of the previous version.
 #[component]
 pub fn IconSwarm(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(18);
     let c = color.as_deref().unwrap_or("currentColor");
     inline_svg(
         rsx! {
-            // connecting lines
-            path { d: "M12 6 L5.5 18 L18.5 18 Z" }
-            path { d: "M12 6 V18" }
-            // star nodes
-            path { d: "M12 4 L12.8 5.6 L14.5 5.8 L13.2 7 L13.6 8.7 L12 7.9 L10.4 8.7 L10.8 7 L9.5 5.8 L11.2 5.6 Z" }
-            circle { cx: "5.5", cy: "18", r: "1.4", fill: c }
-            circle { cx: "18.5", cy: "18", r: "1.4", fill: c }
+            // spokes from the center hub to each satellite
+            path { d: "M12 12 L12 5" }
+            path { d: "M12 12 L18 8" }
+            path { d: "M12 12 L18 16" }
+            path { d: "M12 12 L6 16" }
+            // central hub
+            circle { cx: "12", cy: "12", r: "2", fill: c }
+            // satellite nodes
+            circle { cx: "12", cy: "5", r: "1.4", fill: c }
+            circle { cx: "18", cy: "8", r: "1.4", fill: c }
+            circle { cx: "18", cy: "16", r: "1.4", fill: c }
+            circle { cx: "6", cy: "16", r: "1.4", fill: c }
         },
         s,
         c,
@@ -487,11 +502,10 @@ pub fn IconRefresh(size: Option<u8>, color: Option<String>) -> Element {
     let c = color.as_deref().unwrap_or("currentColor");
     inline_svg(
         rsx! {
-            // ouroboros-curved circular arrows
-            path { d: "M20 12 A8 8 0 1 1 6.5 6.5" }
-            path { d: "M4 12 A8 8 0 1 0 17.5 17.5" }
-            path { d: "M20 5 V8 H17" }
-            path { d: "M4 19 V16 H7" }
+            // single clockwise circular arrow (~280° sweep) ending in a head
+            path { d: "M20 11 A8 8 0 1 0 18.4 16.3" }
+            // arrowhead at the open end (top-right)
+            path { d: "M15.5 4.5 H20 V9" }
         },
         s,
         c,
@@ -641,32 +655,47 @@ pub fn IconFile(size: Option<u8>, color: Option<String>) -> Element {
     )
 }
 
+/// Fullscreen — four corner brackets pointing outward (expand frame). The
+/// mirror of [`IconMinimize`]. Straight L-brackets so it reads unambiguously
+/// as "expand" at 16px.
 #[component]
 pub fn IconFullscreen(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(16);
     let c = color.as_deref().unwrap_or("currentColor");
     inline_svg(
         rsx! {
-            path { d: "M4 9 V5 C4 4.5 4.5 4 5 4 H9" }
-            path { d: "M15 4 H19 C19.5 4 20 4.5 20 5 V9" }
-            path { d: "M20 15 V19 C20 19.5 19.5 20 19 20 H15" }
-            path { d: "M9 20 H5 C4.5 20 4 19.5 4 19 V15" }
+            // top-left bracket: out from corner along top, then down the left
+            path { d: "M4 9 V4 H9" }
+            // top-right bracket
+            path { d: "M15 4 H20 V9" }
+            // bottom-right bracket
+            path { d: "M20 15 V20 H15" }
+            // bottom-left bracket
+            path { d: "M9 20 H4 V15" }
         },
         s,
         c,
     )
 }
 
+/// Minimize — four corner brackets pointing inward toward center (collapse
+/// frame), the mirror of [`IconFullscreen`]. Replaces the previous inward-curl
+/// pinwheel geometry that read wrong. Where fullscreen reaches out to the
+/// corners, minimize reaches in from the corners toward center.
 #[component]
 pub fn IconMinimize(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(16);
     let c = color.as_deref().unwrap_or("currentColor");
     inline_svg(
         rsx! {
-            path { d: "M9 4 V7 C9 8 8 9 7 9 H4" }
-            path { d: "M15 4 V7 C15 8 16 9 17 9 H20" }
-            path { d: "M20 15 V18 C20 19 19 20 18 20 H15" }
-            path { d: "M4 15 V18 C4 19 5 20 6 20 H9" }
+            // top-left bracket: in from corner along top, then down toward center
+            path { d: "M9 4 L9 9 L4 9" }
+            // top-right bracket
+            path { d: "M15 4 L15 9 L20 9" }
+            // bottom-right bracket
+            path { d: "M15 20 L15 15 L20 15" }
+            // bottom-left bracket
+            path { d: "M9 20 L9 15 L4 15" }
         },
         s,
         c,
@@ -726,6 +755,34 @@ pub fn IconOwl(size: Option<u8>, color: Option<String>) -> Element {
             path { d: "M9.6 19.6 V21" }
             path { d: "M12 20 V21.4" }
             path { d: "M14.4 19.6 V21" }
+        },
+        s,
+        c,
+    )
+}
+
+/// Athena — compact owl-face brand glyph for the titlebar "Athena" toggle.
+/// A simplified Owl of Athena (facial disc, two eyes, ear tufts, beak) tuned to
+/// read as the Athena brand mark at 16px. Distinct from the richer [`IconOwl`]
+/// used at larger sizes for toasts.
+#[component]
+pub fn IconAthena(size: Option<u8>, color: Option<String>) -> Element {
+    let s = size.unwrap_or(16);
+    let c = color.as_deref().unwrap_or("currentColor");
+    inline_svg(
+        rsx! {
+            // facial disc / head
+            path { d: "M12 4 C7.9 4 5.5 6.6 5.5 10.4 V13 A6.5 6.5 0 0 0 18.5 13 V10.4 C18.5 6.6 16.1 4 12 4 Z" }
+            // ear tufts rising from the brows
+            path { d: "M7.2 9 C6.9 7 7.6 5.6 8.9 5.3 C9.7 6 10 7.1 9.8 8.3" }
+            path { d: "M16.8 9 C17.1 7 16.4 5.6 15.1 5.3 C14.3 6 14 7.1 14.2 8.3" }
+            // eyes
+            circle { cx: "9.4", cy: "10.6", r: "2.1" }
+            circle { cx: "14.6", cy: "10.6", r: "2.1" }
+            circle { cx: "9.4", cy: "10.6", r: "0.7", fill: c }
+            circle { cx: "14.6", cy: "10.6", r: "0.7", fill: c }
+            // beak
+            path { d: "M12 12.3 L11.1 13.8 H12.9 Z" }
         },
         s,
         c,

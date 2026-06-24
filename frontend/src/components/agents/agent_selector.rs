@@ -1,5 +1,5 @@
-use crate::stores::agent_output::use_agent_output_store;
 use crate::components::shared::icon::IconChevronDown;
+use crate::stores::agent_output::use_agent_output_store;
 use dioxus::prelude::*;
 
 /// Get a color for an agent type.

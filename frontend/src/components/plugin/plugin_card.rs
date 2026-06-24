@@ -36,11 +36,7 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
         .unwrap_or('?')
         .to_uppercase()
         .to_string();
-    let dot_class = if is_running {
-        "pulse-soft"
-    } else {
-        ""
-    };
+    let dot_class = if is_running { "pulse-soft" } else { "" };
 
     rsx! {
         div {

@@ -9,10 +9,16 @@ pub struct MenuItem {
 
 impl MenuItem {
     pub fn new(label: impl Into<String>) -> Self {
-        Self { label: label.into(), danger: false }
+        Self {
+            label: label.into(),
+            danger: false,
+        }
     }
     pub fn danger(label: impl Into<String>) -> Self {
-        Self { label: label.into(), danger: true }
+        Self {
+            label: label.into(),
+            danger: true,
+        }
     }
 }
 

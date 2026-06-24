@@ -18,7 +18,7 @@ use components::right_sidebar::BrowserSurface;
 use components::settings::settings_modal::SettingsModal;
 use components::settings::SettingsPanel;
 use components::shared::icon::{
-    IconAgents, IconFiles, IconGrid, IconPlugins, IconPlus, IconSettings, IconSwarm, IconTerminal,
+    IconAgents, IconAthena, IconFiles, IconGrid, IconPlugins, IconPlus, IconSettings, IconSwarm,
 };
 use components::shared::illustration::OwlMark;
 use components::shared::toast::{provide_toast_store, ToastContainer};
@@ -44,6 +44,26 @@ use stores::ui::{provide_ui_store, use_ui_store, Panel, SidebarSection};
 use stores::workspace::{
     provide_workspace_store, use_workspace_store, AgentType, PaneConfig, Space, WorkspaceState,
 };
+
+/// Migrate old separate pane-title settings into the unified `smart_pane_titles` key.
+async fn migrate_smart_pane_titles() -> bool {
+    if let Ok(v) = crate::tauri_bridge::store_get("smart_pane_titles").await {
+        return v == "true";
+    }
+    let auto_gen = crate::tauri_bridge::store_get("auto_generate_titles")
+        .await
+        .map(|v| v == "true")
+        .unwrap_or(true);
+    let summarize = crate::tauri_bridge::store_get("summarize_agent_titles")
+        .await
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let merged = auto_gen || summarize;
+    let _ =
+        crate::tauri_bridge::store_set("smart_pane_titles", if merged { "true" } else { "false" })
+            .await;
+    merged
+}
 
 /// Root application component — faithful port of App.tsx.
 #[component]
@@ -123,23 +143,18 @@ pub fn App() -> Element {
             let last_call = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
             // Capture unlisten for cleanup. The closure runs for the app
             // lifetime if unlisten is dropped without being called.
-            let _unlisten = crate::tauri_bridge::listen(
-                "tauri://resize",
-                move |_payload| {
-                    let now = js_sys::Date::now();
-                    if now - last_call.get() < 150.0 {
-                        return;
+            let _unlisten = crate::tauri_bridge::listen("tauri://resize", move |_payload| {
+                let now = js_sys::Date::now();
+                if now - last_call.get() < 150.0 {
+                    return;
+                }
+                last_call.set(now);
+                spawn(async move {
+                    if let Ok(maximized) = crate::tauri_bridge::window_is_maximized().await {
+                        is_maximized.set(maximized);
                     }
-                    last_call.set(now);
-                    spawn(async move {
-                        if let Ok(maximized) =
-                            crate::tauri_bridge::window_is_maximized().await
-                        {
-                            is_maximized.set(maximized);
-                        }
-                    });
-                },
-            );
+                });
+            });
         });
     });
 
@@ -183,13 +198,8 @@ pub fn App() -> Element {
                         }
                     }
                 }
-                // Load auto-generate-titles setting from persist
-                if let Ok(v) = crate::tauri_bridge::store_get("auto_generate_titles").await {
-                    ui.write().auto_generate_titles = v == "true";
-                }
-                if let Ok(v) = crate::tauri_bridge::store_get("summarize_agent_titles").await {
-                    ui.write().summarize_agent_titles = v == "true";
-                }
+                // Migrate old separate settings to unified smart_pane_titles
+                ui.write().smart_pane_titles = migrate_smart_pane_titles().await;
             });
         });
     }
@@ -222,15 +232,10 @@ pub fn App() -> Element {
                     if dir.is_empty() {
                         continue;
                     }
-                    if let Err(e) =
-                        crate::tauri_bridge::workspace_add_trusted_root(dir).await
-                    {
+                    if let Err(e) = crate::tauri_bridge::workspace_add_trusted_root(dir).await {
                         web_sys::console::warn_1(
-                            &format!(
-                                "[startup] failed to re-trust space dir '{}': {:?}",
-                                dir, e
-                            )
-                            .into(),
+                            &format!("[startup] failed to re-trust space dir '{}': {:?}", dir, e)
+                                .into(),
                         );
                     }
                 }
@@ -260,7 +265,9 @@ pub fn App() -> Element {
     {
         let final_ws = workspace.clone();
         use_effect(move || {
-            let Some(window) = web_sys::window() else { return; };
+            let Some(window) = web_sys::window() else {
+                return;
+            };
             let ws_signal = final_ws.clone();
             let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
                 ws_signal.read().save();
@@ -592,7 +599,7 @@ pub fn App() -> Element {
                             let v = ui_state.read().right_sidebar_open;
                             ui_state.write().right_sidebar_open = !v;
                         },
-                        IconTerminal { size: Some(16), color: Some("currentColor".to_string()) }
+                        IconAthena { size: Some(16), color: Some("currentColor".to_string()) }
                     }
 
                     // Swarm launch

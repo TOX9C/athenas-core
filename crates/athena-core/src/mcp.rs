@@ -1073,8 +1073,8 @@ impl ConnectionHandler {
                 .await;
                 match read_result {
                     Ok(Ok(Some(l))) => l,
-                    Ok(Ok(None)) => break,  // EOF
-                    Ok(Err(())) => break,   // read error or oversize
+                    Ok(Ok(None)) => break, // EOF
+                    Ok(Err(())) => break,  // read error or oversize
                     Err(_) => {
                         log::info!(
                             "MCP: client {} idle for >{}s, closing connection",
@@ -1458,8 +1458,16 @@ mod tests_parse_error {
         let raw = r#"{"id":42,"method":"foo"#;
         let resp = make_parse_error_response(raw);
         assert!(resp.contains("\"id\":42"), "expected id 42 in: {}", resp);
-        assert!(resp.contains("-32700"), "expected parse error code in: {}", resp);
-        assert!(resp.contains("\"jsonrpc\":\"2.0\""), "expected jsonrpc 2.0 in: {}", resp);
+        assert!(
+            resp.contains("-32700"),
+            "expected parse error code in: {}",
+            resp
+        );
+        assert!(
+            resp.contains("\"jsonrpc\":\"2.0\""),
+            "expected jsonrpc 2.0 in: {}",
+            resp
+        );
     }
 
     #[test]
@@ -1467,8 +1475,16 @@ mod tests_parse_error {
         // Completely unparseable input
         let raw = "not json at all";
         let resp = make_parse_error_response(raw);
-        assert!(resp.contains("\"id\":null"), "expected null id in: {}", resp);
-        assert!(resp.contains("-32700"), "expected parse error code in: {}", resp);
+        assert!(
+            resp.contains("\"id\":null"),
+            "expected null id in: {}",
+            resp
+        );
+        assert!(
+            resp.contains("-32700"),
+            "expected parse error code in: {}",
+            resp
+        );
     }
 
     #[test]
@@ -1488,6 +1504,10 @@ mod tests_parse_error {
         // Valid JSON object but no `id` key
         let raw = r#"{"method":"foo"}"#;
         let resp = make_parse_error_response(raw);
-        assert!(resp.contains("\"id\":null"), "expected null id in: {}", resp);
+        assert!(
+            resp.contains("\"id\":null"),
+            "expected null id in: {}",
+            resp
+        );
     }
 }

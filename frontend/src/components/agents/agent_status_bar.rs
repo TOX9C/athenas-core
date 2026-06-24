@@ -1,6 +1,6 @@
+use crate::components::shared::icon::IconHelmet;
 use crate::stores::agent_output::use_agent_output_store;
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatus};
-use crate::components::shared::icon::IconHelmet;
 use dioxus::prelude::*;
 
 /// Status info for an agent pane.
