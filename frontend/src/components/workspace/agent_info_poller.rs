@@ -73,10 +73,10 @@ pub fn AgentInfoPoller() -> Element {
 
                             if feature_enabled
                                 && prompt_ready
-                                && !summarized_sessions.read().contains(sid)
+                                && !summarized_sessions.read().contains(pane_id)
                             {
-                                // Mark this session as in-flight so we never re-trigger it.
-                                summarized_sessions.write().insert(sid.to_string());
+                                // Mark this pane as in-flight so we never re-trigger it.
+                                summarized_sessions.write().insert(pane_id.clone());
                                 let raw_prompt = raw.to_string();
                                 let mut store = terminal_store.clone();
                                 let pane = pane_id.clone();

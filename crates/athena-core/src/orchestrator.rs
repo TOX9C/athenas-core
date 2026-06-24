@@ -1028,6 +1028,7 @@ impl AthenaOrchestrator {
                 let body = serde_json::json!({
                     "model": model,
                     "max_tokens": 48,
+                    "temperature": 0,
                     "system": system,
                     "messages": [{"role": "user", "content": prompt}]
                 });
@@ -1076,6 +1077,7 @@ impl AthenaOrchestrator {
                 let body = serde_json::json!({
                     "model": model,
                     "max_tokens": 48,
+                    "temperature": 0,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": prompt}
