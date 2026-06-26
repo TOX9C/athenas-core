@@ -3,6 +3,7 @@ use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::notification::{
     mark_notification_dismissed, use_notification_store, NotificationType,
 };
+use crate::tauri_bridge;
 use dioxus::prelude::*;
 
 #[component]
@@ -140,6 +141,10 @@ pub fn NotificationPanel() -> Element {
                                         style: "flex-shrink: 0;",
                                         onclick: move |e: Event<MouseData>| {
                                             e.stop_propagation();
+                                            let id = n_id.clone();
+                                            spawn(async move {
+                                                let _ = tauri_bridge::notification_dismiss(&id).await;
+                                            });
                                             mark_notification_dismissed(&mut notifications, &n_id);
                                         },
                                         IconClose { size: Some(13), color: Some("currentColor".to_string()) }
@@ -157,6 +162,9 @@ pub fn NotificationPanel() -> Element {
                 button {
                     class: "btn-ghost btn-sm",
                     onclick: move |_| {
+                        spawn(async move {
+                            let _ = tauri_bridge::notification_mark_all_read().await;
+                        });
                         for n in notifications.write().iter_mut() {
                             n.read = true;
                         }
@@ -166,6 +174,9 @@ pub fn NotificationPanel() -> Element {
                 button {
                     class: "btn-ghost btn-sm",
                     onclick: move |_| {
+                        spawn(async move {
+                            let _ = tauri_bridge::notification_clear_all().await;
+                        });
                         notifications.write().clear();
                     },
                     "Clear all"
