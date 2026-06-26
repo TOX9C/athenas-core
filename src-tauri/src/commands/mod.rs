@@ -1727,11 +1727,9 @@ struct CodexHistoryEntry {
     timestamp: u64,
 }
 
-/// Parse the last line of Claude's `~/.claude/history.jsonl` into an entry.
-/// Pure (no I/O) so it is unit-testable.
-fn parse_claude_history(content: &str) -> Option<ClaudeHistoryEntry> {
-    let last_line = content.lines().last()?;
-    let json: serde_json::Value = serde_json::from_str(last_line).ok()?;
+/// Parse a single line of Claude's `history.jsonl` into an entry.
+fn parse_claude_history_line(line: &str) -> Option<ClaudeHistoryEntry> {
+    let json: serde_json::Value = serde_json::from_str(line).ok()?;
     let display = json.get("display")?.as_str()?.trim().to_string();
     let session_id = json.get("sessionId")?.as_str()?.to_string();
     let timestamp = json.get("timestamp")?.as_u64()?;
@@ -1742,11 +1740,9 @@ fn parse_claude_history(content: &str) -> Option<ClaudeHistoryEntry> {
     })
 }
 
-/// Parse the last line of Codex's `~/.codex/history.jsonl` into an entry.
-/// Pure (no I/O) so it is unit-testable.
-fn parse_codex_history(content: &str) -> Option<CodexHistoryEntry> {
-    let last_line = content.lines().last()?;
-    let json: serde_json::Value = serde_json::from_str(last_line).ok()?;
+/// Parse a single line of Codex's `history.jsonl` into an entry.
+fn parse_codex_history_line(line: &str) -> Option<CodexHistoryEntry> {
+    let json: serde_json::Value = serde_json::from_str(line).ok()?;
     let display = json.get("text")?.as_str()?.trim().to_string();
     let session_id = json.get("session_id")?.as_str()?.to_string();
     let timestamp = json.get("ts")?.as_u64()?;
@@ -1757,20 +1753,58 @@ fn parse_codex_history(content: &str) -> Option<CodexHistoryEntry> {
     })
 }
 
-/// Scrape the last session entry from Claude's history file.
+/// Returns true if the display text looks like a real user prompt rather than
+/// a meta-command, empty input, or log paste.
+fn is_valid_prompt(display: &str) -> bool {
+    let trimmed = display.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Skip commands like /exit, /model, /new, etc.
+    if trimmed.starts_with('/') {
+        return false;
+    }
+    // Skip meta markers like [Pasted text...] or [Image...]
+    if trimmed.starts_with('[') && (trimmed.contains("Pasted") || trimmed.contains("Image")) {
+        return false;
+    }
+    // Require at least some substance (not just "yo", "y", etc.)
+    if trimmed.chars().count() < 5 {
+        return false;
+    }
+    true
+}
+
+/// Scrape the last *valid* session entry from Claude's history file.
+/// Scans from bottom-most (most recent) line up, skipping meta-commands and
+/// garbage, so a pane does not inherit `/exit` or a single letter as its title.
 fn scrape_claude_task() -> Option<ClaudeHistoryEntry> {
     let home = std::env::var("HOME").ok()?;
     let path = std::path::Path::new(&home).join(".claude/history.jsonl");
     let content = std::fs::read_to_string(path).ok()?;
-    parse_claude_history(&content)
+    for line in content.lines().rev() {
+        if let Some(entry) = parse_claude_history_line(line) {
+            if is_valid_prompt(&entry.display) {
+                return Some(entry);
+            }
+        }
+    }
+    None
 }
 
-/// Scrape the last session entry from Codex's history file.
+/// Scrape the last *valid* session entry from Codex's history file.
 fn scrape_codex_task() -> Option<CodexHistoryEntry> {
     let home = std::env::var("HOME").ok()?;
     let path = std::path::Path::new(&home).join(".codex/history.jsonl");
     let content = std::fs::read_to_string(path).ok()?;
-    parse_codex_history(&content)
+    for line in content.lines().rev() {
+        if let Some(entry) = parse_codex_history_line(line) {
+            if is_valid_prompt(&entry.display) {
+                return Some(entry);
+            }
+        }
+    }
+    None
 }
 
 /// Get the active foreground process and, if it's a known agent, try to
@@ -3913,30 +3947,42 @@ mod title_command_tests {
 
 #[cfg(test)]
 mod scraper_tests {
-    use super::{parse_claude_history, parse_codex_history};
+    use super::{is_valid_prompt, parse_claude_history_line, parse_codex_history_line};
 
     #[test]
-    fn parse_codex_history_extracts_session_and_prompt() {
-        let line = r#"{"session_id":"019e0ec8-7793-77a3-b52c-c153ed517b64","ts":1778364486,"text":"yo what is up"}"#;
-        let entry = parse_codex_history(line).expect("should parse");
+    fn parse_codex_history_line_extracts_session_and_prompt() {
+        let line =
+            r#"{"session_id":"019e0ec8-7793-77a3-b52c-c153ed517b64","ts":1778364486,"text":"yo what is up"}"#;
+        let entry = parse_codex_history_line(line).expect("should parse");
         assert_eq!(entry.display, "yo what is up");
         assert_eq!(entry.session_id, "019e0ec8-7793-77a3-b52c-c153ed517b64");
         assert_eq!(entry.timestamp, 1778364486);
     }
 
     #[test]
-    fn parse_codex_history_returns_none_on_malformed() {
-        assert!(parse_codex_history("not json").is_none());
-        assert!(parse_codex_history(r#"{"no_text":"here"}"#).is_none());
+    fn parse_codex_history_line_returns_none_on_malformed() {
+        assert!(parse_codex_history_line("not json").is_none());
+        assert!(parse_codex_history_line(r#"{"no_text":"here"}"#).is_none());
     }
 
     #[test]
-    fn parse_claude_history_parses_display_session_timestamp() {
+    fn parse_claude_history_line_parses_display_session_timestamp() {
         let line =
             r#"{"display":"analyze the codebase","sessionId":"abc-123","timestamp":1700000000000}"#;
-        let entry = parse_claude_history(line).expect("should parse");
+        let entry = parse_claude_history_line(line).expect("should parse");
         assert_eq!(entry.display, "analyze the codebase");
         assert_eq!(entry.session_id, "abc-123");
         assert_eq!(entry.timestamp, 1700000000000);
+    }
+
+    #[test]
+    fn valid_prompt_filters_meta_commands() {
+        assert!(!is_valid_prompt("/exit"));
+        assert!(!is_valid_prompt("/model"));
+        assert!(!is_valid_prompt("纠结"));  // less than 5 chars
+        assert!(!is_valid_prompt("[Pasted text #1 +5 lines]"));
+        assert!(!is_valid_prompt("[Image #2] what do you see"));
+        assert!(is_valid_prompt("analyze the codebase"));
+        assert!(is_valid_prompt("fix the login bug in auth module"));
     }
 }

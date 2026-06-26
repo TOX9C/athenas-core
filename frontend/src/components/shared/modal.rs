@@ -41,7 +41,7 @@ pub fn Modal(props: ModalProps) -> Element {
             },
             div {
                 class: "modal-container modal-card",
-                style: "background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); width: {width_str}; max-width: 90vw; max-height: 82vh; display: flex; flex-direction: column; overflow: hidden;",
+                style: "background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); width: {width_str}; max-width: 90vw; height: 82vh; display: flex; flex-direction: column; overflow: hidden;",
                 onclick: move |e| e.stop_propagation(),
 
                 // Header

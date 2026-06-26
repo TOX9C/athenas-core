@@ -36,4 +36,9 @@ debug-assertions = false
 opt-level = "z"
 strip = true
 lto = true
-panic = "abort"
+# Using "unwind" instead of "abort" so that RefCell guards are properly
+# dropped if a Dioxus task panics under a JS timer callback.  Without
+# unwinding, the runtime’s RefCell remains mutably-borrowed, making
+# every subsequent render or task poll hit the poisoned cell and crash
+# the WASM runtime until the page is reloaded.
+panic = "unwind"

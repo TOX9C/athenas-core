@@ -143,13 +143,18 @@ pub fn App() -> Element {
             let last_call = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
             // Capture unlisten for cleanup. The closure runs for the app
             // lifetime if unlisten is dropped without being called.
+            // NB: this closure runs from a raw Tauri JS event, *outside* any
+            // Dioxus scope. Using `dioxus_core::spawn` here panics in
+            // `current_scope_id().unwrap()` (RefCell borrow on an empty
+            // scope stack), leaving the runtime poisoned. Use the bare wasm
+            // executor; it does not need a scope.
             let _unlisten = crate::tauri_bridge::listen("tauri://resize", move |_payload| {
                 let now = js_sys::Date::now();
                 if now - last_call.get() < 150.0 {
                     return;
                 }
                 last_call.set(now);
-                spawn(async move {
+                wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(maximized) = crate::tauri_bridge::window_is_maximized().await {
                         is_maximized.set(maximized);
                     }
@@ -199,7 +204,8 @@ pub fn App() -> Element {
                     }
                 }
                 // Migrate old separate settings to unified smart_pane_titles
-                ui.write().smart_pane_titles = migrate_smart_pane_titles().await;
+                let smart_pane_titles = migrate_smart_pane_titles().await;
+                ui.write().smart_pane_titles = smart_pane_titles;
             });
         });
     }

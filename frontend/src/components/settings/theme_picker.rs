@@ -18,7 +18,21 @@ pub fn ThemePicker() -> Element {
 
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; gap: 24px;",
+            style: "display: flex; flex-direction: column; gap: 32px;",
+
+            // Header
+            div {
+                style: "padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 8px;",
+                div {
+                    style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
+                    "Themes"
+                }
+                div {
+                    style: "font-size: var(--text-xs); color: var(--textDim); margin-top: 4px; line-height: 1.5;",
+                    "Choose a color scheme for your Athena environment."
+                }
+            }
+
             ThemeGroup { title: "Dark", themes: dark_themes }
             ThemeGroup { title: "Light", themes: light_themes }
         }
@@ -38,11 +52,11 @@ fn ThemeGroup(props: ThemeGroupProps) -> Element {
     rsx! {
         div {
             div {
-                style: "font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--textMuted); margin-bottom: 12px; padding-left: 2px; letter-spacing: 0.02em;",
+                style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--textMuted); margin-bottom: 12px; padding-left: 2px; letter-spacing: 0.02em;",
                 "{props.title}"
             }
             div {
-                style: "display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;",
+                style: "display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;",
                 for (id, label) in &props.themes {
                     {
                         let theme_enum = UITheme::from_name(id);
@@ -99,9 +113,9 @@ struct ThemeSwatchProps {
 fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
     let mut ui_state = use_ui_store();
     let ring = if props.is_selected {
-        "border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);"
+        "border-color: var(--accent); box-shadow: 0 0 0 2px var(--accentSubtle), 0 2px 8px rgba(0,0,0,0.1); transform: translateY(-2px);"
     } else {
-        "border-color: var(--border);"
+        "border-color: var(--border); box-shadow: 0 1px 2px rgba(0,0,0,0.04); transform: translateY(0);"
     };
 
     rsx! {
@@ -130,13 +144,13 @@ fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
                 }
             }
             div {
-                style: "padding: 6px 8px; background: var(--bgSecondary); display: flex; align-items: center; justify-content: space-between;",
+                style: "padding: 8px 10px; background: var(--bgSecondary); display: flex; align-items: center; justify-content: space-between;",
                 span {
                     style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--text);",
                     "{props.label}"
                 }
                 if props.is_selected {
-                    span { style: "font-size: 9px; color: var(--accent); font-weight: 600;", "ACTIVE" }
+                    span { style: "font-size: 9px; color: var(--accent); font-weight: 600; background: var(--accentSubtle); padding: 2px 6px; border-radius: var--radius-sm);", "ACTIVE" }
                 }
             }
         }
@@ -156,16 +170,12 @@ pub fn apply_theme_to_dom(theme: UITheme) {
 pub fn apply_theme_and_persist(theme: UITheme) {
     apply_theme_to_dom(theme);
     let theme_name = theme.name().to_string();
-    spawn(async move {
+    wasm_bindgen_futures::spawn_local(async move {
         let _ = crate::tauri_bridge::store_set("theme", &theme_name).await;
     });
 }
 
 fn detect_system_theme() -> &'static str {
-    // Query the OS color-scheme preference via typed `matchMedia` instead of
-    // `new Function("window.matchMedia(...)...")`, which the app CSP blocks
-    // (script-src 'self' 'wasm-unsafe-eval' — no 'unsafe-eval'). The previous
-    // eval-based implementation threw EvalError here and poisoned the runtime.
     if let Some(window) = web_sys::window() {
         if let Ok(Some(mql)) = window.match_media("(prefers-color-scheme: light)") {
             if mql.matches() {
