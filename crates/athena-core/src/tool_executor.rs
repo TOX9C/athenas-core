@@ -411,6 +411,27 @@ pub fn orchestrator_tools() -> Vec<ToolDefinition> {
                 "required": ["pattern"]
             }),
         },
+        ToolDefinition {
+            name: "workspace_list".to_string(),
+            description: "List all available workspaces. Returns a list of workspace names and their IDs.".to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDefinition {
+            name: "workspace_get_active".to_string(),
+            description: "Get the currently active workspace name and ID.".to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDefinition {
+            name: "workspace_switch".to_string(),
+            description: "Switch to a different workspace by its ID. Destructive — confirm with the user first.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "space_id": { "type": "string", "description": "The ID of the workspace to switch to." }
+                },
+                "required": ["space_id"]
+            }),
+        },
     ]
 }
 
@@ -539,6 +560,8 @@ pub struct ToolExecutor {
     agent_comms: Arc<AgentComms>,
     event_sender: Arc<dyn ToolEventSender>,
     kanban_backend: KanbanBackend,
+    store: Arc<athena_store::KeyValueStore>,
+    notification_service: Option<Arc<crate::notification::NotificationService>>,
 }
 
 impl std::fmt::Debug for ToolExecutor {
@@ -554,6 +577,7 @@ impl ToolExecutor {
         agent_comms: Arc<AgentComms>,
         event_sender: Arc<dyn ToolEventSender>,
         store: Arc<athena_store::KeyValueStore>,
+        notification_service: Option<Arc<crate::notification::NotificationService>>,
     ) -> Self {
         let kanban_backend = KanbanBackend::new(Arc::clone(&store));
         Self {
@@ -562,6 +586,8 @@ impl ToolExecutor {
             agent_comms,
             event_sender,
             kanban_backend,
+            store,
+            notification_service,
         }
     }
 
@@ -591,6 +617,9 @@ impl ToolExecutor {
             "fs_read_file" => self.fs_read_file(args),
             "fs_list_dir" => self.fs_list_dir(args),
             "fs_search" => self.fs_search(args),
+            "workspace_list" => self.workspace_list(),
+            "workspace_get_active" => self.workspace_get_active(),
+            "workspace_switch" => self.workspace_switch(args),
             _ => Err(ToolExecutorError::UnknownTool(name.to_string())),
         }
     }
@@ -1450,6 +1479,107 @@ impl ToolExecutor {
             }),
         }
     }
+
+    // -- Workspace tools ----------------------------------------------------
+
+    fn workspace_list(&self) -> Result<ToolCallResult, ToolExecutorError> {
+        match self.store.get::<String>("workspaces") {
+            Ok(Some(json)) => match serde_json::from_str::<serde_json::Value>(&json) {
+                Ok(val) => {
+                    let spaces = val.get("spaces").and_then(|s| s.as_array());
+                    let list: Vec<serde_json::Value> = match spaces {
+                        Some(arr) => arr
+                            .iter()
+                            .filter_map(|s| {
+                                let id = s.get("id")?.as_str()?;
+                                let name = s.get("name")?.as_str().unwrap_or(id);
+                                Some(serde_json::json!({"id": id, "name": name}))
+                            })
+                            .collect(),
+                        None => Vec::new(),
+                    };
+                    Ok(ToolCallResult {
+                        text: serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string()),
+                        is_error: None,
+                    })
+                }
+                Err(e) => Ok(ToolCallResult {
+                    text: format!("Error parsing workspaces: {}", e),
+                    is_error: Some(true),
+                    }),
+            },
+            Ok(None) => Ok(ToolCallResult {
+                text: "[]".to_string(),
+                is_error: None,
+            }),
+            Err(e) => Ok(ToolCallResult {
+                text: format!("Error reading workspaces: {}", e),
+                is_error: Some(true),
+            }),
+        }
+    }
+
+    fn workspace_get_active(&self) -> Result<ToolCallResult, ToolExecutorError> {
+        let active_id = match self.store.get::<String>("workspace.active") {
+            Ok(Some(id)) => id,
+            Ok(None) | Err(_) => {
+                return Ok(ToolCallResult {
+                    text: "No active workspace".to_string(),
+                    is_error: Some(true),
+                })
+            }
+        };
+
+        match self.store.get::<String>("workspaces") {
+            Ok(Some(json)) => match serde_json::from_str::<serde_json::Value>(&json) {
+                Ok(val) => {
+                    if let Some(spaces) = val.get("spaces").and_then(|s| s.as_array()) {
+                        for s in spaces {
+                            if s.get("id") == Some(&serde_json::Value::String(active_id.clone())) {
+                                return Ok(ToolCallResult {
+                                    text: serde_json::to_string(&s).unwrap_or_default(),
+                                    is_error: None,
+                                });
+                            }
+                        }
+                    }
+                    Ok(ToolCallResult {
+                        text: serde_json::json!({"id": active_id}).to_string(),
+                        is_error: None,
+                    })
+                }
+                Err(e) => Ok(ToolCallResult {
+                    text: format!("Error parsing workspaces: {}", e),
+                    is_error: Some(true),
+                }),
+            },
+            Ok(None) => Ok(ToolCallResult {
+                text: "No workspaces configured".to_string(),
+                is_error: Some(true),
+            }),
+            Err(e) => Ok(ToolCallResult {
+                text: format!("Error reading workspaces: {}", e),
+                is_error: Some(true),
+            }),
+        }
+    }
+
+    fn workspace_switch(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
+        let space_id = args.space_id.as_deref().ok_or_else(|| {
+            ToolExecutorError::MissingParam("space_id".to_string())
+        })?;
+
+        match self.store.set_sync("workspace.active", &space_id) {
+            Ok(()) => Ok(ToolCallResult {
+                text: format!("Switched to workspace {}", space_id),
+                is_error: None,
+            }),
+            Err(e) => Ok(ToolCallResult {
+                text: format!("Failed to switch workspace: {}", e),
+                is_error: Some(true),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1492,6 +1622,7 @@ mod tests {
             Arc::new(AgentComms::new()),
             Arc::new(MockEventSender),
             Arc::new(athena_store::KeyValueStore::new_empty()),
+            None,
         )
     }
 

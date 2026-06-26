@@ -166,6 +166,28 @@ impl NotificationService {
         format!("notif-{}-{}", Self::now(), n)
     }
 
+    /// Push a simple notification with a title and message.
+    pub fn notify(
+        &self,
+        ntype: NotificationType,
+        title: impl Into<String>,
+        message: impl Into<String>,
+    ) -> NotificationRecord {
+        let event = NotificationEvent {
+            r#type: ntype,
+            title: title.into(),
+            message: message.into(),
+            source: "backend".to_string(),
+            agent_id: None,
+            data: None,
+            timestamp: Self::now(),
+            metadata: None,
+            actions: None,
+            request_id: None,
+        };
+        self.push_notification(event)
+    }
+
     /// Push a new notification to the history.
     pub fn push_notification(&self, event: NotificationEvent) -> NotificationRecord {
         let record = NotificationRecord {
