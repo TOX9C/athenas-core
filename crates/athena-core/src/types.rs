@@ -160,6 +160,29 @@ pub enum OrchestratorError {
     /// JSON serialization or deserialization failed.
     #[error("JSON serialization failed: {0}")]
     SerializationError(#[from] serde_json::Error),
+    /// ------------------------------------
+    /// Error Taxonomy (Phase 4)
+    /// ------------------------------------
+    ///
+    /// A tool executed but the operation failed (file not found, agent already dead).
+    #[error("I couldn't {action} — {reason}.")]
+    ToolFailure { action: String, reason: String },
+    /// The LLM API returned a non-200, rate limit, invalid key, or malformed JSON.
+    #[error("The LLM API returned an error ({status}). Check your API key and base URL in settings.")]
+    LLMApiFailure { status: u16 },
+    /// Two operations raced on the same workspace / agent state.
+    #[error("Two operations conflicted on {resource}. I cancelled {operation}. Try again.")]
+    StateConflict { resource: String, operation: String },
+    /// The user cancelled a pending confirmation. No error to report.
+    #[error("Cancelled by user")]
+    UserCancellation,
+    /// A tool call exceeded the configured timeout.
+    #[error("The {tool_name} call timed out after {timeout}s. {partial_result}")]
+    ToolTimeout {
+        tool_name: String,
+        timeout: u32,
+        partial_result: String,
+    },
     /// A generic error with a human-readable message.
     #[error("{0}")]
     Generic(String),

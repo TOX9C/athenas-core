@@ -2,11 +2,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::components::shared::icon::{IconBell, IconClose};
+use crate::components::shared::toast::{use_toast_store, Toast, ToastType};
 use crate::stores::notification::{
     add_notification, mark_notification_dismissed, mark_notification_read, set_notifications,
     use_notification_store, NotificationRecord, NotificationType,
 };
 use crate::tauri_bridge;
+use crate::utils::notification_sound::play_ding;
 use dioxus::prelude::*;
 
 /// Notification data.
@@ -39,8 +41,9 @@ pub fn NotificationBell() -> Element {
         }
         mounted.set(true);
 
-        // notifications:new — Increment unread count, show badge.
+        // notifications:new — Increment unread count, show badge, push toast.
         let mut new_store = notifications;
+        let mut toast_store = use_toast_store();
         if let Ok(u) = tauri_bridge::listen("notifications:new", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
                 let id = val
@@ -88,7 +91,10 @@ pub fn NotificationBell() -> Element {
         let mut update_store = notifications;
         if let Ok(u) = tauri_bridge::listen("notifications:updated", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                if let Some(notifs_arr) = val.as_array() {
+                // Single-object update: { "id": "notif-xxx", "read": true }
+                if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                    mark_notification_read(&mut update_store, id);
+                } else if let Some(notifs_arr) = val.as_array() {
                     let records: Vec<NotificationRecord> = notifs_arr
                         .iter()
                         .filter_map(|n| {

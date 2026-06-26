@@ -1037,7 +1037,30 @@ impl AthenaOrchestrator {
                 )
                 .await
             {
-                Ok(title) => return Ok(title),
+                Ok(title) => {
+                    // Safety guard: if the LLM returns the raw prompt (or a
+                    // huge chunk of it) instead of a short title, log it and
+                    // fall back to a heuristic so the user never sees the
+                    // entire prompt as the pane label.
+                    let cleaned = title.trim();
+                    let raw_trimmed = raw_prompt.trim();
+                    // Safety guard: reject exact echo (case-insensitive) or
+                    // anything unreasonably long for a 1–6 word title.
+                    let is_echo = cleaned.eq_ignore_ascii_case(raw_trimmed);
+                    let is_too_long = cleaned.chars().count() > 60;
+
+                    if !cleaned.is_empty() && !is_echo && !is_too_long {
+                        log::debug!("[summarize_title] attempt={} title='{}'", attempt, cleaned);
+                        return Ok(cleaned.to_string());
+                    }
+
+                    log::warn!(
+                        "[summarize_title] attempt={} LLM echoed raw prompt or returned long text (len={}). Falling back to heuristic.",
+                        attempt,
+                        cleaned.len()
+                    );
+                    return Ok(Self::heuristic_fallback_title(raw_prompt));
+                }
                 Err(e) => {
                     // MissingApiKey is non-retryable; propagate immediately.
                     if matches!(e, OrchestratorError::MissingApiKey) {
@@ -1055,6 +1078,42 @@ impl AthenaOrchestrator {
             OrchestratorError::Generic("title generation failed with no attempts".to_string())
         }))
     }
+
+/// Heuristic fallback when the LLM echoes the raw prompt or returns an
+/// obviously bad title. Returns a short imperative/-ing title constructed
+/// from the first few content words of the prompt.
+fn heuristic_fallback_title(raw: &str) -> String {
+    let lowered = raw.to_lowercase();
+    let cleaned: String = lowered
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+        .collect();
+
+    let skip: &[&str] = &[
+        "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "at", "for",
+        "with", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+        "had", "do", "does", "did", "can", "could", "will", "would", "should",
+        "may", "might", "must", "shall", "i", "you", "we", "they", "it", "this",
+        "that", "these", "those", "my", "your", "our", "their", "its", "please",
+        "hey", "so", "then", "now", "just", "only", "also", "very", "really",
+        "actually", "basically", "literally", "definitely", "probably", "maybe",
+    ];
+
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    let content_words: Vec<&str> = words
+        .iter()
+        .filter(|w| !skip.contains(w) && w.len() > 1)
+        .copied()
+        .collect();
+
+    let title = content_words.iter().take(4).cloned().collect::<Vec<_>>().join(" ");
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        "working".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
     /// Single LLM call for title summarization. Returns the parsed title on
     /// success, or an error the caller decides whether to retry.

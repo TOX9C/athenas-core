@@ -10,6 +10,7 @@ use components::agents::output_event_bus::OutputEventBus;
 use components::command_palette::CommandPalette;
 use components::kanban::kanban_board::KanbanBoard;
 use components::notifications::notification_bell::NotificationBell;
+use components::notifications::notification_panel::NotificationPanel;
 use components::notifications::notification_toast::NotificationToast;
 use components::plugin::input_request_modal::InputRequestModal;
 use components::plugin::plugin_event_bus::{provide_plugin_bus_store, PluginEventBus};
@@ -796,6 +797,8 @@ pub fn App() -> Element {
                                         // content area (expanded mode). The native
                                         // child webview is overlaid on this surface.
                                         BrowserSurface { expanded: true }
+                                    } else if active_panel == Panel::Notifications {
+                                        NotificationPanel {}
                                     }
                                 }
                             }
