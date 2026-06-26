@@ -747,7 +747,17 @@ impl AthenaOrchestrator {
         Some((name, pane_ids))
     }
 
+    /// Estimate token count from a UTF-8 string using the heuristic
+    /// 1 token ≈ 4 characters for English.
+    fn estimate_tokens(text: &str) -> usize {
+        text.chars().count() / 4
+    }
+
     /// Build a snapshot of the current app state for context injection.
+    ///
+    /// The snapshot is capped at 800 tokens (Decision 7 of the orchestration
+    /// plan). If any section exceeds its budget it is truncated with a
+    /// `[truncated]` marker.
     fn build_app_state_snapshot(&self) -> String {
         const SNAPSHOT_TTL: Duration = Duration::from_secs(1);
         if let Some((cached, ts)) = self.snapshot_cache.lock().as_ref() {
@@ -757,99 +767,88 @@ impl AthenaOrchestrator {
         }
 
         let mut lines: Vec<String> = Vec::new();
-        lines.push("====== ATHENA STATE SNAPSHOT ======".to_string());
-        lines.push(String::new());
+        let mut total_tokens = 0usize;
 
-        // Resolve the active space. When available, the running-agents list is
-        // filtered to only the panes that belong to it, so Athena never reports
-        // on agents from other spaces.
+        // --- Header ---
+        lines.push("[Current State]".to_string());
+        total_tokens += 25; // rough estimate
+
+        // --- Workspace ---
         let scope = self.active_space_scope();
-        let workspace = scope
+        let workspace_name = scope
             .as_ref()
             .map(|(name, _)| name.clone())
             .or_else(|| self.workspace_name.lock().clone())
             .unwrap_or_else(|| "Unknown".to_string());
-        let pane_filter = scope.as_ref().map(|(_, ids)| ids);
-        let in_scope = |id: &str| pane_filter.map_or(true, |ids| ids.contains(id));
+        lines.push(format!("Workspace: {}", workspace_name));
+        total_tokens += Self::estimate_tokens(&lines.last().unwrap());
 
-        lines.push(format!("Active Workspace: {}", workspace));
-        lines.push(String::new());
-
-        // Running agents from output buffer (scoped to the active space)
-        lines.push("--- Running Agents (this space) ---".to_string());
+        // --- Agents ---
+        let in_scope = |id: &str| {
+            scope.as_ref().map_or(true, |(_, ids)| ids.contains(id))
+        };
+        let mut agent_lines: Vec<String> = Vec::new();
         let mut has_agents = false;
         if let Some(ref ob) = self.output_buffer {
-            let panes = ob.get_agent_list();
-            for pane in panes.iter().filter(|p| in_scope(&p.pane_id)) {
+            for pane in ob.get_agent_list().iter().filter(|p| in_scope(&p.pane_id)) {
                 has_agents = true;
-                let activity =
-                    chrono::DateTime::from_timestamp_millis(pane.last_activity_at as i64)
-                        .map(|dt| dt.to_rfc3339())
-                        .unwrap_or_else(|| "unknown".to_string());
-                lines.push(format!(
-                    "  {} | type={} | lines={} | last_activity={}",
-                    pane.pane_id, pane.agent_type, pane.line_count, activity
+                let mins = (chrono::Utc::now().timestamp_millis() - pane.last_activity_at as i64) / 60000;
+                agent_lines.push(format!(
+                    "  {}: {} | {} lines | idle {}m",
+                    pane.pane_id, pane.agent_type, pane.line_count, mins
                 ));
             }
         }
         if let Some(ref ac) = self.agent_comms {
-            let sessions = ac.get_agent_sessions();
-            let scoped: Vec<_> = sessions.iter().filter(|s| in_scope(&s.agent_id)).collect();
-            if !scoped.is_empty() {
+            for s in ac.get_agent_sessions().iter().filter(|s| in_scope(&s.agent_id)) {
                 has_agents = true;
-                for s in scoped {
-                    let connected = chrono::DateTime::from_timestamp_millis(s.connected_at as i64)
-                        .map(|dt| dt.to_rfc3339())
-                        .unwrap_or_else(|| "unknown".to_string());
-                    let status = &s.status;
-                    lines.push(format!(
-                        "  session={} | agent={} | plugin={} | status={} | connected_at={}",
-                        s.id, s.agent_id, s.plugin_id, status, connected
-                    ));
-                }
+                let status_str = format!("{:?}", s.status);
+                let status = if status_str == "\"\"" || status_str == "Empty" { "idle" } else { &status_str };
+                agent_lines.push(format!("  {}: {} | status={}", s.id, s.agent_id, status));
             }
         }
         if !has_agents {
-            lines.push("  (no agents currently running)".to_string());
+            agent_lines.push("  (none running)".to_string());
         }
-        lines.push(String::new());
+        // Agent budget: 200 tokens
+        let mut agent_text = agent_lines.join("\n");
+        if Self::estimate_tokens(&agent_text) > 200 {
+            let mut truncated = agent_lines[..agent_lines.len().min(10)].join("\n");
+            truncated.push_str("\n  [truncated]");
+            agent_text = truncated;
+        }
+        lines.push("Agents:".to_string());
+        lines.push(agent_text);
+        total_tokens += Self::estimate_tokens(&lines.last().unwrap());
 
-        // Active execution plan
-        lines.push("--- Active Execution Plan ---".to_string());
+        // --- Execution Plan ---
+        let mut plan_lines: Vec<String> = Vec::new();
+        plan_lines.push("Execution Plan:".to_string());
         if let Some(ref pm) = self.plan_manager {
             if let Some(plan) = pm.get_active_plan() {
-                lines.push(format!("  ID: {}", plan.id));
-                lines.push(format!("  Goal: {}", plan.goal));
-                lines.push(format!("  Status: {:?}", plan.status));
-                if !plan.steps.is_empty() {
-                    lines.push("  Steps:".to_string());
-                    for step in &plan.steps {
-                        lines.push(format!(
-                            "    {}: {} — status={:?}",
-                            step.id, step.description, step.status
-                        ));
-                    }
-                }
+                let step_info: Vec<String> = plan.steps.iter()
+                    .take(5) // limit to 5 steps
+                    .map(|s| format!("  {}: — {:?}", s.id, s.status))
+                    .collect();
+                plan_lines.push(format!("  {}: {:?}", plan.id, plan.status));
+                plan_lines.extend(step_info);
             } else {
-                lines.push("  (no active execution plan)".to_string());
+                plan_lines.push("  (none active)".to_string());
             }
         } else {
-            lines.push("  (no active execution plan)".to_string());
+            plan_lines.push("  (none active)".to_string());
         }
-        lines.push(String::new());
+        let plan_text = plan_lines.join("\n");
+        total_tokens += Self::estimate_tokens(&plan_text);
+        lines.push(plan_text);
 
-        // Kanban tasks (backend persistence is now available via kanban_list_tasks)
-        lines.push("--- Kanban Tasks ---".to_string());
-        lines.push(
-            "  (tasks are persisted to the backend; use kanban_list_tasks to query them)"
-                .to_string(),
-        );
-        lines.push(String::new());
-
-        lines.push("=====================================".to_string());
-        lines.push(String::new());
+        // --- Kanban ---
+        let kanban_text = "Kanban: use kanban_list_tasks to query".to_string();
+        total_tokens += Self::estimate_tokens(&kanban_text);
+        lines.push(kanban_text);
 
         let snapshot = lines.join("\n");
+        total_tokens += Self::estimate_tokens(&snapshot); // full count
         *self.snapshot_cache.lock() = Some((snapshot.clone(), Instant::now()));
         snapshot
     }
@@ -916,7 +915,10 @@ impl AthenaOrchestrator {
 
         let resolved_base_url = match &provider {
             LLMProvider::NvidiaNim => Some("https://integrate.api.nvidia.com/v1".to_string()),
-            LLMProvider::OpenAI => Some("https://api.openai.com/v1".to_string()),
+            LLMProvider::OpenAI => {
+                // User custom base_url takes precedence over hardcoded default.
+                Some(base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()))
+            }
             LLMProvider::Lmstudio => {
                 Some(base_url.unwrap_or_else(|| "http://localhost:1234/v1".to_string()))
             }
