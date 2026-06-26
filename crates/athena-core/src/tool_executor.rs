@@ -637,6 +637,14 @@ impl ToolExecutor {
                 .agent_spawned(&id, agent_type, &agent_command);
         }
 
+        if let Some(ref svc) = self.notification_service {
+            let _ = svc.notify(
+                crate::notification::NotificationType::Info,
+                "Agent Started",
+                format!("Launched {} {} agent(s)", agent_count, agent_type),
+            );
+        }
+
         Ok(ToolCallResult {
             text: format!("Done, launched {} {} agents.", agent_count, agent_type),
             is_error: None,
@@ -664,6 +672,14 @@ impl ToolExecutor {
         for _ in 0..agent_count {
             let id = format!("custom-agent-{}", Uuid::new_v4());
             self.event_sender.agent_spawned(&id, "custom", command);
+        }
+
+        if let Some(ref svc) = self.notification_service {
+            let _ = svc.notify(
+                crate::notification::NotificationType::Info,
+                "Custom Agent Started",
+                format!("Launched {} custom agent(s)", agent_count),
+            );
         }
 
         Ok(ToolCallResult {
@@ -900,6 +916,14 @@ impl ToolExecutor {
 
         self.event_sender.plan_update(&plan);
 
+        if let Some(ref svc) = self.notification_service {
+            let _ = svc.notify(
+                crate::notification::NotificationType::Info,
+                "Plan Created",
+                format!("Execution plan created: {}", goal),
+            );
+        }
+
         let step_summary: String = plan
             .steps
             .iter()
@@ -963,6 +987,14 @@ impl ToolExecutor {
             self.event_sender.plan_update(&updated_plan);
         }
 
+        if let Some(ref svc) = self.notification_service {
+            let _ = svc.notify(
+                crate::notification::NotificationType::Info,
+                "Step Dispatched",
+                format!("Dispatched step: {}", step_id),
+            );
+        }
+
         Ok(ToolCallResult {
             text: format!(
                 "Dispatched step '{}' ({}) -> pane {}",
@@ -1017,6 +1049,14 @@ impl ToolExecutor {
         let options = args.options.as_deref().unwrap_or(&[]);
 
         let answer = self.event_sender.ask_user(&request_id, question, options);
+
+        if let Some(ref svc) = self.notification_service {
+            let _ = svc.notify(
+                crate::notification::NotificationType::NeedsInput,
+                "Needs Input",
+                question.to_string(),
+            );
+        }
 
         Ok(ToolCallResult {
             text: format!("User selected: {}", answer),
@@ -1738,5 +1778,55 @@ mod tests {
             }
             Err(e) => panic!("fs_search should not propagate Err to callers: {e}"),
         }
+    }
+
+    /// Integration test: workspace tools work end-to-end with a real store.
+    #[test]
+    fn test_workspace_tools_roundtrip() {
+        let store = Arc::new(athena_store::KeyValueStore::new_empty());
+
+        // Seed workspaces key
+        let workspaces = serde_json::json!({
+            "spaces": [
+                {"id": "space-1", "name": "Backend Refactor"},
+                {"id": "space-2", "name": "Frontend Polish"}
+            ]
+        });
+        store.set_sync("workspaces", &workspaces.to_string()).unwrap();
+         store.set_sync("workspace.active", &"space-1").unwrap();
+
+        // Build executor with real store
+        let executor = ToolExecutor::new(
+            Arc::new(OutputBuffer::new()),
+            Arc::new(PlanManager::new()),
+            Arc::new(AgentComms::new()),
+            Arc::new(MockEventSender),
+            store,
+            None,
+        );
+
+        // workspace_list
+        let list_result = executor.execute_tool_call("workspace_list", &ToolInput::default()).unwrap();
+        assert!(!list_result.is_error.unwrap_or(false), "workspace_list failed: {}", list_result.text);
+        let spaces: Vec<serde_json::Value> = serde_json::from_str(&list_result.text).unwrap();
+        assert_eq!(spaces.len(), 2);
+
+        // workspace_get_active
+        let active_result = executor.execute_tool_call("workspace_get_active", &ToolInput::default()).unwrap();
+        assert!(!active_result.is_error.unwrap_or(false), "workspace_get_active failed: {}", active_result.text);
+        println!("Active workspace: {}", active_result.text);
+
+        // workspace_switch
+        let switch_input = ToolInput {
+            space_id: Some("space-2".to_string()),
+            ..Default::default()
+        };
+        let switch_result = executor.execute_tool_call("workspace_switch", &switch_input).unwrap();
+        assert!(!switch_result.is_error.unwrap_or(false), "workspace_switch failed: {}", switch_result.text);
+
+        // Verify switch stuck
+        let active_after = executor.execute_tool_call("workspace_get_active", &ToolInput::default()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&active_after.text).unwrap();
+        assert_eq!(parsed.get("id").and_then(|v| v.as_str()), Some("space-2"));
     }
 }

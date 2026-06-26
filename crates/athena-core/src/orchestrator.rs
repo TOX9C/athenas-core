@@ -2037,3 +2037,134 @@ mod title_tests {
         assert_eq!(title, "analyzing the codebase");
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::agent_comms::AgentComms;
+    use crate::notification::NotificationService;
+    use crate::output_buffer::{AgentListEntry, OutputBuffer};
+    use crate::plan_manager::{ExecutionPlan, PlanManager, PlanStatus};
+    use crate::tool_executor::{ToolEventSender, ToolExecutor};
+    use std::sync::Arc;
+
+    struct MockEventSender;
+    impl ToolEventSender for MockEventSender {
+        fn agent_spawned(&self, _id: &str, _agent_type: &str, _agent_cmd: &str) {}
+        fn close_panes(&self, _pane_ids: &[String]) {}
+        fn pty_write(&self, _pane_id: &str, _data: &str) {}
+        fn has_session(&self, _pane_id: &str) -> bool {
+            false
+        }
+        fn ask_user(
+            &self,
+            _request_id: &str,
+            _question: &str,
+            _options: &[serde_json::Value],
+        ) -> String {
+            String::new()
+        }
+        fn plan_update(&self, _plan: &ExecutionPlan) {}
+        fn plan_evaluated(
+            &self,
+            _plan_id: &str,
+            _overall_status: &str,
+            _step_evaluations: &[serde_json::Value],
+            _next_action: &str,
+            _reasoning: &str,
+        ) {
+        }
+    }
+
+    fn build_test_orchestrator() -> AthenaOrchestrator {
+        let ob = Arc::new(OutputBuffer::new());
+        let pm = Arc::new(PlanManager::new());
+        let ac = Arc::new(AgentComms::new());
+        let store = Arc::new(athena_store::KeyValueStore::new_empty());
+
+        let executor = Arc::new(parking_lot::Mutex::new(ToolExecutor::new(
+            Arc::clone(&ob),
+            Arc::clone(&pm),
+            Arc::clone(&ac),
+            Arc::new(MockEventSender),
+            Arc::clone(&store),
+            None,
+        )));
+
+        AthenaOrchestrator::with_context(
+            executor,
+            ob,
+            pm,
+            ac,
+            None,
+            Some(store),
+            None,
+        )
+    }
+
+    /// Test that an empty snapshot is under 800 tokens.
+    #[test]
+    fn empty_snapshot_under_token_budget() {
+        let orch = build_test_orchestrator();
+        let snapshot = orch.build_app_state_snapshot();
+        let tokens = AthenaOrchestrator::estimate_tokens(&snapshot);
+        assert!(
+            tokens <= 800,
+            "snapshot is {} tokens, expected <= 800. snapshot:\n{}",
+            tokens,
+            snapshot
+        );
+    }
+
+    /// Test that a populated snapshot with agents still fits in budget.
+    #[test]
+    fn snapshot_with_agents_fits_budget() {
+        let ob = Arc::new(OutputBuffer::new());
+        let pm = Arc::new(PlanManager::new());
+        let ac = Arc::new(AgentComms::new());
+        let store = Arc::new(athena_store::KeyValueStore::new_empty());
+
+        // Seed workspace and active space
+        store
+            .set_sync(
+                "workspaces",
+                &serde_json::json!({
+                    "active_space_id": "test-space",
+                    "spaces": [
+                        {
+                            "id": "test-space",
+                            "name": "Integration Test",
+                            "panes": [{"id": "pane-1"}, {"id": "pane-2"}]
+                        }
+                    ]
+                }),
+            )
+            .unwrap();
+
+        let mut orch = AthenaOrchestrator::with_context(
+            Arc::new(parking_lot::Mutex::new(ToolExecutor::new(
+                Arc::clone(&ob),
+                Arc::clone(&pm),
+                Arc::clone(&ac),
+                Arc::new(MockEventSender),
+                Arc::clone(&store),
+                None,
+            ))),
+            ob,
+            pm,
+            ac,
+            None,
+            Some(store),
+            None,
+        );
+
+        let snapshot = orch.build_app_state_snapshot();
+        let tokens = AthenaOrchestrator::estimate_tokens(&snapshot);
+        assert!(
+            tokens <= 800,
+            "snapshot with agents is {} tokens, expected <= 800. snapshot:\n{}",
+            tokens,
+            snapshot
+        );
+    }
+}
