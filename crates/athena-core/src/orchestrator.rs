@@ -949,6 +949,23 @@ impl AthenaOrchestrator {
             }
         }
 
+        match &result {
+            Ok(reply) => {
+                self.notify(
+                    NotifType::Success,
+                    "Athena Ready",
+                    reply.chars().take(80).collect::<String>(),
+                );
+            }
+            Err(err) => {
+                self.notify(
+                    NotifType::Error,
+                    "Athena Error",
+                    err.to_string().chars().take(80).collect::<String>(),
+                );
+            }
+        }
+
         result
     }
 
