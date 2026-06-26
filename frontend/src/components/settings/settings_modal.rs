@@ -82,7 +82,7 @@ pub fn SettingsContent() -> Element {
 
             /* ── Right content area ───────────────────────── */
             div {
-                style: "flex: 1; padding: 24px 32px; min-width: 0;",
+                style: "flex: 1; padding: 24px 32px; min-width: 0; overflow-y: auto;",
 
                 match active_tab() {
                     0 => rsx! { GeneralSettings {} },

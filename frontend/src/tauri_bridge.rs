@@ -306,6 +306,22 @@ pub async fn notification_count() -> TauriResult<String> {
     invoke("notification_count", "{}").await
 }
 
+pub async fn notification_mark_all_read() -> TauriResult<()> {
+    invoke("notification_mark_all_read", "{}").await
+}
+
+pub async fn notification_clear_all() -> TauriResult<()> {
+    invoke("notification_clear_all", "{}").await
+}
+
+pub async fn notification_dismiss(id: &str) -> TauriResult<()> {
+    invoke(
+        "notification_dismiss",
+        &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await
+}
+
 /// Plan operations
 pub async fn plan_create(goal: &str, reasoning: &str, steps: &str) -> TauriResult<String> {
     invoke(
@@ -515,6 +531,11 @@ pub async fn pty_write(id: &str, data: &str) -> TauriResult<()> {
         &serde_json::json!({ "id": id, "data": data }).to_string(),
     )
     .await
+}
+
+/// Read the OS clipboard as plain text.
+pub async fn read_clipboard_text() -> TauriResult<String> {
+    invoke("read_clipboard_text", "{}").await
 }
 
 /// Kill a PTY session.

@@ -2,6 +2,7 @@ use crate::state::AppState;
 use base64::Engine;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 
 /// Minimal HTML escape to prevent XSS in contexts that might render HTML.
@@ -1582,15 +1583,30 @@ pub(crate) async fn pty_read_loop(
 #[tauri::command]
 pub async fn pty_write(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
     validate_session_id(&id)?;
-    let data_len = data.len();
     validate_data_size(data.as_bytes(), "pty_write data")?;
     let session_manager = state.session_manager.lock().await;
-    let _len = session_manager
+    let written = session_manager
         .write(&id, data.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
     drop(session_manager);
+    if written != data.len() {
+        return Err(format!(
+            "pty_write partial write: {} of {} bytes",
+            written,
+            data.len()
+        ));
+    }
     Ok(())
+}
+
+/// Read the OS clipboard as plain text.
+#[tauri::command]
+pub async fn read_clipboard_text(app_handle: tauri::AppHandle) -> Result<String, String> {
+    app_handle
+        .clipboard()
+        .read_text()
+        .map_err(|e| e.to_string())
 }
 
 /// Kill a PTY session by its ID.
@@ -2790,11 +2806,12 @@ pub async fn search_ripgrep(
 
 // ── MCP server commands ──────────────────────────────────────────────────────
 
-/// Initialize the MCP server on the given port.
+/// Initialize the MCP server in stdio mode.
 #[tauri::command]
-pub async fn mcp_init(state: State<'_, AppState>, port: u16) -> Result<(), String> {
-    let mut server = state.mcp_server.lock().await;
-    server.init(port).map_err(|e| e.to_string())
+pub async fn mcp_init(state: State<'_, AppState>, _port: u16) -> Result<(), String> {
+    let server = state.mcp_server.lock().await;
+    server.init_stdio();
+    Ok(())
 }
 
 /// Shut down the MCP server.

@@ -445,6 +445,77 @@ impl McpServer {
         Ok(())
     }
 
+    /// Initialize the MCP server in stdio mode (reads from stdin, writes to stdout).
+    ///
+    /// Used when Athena is launched as a subprocess by an MCP client
+    /// (Claude Code, OpenCode, etc.) via JSON-RPC over stdio.
+    pub fn init_stdio(&self) {
+        let token = self.token.clone();
+        let task_handler = self.task_handler.clone();
+        let spawn_handler = self.spawn_handler.clone();
+        let output_handler = self.output_handler.clone();
+        let agent_comms_handler = self.agent_comms_handler.clone();
+
+        tokio::spawn(async move {
+            log::info!("MCP stdio server started");
+            let stdin = tokio::io::stdin();
+            let stdout = tokio::io::stdout();
+            let mut reader = BufReader::new(stdin);
+            let writer = Arc::new(tokio::sync::Mutex::new(stdout));
+            let mut line = String::new();
+
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => {
+                        log::info!("MCP stdio: EOF on stdin, shutting down");
+                        break;
+                    }
+                    Ok(_) => {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+
+                        let req: JsonRpcRequest = match serde_json::from_str(trimmed) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                log::warn!("MCP stdio: parse error: {}", e);
+                                let err = make_parse_error_response(trimmed);
+                                let mut w = writer.lock().await;
+                                let _ = w.write_all((err + "\n").as_bytes()).await;
+                                continue;
+                            }
+                        };
+
+                        // For stdio mode, skip authentication since the
+                        // process is spawned by the client itself.
+                        let response = handle_request_impl(
+                            &token,
+                            &req,
+                            &task_handler,
+                            &spawn_handler,
+                            &output_handler,
+                            &agent_comms_handler,
+                        ).await;
+
+                        if response.id.is_some() {
+                            let json = McpServer::serialize_response(&response) + "\n";
+                            let mut w = writer.lock().await;
+                            if w.write_all(json.as_bytes()).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("MCP stdio: read error: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     /// Shutdown the MCP server.
     ///
     /// Drops the TCP listener and clears all active client connections.

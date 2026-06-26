@@ -9,6 +9,7 @@ tauri = { version = "2.0", features = ["devtools", "unstable"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
+tauri-plugin-clipboard-manager = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
