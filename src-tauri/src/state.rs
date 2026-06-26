@@ -547,12 +547,9 @@ impl AppState {
                 }
             };
             rt.block_on(async {
-                let mut server = mcp_server.lock().await;
-                if let Err(e) = server.init(4545) {
-                    log::error!("Failed to start MCP server: {}", e);
-                } else {
-                    log::info!("MCP server auto-started on port 4545");
-                }
+                let server = mcp_server.lock().await;
+                server.init_stdio();
+                log::info!("MCP stdio server started");
             });
         });
     }

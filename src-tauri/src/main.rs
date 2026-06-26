@@ -19,7 +19,8 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init());
 
     // WebDriver automation — debug builds only, and only when explicitly
     // requested via TAURI_WEBVIEW_AUTOMATION (set by the `tauri-wd` e2e runner).
@@ -69,6 +70,7 @@ fn main() {
             // PTY
             pty_spawn,
             pty_write,
+            read_clipboard_text,
             pty_kill,
             pty_resize,
             pty_get_history,

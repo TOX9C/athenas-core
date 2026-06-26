@@ -52,6 +52,7 @@
     "allow-pty-foreground-process",
     "allow-pty-spawn-agent",
     "allow-pty-default-shell",
+    "clipboard-manager:allow-read-text",
     "allow-athena-chat",
     "allow-athena-chat-with-session",
     "allow-athena-chat-with-images",

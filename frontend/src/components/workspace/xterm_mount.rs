@@ -4,7 +4,7 @@ use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
     pty_default_shell_cached, pty_has_session, pty_listen_raw, pty_resize, pty_set_xterm,
-    pty_spawn, pty_write,
+    pty_spawn, pty_write, read_clipboard_text,
 };
 use crate::utils::resume_scanner::ResumeScanner;
 use dioxus::prelude::*;
@@ -270,6 +270,11 @@ pub fn XtermMount(
                 &JsValue::from_str("scrollback"),
                 &JsValue::from_f64(XTERM_SCROLLBACK),
             );
+            let _ = js_sys::Reflect::set(
+                &options,
+                &JsValue::from_str("allowProposedApi"),
+                &JsValue::from_bool(true),
+            );
 
             let term_val =
                 match js_sys::Reflect::construct(&term_ctor, &js_sys::Array::of1(&options)) {
@@ -311,15 +316,40 @@ pub fn XtermMount(
                     })
                     .unwrap_or(false);
 
-                if !is_mac {
-                    return;
-                }
-
                 let meta = event.meta_key();
                 let shift = event.shift_key();
                 let ctrl = event.ctrl_key();
                 let alt = event.alt_key();
                 let key = event.key();
+
+                // Cmd+V (macOS) / Ctrl+V (others) → paste via Tauri clipboard with bracketed paste sequences
+                if key == "v" && ((is_mac && meta && !ctrl) || (!is_mac && ctrl && !meta)) && !shift && !alt {
+                    event.prevent_default();
+                    event.stop_propagation();
+                    let pane_id = pane_id_keydown.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match read_clipboard_text().await {
+                            Ok(text) => {
+                                let bracketed = format!("\x1b[200~{}\x1b[201~", text);
+                                if let Err(e) = pty_write(&pane_id, &bracketed).await {
+                                    web_sys::console::error_1(
+                                        &format!("XtermMount: bracketed paste write failed: {:?}", e).into(),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                web_sys::console::error_1(
+                                    &format!("XtermMount: read_clipboard_text failed: {:?}", e).into(),
+                                );
+                            }
+                        }
+                    });
+                    return;
+                }
+
+                if !is_mac {
+                    return;
+                }
 
                 // Shift+Enter → literal newline (not execute)
                 if key == "Enter" && shift && !meta && !ctrl && !alt {
@@ -479,7 +509,11 @@ pub fn XtermMount(
                 wasm_bindgen::closure::Closure::wrap(Box::new(move |data: String| {
                     let pane_id = pane_id_for_data.clone();
                     wasm_bindgen_futures::spawn_local(async move {
-                        let _ = pty_write(&pane_id, &data).await;
+                        if let Err(e) = pty_write(&pane_id, &data).await {
+                            web_sys::console::error_1(
+                                &format!("XtermMount: pty_write failed: {:?}", e).into(),
+                            );
+                        }
                     });
                 }) as Box<dyn FnMut(String)>);
             let on_data_closure_js = on_data_closure.into_js_value();

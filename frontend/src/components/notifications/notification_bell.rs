@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::components::shared::icon::{IconBell, IconClose};
 use crate::stores::notification::{
-    add_notification, mark_notification_dismissed, set_notifications, use_notification_store,
-    NotificationRecord, NotificationType,
+    add_notification, mark_notification_dismissed, mark_notification_read, set_notifications,
+    use_notification_store, NotificationRecord, NotificationType,
 };
 use crate::tauri_bridge;
 use dioxus::prelude::*;

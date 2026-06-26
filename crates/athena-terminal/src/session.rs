@@ -200,18 +200,30 @@ impl TerminalSession {
         }
         let buf = data.to_vec();
         tokio::task::spawn_blocking(move || {
-            let written = unsafe { libc::write(fd, buf.as_ptr() as *const _, buf.len()) };
-            if written < 0 {
-                let err = io::Error::last_os_error();
-                // EIO on a fresh PTY usually means the child hasn't finished exec yet;
-                // treat as WouldBlock so callers can retry.
-                if err.raw_os_error() == Some(5) {
-                    return Err(io::Error::new(io::ErrorKind::WouldBlock, err));
+            let mut total_written = 0usize;
+            while total_written < buf.len() {
+                let written = unsafe {
+                    libc::write(
+                        fd,
+                        buf.as_ptr().add(total_written) as *const _,
+                        buf.len() - total_written,
+                    )
+                };
+                if written < 0 {
+                    let err = io::Error::last_os_error();
+                    if err.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
+                    // EIO on a fresh PTY usually means the child hasn't finished exec yet;
+                    // treat as WouldBlock so callers can retry.
+                    if err.raw_os_error() == Some(5) {
+                        return Err(io::Error::new(io::ErrorKind::WouldBlock, err));
+                    }
+                    return Err(err);
                 }
-                Err(err)
-            } else {
-                Ok(written as usize)
+                total_written += written as usize;
             }
+            Ok(total_written)
         })
         .await
         .map_err(|e| io::Error::other(e))?
