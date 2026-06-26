@@ -94,6 +94,12 @@ fn main() {
             athena_clear_context,
             athena_set_session_context,
             athena_user_answer,
+            // Pinned Context (Phase 5)
+            athena_pin_agent,
+            athena_pin_task,
+            athena_pin_file,
+            athena_clear_pinned_context,
+            athena_get_pinned_context,
             // Output buffer / capture
             output_buffer_append,
             output_buffer_get,

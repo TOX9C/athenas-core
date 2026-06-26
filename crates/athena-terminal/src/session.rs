@@ -211,12 +211,18 @@ impl TerminalSession {
                 };
                 if written < 0 {
                     let err = io::Error::last_os_error();
-                    if err.raw_os_error() == Some(libc::EINTR) {
+                    let errno = err.raw_os_error();
+                    if errno == Some(libc::EINTR) {
+                        continue;
+                    }
+                    if errno == Some(libc::EAGAIN) || errno == Some(libc::EWOULDBLOCK) {
+                        // PTY buffer is full — give the child process a moment to drain it.
+                        std::thread::sleep(std::time::Duration::from_millis(1));
                         continue;
                     }
                     // EIO on a fresh PTY usually means the child hasn't finished exec yet;
                     // treat as WouldBlock so callers can retry.
-                    if err.raw_os_error() == Some(5) {
+                    if errno == Some(5) {
                         return Err(io::Error::new(io::ErrorKind::WouldBlock, err));
                     }
                     return Err(err);
