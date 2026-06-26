@@ -1,3 +1,4 @@
+use crate::notification::NotificationType as NotifType;
 use crate::tool_executor::{to_openai_tools, ToolExecutor, ToolInput};
 use crate::types::*;
 use secrecy::ExposeSecret;
@@ -407,6 +408,8 @@ pub struct AthenaOrchestrator {
     /// the output buffer, plan manager, agent comms, and active-space reads,
     /// so caching for ~1 s avoids redundant work on back-to-back chat turns.
     snapshot_cache: parking_lot::Mutex<Option<(String, Instant)>>,
+    /// Optional notification service for pushing status alerts.
+    notification_service: Option<Arc<crate::notification::NotificationService>>,
 }
 
 impl Default for AthenaOrchestrator {
@@ -440,6 +443,7 @@ impl AthenaOrchestrator {
             session_store: None,
             kv_store: None,
             snapshot_cache: parking_lot::Mutex::new(None),
+            notification_service: None,
         }
     }
 
@@ -462,6 +466,7 @@ impl AthenaOrchestrator {
         agent_comms: Arc<crate::agent_comms::AgentComms>,
         session_store: Option<Arc<athena_store::SessionStore>>,
         kv_store: Option<Arc<athena_store::KeyValueStore>>,
+        notification_service: Option<Arc<crate::notification::NotificationService>>,
     ) -> Self {
         Self {
             anthropic_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -482,6 +487,7 @@ impl AthenaOrchestrator {
             session_store,
             kv_store,
             snapshot_cache: parking_lot::Mutex::new(None),
+            notification_service,
         }
     }
 
@@ -510,12 +516,28 @@ impl AthenaOrchestrator {
             session_store: None,
             kv_store: None,
             snapshot_cache: parking_lot::Mutex::new(None),
+            notification_service: None,
         }
     }
 
     /// Replace or clear the tool executor at runtime.
     pub fn set_tool_executor(&mut self, executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>) {
         self.tool_executor = executor;
+    }
+
+    /// Send a notification if the notification service is configured.
+    fn notify(
+        &self,
+        ntype: crate::notification::NotificationType,
+        title: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        if let Some(ref svc) = self.notification_service {
+            // Limit notification title to a reasonable length
+            let t = title.into();
+            let m = message.into();
+            let _ = svc.notify(ntype, t, m);
+        }
     }
 
     /// Set the conversation history from a list of session entries.
@@ -838,6 +860,11 @@ impl AthenaOrchestrator {
         text: String,
         images: Option<Vec<ImageData>>,
     ) -> Result<String, OrchestratorError> {
+        self.notify(
+            NotifType::Info,
+            "Athena Thinking",
+            "Processing your request...",
+        );
         // Build a fresh app-state snapshot and append it to the SYSTEM prompt
         // for this request. Keeping it out of the persisted user text means the
         // message history doesn't accumulate stale, conflicting snapshots — the
@@ -1619,6 +1646,7 @@ mod tests {
             Arc::new(AgentComms::new()),
             Arc::new(BlockingEventSender),
             Arc::new(athena_store::KeyValueStore::new_empty()),
+            None,
         );
         AthenaOrchestrator::new_with_executor(Arc::new(parking_lot::Mutex::new(executor)))
     }

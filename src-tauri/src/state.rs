@@ -448,6 +448,7 @@ impl AppState {
                 Arc::clone(&agent_comms),
                 event_sender,
                 Arc::clone(&store),
+                Some(Arc::clone(&notification_service)),
             ),
         ));
 
@@ -468,6 +469,7 @@ impl AppState {
                 Arc::clone(&agent_comms),
                 Some(Arc::clone(&session_store)),
                 Some(Arc::clone(&store)),
+                Some(Arc::clone(&notification_service)),
             );
 
             // Try to restore the active workspace name from the store
