@@ -6,6 +6,34 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+// ---------------------------------------------------------------------------
+// PinnedContext (Phase 5: Drag-and-Drop Visual Context)
+// ---------------------------------------------------------------------------
+
+/// An item pinned to the current Athena session for additional context.
+///
+/// Users drag agents, kanban tasks, or files onto the Athena panel to pin
+/// them as context. Pinned items are injected into the system prompt after the
+/// main state snapshot, in a separate `[Pinned Context]` block. Pinned context
+/// persists for the current session and is cleared on "New session".
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum PinnedContext {
+    Agent {
+        pane_id: String,
+        agent_type: String,
+        status: String,
+    },
+    KanbanTask {
+        task_id: String,
+        title: String,
+        status: String,
+    },
+    File {
+        path: String,
+        preview_lines: Vec<String>,
+    },
+}
+
 // Session persistence types
 use athena_store::MessageRole as StoreMessageRole;
 use athena_store::SessionMessage as StoreMessage;
@@ -410,6 +438,9 @@ pub struct AthenaOrchestrator {
     snapshot_cache: parking_lot::Mutex<Option<(String, Instant)>>,
     /// Optional notification service for pushing status alerts.
     notification_service: Option<Arc<crate::notification::NotificationService>>,
+    /// Items pinned by the user as context for the current session.
+    /// Cleared on "New session".
+    pinned_context: parking_lot::Mutex<Vec<PinnedContext>>,
 }
 
 impl Default for AthenaOrchestrator {
@@ -443,6 +474,7 @@ impl AthenaOrchestrator {
             session_store: None,
             kv_store: None,
             snapshot_cache: parking_lot::Mutex::new(None),
+            pinned_context: parking_lot::Mutex::new(Vec::new()),
             notification_service: None,
         }
     }
@@ -487,6 +519,7 @@ impl AthenaOrchestrator {
             session_store,
             kv_store,
             snapshot_cache: parking_lot::Mutex::new(None),
+            pinned_context: parking_lot::Mutex::new(Vec::new()),
             notification_service,
         }
     }
@@ -516,6 +549,7 @@ impl AthenaOrchestrator {
             session_store: None,
             kv_store: None,
             snapshot_cache: parking_lot::Mutex::new(None),
+            pinned_context: parking_lot::Mutex::new(Vec::new()),
             notification_service: None,
         }
     }
@@ -576,6 +610,7 @@ impl AthenaOrchestrator {
         self.anthropic_messages.lock().clear();
         self.openai_messages.lock().clear();
         *self.current_session_id.lock() = None;
+        self.clear_pinned_context();
     }
 
     /// Set the current session identifier.
@@ -611,6 +646,31 @@ impl AthenaOrchestrator {
     /// Get a reference to the session store, if configured.
     pub fn session_store(&self) -> Option<&Arc<athena_store::SessionStore>> {
         self.session_store.as_ref()
+    }
+
+    // -- Pinned Context (Phase 5: Drag-and-Drop) --------------------------------
+
+    /// Pin an item to the current session context.
+    pub fn pin_context(&self, item: PinnedContext) {
+        self.pinned_context.lock().push(item);
+    }
+
+    /// Remove a pinned item by index.
+    pub fn unpin_context(&self, index: usize) {
+        let mut guard = self.pinned_context.lock();
+        if index < guard.len() {
+            guard.remove(index);
+        }
+    }
+
+    /// Clear all pinned context (called on "New session").
+    pub fn clear_pinned_context(&self) {
+        self.pinned_context.lock().clear();
+    }
+
+    /// Get a snapshot of all pinned context items.
+    pub fn get_pinned_context(&self) -> Vec<PinnedContext> {
+        self.pinned_context.lock().clone()
     }
 
     /// Save the current conversation history to the session store.
@@ -846,6 +906,29 @@ impl AthenaOrchestrator {
         let kanban_text = "Kanban: use kanban_list_tasks to query".to_string();
         total_tokens += Self::estimate_tokens(&kanban_text);
         lines.push(kanban_text);
+
+        // --- Pinned Context ---
+        let pinned = self.get_pinned_context();
+        if !pinned.is_empty() {
+            lines.push("\n[Pinned Context]".to_string());
+            for item in &pinned {
+                match item {
+                    PinnedContext::Agent { pane_id, agent_type, status } => {
+                        lines.push(format!("  Agent {}: {} ({})", pane_id, agent_type, status));
+                    }
+                    PinnedContext::KanbanTask { task_id, title, status } => {
+                        lines.push(format!("  Task {}: {} ({})", task_id, title, status));
+                    }
+                    PinnedContext::File { path, preview_lines } => {
+                        lines.push(format!("  File: {}", path));
+                        for line in preview_lines.iter().take(20) {
+                            lines.push(format!("    {}", line));
+                        }
+                    }
+                }
+            }
+            total_tokens += Self::estimate_tokens(&lines.last().unwrap());
+        }
 
         let snapshot = lines.join("\n");
         total_tokens += Self::estimate_tokens(&snapshot); // full count

@@ -36,7 +36,7 @@ pub fn play_ding() {
 
     let result = (|| -> Result<(), JsValue> {
         let osc = OscillatorNode::new(&ctx)?;
-        let gain = ctx.create_gain();
+        let gain = ctx.create_gain()?;
 
         osc.connect_with_audio_node(&gain)?;
         gain.connect_with_audio_node(&ctx.destination())?;

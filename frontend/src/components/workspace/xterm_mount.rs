@@ -38,6 +38,8 @@ struct XtermCleanup {
     _ro_closure: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
     /// Rooted keydown handler for custom macOS keyboard shortcuts.
     _keydown_handler: Option<JsValue>,
+    /// Rooted paste handler for right-click paste.
+    _paste_handler: Option<JsValue>,
     /// IntersectionObserver that detects when the terminal container
     /// becomes visible after being hidden (e.g. display:none toggle).
     _visibility_observer: Option<JsValue>,
@@ -322,8 +324,8 @@ pub fn XtermMount(
                 let alt = event.alt_key();
                 let key = event.key();
 
-                // Cmd+V (macOS) / Ctrl+V (others) → paste via Tauri clipboard with bracketed paste sequences
-                if key == "v" && ((is_mac && meta && !ctrl) || (!is_mac && ctrl && !meta)) && !shift && !alt {
+                // Cmd+V (macOS) / Ctrl+V / Ctrl+Shift+V (others) → paste via Tauri clipboard with bracketed paste sequences
+                if key == "v" && ((is_mac && meta && !ctrl) || (!is_mac && ctrl && !meta)) && !alt {
                     event.prevent_default();
                     event.stop_propagation();
                     let pane_id = pane_id_keydown.clone();
@@ -380,6 +382,36 @@ pub fn XtermMount(
                 "keydown",
                 keydown_handler_js.as_ref().unchecked_ref(),
                 true,
+            );
+
+            // Paste event handler for right-click paste (catches browser paste)
+            let pane_id_for_paste = mount_id.clone();
+            let paste_handler = Closure::wrap(Box::new(move |event: web_sys::Event| {
+                event.prevent_default();
+                event.stop_propagation();
+                let pane_id = pane_id_for_paste.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match read_clipboard_text().await {
+                        Ok(text) => {
+                            let bracketed = format!("\x1b[200~{}\x1b[201~", text);
+                            if let Err(e) = pty_write(&pane_id, &bracketed).await {
+                                web_sys::console::error_1(
+                                    &format!("XtermMount: paste event bracketed paste write failed: {:?}", e).into(),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            web_sys::console::error_1(
+                                &format!("XtermMount: paste event read_clipboard_text failed: {:?}", e).into(),
+                            );
+                        }
+                    }
+                });
+            }) as Box<dyn FnMut(web_sys::Event)>);
+            let paste_handler_js = paste_handler.into_js_value();
+            let _ = container.add_event_listener_with_callback(
+                "paste",
+                paste_handler_js.as_ref().unchecked_ref(),
             );
 
             // On a brand new PTY, clear once before the first fit-triggered
@@ -716,6 +748,7 @@ pub fn XtermMount(
                 _resize_observer: resize_observer_holder,
                 _ro_closure: ro_closure_holder,
                 _keydown_handler: Some(keydown_handler_js),
+                _paste_handler: Some(paste_handler_js),
                 _visibility_observer: vis_observer_holder,
                 _vis_callback: vis_callback_holder,
             }));
