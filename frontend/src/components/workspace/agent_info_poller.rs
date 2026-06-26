@@ -5,9 +5,7 @@
 //! in the active space and writes the result into the terminal store.
 //!
 //! This is what makes the "is Claude/Codex running?" detection and the
-//! scraped task titles actually show up in pane pills — the store fields
-//! (`session.foreground_process`, `session.task_title`) are read by `PaneItem`
-//! but were never written before this component existed.
+//! scraped task titles actually show up in pane pills.
 //!
 //! It intentionally runs on a slower cadence (1500ms) than the per-pane
 //! 750ms loop in `PaneItem`, which is purpose-built for resume-banner reveal
@@ -27,21 +25,21 @@ use crate::tauri_bridge::{pty_agent_info, summarize_agent_title};
 /// process-table churn and file reads reasonable across many panes.
 const POLL_INTERVAL_MS: u64 = 1500;
 
-/// Mount-once component. Renders nothing — exists only to own the `use_future`.
+/// Mount-once component. Renders nothing -- exists only to own the `use_future`.
 #[allow(non_snake_case)]
 pub fn AgentInfoPoller() -> Element {
     let terminal_store = use_terminal_store();
     let workspace = use_workspace_store();
     let ui_state = use_ui_store();
 
-    // Track which session IDs we have already summarized (per-pane).
-    let summarized_sessions: Signal<std::collections::HashSet<String>> =
+    // Track which (pane_id, session_id) pairs we have already summarized.
+    let summarized_pairs: Signal<std::collections::HashSet<(String, String)>> =
         use_signal(std::collections::HashSet::new);
 
     use_future(move || {
         let mut terminal_store = terminal_store.clone();
         let workspace = workspace.clone();
-        let mut summarized_sessions = summarized_sessions.clone();
+        let mut summarized_pairs = summarized_pairs.clone();
         async move {
             loop {
                 // Snapshot the pane ids of every space (not just the active
@@ -65,69 +63,86 @@ pub fn AgentInfoPoller() -> Element {
                                 Some(info.foreground_process.clone())
                             };
 
-                            // Drive the title state machine for a new session.
                             let sid = info.session_id.as_deref().unwrap_or_default();
                             let feature_enabled = ui_state.read().smart_pane_titles;
                             let raw = info.raw_prompt.as_deref().unwrap_or_default();
                             let prompt_ready = !sid.is_empty() && !raw.trim().is_empty();
 
-                            if feature_enabled
-                                && prompt_ready
-                                && !summarized_sessions.read().contains(pane_id)
+                            // Detect session change and reset title state when
+                            // the user starts a new agent run in this pane.
                             {
-                                // Mark this pane as in-flight so we never re-trigger it.
-                                summarized_sessions.write().insert(pane_id.clone());
-                                let raw_prompt = raw.to_string();
-                                let mut store = terminal_store.clone();
-                                let pane = pane_id.clone();
-
-                                // Idle -> Pending. The pill renders empty while waiting.
-                                {
-                                    let mut g = store.write();
-                                    if let Some(session) = g.sessions.get_mut(&pane) {
+                                let mut g = terminal_store.write();
+                                if let Some(session) = g.sessions.get_mut(pane_id) {
+                                    let old_sid =
+                                        session.session_id.as_deref().unwrap_or_default();
+                                    if old_sid != sid {
                                         session.title_state =
-                                            crate::utils::pane_label::TitleState::Pending;
-                                        session.generation = session.generation.wrapping_add(1);
+                                            crate::utils::pane_label::TitleState::Idle;
+                                        session.generation =
+                                            session.generation.wrapping_add(1);
                                     }
                                 }
+                            }
 
-                                // Fire-and-forget. The backend command retries transient
-                                // failures internally, so this single await yields a final
-                                // result (title, "Sensitive prompt", or Err).
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    let result = summarize_agent_title(&raw_prompt).await;
-                                    let mut g = store.write();
-                                    let Some(session) = g.sessions.get_mut(&pane) else {
-                                        return;
-                                    };
-                                    match result {
-                                        Ok(summary) => {
-                                            let cleaned = summary.trim().to_string();
-                                            web_sys::console::log_1(
-                                                &format!(
-                                                    "[AgentInfoPoller] title for pane={}: {}",
-                                                    pane, cleaned
-                                                )
-                                                .into(),
-                                            );
+                            if feature_enabled && prompt_ready {
+                                let key = (pane_id.clone(), sid.to_string());
+                                if !summarized_pairs.read().contains(&key) {
+                                    summarized_pairs.write().insert(key);
+                                    let raw_prompt = raw.to_string();
+                                    let mut store = terminal_store.clone();
+                                    let pane = pane_id.clone();
+
+                                    // Idle -> Pending. The pill renders empty while waiting.
+                                    {
+                                        let mut g = store.write();
+                                        if let Some(session) = g.sessions.get_mut(&pane) {
                                             session.title_state =
-                                                crate::utils::pane_label::TitleState::Done(cleaned);
-                                        }
-                                        Err(e) => {
-                                            web_sys::console::warn_1(
-                                                &format!(
-                                                    "[AgentInfoPoller] title failed for pane={}: {:?}",
-                                                    pane, e
-                                                )
-                                                .into(),
-                                            );
-                                            // Failed is terminal: the pill stays empty.
-                                            session.title_state =
-                                                crate::utils::pane_label::TitleState::Failed;
+                                                crate::utils::pane_label::TitleState::Pending;
+                                            session.generation =
+                                                session.generation.wrapping_add(1);
                                         }
                                     }
-                                    session.generation = session.generation.wrapping_add(1);
-                                });
+
+                                    // Fire-and-forget. The backend command retries transient
+                                    // failures internally, so this single await yields a final
+                                    // result (title, "Sensitive prompt", or Err).
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        let result = summarize_agent_title(&raw_prompt).await;
+                                        let mut g = store.write();
+                                        let Some(session) = g.sessions.get_mut(&pane) else {
+                                            return;
+                                        };
+                                        match result {
+                                            Ok(summary) => {
+                                                let cleaned = summary.trim().to_string();
+                                                web_sys::console::log_1(
+                                                    &format!(
+                                                        "[AgentInfoPoller] title for pane={}: {}",
+                                                        pane, cleaned
+                                                    )
+                                                    .into(),
+                                                );
+                                                session.title_state =
+                                                    crate::utils::pane_label::TitleState::Done(
+                                                        cleaned,
+                                                    );
+                                            }
+                                            Err(e) => {
+                                                web_sys::console::warn_1(
+                                                    &format!(
+                                                        "[AgentInfoPoller] title failed for pane={}: {:?}",
+                                                        pane, e
+                                                    )
+                                                    .into(),
+                                                );
+                                                // Failed is terminal: the pill stays empty.
+                                                session.title_state =
+                                                    crate::utils::pane_label::TitleState::Failed;
+                                            }
+                                        }
+                                        session.generation = session.generation.wrapping_add(1);
+                                    });
+                                }
                             }
                             terminal_store.write().update_agent_info(
                                 pane_id,

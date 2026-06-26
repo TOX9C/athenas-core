@@ -150,7 +150,10 @@ pub fn FileTree() -> Element {
                     });
                 if let Some(dir) = dir_path {
                     loading_for_listen.set(true);
-                    spawn(async move {
+                    // NB: this closure runs from a raw Tauri JS event, *outside*
+                    // any Dioxus scope. `dioxus_core::spawn` would panic in
+                    // `current_scope_id().unwrap()` and poison the runtime.
+                    wasm_bindgen_futures::spawn_local(async move {
                         match tauri_bridge::fs_list_dir(&dir).await {
                             Ok(response) => {
                                 nodes_for_listen.set(parse_dir_entries(&response));

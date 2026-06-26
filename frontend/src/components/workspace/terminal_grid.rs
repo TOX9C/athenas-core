@@ -462,6 +462,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
         fg_process.as_deref(),
         ui_state.read().smart_pane_titles,
         &agent_label,
+        &props.pane_id,
     );
 
     // View-only truncation. The store keeps the full title; the pill shows

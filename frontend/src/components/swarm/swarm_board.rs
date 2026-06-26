@@ -297,7 +297,7 @@ pub fn SwarmBoard() -> Element {
 
             // Agent cards grid
             div {
-                style: "flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden;",
+                style: "flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column;",
 
                 div {
                     style: "display: flex; align-items: center; gap: 8px; margin-bottom: 14px;",

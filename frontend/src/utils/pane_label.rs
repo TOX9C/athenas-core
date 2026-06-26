@@ -40,6 +40,7 @@ pub fn resolve_pane_label(
     fg_process: Option<&str>,
     smart_on: bool,
     static_agent_label: &str,
+    pane_id: &str,
 ) -> String {
     // 1. User rename always wins.
     if let Some(l) = label {
@@ -53,7 +54,7 @@ pub fn resolve_pane_label(
 
     // 2. Idle Shell → random name, only when smart titles are on.
     if is_idle_shell && smart_on {
-        return name_for_pane(""); // pane_id not needed for determinism in tests
+        return name_for_pane(pane_id);
     }
 
     // 3. Agent pane → render TitleState.
@@ -91,7 +92,8 @@ mod tests {
                     &claude(),
                     None,
                     true,
-                    "Claude Code"
+                    "Claude Code",
+                    "test-pane"
                 ),
                 "my pane"
             );
@@ -107,7 +109,8 @@ mod tests {
                 &claude(),
                 None,
                 true,
-                "Claude Code"
+                "Claude Code",
+                "test-pane"
             ),
             "Claude Code"
         );
@@ -122,7 +125,8 @@ mod tests {
                 &claude(),
                 None,
                 true,
-                "Claude Code"
+                "Claude Code",
+                "test-pane"
             ),
             "Claude Code"
         );
@@ -137,7 +141,8 @@ mod tests {
                 &claude(),
                 None,
                 true,
-                "Claude Code"
+                "Claude Code",
+                "test-pane"
             ),
             ""
         );
@@ -152,7 +157,8 @@ mod tests {
                 &claude(),
                 None,
                 true,
-                "Claude Code"
+                "Claude Code",
+                "test-pane"
             ),
             ""
         );
@@ -167,7 +173,8 @@ mod tests {
                 &claude(),
                 None,
                 true,
-                "Claude Code"
+                "Claude Code",
+                "test-pane"
             ),
             "analyzing the codebase"
         );
@@ -182,7 +189,8 @@ mod tests {
                 &claude(),
                 None,
                 true,
-                "Claude Code"
+                "Claude Code",
+                "test-pane"
             ),
             "Sensitive prompt"
         );
@@ -190,7 +198,7 @@ mod tests {
 
     #[test]
     fn idle_shell_smart_on_shows_random_name() {
-        let name = resolve_pane_label(None, &TitleState::Idle, &shell(), None, true, "Shell");
+        let name = resolve_pane_label(None, &TitleState::Idle, &shell(), None, true, "Shell", "pane-abc-123");
         assert!(!name.is_empty());
         assert_ne!(name, "Shell");
     }
@@ -198,7 +206,7 @@ mod tests {
     #[test]
     fn idle_shell_smart_off_shows_static_label() {
         assert_eq!(
-            resolve_pane_label(None, &TitleState::Idle, &shell(), None, false, "Shell"),
+            resolve_pane_label(None, &TitleState::Idle, &shell(), None, false, "Shell", "pane-abc-123"),
             "Shell"
         );
     }
@@ -213,7 +221,8 @@ mod tests {
                 &shell(),
                 Some("vim"),
                 true,
-                "Shell"
+                "Shell",
+                "pane-abc-123"
             ),
             ""
         );
@@ -224,9 +233,22 @@ mod tests {
                 &shell(),
                 Some("vim"),
                 true,
-                "Shell"
+                "Shell",
+                "pane-abc-123"
             ),
             "editing"
+        );
+    }
+
+    #[test]
+    fn different_pane_ids_get_different_names() {
+        let name_a = resolve_pane_label(None, &TitleState::Idle, &shell(), None, true, "Shell", "pane-1");
+        let name_b = resolve_pane_label(None, &TitleState::Idle, &shell(), None, true, "Shell", "pane-2");
+        let name_c = resolve_pane_label(None, &TitleState::Idle, &shell(), None, true, "Shell", "pane-3");
+        let names: std::collections::HashSet<String> = [name_a.clone(), name_b.clone(), name_c.clone()].into_iter().collect();
+        assert!(
+            names.len() >= 2,
+            "expected at least 2 distinct names across 3 panes, got: {name_a}, {name_b}, {name_c}"
         );
     }
 }
