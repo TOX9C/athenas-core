@@ -637,14 +637,6 @@ impl ToolExecutor {
                 .agent_spawned(&id, agent_type, &agent_command);
         }
 
-        if let Some(ref svc) = self.notification_service {
-            let _ = svc.notify(
-                crate::notification::NotificationType::Info,
-                "Agent Started",
-                format!("Launched {} {} agent(s)", agent_count, agent_type),
-            );
-        }
-
         Ok(ToolCallResult {
             text: format!("Done, launched {} {} agents.", agent_count, agent_type),
             is_error: None,
@@ -672,14 +664,6 @@ impl ToolExecutor {
         for _ in 0..agent_count {
             let id = format!("custom-agent-{}", Uuid::new_v4());
             self.event_sender.agent_spawned(&id, "custom", command);
-        }
-
-        if let Some(ref svc) = self.notification_service {
-            let _ = svc.notify(
-                crate::notification::NotificationType::Info,
-                "Custom Agent Started",
-                format!("Launched {} custom agent(s)", agent_count),
-            );
         }
 
         Ok(ToolCallResult {

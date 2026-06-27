@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.82"
 
 [dependencies]
+athena-core = { path = "../athena-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
 
+use crate::EventEmitter;
+
 /// Maximum size in bytes of a single agent-comms line. Prevents an agent
 /// from streaming a giant line and forcing the server to allocate
 /// unbounded memory before it ever sees a newline. Exceeding this cap
@@ -213,7 +215,7 @@ pub struct AgentComms {
     sessions: Arc<Mutex<HashMap<String, SessionInternal>>>,
     pending_input: Arc<Mutex<HashMap<String, PendingInput>>>,
     token: String,
-    event_emitter: Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: EventEmitter,
 }
 
 impl std::fmt::Debug for AgentComms {
@@ -544,7 +546,7 @@ fn send_to_socket(stream: &TcpStream, payload: &serde_json::Value) {
 }
 
 fn emit_to_renderer(
-    event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: &EventEmitter,
     channel: &str,
     data: &serde_json::Value,
 ) {
@@ -562,7 +564,7 @@ fn handle_connection(
     sessions: Arc<Mutex<HashMap<String, SessionInternal>>>,
     pending_input: Arc<Mutex<HashMap<String, PendingInput>>>,
     token: String,
-    event_emitter: Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: EventEmitter,
 ) {
     let peer = stream
         .peer_addr()
@@ -677,7 +679,7 @@ fn handle_incoming_message(
     msg: AgentMessage,
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
     pending_input: &Arc<Mutex<HashMap<String, PendingInput>>>,
-    event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: &EventEmitter,
 ) {
     // NOTE: `initialize` is handled (and auth-gated) in the connection loop
     // before this function is reached; only post-auth methods dispatch here.
@@ -711,7 +713,7 @@ fn handle_initialize(
     msg: AgentMessage,
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
     token: &str,
-    event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: &EventEmitter,
     tx: &SyncSender<Vec<u8>>,
 ) -> bool {
     let incoming_token = msg
@@ -812,7 +814,7 @@ fn handle_notification(
     stream: &TcpStream,
     msg: AgentMessage,
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: &EventEmitter,
 ) {
     let agent_id = msg.params.get("agentId").and_then(|v| v.as_str());
     let session = agent_id.and_then(|aid| find_session_by_agent_id(sessions, aid));
@@ -874,7 +876,7 @@ fn handle_status(
     stream: &TcpStream,
     msg: AgentMessage,
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: &EventEmitter,
 ) {
     let session = find_session_by_stream(sessions, stream);
     if let Some(ref s) = session {
@@ -933,7 +935,7 @@ fn handle_request_input(
     msg: AgentMessage,
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
     pending_input: &Arc<Mutex<HashMap<String, PendingInput>>>,
-    event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: &EventEmitter,
 ) {
     let session = find_session_by_stream(sessions, stream);
     if session.is_none() {
@@ -1164,7 +1166,7 @@ fn cleanup_connection(
     stream: &TcpStream,
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
     pending_input: &Arc<Mutex<HashMap<String, PendingInput>>>,
-    event_emitter: &Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: &EventEmitter,
 ) {
     let peer_addr = match stream.peer_addr() {
         Ok(addr) => Some(addr),
@@ -1258,7 +1260,7 @@ mod tests {
 
         let sessions_arc = Arc::new(Mutex::new(HashMap::new()));
         let pending_arc = Arc::new(Mutex::new(HashMap::new()));
-        let emitter_arc: Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>> =
+        let emitter_arc: EventEmitter =
             Arc::new(Mutex::new(None));
 
         // Clone the handles so the timeout-handler closure can move one
@@ -1388,7 +1390,7 @@ mod tests {
 
         let sessions_arc = Arc::new(Mutex::new(HashMap::new()));
         let pending_arc = Arc::new(Mutex::new(HashMap::new()));
-        let emitter_arc: Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>> =
+        let emitter_arc: EventEmitter =
             Arc::new(Mutex::new(None));
         let token = "test-token-H4".to_string();
 
@@ -1460,7 +1462,7 @@ mod tests {
 
         let sessions_arc = Arc::new(Mutex::new(HashMap::new()));
         let pending_arc = Arc::new(Mutex::new(HashMap::new()));
-        let emitter_arc: Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>> =
+        let emitter_arc: EventEmitter =
             Arc::new(Mutex::new(None));
         let token = "test-token-H4-pos".to_string();
 

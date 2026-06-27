@@ -389,28 +389,6 @@ impl AthenaState {
         self.error = None;
     }
 
-    // -- Event handlers for Tauri push events -------------------------------
-
-    /// Handle athena:status event — update thinking/working/idle state.
-    pub fn handle_status_event(&mut self, status: &str, detail: Option<String>) {
-        match status {
-            "thinking" | "working" => {
-                self.is_streaming = true;
-                self.streaming_status = detail.or_else(|| Some(status.to_string()));
-            }
-            "idle" | "completed" => {
-                self.is_streaming = false;
-                self.streaming_status = None;
-            }
-            "error" => {
-                self.is_streaming = false;
-                self.streaming_status = None;
-                self.error = detail;
-            }
-            _ => {}
-        }
-    }
-
     /// Handle athena:askUser event — add an AskUser block to the latest assistant message
     /// or create a new message with the AskUser block.
     pub fn handle_ask_user(

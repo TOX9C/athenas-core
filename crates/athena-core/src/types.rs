@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+use std::sync::{Arc, Mutex};
+
+/// Shared event-emitter type used across crates for forwarding events to the frontend.
+pub type EventEmitter = Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>;
+
 /// Represents an image attachment with base64 data and media type.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ImageData {

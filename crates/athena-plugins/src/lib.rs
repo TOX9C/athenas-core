@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use athena_core::EventEmitter;
+
 /// Maximum size in bytes for a plugin manifest file. Manifests larger than
 /// this are skipped during discovery to prevent a malicious or accidental
 /// oversized file from exhausting memory.
@@ -569,7 +571,7 @@ fn validate_mcp_env(env: &HashMap<String, String>) -> Result<(), PluginError> {
 pub struct PluginManager {
     inner: Arc<Mutex<PluginManagerInner>>,
     callbacks: Arc<dyn PluginCallbacks>,
-    event_emitter: Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: EventEmitter,
 }
 
 impl std::fmt::Debug for PluginManager {
