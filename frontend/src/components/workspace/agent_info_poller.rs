@@ -86,7 +86,12 @@ pub fn AgentInfoPoller() -> Element {
                                 }
                             }
 
-                            if feature_enabled && prompt_ready {
+                            // Only invoke LLM summarization for actual agent
+                            // panes (claude, codex, opencode). Shells must
+                            // never scrape global agent state.
+                            let known_agents = ["claude", "codex", "opencode"];
+                            let is_agent = known_agents.contains(&info.foreground_process.as_str());
+                            if feature_enabled && prompt_ready && is_agent {
                                 let key = (pane_id.clone(), sid.to_string());
                                 if !summarized_pairs.read().contains(&key) {
                                     summarized_pairs.write().insert(key);
