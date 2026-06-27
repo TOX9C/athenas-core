@@ -181,12 +181,13 @@ fn validate_path_exists(
             .unwrap_or_else(|| std::path::PathBuf::from("/"))
             .join(path)
     };
-    if !path.exists() {
-        return Err(CommandError::NotFound("Path does not exist".to_string()));
-    }
-    let canonicalized = path
-        .canonicalize()
-        .map_err(|e| CommandError::Internal(format!("Failed to canonicalize path: {}", e)))?;
+    let canonicalized = path.canonicalize().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            CommandError::NotFound("Path does not exist".to_string())
+        } else {
+            CommandError::Internal(format!("Failed to canonicalize path: {}", e))
+        }
+    })?;
     if !is_within_any_root(&canonicalized, &roots) {
         // Do NOT echo the canonicalized workspace root or the requested path
         // back to the frontend — it confirms on-disk layout (user home
