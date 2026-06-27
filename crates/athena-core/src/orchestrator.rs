@@ -308,7 +308,7 @@ fn validate_base_url(url: &str) -> Result<(), OrchestratorError> {
     // local server and is exempt from the HTTPS requirement.
     let is_loopback = host
         .parse::<std::net::IpAddr>()
-        .map_or(false, |ip| ip.is_loopback())
+        .is_ok_and(|ip| ip.is_loopback())
         || host == "localhost";
 
     if scheme == "http" && !is_loopback {
@@ -827,11 +827,9 @@ impl AthenaOrchestrator {
         }
 
         let mut lines: Vec<String> = Vec::new();
-        let mut total_tokens = 0usize;
 
         // --- Header ---
         lines.push("[Current State]".to_string());
-        total_tokens += 25; // rough estimate
 
         // --- Workspace ---
         let scope = self.active_space_scope();
@@ -841,11 +839,10 @@ impl AthenaOrchestrator {
             .or_else(|| self.workspace_name.lock().clone())
             .unwrap_or_else(|| "Unknown".to_string());
         lines.push(format!("Workspace: {}", workspace_name));
-        total_tokens += Self::estimate_tokens(&lines.last().unwrap());
 
         // --- Agents ---
         let in_scope = |id: &str| {
-            scope.as_ref().map_or(true, |(_, ids)| ids.contains(id))
+            scope.as_ref().is_none_or(|(_, ids)| ids.contains(id))
         };
         let mut agent_lines: Vec<String> = Vec::new();
         let mut has_agents = false;
@@ -879,7 +876,6 @@ impl AthenaOrchestrator {
         }
         lines.push("Agents:".to_string());
         lines.push(agent_text);
-        total_tokens += Self::estimate_tokens(&lines.last().unwrap());
 
         // --- Execution Plan ---
         let mut plan_lines: Vec<String> = Vec::new();
@@ -899,12 +895,10 @@ impl AthenaOrchestrator {
             plan_lines.push("  (none active)".to_string());
         }
         let plan_text = plan_lines.join("\n");
-        total_tokens += Self::estimate_tokens(&plan_text);
         lines.push(plan_text);
 
         // --- Kanban ---
         let kanban_text = "Kanban: use kanban_list_tasks to query".to_string();
-        total_tokens += Self::estimate_tokens(&kanban_text);
         lines.push(kanban_text);
 
         // --- Pinned Context ---
@@ -927,11 +921,9 @@ impl AthenaOrchestrator {
                     }
                 }
             }
-            total_tokens += Self::estimate_tokens(&lines.last().unwrap());
         }
 
         let snapshot = lines.join("\n");
-        total_tokens += Self::estimate_tokens(&snapshot); // full count
         *self.snapshot_cache.lock() = Some((snapshot.clone(), Instant::now()));
         snapshot
     }

@@ -1394,6 +1394,7 @@ fn map_mcp_to_executor_name(mcp_name: &str) -> &str {
 
 /// Convert JSON-RPC tool call arguments into a `ToolInput` structure,
 /// handling both camelCase and snake_case keys.
+#[allow(clippy::field_reassign_with_default)]
 fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::ToolInput> {
     let map = args.as_object()?;
 
