@@ -1,6 +1,6 @@
 use crate::components::shared::icon::IconAgents;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
-use crate::stores::agent_status::{use_agent_status_store, AgentStatus, AgentRunStatus};
+use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatus};
 use crate::stores::athena::DraggableItem;
 use dioxus::prelude::*;
 

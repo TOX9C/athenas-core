@@ -900,14 +900,6 @@ impl ToolExecutor {
 
         self.event_sender.plan_update(&plan);
 
-        if let Some(ref svc) = self.notification_service {
-            let _ = svc.notify(
-                crate::notification::NotificationType::Info,
-                "Plan Created",
-                format!("Execution plan created: {}", goal),
-            );
-        }
-
         let step_summary: String = plan
             .steps
             .iter()
@@ -969,14 +961,6 @@ impl ToolExecutor {
 
         if let Some(updated_plan) = self.plan_manager.get_active_plan() {
             self.event_sender.plan_update(&updated_plan);
-        }
-
-        if let Some(ref svc) = self.notification_service {
-            let _ = svc.notify(
-                crate::notification::NotificationType::Info,
-                "Step Dispatched",
-                format!("Dispatched step: {}", step_id),
-            );
         }
 
         Ok(ToolCallResult {
@@ -1530,7 +1514,7 @@ impl ToolExecutor {
                 Err(e) => Ok(ToolCallResult {
                     text: format!("Error parsing workspaces: {}", e),
                     is_error: Some(true),
-                    }),
+                }),
             },
             Ok(None) => Ok(ToolCallResult {
                 text: "[]".to_string(),
@@ -1589,9 +1573,10 @@ impl ToolExecutor {
     }
 
     fn workspace_switch(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
-        let space_id = args.space_id.as_deref().ok_or_else(|| {
-            ToolExecutorError::MissingParam("space_id".to_string())
-        })?;
+        let space_id = args
+            .space_id
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("space_id".to_string()))?;
 
         match self.store.set_sync("workspace.active", &space_id) {
             Ok(()) => Ok(ToolCallResult {
@@ -1776,8 +1761,10 @@ mod tests {
                 {"id": "space-2", "name": "Frontend Polish"}
             ]
         });
-        store.set_sync("workspaces", &workspaces.to_string()).unwrap();
-         store.set_sync("workspace.active", &"space-1").unwrap();
+        store
+            .set_sync("workspaces", &workspaces.to_string())
+            .unwrap();
+        store.set_sync("workspace.active", &"space-1").unwrap();
 
         // Build executor with real store
         let executor = ToolExecutor::new(
@@ -1790,26 +1777,45 @@ mod tests {
         );
 
         // workspace_list
-        let list_result = executor.execute_tool_call("workspace_list", &ToolInput::default()).unwrap();
-        assert!(!list_result.is_error.unwrap_or(false), "workspace_list failed: {}", list_result.text);
+        let list_result = executor
+            .execute_tool_call("workspace_list", &ToolInput::default())
+            .unwrap();
+        assert!(
+            !list_result.is_error.unwrap_or(false),
+            "workspace_list failed: {}",
+            list_result.text
+        );
         let spaces: Vec<serde_json::Value> = serde_json::from_str(&list_result.text).unwrap();
         assert_eq!(spaces.len(), 2);
 
         // workspace_get_active
-        let active_result = executor.execute_tool_call("workspace_get_active", &ToolInput::default()).unwrap();
-        assert!(!active_result.is_error.unwrap_or(false), "workspace_get_active failed: {}", active_result.text);
-        println!("Active workspace: {}", active_result.text);
+        let active_result = executor
+            .execute_tool_call("workspace_get_active", &ToolInput::default())
+            .unwrap();
+        assert!(
+            !active_result.is_error.unwrap_or(false),
+            "workspace_get_active failed: {}",
+            active_result.text
+        );
 
         // workspace_switch
         let switch_input = ToolInput {
             space_id: Some("space-2".to_string()),
             ..Default::default()
         };
-        let switch_result = executor.execute_tool_call("workspace_switch", &switch_input).unwrap();
-        assert!(!switch_result.is_error.unwrap_or(false), "workspace_switch failed: {}", switch_result.text);
+        let switch_result = executor
+            .execute_tool_call("workspace_switch", &switch_input)
+            .unwrap();
+        assert!(
+            !switch_result.is_error.unwrap_or(false),
+            "workspace_switch failed: {}",
+            switch_result.text
+        );
 
         // Verify switch stuck
-        let active_after = executor.execute_tool_call("workspace_get_active", &ToolInput::default()).unwrap();
+        let active_after = executor
+            .execute_tool_call("workspace_get_active", &ToolInput::default())
+            .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&active_after.text).unwrap();
         assert_eq!(parsed.get("id").and_then(|v| v.as_str()), Some("space-2"));
     }

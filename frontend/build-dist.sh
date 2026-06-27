@@ -61,6 +61,10 @@ done
 VENDOR_DIR="$SCRIPT_DIR/vendor"
 if [ -d "$VENDOR_DIR" ]; then
   cp -r "$VENDOR_DIR" "$DIST_DIR/vendor"
+  # Strip sourceMappingURL comments to prevent 404s that cause JSON parse errors
+  # (Tauri's custom protocol serves index.html for missing files, which the browser
+  # tries to parse as a JSON source map and throws "Unrecognized token '<'").
+  find "$DIST_DIR/vendor" -name '*.js' -exec sed -i '' '/\/\/# sourceMappingURL/d' {} +
   VENDOR_FILES=$(find "$DIST_DIR/vendor" -type f | wc -l | tr -d ' ')
   echo "Vendored assets copied: $VENDOR_FILES files in dist/vendor/"
 fi
