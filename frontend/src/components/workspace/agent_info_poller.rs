@@ -46,11 +46,16 @@ pub fn AgentInfoPoller() -> Element {
                 // one) so a background space keeps its detection fresh too.
                 let (pane_ids, pane_types) = {
                     let ws = workspace.read();
-                    let ids: Vec<String> = ws.spaces
+                    let ids: Vec<String> = ws
+                        .spaces
                         .iter()
                         .flat_map(|s| s.panes.iter().map(|p| p.id.clone()))
                         .collect();
-                    let types: std::collections::HashMap<String, crate::types::workspace::AgentType> = ws.spaces
+                    let types: std::collections::HashMap<
+                        String,
+                        crate::types::workspace::AgentType,
+                    > = ws
+                        .spaces
                         .iter()
                         .flat_map(|s| s.panes.iter().map(|p| (p.id.clone(), p.agent_type.clone())))
                         .collect();
@@ -80,24 +85,18 @@ pub fn AgentInfoPoller() -> Element {
                             {
                                 let mut g = terminal_store.write();
                                 if let Some(session) = g.sessions.get_mut(pane_id) {
-                                    let old_sid =
-                                        session.session_id.as_deref().unwrap_or_default();
+                                    let old_sid = session.session_id.as_deref().unwrap_or_default();
                                     if old_sid != sid {
                                         session.title_state =
                                             crate::utils::pane_label::TitleState::Idle;
-                                        session.generation =
-                                            session.generation.wrapping_add(1);
+                                        session.generation = session.generation.wrapping_add(1);
                                     }
                                 }
                             }
 
-                            // Only invoke LLM summarization for actual agent
-                            // panes. Shells must never scrape global state.
-                            let is_shell = matches!(
-                                pane_types.get(pane_id),
-                                Some(crate::types::workspace::AgentType::Shell)
-                            );
-                            if feature_enabled && prompt_ready && !is_shell {
+                            // Invoke LLM summarization for any pane that
+                            // carries a valid prompt, Shell or otherwise.
+                            if feature_enabled && prompt_ready {
                                 let key = (pane_id.clone(), sid.to_string());
                                 if !summarized_pairs.read().contains(&key) {
                                     summarized_pairs.write().insert(key);
@@ -111,8 +110,7 @@ pub fn AgentInfoPoller() -> Element {
                                         if let Some(session) = g.sessions.get_mut(&pane) {
                                             session.title_state =
                                                 crate::utils::pane_label::TitleState::Pending;
-                                            session.generation =
-                                                session.generation.wrapping_add(1);
+                                            session.generation = session.generation.wrapping_add(1);
                                         }
                                     }
 

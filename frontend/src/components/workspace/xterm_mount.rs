@@ -335,13 +335,18 @@ pub fn XtermMount(
                                 let bracketed = format!("\x1b[200~{}\x1b[201~", text);
                                 if let Err(e) = pty_write(&pane_id, &bracketed).await {
                                     web_sys::console::error_1(
-                                        &format!("XtermMount: bracketed paste write failed: {:?}", e).into(),
+                                        &format!(
+                                            "XtermMount: bracketed paste write failed: {:?}",
+                                            e
+                                        )
+                                        .into(),
                                     );
                                 }
                             }
                             Err(e) => {
                                 web_sys::console::error_1(
-                                    &format!("XtermMount: read_clipboard_text failed: {:?}", e).into(),
+                                    &format!("XtermMount: read_clipboard_text failed: {:?}", e)
+                                        .into(),
                                 );
                             }
                         }
@@ -402,7 +407,11 @@ pub fn XtermMount(
                         }
                         Err(e) => {
                             web_sys::console::error_1(
-                                &format!("XtermMount: paste event read_clipboard_text failed: {:?}", e).into(),
+                                &format!(
+                                    "XtermMount: paste event read_clipboard_text failed: {:?}",
+                                    e
+                                )
+                                .into(),
                             );
                         }
                     }
@@ -672,7 +681,9 @@ pub fn XtermMount(
                             // The canvas backing store was discarded while hidden;
                             // refit first (re-creates the canvas at correct size)
                             // then refresh the text buffer into it.
-                            if let Ok(fit_val) = js_sys::Reflect::get(&term_for_vis_fit, &JsValue::from_str("fit")) {
+                            if let Ok(fit_val) =
+                                js_sys::Reflect::get(&term_for_vis_fit, &JsValue::from_str("fit"))
+                            {
                                 if let Ok(fit_fn) = fit_val.dyn_into::<js_sys::Function>() {
                                     let _ = fit_fn.call0(&term_for_vis_fit);
                                 }

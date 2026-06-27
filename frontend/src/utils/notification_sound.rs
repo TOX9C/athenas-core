@@ -12,17 +12,16 @@
 pub fn play_ding() {
     use std::sync::OnceLock;
     use wasm_bindgen::JsCast;
-    use web_sys::{AudioContext, OscillatorNode};
     use web_sys::AudioContextOptions;
+    use web_sys::{AudioContext, OscillatorNode};
 
     // Reuse a single AudioContext for the lifetime of the app. The first
     // call constructs it; subsequent calls reuse it. This avoids the ~6
     // AudioContext browser cap.
     static CTX: OnceLock<Option<AudioContext>> = OnceLock::new();
-    let ctx = match CTX.get_or_init(|| {
-        AudioContext::new_with_context_options(&AudioContextOptions::new())
-            .ok()
-    }) {
+    let ctx = match CTX
+        .get_or_init(|| AudioContext::new_with_context_options(&AudioContextOptions::new()).ok())
+    {
         Some(c) => c,
         None => {
             log::warn!("Notification sound: AudioContext unavailable");

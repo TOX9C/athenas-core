@@ -47,6 +47,8 @@ src-tauri/gen/
 # Frontend build artifacts
 frontend/dist/
 frontend/target/
+frontend/wasm/
+frontend/assets/
 
 # E2E test artifacts
 e2e-tests/test/screenshots/
@@ -68,8 +70,15 @@ dist-electron/
 *.rlib
 *.d
 *.rmeta
+*.rs.bk
+*.rs.bc
 *.dylib
 *.so
+*.pdb
+
+# Node / JS artifacts
+node_modules/
+*.tsbuildinfo
 
 # Log files
 *.log

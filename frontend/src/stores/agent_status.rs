@@ -103,9 +103,20 @@ impl AgentStatusState {
 
     // -- Event handlers for Tauri push events -------------------------------
 
+    /// Maximum number of agent status entries to retain.
+    const MAX_STATUSES: usize = 500;
+    /// Target count after LRU eviction.
+    const STATUS_GC_TARGET: usize = 400;
+
     /// Handle an agent connected event.
+    /// If the pane already exists (e.g. reconnect), reset it to Idle.
     pub fn connect_agent(&mut self, pane_id: String, now: i64) {
-        if !self.statuses.iter().any(|(id, _)| id == &pane_id) {
+        if let Some(entry) = self.statuses.iter_mut().find(|(id, _)| id == &pane_id) {
+            entry.1.status = AgentRunStatus::Idle;
+            entry.1.message = Some("Connected".to_string());
+            entry.1.progress = None;
+            entry.1.last_updated_at = now;
+        } else {
             self.statuses.push((
                 pane_id.clone(),
                 AgentStatus {
@@ -117,15 +128,24 @@ impl AgentStatusState {
                 },
             ));
         }
+        self.maybe_gc_statuses();
     }
 
-    /// Handle an agent disconnected event.
-    pub fn disconnect_agent(&mut self, pane_id: &str, now: i64) {
-        if let Some(entry) = self.statuses.iter_mut().find(|(id, _)| id == pane_id) {
-            entry.1.status = AgentRunStatus::Disconnected;
-            entry.1.message = Some("Disconnected".to_string());
-            entry.1.last_updated_at = now;
+    /// Handle an agent disconnected event — removes the entry entirely
+    /// to prevent unbounded growth.
+    pub fn disconnect_agent(&mut self, pane_id: &str, _now: i64) {
+        self.statuses.retain(|(id, _)| id != pane_id);
+    }
+
+    /// Evict oldest statuses when we exceed the hard cap.
+    fn maybe_gc_statuses(&mut self) {
+        if self.statuses.len() <= Self::MAX_STATUSES {
+            return;
         }
+        // Sort by last_updated_at (oldest first) and trim to target.
+        self.statuses.sort_by_key(|(_, s)| s.last_updated_at);
+        let to_remove = self.statuses.len().saturating_sub(Self::STATUS_GC_TARGET);
+        self.statuses.drain(0..to_remove);
     }
 
     /// Handle an input requested event — add a notification-worthy status.
