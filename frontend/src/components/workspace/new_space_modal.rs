@@ -308,6 +308,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     resume_id: None,
                                                     resume_cmd: None,
                                                     resume_dismissed: None,
+                                                    slot_index: 0,
                                                 });
                                             }
                                         }
@@ -397,6 +398,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 resume_id: None,
                                                 resume_cmd: None,
                                                 resume_dismissed: None,
+                                                slot_index: 0,
                                             });
                                             _swarm_agents.push(SwarmAgent {
                                                 id: agent_id,
