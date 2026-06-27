@@ -418,26 +418,28 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                 };
                 if let Ok(item) = serde_json::from_str::<DraggableItem>(&json) {
                     let mut athena = athena_state.write();
-                    // Prevent duplicates
-                    if !athena.dropped_context.iter().any(|existing| match (existing, &item) {
+                    let is_new = !athena.dropped_context.iter().any(|existing| match (existing, &item) {
                         (DraggableItem::Agent { pane_id: a, .. }, DraggableItem::Agent { pane_id: b, .. }) => a == b,
                         (DraggableItem::KanbanTask { task_id: a, .. }, DraggableItem::KanbanTask { task_id: b, .. }) => a == b,
                         (DraggableItem::File { path: a, .. }, DraggableItem::File { path: b, .. }) => a == b,
                         _ => false,
-                    }) {
+                    });
+                    if is_new {
                         athena.dropped_context.push(item.clone());
-                    }
-                    // Notify backend asynchronously
-                    match &item {
-                        DraggableItem::Agent { pane_id, label, agent_type } => {
-                            let _ = tauri_bridge::athena_pin_agent(pane_id, agent_type, label);
-                        }
-                        DraggableItem::KanbanTask { task_id, title, status } => {
-                            let _ = tauri_bridge::athena_pin_task(task_id, title, status);
-                        }
-                        DraggableItem::File { path, name } => {
-                            let _ = tauri_bridge::athena_pin_file(path, &[name.clone()]);
-                        }
+                        drop(athena);
+                        spawn(async move {
+                            match &item {
+                                DraggableItem::Agent { pane_id, agent_type, label } => {
+                                    let _ = tauri_bridge::athena_pin_agent(pane_id, agent_type, label).await;
+                                }
+                                DraggableItem::KanbanTask { task_id, title, status } => {
+                                    let _ = tauri_bridge::athena_pin_task(task_id, title, status).await;
+                                }
+                                DraggableItem::File { path, name: _ } => {
+                                    let _ = tauri_bridge::athena_pin_file(path, &[]).await;
+                                }
+                            }
+                        });
                     }
                 }
             },
@@ -518,6 +520,10 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                             onclick: move |_| {
                                 let mut athena = athena_state.write();
                                 athena.dropped_context.clear();
+                                drop(athena);
+                                spawn(async move {
+                                    let _ = tauri_bridge::athena_clear_pinned_context().await;
+                                });
                             },
                             IconClose { size: Some(14), color: Some("currentColor".to_string()) }
                         }
