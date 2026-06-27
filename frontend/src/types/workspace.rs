@@ -90,6 +90,9 @@ pub struct PaneConfig {
     /// this to `Some(false)` so the banner reappears for the new session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_dismissed: Option<bool>,
+    /// Stable position within the grid layout. Persists across grid template changes.
+    #[serde(default)]
+    pub slot_index: usize,
 }
 
 /// A workspace space (tab group) containing panes.
@@ -103,4 +106,40 @@ pub struct Space {
     pub color: String,
     pub created_at: i64,
     pub last_opened_at: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_slot_index_default_zero() {
+        let json = r#" {
+            "id": "pane-1",
+            "agent_type": "Claude"
+        }"#;
+        let pane: PaneConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(pane.slot_index, 0);
+    }
+
+    #[test]
+    fn slot_index_roundtrip() {
+        let pane = PaneConfig {
+            id: "pane-2".to_string(),
+            agent_type: AgentType::Claude,
+            custom_cmd: None,
+            custom_agent_id: None,
+            label: None,
+            bypass_mode: None,
+            project_name: None,
+            model_name: None,
+            resume_id: None,
+            resume_cmd: None,
+            resume_dismissed: None,
+            slot_index: 3,
+        };
+        let json = serde_json::to_string(&pane).unwrap();
+        let deserialized: PaneConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.slot_index, 3);
+    }
 }
