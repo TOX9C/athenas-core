@@ -1,5 +1,6 @@
 use super::file_tree::FileNode;
 use crate::components::shared::icon::{IconChevronRight, IconFolder};
+use crate::stores::athena::DraggableItem;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -42,6 +43,19 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
 
             div {
                 style: "display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px {indent}px; cursor: pointer; border-radius: var(--radius-sm); transition: background var(--dur-fast) var(--ease); font-size: var(--text-sm); color: var(--textMuted);",
+                draggable: if props.node.is_dir { "false" } else { "true" },
+                ondragstart: move |e| {
+                    if !props.node.is_dir {
+                        let dt = e.data_transfer();
+                        let item = DraggableItem::File {
+                            path: props.node.path.clone(),
+                            name: props.node.name.clone(),
+                        };
+                        if let Ok(json) = serde_json::to_string(&item) {
+                            let _ = dt.set_data("text/plain", &json);
+                        }
+                    }
+                },
                 background: if hovered() { "var(--bgHover)" } else { "transparent" },
 
                 onmouseenter: move |_| hovered.set(true),

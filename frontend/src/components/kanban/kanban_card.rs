@@ -1,4 +1,5 @@
 use crate::components::shared::icon::{IconEdit, IconTrash};
+use crate::stores::athena::DraggableItem;
 use crate::stores::task::KanbanTask;
 use dioxus::prelude::*;
 
@@ -20,6 +21,24 @@ pub fn KanbanCard(props: KanbanCardProps) -> Element {
         div {
             class: "kanban-card card is-interactive",
             style: "border-left: 3px solid {accent_color}; cursor: grab;",
+            draggable: "true",
+            ondragstart: move |e| {
+                let dt = e.data_transfer();
+                let status_str = match &props.task.status {
+                    crate::stores::task::KanbanStatus::Todo => "todo",
+                    crate::stores::task::KanbanStatus::InProgress => "in_progress",
+                    crate::stores::task::KanbanStatus::InReview => "in_review",
+                    crate::stores::task::KanbanStatus::Complete => "complete",
+                };
+                let item = DraggableItem::KanbanTask {
+                    task_id: props.task.id.clone(),
+                    title: props.task.title.clone(),
+                    status: status_str.to_string(),
+                };
+                if let Ok(json) = serde_json::to_string(&item) {
+                    let _ = dt.set_data("text/plain", &json);
+                }
+            },
 
             div {
                 style: "display: flex; align-items: center; gap: 6px;",
