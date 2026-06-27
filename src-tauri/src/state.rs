@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use athena_core::plan_manager::ExecutionPlan;
@@ -382,6 +383,9 @@ pub struct AppState {
 
     /// Per-command rate limiter to prevent DoS from IPC spam.
     pub rate_limiter: crate::commands::caps::RateLimiter,
+
+    /// Guard to ensure the MCP stdio background thread is only started once.
+    pub mcp_stdio_started: AtomicBool,
 }
 
 impl Default for AppState {
@@ -516,6 +520,7 @@ impl AppState {
             pending_questions,
             tool_executor,
             rate_limiter: crate::commands::caps::global_rate_limiter(),
+            mcp_stdio_started: AtomicBool::new(false),
         }
     }
 
@@ -536,22 +541,28 @@ impl AppState {
         self.wire_browser_events();
         self.wire_plugin_events();
 
-        // Auto-start the MCP server on a background thread
-        let mcp_server = Arc::clone(&self.mcp_server);
-        std::thread::spawn(move || {
-            let rt = match tokio::runtime::Runtime::new() {
-                Ok(rt) => rt,
-                Err(e) => {
-                    log::error!("Failed to create tokio runtime for MCP server: {}", e);
-                    return;
-                }
-            };
-            rt.block_on(async {
-                let server = mcp_server.lock().await;
-                server.init_stdio();
-                log::info!("MCP stdio server started");
+        // Auto-start the MCP server on a background thread (only once)
+        if self
+            .mcp_stdio_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            == Ok(false)
+        {
+            let mcp_server = Arc::clone(&self.mcp_server);
+            std::thread::spawn(move || {
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        log::error!("Failed to create tokio runtime for MCP server: {}", e);
+                        return;
+                    }
+                };
+                rt.block_on(async {
+                    let server = mcp_server.lock().await;
+                    server.init_stdio();
+                    log::info!("MCP stdio server started");
+                });
             });
-        });
+        }
     }
 
     /// Retrieve a clone of the Tauri `AppHandle`.

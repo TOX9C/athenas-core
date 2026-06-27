@@ -608,19 +608,29 @@ impl McpServer {
         let line = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into()) + "\n";
         let bytes = line.as_bytes();
 
-        if let Ok(mut clients) = self.active_clients.lock() {
-            let dead_peers: Vec<String> = clients
-                .iter()
-                .filter_map(|(peer, stream)| {
-                    if let Ok(mut clone) = stream.try_clone() {
-                        if clone.write_all(bytes).is_err() {
-                            return Some(peer.clone());
-                        }
-                    }
-                    None
-                })
-                .collect();
+        // Collect cloned streams briefly while holding the lock, then write outside the lock
+        let streams: Vec<(String, std::net::TcpStream)> = {
+            if let Ok(clients) = self.active_clients.lock() {
+                clients
+                    .iter()
+                    .filter_map(|(peer, stream)| {
+                        stream.try_clone().ok().map(|s| (peer.clone(), s))
+                    })
+                    .collect()
+            } else {
+                return;
+            }
+        };
 
+        let mut dead_peers = Vec::new();
+        for (peer, mut stream) in streams {
+            if stream.write_all(bytes).is_err() {
+                dead_peers.push(peer);
+            }
+        }
+
+        // Remove dead peers
+        if let Ok(mut clients) = self.active_clients.lock() {
             for peer in dead_peers {
                 clients.remove(&peer);
             }

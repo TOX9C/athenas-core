@@ -44,12 +44,17 @@ pub fn AgentInfoPoller() -> Element {
             loop {
                 // Snapshot the pane ids of every space (not just the active
                 // one) so a background space keeps its detection fresh too.
-                let pane_ids: Vec<String> = {
+                let (pane_ids, pane_types) = {
                     let ws = workspace.read();
-                    ws.spaces
+                    let ids: Vec<String> = ws.spaces
                         .iter()
                         .flat_map(|s| s.panes.iter().map(|p| p.id.clone()))
-                        .collect()
+                        .collect();
+                    let types: std::collections::HashMap<String, crate::types::workspace::AgentType> = ws.spaces
+                        .iter()
+                        .flat_map(|s| s.panes.iter().map(|p| (p.id.clone(), p.agent_type.clone())))
+                        .collect();
+                    (ids, types)
                 };
 
                 for pane_id in &pane_ids {
@@ -87,11 +92,12 @@ pub fn AgentInfoPoller() -> Element {
                             }
 
                             // Only invoke LLM summarization for actual agent
-                            // panes (claude, codex, opencode). Shells must
-                            // never scrape global agent state.
-                            let known_agents = ["claude", "codex", "opencode"];
-                            let is_agent = known_agents.contains(&info.foreground_process.as_str());
-                            if feature_enabled && prompt_ready && is_agent {
+                            // panes. Shells must never scrape global state.
+                            let is_shell = matches!(
+                                pane_types.get(pane_id),
+                                Some(crate::types::workspace::AgentType::Shell)
+                            );
+                            if feature_enabled && prompt_ready && !is_shell {
                                 let key = (pane_id.clone(), sid.to_string());
                                 if !summarized_pairs.read().contains(&key) {
                                     summarized_pairs.write().insert(key);
