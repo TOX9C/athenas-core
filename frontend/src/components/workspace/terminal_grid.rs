@@ -558,6 +558,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
                     {
                         let space_id_drag = props.space_id.clone();
                         let pane_id_drag = props.pane_id.clone();
+                        let agent_type_drag = props.agent_type.clone();
                         let label_drag = display_label.clone();
                         let slot_drag = props.slot_index;
                         let label_drag2 = label_drag.clone();
@@ -572,6 +573,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                         source_slot: slot_drag,
                                         pane_id: pane_id_drag.clone(),
                                         pane_label: label_drag2.clone(),
+                                        agent_type: agent_type_drag.to_string(),
                                     };
                                     let dt = e.data_transfer();
                                     let json = serde_json::to_string(&payload).unwrap_or_default();
