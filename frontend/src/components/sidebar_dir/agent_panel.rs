@@ -1,12 +1,18 @@
 use crate::components::shared::icon::IconAgents;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
-use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
+use crate::stores::agent_status::{use_agent_status_store, AgentStatus, AgentRunStatus};
+use crate::stores::athena::DraggableItem;
 use dioxus::prelude::*;
 
 #[component]
 pub fn AgentPanel() -> Element {
     let agent_status = use_agent_status_store();
     let statuses = agent_status.read().statuses.clone();
+
+    let display_data: Vec<(String, AgentStatus)> = statuses
+        .iter()
+        .map(|(id, s)| (id.clone(), s.clone()))
+        .collect();
 
     rsx! {
         div {
@@ -32,7 +38,7 @@ pub fn AgentPanel() -> Element {
                 div {
                     style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 0;",
 
-                    for (pane_id, status) in statuses.iter() {
+                    for (pane_id, status) in display_data {
                         {
                             let dot_color = match &status.status {
                                 AgentRunStatus::Thinking => "var(--warning)",
@@ -59,7 +65,19 @@ pub fn AgentPanel() -> Element {
                             rsx! {
                                 div {
                                     key: "{pane_id}",
-                                    style: "display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 10px;",
+                                    style: "display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 10px; cursor: grab;",
+                                    draggable: "true",
+                                    ondragstart: move |_e| {
+                                        let dt = _e.data_transfer();
+                                        let item = DraggableItem::Agent {
+                                            pane_id: pane_id.clone(),
+                                            agent_type: "agent".to_string(),
+                                            label: pane_id.clone(),
+                                        };
+                                        if let Ok(json) = serde_json::to_string(&item) {
+                                            let _ = dt.set_data("text/plain", &json);
+                                        }
+                                    },
 
                                     div {
                                         style: "width: 6px; height: 6px; border-radius: 50%; background: {dot_color}; flex-shrink: 0;",
