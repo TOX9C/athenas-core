@@ -251,7 +251,7 @@ pub async fn output_buffer_append(
 ) -> TauriResult<JsValue> {
     invoke(
         "output_buffer_append",
-        &serde_json::json!({ "paneId": pane_id, "data": data, "agentType": agent_type })
+        &serde_json::json!({ "pane_id": pane_id, "data": data, "agent_type": agent_type })
             .to_string(),
     )
     .await
@@ -264,7 +264,7 @@ pub async fn output_buffer_get(
 ) -> TauriResult<String> {
     invoke(
         "output_buffer_get",
-        &serde_json::json!({ "paneId": pane_id, "limit": limit, "offset": offset }).to_string(),
+        &serde_json::json!({ "pane_id": pane_id, "limit": limit, "offset": offset }).to_string(),
     )
     .await
 }
@@ -276,7 +276,7 @@ pub async fn output_buffer_list() -> TauriResult<String> {
 pub async fn output_buffer_clear(pane_id: &str) -> TauriResult<String> {
     invoke(
         "output_buffer_clear",
-        &serde_json::json!({ "paneId": pane_id }).to_string(),
+        &serde_json::json!({ "pane_id": pane_id }).to_string(),
     )
     .await
 }
@@ -342,7 +342,7 @@ pub async fn plan_update_step(
 ) -> TauriResult<String> {
     invoke(
         "plan_update_step",
-        &serde_json::json!({ "stepId": step_id, "status": status, "paneId": pane_id }).to_string(),
+        &serde_json::json!({ "step_id": step_id, "status": status, "pane_id": pane_id }).to_string(),
     )
     .await
 }
@@ -359,7 +359,7 @@ pub async fn agent_comms_sessions() -> TauriResult<String> {
 pub async fn agent_comms_send(agent_id: &str, method: &str, params: &str) -> TauriResult<String> {
     invoke(
         "agent_comms_send",
-        &serde_json::json!({ "agentId": agent_id, "method": method, "params": params }).to_string(),
+        &serde_json::json!({ "agent_id": agent_id, "method": method, "params": params }).to_string(),
     )
     .await
 }
@@ -427,7 +427,7 @@ pub async fn swarm_send_message(
 pub async fn swarm_read_mailbox(dir: &str, agent_id: &str) -> TauriResult<String> {
     invoke(
         "swarm_read_mailbox",
-        &serde_json::json!({ "dir": dir, "agentId": agent_id }).to_string(),
+        &serde_json::json!({ "dir": dir, "agent_id": agent_id }).to_string(),
     )
     .await
 }
@@ -586,7 +586,7 @@ pub async fn pty_foreground_process(id: &str) -> TauriResult<String> {
 pub async fn pty_set_xterm(id: &str, is_xterm: bool) -> TauriResult<()> {
     invoke(
         "pty_set_xterm",
-        &serde_json::json!({ "id": id, "isXterm": is_xterm }).to_string(),
+        &serde_json::json!({ "id": id, "is_xterm": is_xterm }).to_string(),
     )
     .await
 }
@@ -651,7 +651,7 @@ pub async fn get_pane_history(pane_id: &str) -> TauriResult<Vec<OutputLine>> {
 }
 ///
 /// The backend emits `pty:raw` events with a JSON payload of the form
-/// `{ "sessionId": "<id>", "data": "<base64>" }`. This function filters
+/// `{ "session_id": "<id>", "data": "<base64>" }`. This function filters
 /// by `id` and decodes `data` from base64 to `Vec<u8>` before invoking
 /// `callback`. Events for other sessions are dropped silently.
 ///
@@ -669,7 +669,7 @@ pub fn pty_listen_raw(
             Ok(v) => v,
             Err(_) => return,
         };
-        let session_id = match parsed.get("sessionId").and_then(|v| v.as_str()) {
+        let session_id = match parsed.get("session_id").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return,
         };
@@ -715,7 +715,7 @@ pub fn pty_listen_raw(
 pub async fn tool_execute(tool_name: &str, arguments: &str) -> TauriResult<String> {
     invoke(
         "tool_execute",
-        &serde_json::json!({ "toolName": tool_name, "arguments": arguments }).to_string(),
+        &serde_json::json!({ "tool_name": tool_name, "arguments": arguments }).to_string(),
     )
     .await
 }
@@ -745,7 +745,7 @@ pub async fn athena_chat(message: &str) -> TauriResult<String> {
 pub async fn athena_chat_with_session(message: &str, session_id: &str) -> TauriResult<String> {
     invoke(
         "athena_chat_with_session",
-        &serde_json::json!({ "message": message, "sessionId": session_id }).to_string(),
+        &serde_json::json!({ "message": message, "session_id": session_id }).to_string(),
     )
     .await
 }
@@ -764,7 +764,7 @@ pub async fn athena_chat_with_images(message: &str, images: &str) -> TauriResult
 pub async fn summarize_agent_title(raw_prompt: &str) -> TauriResult<String> {
     invoke(
         "summarize_agent_title",
-        &serde_json::json!({ "rawPrompt": raw_prompt }).to_string(),
+        &serde_json::json!({ "raw_prompt": raw_prompt }).to_string(),
     )
     .await
 }
@@ -789,7 +789,7 @@ pub async fn athena_set_session_context(history: &str) -> TauriResult<JsValue> {
 pub async fn athena_pin_agent(pane_id: &str, agent_type: &str, status: &str) -> TauriResult<JsValue> {
     invoke(
         "athena_pin_agent",
-        &serde_json::json!({ "paneId": pane_id, "agentType": agent_type, "status": status }).to_string(),
+        &serde_json::json!({ "pane_id": pane_id, "agent_type": agent_type, "status": status }).to_string(),
     )
     .await
 }
@@ -798,7 +798,7 @@ pub async fn athena_pin_agent(pane_id: &str, agent_type: &str, status: &str) -> 
 pub async fn athena_pin_task(task_id: &str, title: &str, status: &str) -> TauriResult<JsValue> {
     invoke(
         "athena_pin_task",
-        &serde_json::json!({ "taskId": task_id, "title": title, "status": status }).to_string(),
+        &serde_json::json!({ "task_id": task_id, "title": title, "status": status }).to_string(),
     )
     .await
 }
@@ -807,7 +807,7 @@ pub async fn athena_pin_task(task_id: &str, title: &str, status: &str) -> TauriR
 pub async fn athena_pin_file(path: &str, preview_lines: &[String]) -> TauriResult<JsValue> {
     invoke(
         "athena_pin_file",
-        &serde_json::json!({ "path": path, "previewLines": preview_lines }).to_string(),
+        &serde_json::json!({ "path": path, "preview_lines": preview_lines }).to_string(),
     )
     .await
 }
@@ -915,7 +915,7 @@ pub async fn plugin_list() -> TauriResult<String> {
 pub async fn plugin_get(plugin_id: &str) -> TauriResult<String> {
     invoke(
         "plugin_get",
-        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+        &serde_json::json!({ "plugin_id": plugin_id }).to_string(),
     )
     .await
 }
@@ -924,7 +924,7 @@ pub async fn plugin_get(plugin_id: &str) -> TauriResult<String> {
 pub async fn plugin_register(plugin_id: &str, name: &str, version: &str) -> TauriResult<String> {
     invoke(
         "plugin_register",
-        &serde_json::json!({ "pluginId": plugin_id, "name": name, "version": version }).to_string(),
+        &serde_json::json!({ "plugin_id": plugin_id, "name": name, "version": version }).to_string(),
     )
     .await
 }
@@ -933,7 +933,7 @@ pub async fn plugin_register(plugin_id: &str, name: &str, version: &str) -> Taur
 pub async fn plugin_unregister(plugin_id: &str) -> TauriResult<JsValue> {
     invoke(
         "plugin_unregister",
-        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+        &serde_json::json!({ "plugin_id": plugin_id }).to_string(),
     )
     .await
 }
@@ -942,7 +942,7 @@ pub async fn plugin_unregister(plugin_id: &str) -> TauriResult<JsValue> {
 pub async fn plugin_enable(plugin_id: &str) -> TauriResult<JsValue> {
     invoke(
         "plugin_enable",
-        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+        &serde_json::json!({ "plugin_id": plugin_id }).to_string(),
     )
     .await
 }
@@ -951,7 +951,7 @@ pub async fn plugin_enable(plugin_id: &str) -> TauriResult<JsValue> {
 pub async fn plugin_disable(plugin_id: &str) -> TauriResult<JsValue> {
     invoke(
         "plugin_disable",
-        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+        &serde_json::json!({ "plugin_id": plugin_id }).to_string(),
     )
     .await
 }
@@ -960,7 +960,7 @@ pub async fn plugin_disable(plugin_id: &str) -> TauriResult<JsValue> {
 pub async fn plugin_get_config(plugin_id: &str) -> TauriResult<String> {
     invoke(
         "plugin_get_config",
-        &serde_json::json!({ "pluginId": plugin_id }).to_string(),
+        &serde_json::json!({ "plugin_id": plugin_id }).to_string(),
     )
     .await
 }
@@ -969,7 +969,7 @@ pub async fn plugin_get_config(plugin_id: &str) -> TauriResult<String> {
 pub async fn plugin_set_config(plugin_id: &str, config: &str) -> TauriResult<JsValue> {
     invoke(
         "plugin_set_config",
-        &serde_json::json!({ "pluginId": plugin_id, "config": config }).to_string(),
+        &serde_json::json!({ "plugin_id": plugin_id, "config": config }).to_string(),
     )
     .await
 }
@@ -978,7 +978,7 @@ pub async fn plugin_set_config(plugin_id: &str, config: &str) -> TauriResult<JsV
 pub async fn plugin_set_error(plugin_id: &str, error: &str) -> TauriResult<JsValue> {
     invoke(
         "plugin_set_error",
-        &serde_json::json!({ "pluginId": plugin_id, "error": error }).to_string(),
+        &serde_json::json!({ "plugin_id": plugin_id, "error": error }).to_string(),
     )
     .await
 }
@@ -992,7 +992,7 @@ pub async fn plugin_host_list_sessions() -> TauriResult<String> {
 pub async fn plugin_host_get_session(session_id: &str) -> TauriResult<String> {
     invoke(
         "plugin_host_get_session",
-        &serde_json::json!({ "sessionId": session_id }).to_string(),
+        &serde_json::json!({ "session_id": session_id }).to_string(),
     )
     .await
 }
@@ -1001,7 +1001,7 @@ pub async fn plugin_host_get_session(session_id: &str) -> TauriResult<String> {
 pub async fn plugin_host_emit_event(event_type: &str, data: &str) -> TauriResult<JsValue> {
     invoke(
         "plugin_host_emit_event",
-        &serde_json::json!({ "eventType": event_type, "data": data }).to_string(),
+        &serde_json::json!({ "event_type": event_type, "data": data }).to_string(),
     )
     .await
 }
