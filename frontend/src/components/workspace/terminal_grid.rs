@@ -14,6 +14,7 @@ use crate::utils::agent_commands::{
     agent_process_name, claude_resume_variants, custom_agent_process_name, get_agent_color,
     get_agent_label, get_agent_resume_command,
 };
+use crate::components::agents::drag_layer::{DragLayer, DragPayload};
 
 #[cfg(feature = "xterm")]
 use crate::components::workspace::xterm_mount::XtermMount;
@@ -43,6 +44,7 @@ fn render_shell_pane(pane_id: String, _cwd: String) -> Element {
 pub struct WorkspaceGridProps {
     pub active_space: Option<Space>,
     pub active_space_id: Option<String>,
+    pub drag_layer: Signal<DragLayer>,
 }
 
 // ---------------------------------------------------------------------------
@@ -123,12 +125,14 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     let fullscreen_pane_id = use_signal(|| None::<String>);
     let terminal_store = use_terminal_store();
     let active_pane_id = terminal_store.read().active_session_id.clone();
+    let drag_layer = props.drag_layer;
+    let mut hovered_slot = use_signal(|| None::<usize>);
     // Note: active pane selection is stored in TerminalStore (single source of truth).
     // The clicked pane gets a subtle gold focus ring (see `.pane-focus-ring`).
 
     // Subscribe to workspace changes so this effect re-runs when panes are
     // added or removed, ensuring col_widths shape stays in sync.
-    let workspace = use_workspace_store();
+    let mut workspace = use_workspace_store();
 
     use_effect(move || {
         // Reactive read causes re-run on workspace mutations (add/remove panes).
@@ -189,6 +193,9 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                     let has_bottom = row_idx + 1 < actual_row_count;
                                     let is_active = active_pane_id.as_deref() == Some(pane.id.as_str());
                                     let is_fullscreenmode = fullscreen_pane_id.read().as_deref() == Some(pane.id.as_str());
+                                    let my_slot = row_idx * cols + rel_idx;
+                                    let is_hovered = *hovered_slot.read() == Some(my_slot);
+                                    let space_id_cell = space.id.clone();
 
                                     let wrapper_style = if is_fullscreenmode {
                                         "position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 40; background: var(--bg); box-sizing: border-box;".to_string()
@@ -212,9 +219,38 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                         div {
                                             key: "pane-wrap-{space.id}-{pane.id}",
                                             style: "{wrapper_style}",
+                                            ondragover: move |e| {
+                                                e.prevent_default();
+                                                hovered_slot.set(Some(my_slot));
+                                            },
+                                            ondragleave: move |_| {
+                                                if *hovered_slot.read() == Some(my_slot) {
+                                                    hovered_slot.set(None);
+                                                }
+                                            },
+                                            ondrop: move |e| {
+                                                e.prevent_default();
+                                                hovered_slot.set(None);
+                                                let dt = e.data_transfer();
+                                                if let Some(json) = dt.get_data("application/x-athena-grid-swap") {
+                                                    if let Ok(payload) = serde_json::from_str::<DragPayload>(&json) {
+                                                        if let DragPayload::GridPane { space_id, source_slot, .. } = payload {
+                                                            if space_id == space_id_cell {
+                                                                workspace.write().swap_pane_slots(&space_id, source_slot, my_slot);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
 
                                             if is_active && !is_fullscreenmode {
                                                 div { class: "pane-focus-ring" }
+                                            }
+
+                                            if is_hovered && !is_fullscreenmode {
+                                                div {
+                                                    style: "position: absolute; inset: 0; border: 2px solid var(--accent); pointer-events: none; z-index: 5;"
+                                                }
                                             }
 
                                             PaneItem {
@@ -231,6 +267,8 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 custom_agent_id: pane.custom_agent_id.clone(),
                                                 label: pane.label.clone(),
                                                 fullscreen_pane_id: fullscreen_pane_id,
+                                                drag_layer: drag_layer,
+                                                slot_index: pane.slot_index,
                                             }
                                         }
 
@@ -291,6 +329,8 @@ struct PaneItemProps {
     custom_agent_id: Option<String>,
     label: Option<String>,
     fullscreen_pane_id: Signal<Option<String>>,
+    drag_layer: Signal<DragLayer>,
+    slot_index: usize,
 }
 
 #[component]
@@ -513,6 +553,38 @@ fn PaneItem(props: PaneItemProps) -> Element {
 
                 div {
                     style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 999px; flex-shrink: 0;",
+
+                    // Drag handle
+                    {
+                        let space_id_drag = props.space_id.clone();
+                        let pane_id_drag = props.pane_id.clone();
+                        let label_drag = display_label.clone();
+                        let slot_drag = props.slot_index;
+                        let label_drag2 = label_drag.clone();
+                        let mut drag_layer_local = props.drag_layer.clone();
+                        rsx! {
+                            span {
+                                style: "cursor: grab; padding-right: 2px; font-size: 10px; color: var(--textMuted); user-select: none;",
+                                draggable: true,
+                                ondragstart: move |e| {
+                                    let payload = DragPayload::GridPane {
+                                        space_id: space_id_drag.clone(),
+                                        source_slot: slot_drag,
+                                        pane_id: pane_id_drag.clone(),
+                                        pane_label: label_drag2.clone(),
+                                    };
+                                    let dt = e.data_transfer();
+                                    let json = serde_json::to_string(&payload).unwrap_or_default();
+                                    let _ = dt.set_data("application/x-athena-grid-swap", &json);
+                                    drag_layer_local.write().set_active(Some(payload));
+                                },
+                                ondragend: move |_| {
+                                    drag_layer_local.write().clear();
+                                },
+                                "⋮⋮"
+                            }
+                        }
+                    }
 
                     // Left: editable title
                     {

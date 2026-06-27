@@ -10,6 +10,7 @@ pub mod xterm_mount;
 
 // Re-export panel
 use super::workspace::workspace_tabs::WorkspaceTabs;
+use crate::components::agents::drag_layer::DragLayer;
 use crate::components::workspace::terminal_grid::WorkspaceGrid;
 use crate::stores::workspace::use_workspace_store;
 use dioxus::prelude::*;
@@ -18,6 +19,7 @@ use dioxus::prelude::*;
 pub fn WorkspacePanel() -> Element {
     let workspace_state = use_workspace_store();
     let state = workspace_state.read();
+    let drag_layer = use_signal(|| DragLayer::new());
 
     rsx! {
         div {
@@ -54,6 +56,7 @@ pub fn WorkspacePanel() -> Element {
                     WorkspaceGrid {
                         active_space: state.active_space_id.clone().and_then(|id| state.spaces.iter().find(|s| s.id == id).cloned()),
                         active_space_id: state.active_space_id.clone(),
+                        drag_layer: drag_layer,
                     }
                 }
             }
