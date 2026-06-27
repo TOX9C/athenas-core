@@ -125,6 +125,7 @@ impl Drop for TerminalSession {
 }
 
 impl TerminalSession {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         master_fd: RawFd,
@@ -232,7 +233,7 @@ impl TerminalSession {
             Ok(total_written)
         })
         .await
-        .map_err(|e| io::Error::other(e))?
+        .map_err(io::Error::other)?
     }
 
     /// Mark the session as ready and flush any pending writes.
@@ -304,7 +305,7 @@ impl SessionManager {
         // Create a pipe for the child to report pre-exec errors.
         // FD_CLOEXEC ensures the pipe is closed automatically on a successful exec.
         let (err_read, err_write) =
-            nix::unistd::pipe().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            nix::unistd::pipe().map_err(|e| io::Error::other(e.to_string()))?;
         let err_read = err_read.into_raw_fd();
         let err_write = err_write.into_raw_fd();
         unsafe {
@@ -381,7 +382,7 @@ impl SessionManager {
                     };
                     let _ = nix::sys::wait::waitpid(child, None);
                     let _ = close(master_fd);
-                    return Err(io::Error::new(io::ErrorKind::Other, err_msg));
+                    return Err(io::Error::other(err_msg));
                 }
 
                 // Success: child exec'd and pipe was closed by FD_CLOEXEC.

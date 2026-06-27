@@ -50,7 +50,7 @@ pub struct Grid {
     pub cols: usize,
     pub rows_count: usize,
     pub scroll_region: ScrollRegion,
-    selection: Option<(Point, Point)>,
+    _selection: Option<(Point, Point)>,
     dirty_cells: Vec<(usize, usize)>,
     pub default_cell: Cell,
     max_scrollback: usize,
@@ -72,11 +72,11 @@ pub struct Grid {
     /// Origin mode (relative to scroll region)
     origin_mode: bool,
     /// Reverse video (screen-wide)
-    reverse_video: bool,
+    _reverse_video: bool,
     /// Bracketed paste mode enabled
-    bracketed_paste: bool,
+    _bracketed_paste: bool,
     /// Mouse tracking mode (0 = off, 1000 = normal, 1002 = motion, 1003 = all motion)
-    mouse_mode: u16,
+    _mouse_mode: u16,
 }
 
 impl Default for Grid {
@@ -104,7 +104,7 @@ impl Grid {
                 top: 0,
                 bottom: rows.saturating_sub(1),
             },
-            selection: None,
+            _selection: None,
             dirty_cells: Vec::new(),
             default_cell: Cell::default(),
             max_scrollback: 10000,
@@ -120,9 +120,9 @@ impl Grid {
             insert_mode: false,
             auto_wrap: true,
             origin_mode: false,
-            reverse_video: false,
-            bracketed_paste: false,
-            mouse_mode: 0,
+            _reverse_video: false,
+            _bracketed_paste: false,
+            _mouse_mode: 0,
         };
         for _ in 0..rows {
             grid.rows.push(Row::new(cols));
