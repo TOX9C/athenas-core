@@ -6,6 +6,8 @@ pub mod types;
 pub mod utils;
 
 use components::agents::agent_inspector::AgentInspector;
+use components::agents::drag_ghost::DragGhost;
+use components::agents::drag_layer::DragLayer;
 use components::agents::output_event_bus::OutputEventBus;
 use components::command_palette::CommandPalette;
 use components::kanban::kanban_board::KanbanBoard;
@@ -92,6 +94,7 @@ pub fn App() -> Element {
     let mut athena_state = use_athena_store();
     let panel_state = use_panel_manager_store();
     let mut terminal_store = use_terminal_store();
+    let drag_layer = use_signal(|| DragLayer::new());
 
     // Track mounted spaces. The set is reconciled against the current
     // workspace state on every render so it stays bounded — entries for
@@ -779,6 +782,7 @@ pub fn App() -> Element {
                                                         key: "workspace-grid-{space.id}",
                                                         active_space: Some(space.clone()),
                                                         active_space_id: active_space_id.clone(),
+                                                        drag_layer: drag_layer,
                                                     }
                                                 }
                                             }
@@ -895,6 +899,7 @@ pub fn App() -> Element {
             InputRequestModal {}
             ToastContainer {}
             NotificationToast {}
+            DragGhost { layer: drag_layer }
             PluginEventBus {}
             OutputEventBus {}
             // Central agent-info poller: writes detected foreground process +
