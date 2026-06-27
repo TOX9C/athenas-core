@@ -55,21 +55,6 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
 
         let store = athena_state;
 
-        // athena:status — Update thinking/working/idle state.
-        let mut status_store = store;
-        if let Ok(u) = tauri_bridge::listen("athena:status", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let status = val.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
-                let detail = val
-                    .get("detail")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                status_store.write().handle_status_event(status, detail);
-            }
-        }) {
-            unlisteners_clone.borrow_mut().push(u);
-        }
-
         // athena:askUser — Show interactive user question modal.
         let mut ask_store = store;
         if let Ok(u) = tauri_bridge::listen("athena:askUser", move |payload: String| {

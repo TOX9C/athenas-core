@@ -332,6 +332,7 @@ dependencies = [
 name = "athena-browser"
 version = "0.1.0"
 dependencies = [
+ "athena-core",
  "log",
  "serde",
  "serde_json",
@@ -401,6 +402,7 @@ dependencies = [
 name = "athena-plugins"
 version = "0.1.0"
 dependencies = [
+ "athena-core",
  "chrono",
  "log",
  "serde",

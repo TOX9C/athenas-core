@@ -934,11 +934,6 @@ impl AthenaOrchestrator {
         text: String,
         images: Option<Vec<ImageData>>,
     ) -> Result<String, OrchestratorError> {
-        self.notify(
-            NotifType::Info,
-            "Athena Thinking",
-            "Processing your request...",
-        );
         // Build a fresh app-state snapshot and append it to the SYSTEM prompt
         // for this request. Keeping it out of the persisted user text means the
         // message history doesn't accumulate stale, conflicting snapshots — the

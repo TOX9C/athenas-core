@@ -13,6 +13,8 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
+use crate::EventEmitter;
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -93,7 +95,7 @@ pub struct SwarmCoordinator {
     watch_rx: watch::Receiver<SwarmState>,
     cancel_tokens: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     watching_dirs: Arc<Mutex<HashSet<String>>>,
-    event_emitter: Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: EventEmitter,
 }
 
 impl std::fmt::Debug for SwarmCoordinator {

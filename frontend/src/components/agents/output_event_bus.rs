@@ -27,10 +27,6 @@ enum OutputBusEvent {
         pane_id: String,
         now: i64,
     },
-    TerminalPrompt {
-        pane_id: String,
-        now: i64,
-    },
     TerminalData {
         session_id: String,
         payload: String,
@@ -60,9 +56,6 @@ enum OutputBusEvent {
         agent_type: String,
         now: i64,
     },
-    PaneUnregistered {
-        pane_id: String,
-    },
 }
 
 /// Output event bus component - renders nothing, handles IPC events.
@@ -74,9 +67,8 @@ enum OutputBusEvent {
 /// 4. `agents:disconnected` - Remove/update agent status
 /// 5. `agents:statusUpdate` - Update agent status
 /// 6. `agents:inputRequested` - Show input request
-/// 7. `output-capture:line` - Append output line
+/// 7. `output-capture:batch` - Append batched output lines
 /// 8. `output-capture:paneRegistered` - Register new pane
-/// 9. `output-capture:paneUnregistered` - Remove pane
 ///
 /// Also sets up heuristic shell-prompt detection: when terminal data arrives
 /// containing a shell prompt pattern, the agent status transitions to Idle.
@@ -122,17 +114,6 @@ pub fn OutputEventBus() -> Element {
                             AgentStatusUpdate {
                                 status: Some(AgentRunStatus::Disconnected),
                                 message: Some("PTY exited".to_string()),
-                                progress: None,
-                            },
-                            now,
-                        );
-                    }
-                    OutputBusEvent::TerminalPrompt { pane_id, now } => {
-                        agent_status.write().update_status(
-                            pane_id,
-                            AgentStatusUpdate {
-                                status: Some(AgentRunStatus::Idle),
-                                message: None,
                                 progress: None,
                             },
                             now,
@@ -196,9 +177,6 @@ pub fn OutputEventBus() -> Element {
                         now,
                     } => {
                         agent_output.write().register_pane(pane_id, agent_type, now);
-                    }
-                    OutputBusEvent::PaneUnregistered { pane_id } => {
-                        agent_output.write().unregister_pane(&pane_id);
                     }
                 }
             }
@@ -291,25 +269,6 @@ pub fn OutputEventBus() -> Element {
             }
         }) {
             exit_unlistens.borrow_mut().push(u);
-        }
-
-        // Listener for terminal:prompt
-        let dispatcher = dispatcher.clone();
-        let prompt_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("terminal:prompt", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let pane_id = val
-                    .get("paneId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !pane_id.is_empty() {
-                    let now = js_sys::Date::now() as i64;
-                    dispatcher.send(OutputBusEvent::TerminalPrompt { pane_id, now });
-                }
-            }
-        }) {
-            prompt_unlistens.borrow_mut().push(u);
         }
 
         // Listener for terminal:data
@@ -439,42 +398,6 @@ pub fn OutputEventBus() -> Element {
             input_unlistens.borrow_mut().push(u);
         }
 
-        // Listener for output-capture:line
-        let dispatcher = dispatcher.clone();
-        let output_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("output-capture:line", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let pane_id = val
-                    .get("paneId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let text = val
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let line_num = val.get("lineNum").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let timestamp = val.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-
-                if !pane_id.is_empty() {
-                    // Precompute stderr heuristic once at arrival; the render
-                    // path now just reads `line.is_stderr`.
-                    let is_stderr = is_stderr_like(&text);
-                    let line = crate::stores::agent_output::OutputLine {
-                        pane_id,
-                        line_num,
-                        timestamp,
-                        text,
-                        is_stderr,
-                    };
-                    dispatcher.send(OutputBusEvent::OutputLine(line));
-                }
-            }
-        }) {
-            output_unlistens.borrow_mut().push(u);
-        }
-
         // Listener for output-capture:batch (replaces per-line emission)
         let dispatcher = dispatcher.clone();
         let batch_unlistens = unlistens_effect.clone();
@@ -549,25 +472,6 @@ pub fn OutputEventBus() -> Element {
             register_unlistens.borrow_mut().push(u);
         }
 
-        // Listener for output-capture:paneUnregistered
-        let dispatcher = dispatcher.clone();
-        let unregister_unlistens = unlistens_effect.clone();
-        if let Ok(u) =
-            tauri_bridge::listen("output-capture:paneUnregistered", move |payload: String| {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                    let pane_id = val
-                        .get("paneId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !pane_id.is_empty() {
-                        dispatcher.send(OutputBusEvent::PaneUnregistered { pane_id });
-                    }
-                }
-            })
-        {
-            unregister_unlistens.borrow_mut().push(u);
-        }
     });
 
     // Cleanup: unlisten all event listeners on component unmount.

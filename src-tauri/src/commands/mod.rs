@@ -1587,17 +1587,12 @@ pub(crate) async fn pty_read_loop(
                 if !did_emit_ready {
                     did_emit_ready = true;
                     session.mark_ready().await;
-                    // Clone to an owned String to avoid the same borrow-sharing
-                    // race that motivated the pty:raw String-serialize fix.
-                    if let Err(e) = app_handle.emit("terminal:ready", session_id.clone()) {
-                        log::warn!("Failed to emit terminal:ready event: {}", e);
-                    }
                 }
 
                 // Skip cell-delta emission for xterm sessions — they have their
                 // own ANSI parser and do not consume `terminal:data` events.
                 if session.is_xterm.load(std::sync::atomic::Ordering::Relaxed) {
-                    // still need to emit `terminal:ready` above, but skip data
+                    // xterm sessions handle readiness internally; skip data
                 } else {
                     let event_data = serde_json::json!({
                         "sessionId": session_id,

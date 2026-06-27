@@ -3,6 +3,8 @@ use std::sync::{Arc, RwLock};
 
 use thiserror::Error;
 
+use athena_core::EventEmitter;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -225,8 +227,7 @@ pub fn normalize_url(raw: &str) -> Result<String, BrowserError> {
 /// performed in the `src-tauri` command handlers that call into this struct.
 pub struct BrowserManager {
     panels: Arc<RwLock<HashMap<String, BrowserPanel>>>,
-    event_emitter:
-        Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    event_emitter: EventEmitter,
 }
 
 impl std::fmt::Debug for BrowserManager {
