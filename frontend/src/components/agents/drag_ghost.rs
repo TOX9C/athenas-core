@@ -9,7 +9,6 @@ use crate::components::agents::drag_layer::{DragLayer, DragPayload};
 #[component]
 pub fn DragGhost(layer: Signal<DragLayer>) -> Element {
     let active = layer.read().active.read().clone();
-    let (x, y) = *layer.read().cursor_xy.read();
 
     let text = match active {
         Some(DragPayload::GridPane { pane_label, .. }) => pane_label,
@@ -20,11 +19,7 @@ pub fn DragGhost(layer: Signal<DragLayer>) -> Element {
     rsx! {
         div {
             class: "drag-ghost",
-            style: "top: {y}px; left: {x}px;",
-            div {
-                class: "drag-ghost-inner",
-                "{text}"
-            }
+            "{text}"
         }
     }
 }
