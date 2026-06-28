@@ -231,8 +231,22 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                             ondrop: move |e| {
                                                 e.prevent_default();
                                                 hovered_slot.set(None);
+
+                                                // Use drag_layer first (reliable in WKWebView);
+                                                // dataTransfer with custom MIMEs is silently dropped by WebKit.
+                                                if let Some(active) = drag_layer.read().active.read().clone() {
+                                                    if let DragPayload::GridPane { space_id, source_slot, .. } = active {
+                                                        if space_id == space_id_cell {
+                                                            workspace.write().swap_pane_slots(&space_id, source_slot, my_slot);
+                                                        }
+                                                    }
+                                                    drag_layer.write().clear();
+                                                    return;
+                                                }
+
+                                                // Fallback: try dataTransfer with standard MIME (external drags)
                                                 let dt = e.data_transfer();
-                                                if let Some(json) = dt.get_data("application/x-athena-grid-swap") {
+                                                if let Some(json) = dt.get_data("text/plain") {
                                                     if let Ok(payload) = serde_json::from_str::<DragPayload>(&json) {
                                                         if let DragPayload::GridPane { space_id, source_slot, .. } = payload {
                                                             if space_id == space_id_cell {
@@ -584,7 +598,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                     };
                                     let dt = e.data_transfer();
                                     let json = serde_json::to_string(&payload).unwrap_or_default();
-                                    let _ = dt.set_data("application/x-athena-grid-swap", &json);
+                                    let _ = dt.set_data("text/plain", &json);
                                     drag_layer_local.write().set_active(Some(payload));
                                 },
                                 ondragend: move |_| {
