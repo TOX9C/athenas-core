@@ -114,15 +114,23 @@ impl WorkspaceState {
     /// Swap the slot_index of two panes in the given space.
     pub fn swap_pane_slots(&mut self, space_id: &str, a: usize, b: usize) {
         if a == b {
+            #[cfg(not(test))]
+            web_sys::console::warn_1(&"[swap_pane_slots] a == b, no-op".into());
             return;
         }
         let Some(space) = self.spaces.iter_mut().find(|s| s.id == space_id) else {
+            #[cfg(not(test))]
+            web_sys::console::warn_1(&format!("[swap_pane_slots] space not found: {}", space_id).into());
             return;
         };
         let Some(pane_a_idx) = space.panes.iter().position(|p| p.slot_index == a) else {
+            #[cfg(not(test))]
+            web_sys::console::warn_1(&format!("[swap_pane_slots] source pane with slot_index {} not found in space {}", a, space_id).into());
             return;
         };
         let Some(pane_b_idx) = space.panes.iter().position(|p| p.slot_index == b) else {
+            #[cfg(not(test))]
+            web_sys::console::warn_1(&format!("[swap_pane_slots] target pane with slot_index {} not found in space {}", b, space_id).into());
             return;
         };
         let pane_a_id = space.panes[pane_a_idx].id.clone();
@@ -202,6 +210,15 @@ impl WorkspaceState {
                             if space.panes.len() > 1
                                 && space.panes.iter().all(|p| p.slot_index == 0)
                             {
+                                for (i, pane) in space.panes.iter_mut().enumerate() {
+                                    pane.slot_index = i;
+                                }
+                                reindexed = true;
+                            }
+                            // Also re-index if there are duplicate slot_index values
+                            let unique_slots: std::collections::HashSet<usize> =
+                                space.panes.iter().map(|p| p.slot_index).collect();
+                            if unique_slots.len() != space.panes.len() {
                                 for (i, pane) in space.panes.iter_mut().enumerate() {
                                     pane.slot_index = i;
                                 }

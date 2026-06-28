@@ -7,13 +7,19 @@ pub enum DragPayload {
     GridPane {
         space_id: String,
         source_slot: usize,
+        #[serde(default)]
         pane_id: String,
+        #[serde(default)]
         pane_label: String,
+        #[serde(default)]
         agent_type: String,
     },
     Agent {
+        #[serde(default)]
         pane_id: String,
+        #[serde(default)]
         agent_type: String,
+        #[serde(default)]
         label: String,
     },
 }
@@ -24,16 +30,12 @@ pub enum DragPayload {
 #[derive(Default)]
 pub struct DragLayer {
     pub active: Signal<Option<DragPayload>>,
-    pub cursor_xy: Signal<(i32, i32)>,
-    pub hovered_cell: Signal<Option<usize>>, // slot_index of the hovered drop target
 }
 
 impl DragLayer {
     pub fn new() -> Self {
         Self {
             active: Signal::new(None),
-            cursor_xy: Signal::new((0, 0)),
-            hovered_cell: Signal::new(None),
         }
     }
 
@@ -45,16 +47,7 @@ impl DragLayer {
         self.active.set(payload);
     }
 
-    pub fn set_hovered(&mut self, slot: Option<usize>) {
-        self.hovered_cell.set(slot);
-    }
-
-    pub fn set_cursor(&mut self, x: i32, y: i32) {
-        self.cursor_xy.set((x, y));
-    }
-
     pub fn clear(&mut self) {
         self.active.set(None);
-        self.hovered_cell.set(None);
     }
 }
