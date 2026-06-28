@@ -1152,9 +1152,33 @@ fn schedule_fit_until_sized(
     let _ = window.request_animation_frame(raf_closure.as_ref().unchecked_ref());
 }
 
-/// Force xterm.js to redraw the visible range. Use after the terminal may
-/// have been reparented or its canvas backing store discarded by WebKit.
+/// Force xterm.js to re-render the entire canvas. Use after the terminal
+/// may have been reparented or its canvas backing store discarded by WebKit.
 fn refresh_term(term: &JsValue) {
+    // Toggle the internal renderService's paused state to force a full
+    // canvas refresh. This reaches the CanvasRenderer directly.
+    if let Ok(core) = js_sys::Reflect::get(term, &JsValue::from_str("_core")) {
+        if let Ok(rs) = js_sys::Reflect::get(&core, &JsValue::from_str("_renderService")) {
+            let _ = js_sys::Reflect::set(
+                &rs,
+                &JsValue::from_str("isPaused"),
+                &JsValue::from_bool(true),
+            );
+            let _ = js_sys::Reflect::set(
+                &rs,
+                &JsValue::from_str("isPaused"),
+                &JsValue::from_bool(false),
+            );
+            return;
+        }
+    }
+    // Fallback for older builds without _renderService: toggle dimensions
+    // by one row to force renderer re-initialisation.
+    let cols = js_sys::Reflect::get(term, &JsValue::from_str("cols"))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|v| v as i32)
+        .unwrap_or(80);
     let rows = js_sys::Reflect::get(term, &JsValue::from_str("rows"))
         .ok()
         .and_then(|v| v.as_f64())
@@ -1163,12 +1187,18 @@ fn refresh_term(term: &JsValue) {
     if rows <= 0 {
         return;
     }
-    if let Ok(refresh_val) = js_sys::Reflect::get(term, &JsValue::from_str("refresh")) {
-        if let Ok(refresh_fn) = refresh_val.dyn_into::<js_sys::Function>() {
-            let _ = refresh_fn.call2(
+    if let Ok(resize_val) = js_sys::Reflect::get(term, &JsValue::from_str("resize")) {
+        if let Ok(resize_fn) = resize_val.dyn_into::<js_sys::Function>() {
+            let alt_rows = if rows > 1 { rows - 1 } else { rows + 1 };
+            let _ = resize_fn.call2(
                 term,
-                &JsValue::from_f64(0.0),
-                &JsValue::from_f64((rows - 1) as f64),
+                &JsValue::from_f64(cols as f64),
+                &JsValue::from_f64(alt_rows as f64),
+            );
+            let _ = resize_fn.call2(
+                term,
+                &JsValue::from_f64(cols as f64),
+                &JsValue::from_f64(rows as f64),
             );
         }
     }
