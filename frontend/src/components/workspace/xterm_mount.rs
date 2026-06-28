@@ -598,10 +598,13 @@ pub fn XtermMount(
             let mut ro_closure_holder: Option<wasm_bindgen::closure::Closure<dyn FnMut()>> = None;
             if let Some(fit_instance) = try_activate_addon(&window, "FitAddon", &term_val) {
                 // Initial fit so the terminal has correct cols/rows before any data arrives.
-                schedule_fit(&window, &fit_instance, &container);
+                // Use a retry loop because the parent flex grid may not have
+                // laid out yet, leaving the container at 0×0.
+                schedule_fit_until_sized(&window, &fit_instance, &container, 60);
 
                 let fit_for_ro = fit_instance.clone();
                 let container_for_ro = container.clone();
+                let term_for_ro = term_val.clone();
                 let ro_timer: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
                 let ro_timer_for_cb = ro_timer.clone();
                 let ro_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
@@ -611,12 +614,13 @@ pub fn XtermMount(
                         }
                         let fit_for_cb = fit_for_ro.clone();
                         let container_for_cb = container_for_ro.clone();
+                        let term_for_cb = term_for_ro.clone();
                         // Single-fire timer closure — once_into_js auto-frees
                         // after the timeout fires, so this no longer leaks one
                         // Closure per resize tick.
                         let timer = wasm_bindgen::closure::Closure::once_into_js(move || {
                             if let Some(win) = web_sys::window() {
-                                schedule_fit(&win, &fit_for_cb, &container_for_cb);
+                                schedule_fit_and_refresh(&win, &fit_for_cb, &container_for_cb, &term_for_cb);
                             }
                         });
                         let handle = w.set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -977,6 +981,82 @@ fn schedule_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &we
     // raf_closure is a JsValue here; keep it alive in this scope until the
     // RAF fires by... actually once_into_js hands ownership to JS. The RAF
     // holds a reference until it fires, then the closure frees itself.
+}
+
+/// Fit the terminal and force a full text refresh. Used after resize or
+/// reparenting, when WebKit may have blanked the canvas backing store.
+fn schedule_fit_and_refresh(
+    window: &web_sys::Window,
+    fit_instance: &JsValue,
+    container: &web_sys::Element,
+    term: &JsValue,
+) {
+    let fit_for_raf = fit_instance.clone();
+    let container_for_raf = container.clone();
+    let term_for_raf = term.clone();
+    let raf_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
+        call_fit(&fit_for_raf, &container_for_raf);
+        refresh_term(&term_for_raf);
+    });
+    let _ = window.request_animation_frame(raf_closure.as_ref().unchecked_ref());
+}
+
+/// Retry calling fit() until the container has a non-zero bounding rect or
+/// max attempts are reached. Prevents xterm from opening into a 0×0 canvas.
+fn schedule_fit_until_sized(
+    window: &web_sys::Window,
+    fit_instance: &JsValue,
+    container: &web_sys::Element,
+    attempts_left: u32,
+) {
+    let rect = container.get_bounding_client_rect();
+    if rect.width() > 0.0 && rect.height() > 0.0 {
+        call_fit(fit_instance, container);
+        return;
+    }
+    if attempts_left == 0 {
+        web_sys::console::warn_1(
+            &format!(
+                "[XtermMount] container still 0×0 after max attempts, fit skipped"
+            )
+            .into(),
+        );
+        return;
+    }
+    let win_for_retry = window.clone();
+    let fit_for_retry = fit_instance.clone();
+    let container_for_retry = container.clone();
+    let raf_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
+        schedule_fit_until_sized(
+            &win_for_retry,
+            &fit_for_retry,
+            &container_for_retry,
+            attempts_left.saturating_sub(1),
+        );
+    });
+    let _ = window.request_animation_frame(raf_closure.as_ref().unchecked_ref());
+}
+
+/// Force xterm.js to redraw the visible range. Use after the terminal may
+/// have been reparented or its canvas backing store discarded by WebKit.
+fn refresh_term(term: &JsValue) {
+    let rows = js_sys::Reflect::get(term, &JsValue::from_str("rows"))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|v| v as i32)
+        .unwrap_or(24);
+    if rows <= 0 {
+        return;
+    }
+    if let Ok(refresh_val) = js_sys::Reflect::get(term, &JsValue::from_str("refresh")) {
+        if let Ok(refresh_fn) = refresh_val.dyn_into::<js_sys::Function>() {
+            let _ = refresh_fn.call2(
+                term,
+                &JsValue::from_f64(0.0),
+                &JsValue::from_f64((rows - 1) as f64),
+            );
+        }
+    }
 }
 
 // `debounced_fit` was deleted: it was dead code (never called) and leaked a
