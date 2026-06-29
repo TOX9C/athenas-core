@@ -219,9 +219,6 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                         div {
                                             key: "pane-wrap-{space.id}-{pane.id}",
                                             style: "{wrapper_style}",
-                                            ondragenter: move |e| {
-                                                e.prevent_default();
-                                            },
                                             ondragover: move |e| {
                                                 e.prevent_default();
                                                 hovered_slot.set(Some(my_slot));
