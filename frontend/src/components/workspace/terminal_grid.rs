@@ -249,7 +249,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
 
                                             if is_hovered && !is_fullscreenmode {
                                                 div {
-                                                    class: "drop-target"
+                                                    style: "position: absolute; inset: 0; border: 2px solid var(--accent); pointer-events: none; z-index: 5;"
                                                 }
                                             }
 
@@ -565,7 +565,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
                         let mut drag_layer_local = props.drag_layer.clone();
                         rsx! {
                             span {
-                                class: "drag-handle",
+                                style: "cursor: grab; padding-right: 2px; font-size: 10px; color: var(--textMuted); user-select: none;",
                                 draggable: true,
                                 ondragstart: move |e| {
                                     let payload = DragPayload::GridPane {

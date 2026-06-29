@@ -545,7 +545,11 @@ fn send_to_socket(stream: &TcpStream, payload: &serde_json::Value) {
     }
 }
 
-fn emit_to_renderer(event_emitter: &EventEmitter, channel: &str, data: &serde_json::Value) {
+fn emit_to_renderer(
+    event_emitter: &EventEmitter,
+    channel: &str,
+    data: &serde_json::Value,
+) {
     if let Ok(guard) = event_emitter.lock() {
         if let Some(ref emitter) = *guard {
             emitter(channel, data);
@@ -1256,7 +1260,8 @@ mod tests {
 
         let sessions_arc = Arc::new(Mutex::new(HashMap::new()));
         let pending_arc = Arc::new(Mutex::new(HashMap::new()));
-        let emitter_arc: EventEmitter = Arc::new(Mutex::new(None));
+        let emitter_arc: EventEmitter =
+            Arc::new(Mutex::new(None));
 
         // Clone the handles so the timeout-handler closure can move one
         // in while the main test thread keeps a reference to assert
@@ -1385,7 +1390,8 @@ mod tests {
 
         let sessions_arc = Arc::new(Mutex::new(HashMap::new()));
         let pending_arc = Arc::new(Mutex::new(HashMap::new()));
-        let emitter_arc: EventEmitter = Arc::new(Mutex::new(None));
+        let emitter_arc: EventEmitter =
+            Arc::new(Mutex::new(None));
         let token = "test-token-H4".to_string();
 
         let sessions_t = Arc::clone(&sessions_arc);
@@ -1456,7 +1462,8 @@ mod tests {
 
         let sessions_arc = Arc::new(Mutex::new(HashMap::new()));
         let pending_arc = Arc::new(Mutex::new(HashMap::new()));
-        let emitter_arc: EventEmitter = Arc::new(Mutex::new(None));
+        let emitter_arc: EventEmitter =
+            Arc::new(Mutex::new(None));
         let token = "test-token-H4-pos".to_string();
 
         let sessions_t = Arc::clone(&sessions_arc);

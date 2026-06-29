@@ -20,9 +20,9 @@ pub fn DragGhost(layer: Signal<DragLayer>) -> Element {
     rsx! {
         div {
             class: "drag-ghost",
-            style: "top: {y}px; left: {x}px;",
+            style: "position: fixed; pointer-events: none; z-index: 9999; top: {y}px; left: {x}px;",
             div {
-                class: "drag-ghost-inner",
+                style: "padding: 6px 12px; background: var(--accent); color: var(--bg); border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; box-shadow: 0 4px 12px rgba(0,0,0,0.3); opacity: 0.85;",
                 "{text}"
             }
         }

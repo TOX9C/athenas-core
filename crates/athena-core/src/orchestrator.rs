@@ -841,14 +841,15 @@ impl AthenaOrchestrator {
         lines.push(format!("Workspace: {}", workspace_name));
 
         // --- Agents ---
-        let in_scope = |id: &str| scope.as_ref().is_none_or(|(_, ids)| ids.contains(id));
+        let in_scope = |id: &str| {
+            scope.as_ref().is_none_or(|(_, ids)| ids.contains(id))
+        };
         let mut agent_lines: Vec<String> = Vec::new();
         let mut has_agents = false;
         if let Some(ref ob) = self.output_buffer {
             for pane in ob.get_agent_list().iter().filter(|p| in_scope(&p.pane_id)) {
                 has_agents = true;
-                let mins =
-                    (chrono::Utc::now().timestamp_millis() - pane.last_activity_at as i64) / 60000;
+                let mins = (chrono::Utc::now().timestamp_millis() - pane.last_activity_at as i64) / 60000;
                 agent_lines.push(format!(
                     "  {}: {} | {} lines | idle {}m",
                     pane.pane_id, pane.agent_type, pane.line_count, mins
@@ -856,18 +857,10 @@ impl AthenaOrchestrator {
             }
         }
         if let Some(ref ac) = self.agent_comms {
-            for s in ac
-                .get_agent_sessions()
-                .iter()
-                .filter(|s| in_scope(&s.agent_id))
-            {
+            for s in ac.get_agent_sessions().iter().filter(|s| in_scope(&s.agent_id)) {
                 has_agents = true;
                 let status_str = format!("{:?}", s.status);
-                let status = if status_str == "\"\"" || status_str == "Empty" {
-                    "idle"
-                } else {
-                    &status_str
-                };
+                let status = if status_str == "\"\"" || status_str == "Empty" { "idle" } else { &status_str };
                 agent_lines.push(format!("  {}: {} | status={}", s.id, s.agent_id, status));
             }
         }
@@ -889,9 +882,7 @@ impl AthenaOrchestrator {
         plan_lines.push("Execution Plan:".to_string());
         if let Some(ref pm) = self.plan_manager {
             if let Some(plan) = pm.get_active_plan() {
-                let step_info: Vec<String> = plan
-                    .steps
-                    .iter()
+                let step_info: Vec<String> = plan.steps.iter()
                     .take(5) // limit to 5 steps
                     .map(|s| format!("  {}: — {:?}", s.id, s.status))
                     .collect();
@@ -916,24 +907,13 @@ impl AthenaOrchestrator {
             lines.push("\n[Pinned Context]".to_string());
             for item in &pinned {
                 match item {
-                    PinnedContext::Agent {
-                        pane_id,
-                        agent_type,
-                        status,
-                    } => {
+                    PinnedContext::Agent { pane_id, agent_type, status } => {
                         lines.push(format!("  Agent {}: {} ({})", pane_id, agent_type, status));
                     }
-                    PinnedContext::KanbanTask {
-                        task_id,
-                        title,
-                        status,
-                    } => {
+                    PinnedContext::KanbanTask { task_id, title, status } => {
                         lines.push(format!("  Task {}: {} ({})", task_id, title, status));
                     }
-                    PinnedContext::File {
-                        path,
-                        preview_lines,
-                    } => {
+                    PinnedContext::File { path, preview_lines } => {
                         lines.push(format!("  File: {}", path));
                         for line in preview_lines.iter().take(20) {
                             lines.push(format!("    {}", line));
@@ -1169,110 +1149,41 @@ impl AthenaOrchestrator {
         }))
     }
 
-    /// Heuristic fallback when the LLM echoes the raw prompt or returns an
-    /// obviously bad title. Returns a short imperative/-ing title constructed
-    /// from the first few content words of the prompt.
-    fn heuristic_fallback_title(raw: &str) -> String {
-        let lowered = raw.to_lowercase();
-        let cleaned: String = lowered
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == ' ' {
-                    c
-                } else {
-                    ' '
-                }
-            })
-            .collect();
+/// Heuristic fallback when the LLM echoes the raw prompt or returns an
+/// obviously bad title. Returns a short imperative/-ing title constructed
+/// from the first few content words of the prompt.
+fn heuristic_fallback_title(raw: &str) -> String {
+    let lowered = raw.to_lowercase();
+    let cleaned: String = lowered
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+        .collect();
 
-        let skip: &[&str] = &[
-            "a",
-            "an",
-            "the",
-            "and",
-            "or",
-            "but",
-            "to",
-            "of",
-            "in",
-            "on",
-            "at",
-            "for",
-            "with",
-            "is",
-            "are",
-            "was",
-            "were",
-            "be",
-            "been",
-            "being",
-            "have",
-            "has",
-            "had",
-            "do",
-            "does",
-            "did",
-            "can",
-            "could",
-            "will",
-            "would",
-            "should",
-            "may",
-            "might",
-            "must",
-            "shall",
-            "i",
-            "you",
-            "we",
-            "they",
-            "it",
-            "this",
-            "that",
-            "these",
-            "those",
-            "my",
-            "your",
-            "our",
-            "their",
-            "its",
-            "please",
-            "hey",
-            "so",
-            "then",
-            "now",
-            "just",
-            "only",
-            "also",
-            "very",
-            "really",
-            "actually",
-            "basically",
-            "literally",
-            "definitely",
-            "probably",
-            "maybe",
-        ];
+    let skip: &[&str] = &[
+        "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "at", "for",
+        "with", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+        "had", "do", "does", "did", "can", "could", "will", "would", "should",
+        "may", "might", "must", "shall", "i", "you", "we", "they", "it", "this",
+        "that", "these", "those", "my", "your", "our", "their", "its", "please",
+        "hey", "so", "then", "now", "just", "only", "also", "very", "really",
+        "actually", "basically", "literally", "definitely", "probably", "maybe",
+    ];
 
-        let words: Vec<&str> = cleaned.split_whitespace().collect();
-        let content_words: Vec<&str> = words
-            .iter()
-            .filter(|w| !skip.contains(w) && w.len() > 1)
-            .copied()
-            .collect();
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    let content_words: Vec<&str> = words
+        .iter()
+        .filter(|w| !skip.contains(w) && w.len() > 1)
+        .copied()
+        .collect();
 
-        let title = content_words
-            .iter()
-            .take(4)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" ");
-        let trimmed = title.trim();
-        if trimmed.is_empty() {
-            "working".to_string()
-        } else {
-            trimmed.to_string()
-        }
+    let title = content_words.iter().take(4).cloned().collect::<Vec<_>>().join(" ");
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        "working".to_string()
+    } else {
+        trimmed.to_string()
     }
+}
 
     /// Single LLM call for title summarization. Returns the parsed title on
     /// success, or an error the caller decides whether to retry.
@@ -2309,7 +2220,15 @@ mod snapshot_tests {
             None,
         )));
 
-        AthenaOrchestrator::with_context(executor, ob, pm, ac, None, Some(store), None)
+        AthenaOrchestrator::with_context(
+            executor,
+            ob,
+            pm,
+            ac,
+            None,
+            Some(store),
+            None,
+        )
     }
 
     /// Test that an empty snapshot is under 800 tokens.
