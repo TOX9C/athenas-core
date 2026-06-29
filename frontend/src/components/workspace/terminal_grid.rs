@@ -193,7 +193,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                     let has_bottom = row_idx + 1 < actual_row_count;
                                     let is_active = active_pane_id.as_deref() == Some(pane.id.as_str());
                                     let is_fullscreenmode = fullscreen_pane_id.read().as_deref() == Some(pane.id.as_str());
-                                    let my_slot = pane.slot_index;
+                                    let my_slot = row_idx * cols + rel_idx;
                                     let is_hovered = *hovered_slot.read() == Some(my_slot);
                                     let space_id_cell = space.id.clone();
 
