@@ -101,10 +101,6 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
 
     let actual_row_count = (pane_count + cols - 1) / cols;
 
-    // Sort panes by slot_index so drag-and-drop reorder is reflected in the grid.
-    let mut sorted_panes = space.panes.clone();
-    sorted_panes.sort_by_key(|p| p.slot_index);
-
     // Per-row column flex-grow values. Each row keeps its own width state, so
     // resizing the top row does not force the bottom row to match it.
     let mut col_widths = use_signal(|| {
@@ -167,7 +163,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                 {
                     let start_pane = row_idx * cols;
                     let end_pane = ((row_idx + 1) * cols).min(pane_count);
-                    let row_panes = &sorted_panes[start_pane..end_pane];
+                    let row_panes = &space.panes[start_pane..end_pane];
                     let row_weight = row_heights.read().get(row_idx).copied().unwrap_or(1.0);
 
                     rsx! {
