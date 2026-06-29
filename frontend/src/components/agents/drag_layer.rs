@@ -9,7 +9,6 @@ pub enum DragPayload {
         source_slot: usize,
         pane_id: String,
         pane_label: String,
-        agent_type: String,
     },
     Agent {
         pane_id: String,

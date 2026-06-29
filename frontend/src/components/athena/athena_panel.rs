@@ -2,7 +2,6 @@ use super::athena_input::AthenaInput;
 use super::chat_message::AthenaChatMessage;
 use super::session_switcher::SessionSwitcher;
 use super::thinking::AthenaThinkingIndicator;
-use crate::components::agents::drag_layer::DragPayload;
 use crate::components::shared::icon::IconClose;
 use crate::components::shared::illustration::OwlMark;
 use crate::stores::athena::{
@@ -397,38 +396,8 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
             ondrop: move |e| {
                 e.prevent_default();
                 let dt = e.data_transfer();
-
-                // Handle application/x-athena-grid-swap payloads (drag from grid pane).
-                if let Some(json) = dt.get_data("application/x-athena-grid-swap") {
-                    if let Ok(payload) = serde_json::from_str::<DragPayload>(&json) {
-                        let item = match payload {
-                            DragPayload::GridPane { pane_id, pane_label, agent_type, .. } => {
-                                DraggableItem::Agent { pane_id, agent_type, label: pane_label }
-                            }
-                            DragPayload::Agent { pane_id, agent_type, label } => {
-                                DraggableItem::Agent { pane_id, agent_type, label }
-                            }
-                        };
-                        let mut athena = athena_state.write();
-                        let is_new = !athena.dropped_context.iter().any(|existing| match (existing, &item) {
-                            (DraggableItem::Agent { pane_id: a, .. }, DraggableItem::Agent { pane_id: b, .. }) => a == b,
-                            _ => false,
-                        });
-                        if is_new {
-                            athena.dropped_context.push(item.clone());
-                            drop(athena);
-                            spawn(async move {
-                                if let DraggableItem::Agent { pane_id, agent_type, label } = &item {
-                                    let _ = tauri_bridge::athena_pin_agent(pane_id, agent_type, label).await;
-                                }
-                            });
-                        }
-                        return;
-                    }
-                }
-
-                // Fallback: legacy text/plain DraggableItem payloads.
-                let json = match dt.get_data("text/plain") {
+                let json = dt.get_data("text/plain");
+                let json = match json {
                     Some(s) => s,
                     None => return,
                 };
