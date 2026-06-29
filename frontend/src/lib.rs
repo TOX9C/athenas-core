@@ -90,7 +90,7 @@ pub fn App() -> Element {
     let workspace = use_workspace_store();
     let mut workspace_mut = use_workspace_store();
     let mut athena_state = use_athena_store();
-    let panel_state = use_panel_manager_store();
+    let _panel_state = use_panel_manager_store();
     let mut terminal_store = use_terminal_store();
 
     // Track mounted spaces. The set is reconciled against the current

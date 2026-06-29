@@ -550,7 +550,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                 span {
                                     style: "font-family: var(--font-ui); font-size: var(--text-xs); font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; cursor: text;",
                                     title: "{title_text}",
-                                    ondblclick: move |_| {
+                                    ondoubleclick: move |_| {
                                         temp_title.set(left_label.clone());
                                         editing_title.set(true);
                                     },

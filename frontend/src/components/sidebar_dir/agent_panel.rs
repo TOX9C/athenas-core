@@ -59,8 +59,7 @@ pub fn AgentPanel() -> Element {
                             rsx! {
                                 div {
                                     key: "{pane_id}",
-                                    style: "display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 10px;"
-
+                                    style: "display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 10px;",
                                     div {
                                         style: "width: 6px; height: 6px; border-radius: 50%; background: {dot_color}; flex-shrink: 0;",
                                     }

@@ -447,7 +447,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                         for (i, item) in state.dropped_context.iter().enumerate() {
                             {
                                 let display = match item {
-                                    crate::stores::athena::DraggableItem::Agent { pane_id, label, .. } => format!("Agent: {}", label),
+                                    crate::stores::athena::DraggableItem::Agent { pane_id: _pane_id, label, .. } => format!("Agent: {}", label),
                                     crate::stores::athena::DraggableItem::KanbanTask { title, .. } => format!("Task: {}", title),
                                     crate::stores::athena::DraggableItem::File { name, .. } => format!("File: {}", name),
                                 };
@@ -467,10 +467,6 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                             onclick: move |_| {
                                 let mut athena = athena_state.write();
                                 athena.dropped_context.clear();
-                                drop(athena);
-                                spawn(async move {
-                                    let _ = tauri_bridge::athena_clear_pinned_context().await;
-                                });
                             },
                             IconClose { size: Some(14), color: Some("currentColor".to_string()) }
                         }
