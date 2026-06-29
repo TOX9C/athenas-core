@@ -62,8 +62,6 @@ pub fn AgentInfoPoller() -> Element {
                         Ok(info) => {
                             let fg = if info.foreground_process.is_empty()
                                 || info.foreground_process == "shell"
-                                || ["bash", "zsh", "sh", "fish"]
-                                    .contains(&info.foreground_process.as_str())
                             {
                                 None
                             } else {
@@ -119,14 +117,6 @@ pub fn AgentInfoPoller() -> Element {
                                     // Fire-and-forget. The backend command retries transient
                                     // failures internally, so this single await yields a final
                                     // result (title, "Sensitive prompt", or Err).
-                                    web_sys::console::log_1(
-                                        &format!(
-                                            "[AgentInfoPoller] summarizing pane={} prompt='{}'",
-                                            pane_id,
-                                            raw.chars().take(80).collect::<String>()
-                                        )
-                                        .into(),
-                                    );
                                     wasm_bindgen_futures::spawn_local(async move {
                                         let result = summarize_agent_title(&raw_prompt).await;
                                         let mut g = store.write();

@@ -617,10 +617,8 @@ pub fn App() -> Element {
                         IconSwarm { size: Some(16), color: Some("currentColor".to_string()) }
                     }
 
-                    // Outside drag zone so clicks aren't stolen by the WM
-                    div { style: "-webkit-app-region: no-drag;",
-                        NotificationBell {}
-                    }
+                    // Notification bell
+                    NotificationBell {}
 
                     // Settings
                     button {

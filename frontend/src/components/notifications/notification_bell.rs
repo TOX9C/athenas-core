@@ -41,7 +41,7 @@ pub fn NotificationBell() -> Element {
         }
         mounted.set(true);
 
-        // notifications:new — Increment unread count, show badge, push toast, play ding.
+        // notifications:new — Increment unread count, show badge, push toast.
         let mut new_store = notifications;
         let mut toast_store = use_toast_store();
         if let Ok(u) = tauri_bridge::listen("notifications:new", move |payload: String| {
@@ -72,38 +72,16 @@ pub fn NotificationBell() -> Element {
                     _ => NotificationType::Info,
                 };
                 let record = NotificationRecord {
-                    id: id.clone(),
+                    id,
                     r#type: ntype,
-                    title: title.clone(),
-                    message: message.clone(),
+                    title,
+                    message,
                     source: "backend".to_string(),
                     read: false,
                     timestamp: chrono::Utc::now().timestamp_millis(),
                     count: 1,
                 };
                 add_notification(&mut new_store, record);
-
-                // Push toast.
-                let toast_type = match ntype_str {
-                    "warning" => ToastType::Warning,
-                    "error" => ToastType::Error,
-                    "success" => ToastType::Success,
-                    "needsInput" => ToastType::NeedsInput,
-                    "taskComplete" => ToastType::TaskComplete,
-                    "taskError" => ToastType::Error,
-                    _ => ToastType::Info,
-                };
-                let toast = Toast {
-                    id: id.clone(),
-                    toast_type,
-                    title: title.clone(),
-                    message: message.clone(),
-                    duration_ms: 5000,
-                };
-                toast_store.write().push(toast);
-
-                // Play notification sound on new notification.
-                play_ding();
             }
         }) {
             unlisteners_clone.borrow_mut().push(u);
@@ -183,11 +161,11 @@ pub fn NotificationBell() -> Element {
     rsx! {
         div {
             class: "notification-bell",
-            style: "position: relative; -webkit-app-region: no-drag;",
+            style: "position: relative;",
 
             button {
                 class: "icon-btn",
-                style: "position: relative; -webkit-app-region: no-drag;",
+                style: "position: relative;",
                 "aria-label": "Notifications",
                 onclick: move |_| dropdown_open.set(!dropdown_open()),
 

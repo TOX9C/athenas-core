@@ -783,45 +783,6 @@ pub async fn athena_set_session_context(history: &str) -> TauriResult<JsValue> {
     .await
 }
 
-// ── Pinned Context (Phase 5) ───────────────────────────────────────────
-
-/// Pin an agent to the current session context.
-pub async fn athena_pin_agent(pane_id: &str, agent_type: &str, status: &str) -> TauriResult<JsValue> {
-    invoke(
-        "athena_pin_agent",
-        &serde_json::json!({ "pane_id": pane_id, "agent_type": agent_type, "status": status }).to_string(),
-    )
-    .await
-}
-
-/// Pin a Kanban task to the current session context.
-pub async fn athena_pin_task(task_id: &str, title: &str, status: &str) -> TauriResult<JsValue> {
-    invoke(
-        "athena_pin_task",
-        &serde_json::json!({ "task_id": task_id, "title": title, "status": status }).to_string(),
-    )
-    .await
-}
-
-/// Pin a file to the current session context.
-pub async fn athena_pin_file(path: &str, preview_lines: &[String]) -> TauriResult<JsValue> {
-    invoke(
-        "athena_pin_file",
-        &serde_json::json!({ "path": path, "preview_lines": preview_lines }).to_string(),
-    )
-    .await
-}
-
-/// Clear all pinned context.
-pub async fn athena_clear_pinned_context() -> TauriResult<JsValue> {
-    invoke("athena_clear_pinned_context", "{}").await
-}
-
-/// Get all pinned context items.
-pub async fn athena_get_pinned_context() -> TauriResult<String> {
-    invoke("athena_get_pinned_context", "{}").await
-}
-
 /// Test whether the saved LLM API key can be read from the keyring.
 /// Returns a JSON object: { ok: bool, message: string }.
 pub async fn test_llm_api_key() -> TauriResult<String> {
