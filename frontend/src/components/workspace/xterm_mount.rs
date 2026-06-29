@@ -45,13 +45,6 @@ struct XtermCleanup {
     _visibility_observer: Option<JsValue>,
     /// Rooted IntersectionObserver callback closure.
     _vis_callback: Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>>,
-    /// MutationObserver that detects when the terminal container is
-    /// reparented (e.g. grid restructuring after a pane is closed).
-    _mutation_observer: Option<JsValue>,
-    /// Rooted MutationObserver callback closure.
-    _mo_callback: Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue, JsValue)>>,
-    /// Safety timer handle for delayed fit+refresh.
-    _safety_timer: Option<i32>,
 }
 
 /// Mount an xterm.js Terminal into a div with id `pane_id`.
@@ -603,16 +596,11 @@ pub fn XtermMount(
 
             let mut resize_observer_holder: Option<JsValue> = None;
             let mut ro_closure_holder: Option<wasm_bindgen::closure::Closure<dyn FnMut()>> = None;
-            let mut mutation_observer_holder: Option<JsValue> = None;
-            let mut mo_callback_holder: Option<
-                wasm_bindgen::closure::Closure<dyn FnMut(JsValue, JsValue)>,
-            > = None;
-            let mut safety_timer_handle: Option<i32> = None;
             if let Some(fit_instance) = try_activate_addon(&window, "FitAddon", &term_val) {
                 // Initial fit so the terminal has correct cols/rows before any data arrives.
                 // Use a retry loop because the parent flex grid may not have
                 // laid out yet, leaving the container at 0×0.
-                schedule_fit_until_sized(&window, &fit_instance, &container, &term_val, 60);
+                schedule_fit_until_sized(&window, &fit_instance, &container, 60);
 
                 let fit_for_ro = fit_instance.clone();
                 let container_for_ro = container.clone();
@@ -675,89 +663,6 @@ pub fn XtermMount(
                 // NOTE: removed the 75ms setInterval fallback. ResizeObserver
                 // handles all shape changes; the interval caused jitter by
                 // calling fit() during scroll / continuous output.
-
-                // ── MutationObserver: detect reparenting after pane close/grid restructure ──
-                let c_for_mo = container.clone();
-                let fit_for_mo = fit_instance.clone();
-                let term_for_mo = term_val.clone();
-                let mo_closure = wasm_bindgen::closure::Closure::wrap(Box::new(
-                    move |_records: JsValue, _observer: JsValue| {
-                        if let Some(win) = web_sys::window() {
-                            let container = c_for_mo.clone();
-                            let fit = fit_for_mo.clone();
-                            let term = term_for_mo.clone();
-                            let _ = win.request_animation_frame(
-                                wasm_bindgen::closure::Closure::once_into_js(move || {
-                                    call_fit(&fit, &container);
-                                    refresh_term(&term);
-                                })
-                                .as_ref()
-                                .unchecked_ref(),
-                            );
-                        }
-                    }
-                )
-                    as Box<dyn FnMut(JsValue, JsValue)>);
-                let mo_options = js_sys::Object::new();
-                let _ = js_sys::Reflect::set(
-                    &mo_options,
-                    &JsValue::from_str("childList"),
-                    &JsValue::from_bool(true),
-                );
-                let mo_ctor = js_sys::Reflect::get(&window, &JsValue::from_str("MutationObserver"))
-                    .ok()
-                    .and_then(|c| c.dyn_into::<js_sys::Function>().ok());
-                if let Some(parent) = container.parent_element() {
-                    if let Some(ctor) = mo_ctor {
-                        if let Ok(observer) = js_sys::Reflect::construct(
-                            &ctor,
-                            &js_sys::Array::of1(mo_closure.as_ref()),
-                        ) {
-                            if let Ok(observe_fn) =
-                                js_sys::Reflect::get(&observer, &JsValue::from_str("observe"))
-                            {
-                                if let Ok(observe_fn) = observe_fn.dyn_into::<js_sys::Function>() {
-                                    let _ = observe_fn.call3(
-                                        &observer,
-                                        &parent,
-                                        &mo_options,
-                                        &JsValue::NULL,
-                                    );
-                                }
-                            }
-                            mo_callback_holder = Some(mo_closure);
-                            mutation_observer_holder = Some(observer);
-                        }
-                    }
-                }
-
-                // ── Safety timer: delayed fit+refresh after mount ────────────────────────
-                if let Some(w) = web_sys::window() {
-                    let c_for_timer = container.clone();
-                    let fit_for_timer = fit_instance.clone();
-                    let term_for_timer = term_val.clone();
-                    let timer = wasm_bindgen::closure::Closure::once_into_js(move || {
-                        if let Some(win) = web_sys::window() {
-                            let container = c_for_timer.clone();
-                            let fit = fit_for_timer.clone();
-                            let term = term_for_timer.clone();
-                            let _ = win.request_animation_frame(
-                                wasm_bindgen::closure::Closure::once_into_js(move || {
-                                    call_fit(&fit, &container);
-                                    refresh_term(&term);
-                                })
-                                .as_ref()
-                                .unchecked_ref(),
-                            );
-                        }
-                    });
-                    if let Ok(handle) = w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                        timer.as_ref().unchecked_ref(),
-                        150,
-                    ) {
-                        safety_timer_handle = Some(handle);
-                    }
-                }
             }
             // ── IntersectionObserver: redraw when container becomes visible ──
             // When the terminal is hidden inside a display:none subtree (e.g. panel
@@ -848,9 +753,6 @@ pub fn XtermMount(
                 _paste_handler: Some(paste_handler_js),
                 _visibility_observer: vis_observer_holder,
                 _vis_callback: vis_callback_holder,
-                _mutation_observer: mutation_observer_holder,
-                _mo_callback: mo_callback_holder,
-                _safety_timer: safety_timer_handle,
             }));
         });
     });
@@ -931,20 +833,6 @@ pub fn XtermMount(
                     if let Ok(disconnect_fn) = disconnect_val.dyn_into::<js_sys::Function>() {
                         let _ = disconnect_fn.call0(&observer);
                     }
-                }
-            }
-            if let Some(observer) = c._mutation_observer.take() {
-                if let Ok(disconnect_val) =
-                    js_sys::Reflect::get(&observer, &JsValue::from_str("disconnect"))
-                {
-                    if let Ok(disconnect_fn) = disconnect_val.dyn_into::<js_sys::Function>() {
-                        let _ = disconnect_fn.call0(&observer);
-                    }
-                }
-            }
-            if let Some(timer_id) = c._safety_timer.take() {
-                if let Some(w) = web_sys::window() {
-                    w.clear_timeout_with_handle(timer_id);
                 }
             }
             if let Ok(dispose_val) = js_sys::Reflect::get(&c.term, &JsValue::from_str("dispose")) {
@@ -1119,12 +1007,11 @@ fn schedule_fit_until_sized(
     window: &web_sys::Window,
     fit_instance: &JsValue,
     container: &web_sys::Element,
-    term: &JsValue,
     attempts_left: u32,
 ) {
     let rect = container.get_bounding_client_rect();
     if rect.width() > 0.0 && rect.height() > 0.0 {
-        schedule_fit_and_refresh(window, fit_instance, container, term);
+        call_fit(fit_instance, container);
         return;
     }
     if attempts_left == 0 {
@@ -1139,13 +1026,11 @@ fn schedule_fit_until_sized(
     let win_for_retry = window.clone();
     let fit_for_retry = fit_instance.clone();
     let container_for_retry = container.clone();
-    let term_for_retry = term.clone();
     let raf_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
         schedule_fit_until_sized(
             &win_for_retry,
             &fit_for_retry,
             &container_for_retry,
-            &term_for_retry,
             attempts_left.saturating_sub(1),
         );
     });
