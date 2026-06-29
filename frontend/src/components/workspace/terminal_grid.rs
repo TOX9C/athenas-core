@@ -564,16 +564,9 @@ fn PaneItem(props: PaneItemProps) -> Element {
                         let label_drag2 = label_drag.clone();
                         let mut drag_layer_local = props.drag_layer.clone();
                         rsx! {
-                            div {
+                            span {
                                 class: "drag-handle",
                                 draggable: true,
-                                style: "user-select: none; -webkit-user-select: none; -webkit-user-drag: element;",
-                                onpointerdown: {
-                                    let pane_id_ptr = pane_id_drag.clone();
-                                    move |_| {
-                                        terminal_store.write().set_active(pane_id_ptr.clone());
-                                    }
-                                },
                                 ondragstart: move |e| {
                                     let payload = DragPayload::GridPane {
                                         space_id: space_id_drag.clone(),

@@ -324,9 +324,6 @@ color: inherit;
   font-size: 10px;
   color: var(--textMuted);
   user-select: none;
-  -webkit-user-select: none;
-  -webkit-user-drag: element;
-  pointer-events: auto;
   transition: color 150ms ease;
 }
 
