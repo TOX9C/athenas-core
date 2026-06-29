@@ -59,11 +59,6 @@ done
 
 # Tauri serves dist/ as static files, so vendored assets must be copied into it.
 VENDOR_DIR="$SCRIPT_DIR/vendor"
-# Copy the main stylesheet so the custom index.html can resolve ./styles.css
-if [ -f "$SCRIPT_DIR/styles.css" ]; then
-  cp "$SCRIPT_DIR/styles.css" "$DIST_DIR/styles.css"
-fi
-
 
 if [ -d "$VENDOR_DIR" ]; then
   cp -r "$VENDOR_DIR" "$DIST_DIR/vendor"
