@@ -109,8 +109,15 @@ pub fn OutputEventBus() -> Element {
                         );
                     }
                     OutputBusEvent::TerminalExit { pane_id, now } => {
-                        use_terminal_store().write().on_exit(&pane_id);
-                        agent_status.write().disconnect_agent(&pane_id, now);
+                        agent_status.write().update_status(
+                            pane_id,
+                            AgentStatusUpdate {
+                                status: Some(AgentRunStatus::Disconnected),
+                                message: Some("PTY exited".to_string()),
+                                progress: None,
+                            },
+                            now,
+                        );
                     }
                     OutputBusEvent::TerminalData {
                         session_id,
@@ -464,6 +471,7 @@ pub fn OutputEventBus() -> Element {
         {
             register_unlistens.borrow_mut().push(u);
         }
+
     });
 
     // Cleanup: unlisten all event listeners on component unmount.
