@@ -121,7 +121,7 @@ impl ContentBlock {
 }
 
 /// An item that has been dragged/dropped onto the Athena panel for context.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DraggableItem {
     Agent {
         pane_id: String,

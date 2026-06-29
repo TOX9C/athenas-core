@@ -669,14 +669,6 @@ pub fn XtermMount(
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
                         if is_intersecting {
-                            // The canvas backing store was discarded while hidden;
-                            // refit first (re-creates the canvas at correct size)
-                            // then refresh the text buffer into it.
-                            if let Ok(fit_val) = js_sys::Reflect::get(&term_for_vis_fit, &JsValue::from_str("fit")) {
-                                if let Ok(fit_fn) = fit_val.dyn_into::<js_sys::Function>() {
-                                    let _ = fit_fn.call0(&term_for_vis_fit);
-                                }
-                            }
                             let rows =
                                 js_sys::Reflect::get(&term_for_vis, &JsValue::from_str("rows"))
                                     .ok()
@@ -699,6 +691,27 @@ pub fn XtermMount(
                                     }
                                 }
                             }
+                            // Also refit after becoming visible again:
+                            let fit_ref = term_for_vis_fit.clone();
+                            let _ = web_sys::window().and_then(|w| {
+                                w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                    Closure::once_into_js(Box::new(move || {
+                                        if let Ok(fit_val) = js_sys::Reflect::get(
+                                            &fit_ref,
+                                            &JsValue::from_str("fit"),
+                                        ) {
+                                            if let Ok(fit_fn) =
+                                                fit_val.dyn_into::<js_sys::Function>()
+                                            {
+                                                let _ = fit_fn.call0(&fit_ref);
+                                            }
+                                        }
+                                    }))
+                                    .unchecked_ref(),
+                                    50,
+                                )
+                                .ok()
+                            });
                             break;
                         }
                     }
