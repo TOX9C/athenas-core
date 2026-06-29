@@ -767,27 +767,34 @@ pub fn App() -> Element {
                                     // instead of display: none — inactive panels are
                                     // never mounted, so they don't subscribe to
                                     // stores or run their hooks.
-                                    if active_panel == Panel::Workspace {
-                                        div {
-                                            style: "flex: 1; display: flex; min-width: 0; min-height: 0; position: relative;",
-                                            for space in mounted_workspaces.iter() {
-                                                div {
-                                                    key: "workspace-view-{space.id}",
-                                                    style: if active_space_id.as_deref() == Some(space.id.as_str()) {
-                                                        "position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0;"
-                                                    } else {
-                                                        "position: absolute; inset: 0; display: none; min-width: 0; min-height: 0;"
-                                                    },
-                                                    WorkspaceGrid {
-                                                        key: "workspace-grid-{space.id}",
-                                                        active_space: Some(space.clone()),
-                                                        active_space_id: active_space_id.clone(),
-                                                        drag_layer: drag_layer,
-                                                    }
+                                    // Workspace panel is always kept mounted and
+                                    // toggled via display:none so xterm.js terminals
+                                    // stay alive and their canvas backing stores is not
+                                    // destroyed on a Kanban/Editor/Swarm switch.
+                                    div {
+                                        style: if active_panel == Panel::Workspace {
+                                            "flex: 1; display: flex; min-width: 0; min-height: 0; position: relative;"
+                                        } else {
+                                            "flex: 1; display: none; min-width: 0; min-height: 0; position: relative;"
+                                        },
+                                        for space in mounted_workspaces.iter() {
+                                            div {
+                                                key: "workspace-view-{space.id}",
+                                                style: if active_space_id.as_deref() == Some(space.id.as_str()) {
+                                                    "position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0;"
+                                                } else {
+                                                    "position: absolute; inset: 0; display: none; min-width: 0; min-height: 0;"
+                                                },
+                                                WorkspaceGrid {
+                                                    key: "workspace-grid-{space.id}",
+                                                    active_space: Some(space.clone()),
+                                                    active_space_id: active_space_id.clone(),
+                                                    drag_layer: drag_layer,
                                                 }
                                             }
                                         }
-                                    } else if active_panel == Panel::Editor {
+                                    }
+                                    if active_panel == Panel::Editor {
                                         div {
                                             style: "flex: 1; display: flex; min-width: 0; min-height: 0;",
                                             div { style: "flex: 1; overflow: hidden;", "Editor panel" }
