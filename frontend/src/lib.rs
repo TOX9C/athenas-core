@@ -487,7 +487,6 @@ pub fn App() -> Element {
                                     resume_id: None,
                                     resume_cmd: None,
                                     resume_dismissed: None,
-                                    slot_index: 0,
                                 };
                                 workspace_mut.write().add_pane_to_space(&sid, pane);
                                 e.prevent_default();
@@ -590,7 +589,6 @@ pub fn App() -> Element {
                                         resume_id: None,
                                         resume_cmd: None,
                                         resume_dismissed: None,
-                                        slot_index: 0,
                                     };
                                     workspace_mut.write().add_pane_to_space(&sid, pane);
                                 }
@@ -619,8 +617,10 @@ pub fn App() -> Element {
                         IconSwarm { size: Some(16), color: Some("currentColor".to_string()) }
                     }
 
-                    // Notification bell (no-drag handled inside component)
-                    NotificationBell {}
+                    // Outside drag zone so clicks aren't stolen by the WM
+                    div { style: "-webkit-app-region: no-drag;",
+                        NotificationBell {}
+                    }
 
                     // Settings
                     button {
