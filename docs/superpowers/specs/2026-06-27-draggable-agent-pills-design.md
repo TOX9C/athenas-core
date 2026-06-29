@@ -28,7 +28,7 @@ Dioxus 0.7.9 (`Cargo.lock`) serializes `draggable="true"` directly via `set_attr
 | Self-target (A onto A) | No-op |
 | Empty cells | Concept doesn't exist (terminal_grid.rs always renders `cols` cells; under-filled rows have a spanning cell) |
 | Visual feedback | Ghost overlay following cursor |
-| Persistence | Save to athena-store (same path as other PaneConfig edits) |
+| Persistence | Save to athena-store (SQLite-backed, same path as other PaneConfig edits) |
 | Undo | None (no Cmd+Z) |
 | Athena drop | Wire both grid pills and sidebar pills to Athena |
 | DnD engine | Raw HTML5 + ghost overlay (no library) |
@@ -45,21 +45,18 @@ pub struct PaneConfig {
     pub agent_type: AgentType,
     pub custom_cmd: Option<String>,
     pub custom_agent_id: Option<String>,
-    pub label: Option<String>,
-    pub bypass_mode: Option<bool>,
+    pub label: String,
+    pub bypass_mode: bool,
     pub project_name: Option<String>,
     pub model_name: Option<String>,
     pub resume_id: Option<String>,
     pub resume_cmd: Option<String>,
-    pub resume_dismissed: Option<bool>,
-    #[serde(default)]
+    pub resume_dismissed: bool,
     pub slot_index: usize,   // NEW — persists across grid template changes
 }
 ```
 
-### Backward compatibility
-
-Legacy panes lack `slot_index`. `#[serde(default)]` deserializes missing fields to `0`. On workspace load, if any pane has `slot_index == 0` and it's not the first in position order, run a one-time re-index that sets `slot_index = Vec position` for all panes in each space, then immediately save.
+Render uses `SlotIndex → (row, col)` derived from `grid: GridTemplate` per `terminal_grid.rs:82-103`. Slot index is the source of truth; `space.panes` ordering becomes implementation detail.
 
 ### SlotIndex helper
 
@@ -69,11 +66,13 @@ fn slot_to_row_col(slot: usize, cols: usize) -> (usize, usize) {
     (slot / cols, slot % cols)
 }
 fn row_col_to_slot(row: usize, col: usize, cols: usize) -> usize {
-    row * (cols) + col
+    row * cols + col
 }
 ```
 
-**CRITICAL**: The grid render logic in `WorkspaceGrid` currently does `space.panes[start_pane..end_pane]` to determine cell contents, implicitly relying on Vec ordering. With `slot_index`, the render must first **sort panes by `slot_index`** before slicing into rows. This is a fundamental change to the grid rendering pipeline.
+### Migration
+
+Legacy panes (no `slot_index`) use `Vec::position` as default on first app open. athena-store schema gets one-time migration in `crates/athena-store/src/migrations/` reading each pane row, setting `slot_index = position` if missing.
 
 ## DnD Layer
 
@@ -113,7 +112,7 @@ Pointer-down on pill with 50ms timer + 5px movement threshold switches into manu
 
 ## Grid Cell Drop Targets
 
-The drop zone is the cell wrapper div in `WorkspaceGrid` (not `PaneItem`), providing full-cell coverage.
+Each `PaneItem` div in `terminal_grid.rs:209-260` gains:
 
 ```rust
 div {
@@ -145,23 +144,23 @@ div {
 In `frontend/src/stores/workspace.rs`:
 
 ```rust
-pub fn swap_pane_slots(&mut self, space_id: &str, a: usize, b: usize) {
-    if a == b { return; }  // self-target no-op
-    let space = self.spaces.iter_mut().find(|s| s.id == space_id);
-    let Some(space) = space else { return; };
-    let Some(pane_a) = space.panes.iter_mut().find(|p| p.slot_index == a) else { return; };
-    pane_a.slot_index = b;
-    let Some(pane_b) = space.panes.iter_mut().find(|p| p.slot_index == b) else { return; };
-    pane_b.slot_index = a;
-    self.save();
+pub fn swap_pane_slots(&mut self, space_id: &str, a: usize, b: usize) -> Result<(), WorkspaceError> {
+    if a == b { return Ok(()); }  // self-target no-op
+    let Some(idx_a) = self.find_pane_by_slot(space_id, a) else { return Err(...); };
+    let Some(idx_b) = self.find_pane_by_slot(space_id, b) else { return Err(...); };
+    let space = &mut self.spaces[/* ... */];
+    space.panes[idx_a].slot_index = b;
+    space.panes[idx_b].slot_index = a;
+    self.persist_space(&space.id);
+    Ok(())
 }
 ```
 
-Persists via existing `WorkspaceState::save()` which serializes to KV store (already used for label edits, add/remove pane, etc.).
+Persists via existing `WorkspaceStore::persist_space()` which calls the `save_space` Tauri command (already used for label edits).
 
 ## Athena Drop Path
 
-Existing drop at `athena_panel.rs:393-426` already accepts `text/plain` JSON of `DraggableItem`. Extend the handler to also accept `application/x-athena-grid-swap` (decode, project to `DraggableItem::Agent`) and `application/x-athena-agent-ref` (decode directly).
+Existing drop at `athena_panel.rs:393-426` already accepts `text/plain` JSON of `DraggableItem::Agent`. Extend the handler to also accept `application/x-athena-grid-swap` (decode, project to `DraggableItem::Agent`) and `application/x-athena-agent-ref` (decode directly).
 
 ```rust
 ondrop: move |e| {
@@ -180,25 +179,11 @@ ondrop: move |e| {
 },
 ```
 
-`push_agent_ref` calls `tauri_bridge::athena_pin_agent(pane_id, agent_type, label)` `src-tauri/src/commands/mod.rs:1288-1303`.
+`push_agent_ref` calls `tauri_bridge::athena_pin_agent(pane_id)` (`src-tauri/src/commands/mod.rs:1288-1303`).
 
 ## Cross-Workspace Blocker
 
 Drop zone checks `payload.space_id == active_space_id`. Mismatch → toast via `notification` store. Existing `notification.rs` already provides `enqueue_toast()`.
-
-## Drag Handle
-
-To avoid making the entire pane header (which contains fullscreen and close buttons) draggable, add a small drag handle icon at the left of the pill. Only the handle is `draggable="true"`. This prevents the fullscreen/close buttons from being unclickable.
-
-```rust
-span {
-    class: "drag-handle",
-    draggable: true,
-    ondragstart: move |e| { /* set dataTransfer */ },
-    style: "cursor: grab; padding-right: 4px;",
-    "≡"
-}
-```
 
 ## Visual Feedback
 
@@ -234,13 +219,14 @@ Ghost rendered by `frontend/src/components/agents/drag_ghost.rs` — a memoized 
 
 Modified:
 - `frontend/src/types/workspace.rs` — `slot_index` field on `PaneConfig`
-- `frontend/src/stores/workspace.rs` — `swap_pane_slots`, re-index on load
-- `frontend/src/components/workspace/terminal_grid.rs` — sort-by-slot before render, drop handlers on cell wrappers
+- `frontend/src/stores/workspace.rs` — `swap_pane_slots`, `persist_space`, `find_pane_by_slot`
+- `frontend/src/components/workspace/terminal_grid.rs` — drop handlers, render by slot
 - `frontend/src/components/athena/athena_panel.rs` — accept new MIMEs
+- `crates/athena-store/src/migrations/` — slot_index default migration
 - `frontend/styles.css` — drop-target + ghost CSS
 
 New files:
-- `frontend/src/components/agents/d amen-drag_layer.rs` — DnD state
+- `frontend/src/components/agents/drag_layer.rs` — DnD state
 - `frontend/src/components/agents/drag_ghost.rs` — floating overlay
 - `e2e-tests/test/specs/draggable-pill-swap.e2e.mjs` — E2E
 
@@ -265,18 +251,17 @@ fn swap_exchanges_slot_indices() {
 }
 
 #[test]
-fn swap_triggers_save() {
+fn swap_calls_persist_space_callback() {
     let mut ws = WorkspaceState::new_test_with_persist_counter();
-    ws.swap_pane_slots("space-1", 0, 1);
-    assert_eq!(ws.save_call_count(), 1);
+    ws.swap_pane_slots("space-1", 0, 1).unwrap();
+    assert_eq!(ws.persist_call_count(), 1);
 }
 
 #[test]
-fn legacy_slot_index_default_zero() {
-    // Deserialize without slot_index field
-    let json = r#"{\"id\":\"p1\",\"agent_type\":\"Claude\"}"#;
-    let pane: PaneConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(pane.slot_index, 0);
+fn migration_defaults_slot_index_to_vec_position() {
+    let legacy = PaneConfig { slot_index: 0, ..default }; // pre-upgrade
+    let migrated = migrate_pane_config(legacy, vec_position=2);
+    assert_eq!(migrated.slot_index, 2);
 }
 
 #[test]
@@ -299,7 +284,7 @@ fn drag_payload_roundtrip_serde() {
 
 | Risk | Mitigation |
 |---|---|
-| Legacy panes lack `slot_index` | `#[serde(default)]` + one-time re-index on load |
+| Legacy panes lack `slot_index` | One-time migration; default to Vec position |
 | Touch path has different edge cases than mouse | Touch path tested separately; opt-in via pointer-down timer |
 | WKWebView DnD quirks per `CLAUDE.md` known WASM runtime panics on click | Drag listeners attach at mount; if WASM survives mount, DnD fires. Same risk as today. |
 | WebDriver `dragAndDrop` known buggy on WKWebView | E2E test uses `browser.execute()` to synthesize events directly, per `CLAUDE.md` note. |

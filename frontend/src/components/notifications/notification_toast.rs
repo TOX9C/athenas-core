@@ -1,4 +1,4 @@
-use crate::components::shared::toast::{use_toast_store, ToastItem};
+use crate::components::shared::toast::{ToastItem, use_toast_store};
 use dioxus::prelude::*;
 
 #[component]

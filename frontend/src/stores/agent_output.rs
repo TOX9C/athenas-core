@@ -180,7 +180,6 @@ impl AgentOutputState {
             *buf = trimmed;
         } else {
             self.buffers.push((key.clone(), trimmed));
-            self.maybe_gc_panes();
         }
         self.touch(&key);
     }

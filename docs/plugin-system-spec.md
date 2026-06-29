@@ -1,8 +1,3 @@
-> ⚠️ This spec was authored under the legacy Electron/React/Zustand stack (pre-migration).
-> The current implementation is **Tauri 2 + Dioxus 0.7 (Rust/WASM)**. Architectural intent
-> in the "Plugin & MCP System" sections remains accurate; the WebView rendering layer and
-> state-manager diagrams below are historical references only.
-
 # Athena Plugin & MCP System — Architecture Specification
 
 > **Version:** 1.1.0-draft

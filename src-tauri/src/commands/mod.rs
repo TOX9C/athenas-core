@@ -1342,9 +1342,7 @@ pub async fn athena_clear_pinned_context(state: State<'_, AppState>) -> Result<(
 
 /// Get all pinned context items.
 #[tauri::command]
-pub async fn athena_get_pinned_context(
-    state: State<'_, AppState>,
-) -> Result<Vec<serde_json::Value>, String> {
+pub async fn athena_get_pinned_context(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
     let orchestrator = Arc::clone(&state.orchestrator);
     Ok(orchestrator
         .get_pinned_context()
@@ -1495,7 +1493,7 @@ pub(crate) async fn pty_read_loop(
         // serialization for this event type.
         let encoded = base64::engine::general_purpose::STANDARD.encode(coalesce_buf.as_slice());
         let raw_event = serde_json::json!({
-            "session_id": session_id,
+            "sessionId": session_id,
             "data": encoded,
         });
         // Serialize to a fully-owned String before calling emit. Passing
@@ -4046,7 +4044,8 @@ mod scraper_tests {
 
     #[test]
     fn parse_codex_history_line_extracts_session_and_prompt() {
-        let line = r#"{"session_id":"019e0ec8-7793-77a3-b52c-c153ed517b64","ts":1778364486,"text":"yo what is up"}"#;
+        let line =
+            r#"{"session_id":"019e0ec8-7793-77a3-b52c-c153ed517b64","ts":1778364486,"text":"yo what is up"}"#;
         let entry = parse_codex_history_line(line).expect("should parse");
         assert_eq!(entry.display, "yo what is up");
         assert_eq!(entry.session_id, "019e0ec8-7793-77a3-b52c-c153ed517b64");
@@ -4073,7 +4072,7 @@ mod scraper_tests {
     fn valid_prompt_filters_meta_commands() {
         assert!(!is_valid_prompt("/exit"));
         assert!(!is_valid_prompt("/model"));
-        assert!(!is_valid_prompt("纠结")); // less than 5 chars
+        assert!(!is_valid_prompt("纠结"));  // less than 5 chars
         assert!(!is_valid_prompt("[Pasted text #1 +5 lines]"));
         assert!(!is_valid_prompt("[Image #2] what do you see"));
         assert!(is_valid_prompt("analyze the codebase"));

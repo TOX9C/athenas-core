@@ -21,9 +21,6 @@ pub struct SessionListItem {
 // State
 // ---------------------------------------------------------------------------
 
-/// Maximum number of messages retained for the active session.
-const MAX_ACTIVE_MESSAGES: usize = 500;
-
 /// Global session management state.
 #[derive(Clone, PartialEq, Default)]
 pub struct SessionState {
@@ -100,10 +97,6 @@ impl SessionState {
         }
         let preview: String = msg.content.chars().take(100).collect();
         self.active_session_messages.push(msg);
-        if self.active_session_messages.len() > MAX_ACTIVE_MESSAGES {
-            let excess = self.active_session_messages.len() - MAX_ACTIVE_MESSAGES;
-            self.active_session_messages.drain(0..excess);
-        }
 
         if let Some(active_id) = &self.active_session_id {
             if let Some(item) = self.sessions.iter_mut().find(|s| &s.id == active_id) {

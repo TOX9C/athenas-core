@@ -497,8 +497,7 @@ impl McpServer {
                             &spawn_handler,
                             &output_handler,
                             &agent_comms_handler,
-                        )
-                        .await;
+                        ).await;
 
                         if response.id.is_some() {
                             let json = McpServer::serialize_response(&response) + "\n";
@@ -614,7 +613,9 @@ impl McpServer {
             if let Ok(clients) = self.active_clients.lock() {
                 clients
                     .iter()
-                    .filter_map(|(peer, stream)| stream.try_clone().ok().map(|s| (peer.clone(), s)))
+                    .filter_map(|(peer, stream)| {
+                        stream.try_clone().ok().map(|s| (peer.clone(), s))
+                    })
                     .collect()
             } else {
                 return;

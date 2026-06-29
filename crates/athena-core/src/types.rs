@@ -173,9 +173,7 @@ pub enum OrchestratorError {
     #[error("I couldn't {action} — {reason}.")]
     ToolFailure { action: String, reason: String },
     /// The LLM API returned a non-200, rate limit, invalid key, or malformed JSON.
-    #[error(
-        "The LLM API returned an error ({status}). Check your API key and base URL in settings."
-    )]
+    #[error("The LLM API returned an error ({status}). Check your API key and base URL in settings.")]
     LLMApiFailure { status: u16 },
     /// Two operations raced on the same workspace / agent state.
     #[error("Two operations conflicted on {resource}. I cancelled {operation}. Try again.")]

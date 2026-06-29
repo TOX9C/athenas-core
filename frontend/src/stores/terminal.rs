@@ -394,7 +394,6 @@ impl TerminalStore {
                 self.active_session_id = Some(id_str);
             }
             self.generation = self.generation.wrapping_add(1);
-            self.maybe_gc_sessions();
             true
         } else {
             false
@@ -509,39 +508,12 @@ impl TerminalStore {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Maximum number of terminal sessions to retain in memory.
-    const MAX_SESSIONS: usize = 50;
-    /// Target count after session GC.
-    const SESSION_GC_TARGET: usize = 40;
-
-    /// Handle session exit from the backend — remove it to prevent
-    /// unbounded growth. Mirrors the cleanup in `kill()`.
+    /// Handle session exit from the backend.
     pub fn on_exit(&mut self, id: &str) {
-        self.sessions.remove(id);
-        if self.active_session_id.as_deref() == Some(id) {
-            self.active_session_id = self.sessions.keys().next().cloned();
+        if let Some(session) = self.sessions.get_mut(id) {
+            session.exited = true;
         }
         self.generation = self.generation.wrapping_add(1);
-    }
-
-    /// Evict oldest sessions when the store grows past the hard cap.
-    fn maybe_gc_sessions(&mut self) {
-        if self.sessions.len() <= Self::MAX_SESSIONS {
-            return;
-        }
-        // Collect (last_update_ms, id) pairs and sort oldest first.
-        let mut pairs: Vec<(f64, String)> = self
-            .sessions
-            .values()
-            .map(|s| (s.last_update_ms, s.id.clone()))
-            .collect();
-        pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let to_remove = self.sessions.len().saturating_sub(Self::SESSION_GC_TARGET);
-        for (_, id) in pairs.into_iter().take(to_remove) {
-            if self.active_session_id.as_deref() != Some(&id) {
-                self.sessions.remove(&id);
-            }
-        }
     }
 
     /// Update the detected foreground process + scraped task title for a pane.

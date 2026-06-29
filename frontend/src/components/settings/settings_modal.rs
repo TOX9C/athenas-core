@@ -930,21 +930,9 @@ struct CustomToggleProps {
 
 #[component]
 fn CustomToggle(props: CustomToggleProps) -> Element {
-    let bg = if props.active {
-        "var(--accent)"
-    } else {
-        "var(--bgTertiary)"
-    };
-    let knob = if props.active {
-        "translateX(22px)"
-    } else {
-        "translateX(2px)"
-    };
-    let knob_bg = if props.active {
-        "var(--bg)"
-    } else {
-        "var(--textDim)"
-    };
+    let bg = if props.active { "var(--accent)" } else { "var(--bgTertiary)" };
+    let knob = if props.active { "translateX(22px)" } else { "translateX(2px)" };
+    let knob_bg = if props.active { "var(--bg)" } else { "var(--textDim)" };
     rsx! {
         div {
             style: "flex-shrink: 0; width: 48px; height: 26px; border-radius: 999px; background: {bg}; border: 1px solid var(--border); position: relative; box-shadow: inset 0 1px 2px rgba(0,0,0,0.12); transition: background 0.18s ease, border-color 0.18s ease; pointer-events: none;",
