@@ -417,18 +417,30 @@ pub fn XtermMount(
                     let s = wq_sched.clone();
                     let t = wq_term.clone();
                     wasm_bindgen_futures::spawn_local(async move {
+                        let q_for_closure = q.clone();
+                        let s_for_closure = s.clone();
+                        let t_for_closure = t.clone();
                         let closure = Closure::once_into_js(Box::new(move || {
+                            let chunks = q_for_closure.borrow_mut().drain(..).collect::<Vec<_>>();
+                            for chunk in chunks {
+                                write_bytes_to_term(&t_for_closure, &chunk);
+                            }
+                            *s_for_closure.borrow_mut() = false;
+                        }) as Box<dyn FnOnce()>);
+
+                        let mut raf_failed = true;
+                        if let Some(window) = web_sys::window() {
+                            if window.request_animation_frame(closure.as_ref().unchecked_ref()).is_ok() {
+                                raf_failed = false;
+                            }
+                        }
+                        if raf_failed {
                             let chunks = q.borrow_mut().drain(..).collect::<Vec<_>>();
                             for chunk in chunks {
                                 write_bytes_to_term(&t, &chunk);
                             }
                             *s.borrow_mut() = false;
-                        })
-                            as Box<dyn FnOnce()>);
-                        let _ = web_sys::window().and_then(|w| {
-                            w.request_animation_frame(closure.as_ref().unchecked_ref())
-                                .ok()
-                        });
+                        }
                     });
                 }
                 if let Some((prefix, id)) = resume_scanner.feed(&text) {

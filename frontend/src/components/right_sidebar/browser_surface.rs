@@ -270,10 +270,15 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     let outside = match node {
                         Some(node) => match window_for_cb.document() {
                             Some(document) => {
-                                match document.get_element_by_id("browser-quick-menu") {
-                                    Some(popover) => !popover.contains(Some(&node)),
-                                    None => true,
-                                }
+                                let in_popover = match document.get_element_by_id("browser-quick-menu") {
+                                    Some(popover) => popover.contains(Some(&node)),
+                                    None => false,
+                                };
+                                let in_trigger = match document.get_element_by_id("quick-links-trigger") {
+                                    Some(trigger) => trigger.contains(Some(&node)),
+                                    None => false,
+                                };
+                                !in_popover && !in_trigger
                             }
                             None => true,
                         },
@@ -427,6 +432,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                 style: "position: relative; border-top: 1px solid var(--border); padding: 8px 12px; background: var(--bgSecondary); flex-shrink: 0;",
 
                 button {
+                    id: "quick-links-trigger",
                     class: "icon-btn",
                     style: "width: 100%; justify-content: space-between; padding: 5px 10px; font-size: 12px; color: var(--text);",
                     title: "Quick links",

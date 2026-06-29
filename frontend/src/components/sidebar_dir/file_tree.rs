@@ -179,8 +179,8 @@ pub fn FileTree() -> Element {
         });
     }
 
-    let mut ui_state = use_ui_store();
-    let mut panel_manager = use_panel_manager_store();
+    let ui_state = use_ui_store();
+    let panel_manager = use_panel_manager_store();
 
     // Handler: open a file in the editor.
     let on_file_open = move |file_path: String| {

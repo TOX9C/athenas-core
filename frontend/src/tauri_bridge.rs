@@ -669,7 +669,7 @@ pub fn pty_listen_raw(
             Ok(v) => v,
             Err(_) => return,
         };
-        let session_id = match parsed.get("session_id").and_then(|v| v.as_str()) {
+        let session_id = match parsed.get("sessionId").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return,
         };
@@ -764,7 +764,7 @@ pub async fn athena_chat_with_images(message: &str, images: &str) -> TauriResult
 pub async fn summarize_agent_title(raw_prompt: &str) -> TauriResult<String> {
     invoke(
         "summarize_agent_title",
-        &serde_json::json!({ "raw_prompt": raw_prompt }).to_string(),
+        &serde_json::json!({ "rawPrompt": raw_prompt }).to_string(),
     )
     .await
 }

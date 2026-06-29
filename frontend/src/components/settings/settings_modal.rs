@@ -536,7 +536,7 @@ fn AgentsSettings() -> Element {
     let mut new_priority = use_signal(|| false);
     let mut show_form = use_signal(|| false);
 
-    let agents_snapshot: Vec<crate::types::workspace::CustomAgent> =
+    let _agents_snapshot: Vec<crate::types::workspace::CustomAgent> =
         ui_state.read().custom_agents.clone();
 
     let persist = |agents: &[_]| {
