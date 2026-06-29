@@ -148,6 +148,7 @@ describe('Draggable pill swap smoke tests', () => {
       const payload = {
         space_id: spaceId,
         source_slot: Math.max(0, sourceIndex),
+        pane_id: 'source-pane-id',
         pane_label: fullLabel,
         agent_type: 'Shell',
       }
