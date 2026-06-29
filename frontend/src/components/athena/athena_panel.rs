@@ -5,8 +5,8 @@ use super::thinking::AthenaThinkingIndicator;
 use crate::components::shared::icon::IconClose;
 use crate::components::shared::illustration::OwlMark;
 use crate::stores::athena::{
-    use_athena_store, AskUserOption, AthenaMessage, DraggableItem, MessageRole, PlanStatus,
-    PlanStepStatus, StepEvaluation,
+    use_athena_store, AskUserOption, AthenaMessage, MessageRole, PlanStatus, PlanStepStatus,
+    StepEvaluation,
 };
 use crate::tauri_bridge;
 use dioxus::prelude::*;
@@ -390,44 +390,6 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         div {
             class: "athena-panel",
             style: wrapper_style,
-            ondragover: move |e| {
-                e.prevent_default();
-            },
-            ondrop: move |e| {
-                e.prevent_default();
-                let dt = e.data_transfer();
-                let json = dt.get_data("text/plain");
-                let json = match json {
-                    Some(s) => s,
-                    None => return,
-                };
-                if let Ok(item) = serde_json::from_str::<DraggableItem>(&json) {
-                    let mut athena = athena_state.write();
-                    let is_new = !athena.dropped_context.iter().any(|existing| match (existing, &item) {
-                        (DraggableItem::Agent { pane_id: a, .. }, DraggableItem::Agent { pane_id: b, .. }) => a == b,
-                        (DraggableItem::KanbanTask { task_id: a, .. }, DraggableItem::KanbanTask { task_id: b, .. }) => a == b,
-                        (DraggableItem::File { path: a, .. }, DraggableItem::File { path: b, .. }) => a == b,
-                        _ => false,
-                    });
-                    if is_new {
-                        athena.dropped_context.push(item.clone());
-                        drop(athena);
-                        spawn(async move {
-                            match &item {
-                                DraggableItem::Agent { pane_id, agent_type, label } => {
-                                    let _ = tauri_bridge::athena_pin_agent(pane_id, agent_type, label).await;
-                                }
-                                DraggableItem::KanbanTask { task_id, title, status } => {
-                                    let _ = tauri_bridge::athena_pin_task(task_id, title, status).await;
-                                }
-                                DraggableItem::File { path, name: _ } => {
-                                    let _ = tauri_bridge::athena_pin_file(path, &[]).await;
-                                }
-                            }
-                        });
-                    }
-                }
-            },
 
             // Main chat area
             div {
