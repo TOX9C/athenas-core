@@ -125,7 +125,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     let fullscreen_pane_id = use_signal(|| None::<String>);
     let terminal_store = use_terminal_store();
     let active_pane_id = terminal_store.read().active_session_id.clone();
-    let mut drag_layer = props.drag_layer;
+    let drag_layer = props.drag_layer;
     let mut hovered_slot = use_signal(|| None::<usize>);
     // Note: active pane selection is stored in TerminalStore (single source of truth).
     // The clicked pane gets a subtle gold focus ring (see `.pane-focus-ring`).
@@ -234,8 +234,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
 
                                                 // Use drag_layer first (reliable in WKWebView);
                                                 // dataTransfer with custom MIMEs is silently dropped by WebKit.
-                                                let active = drag_layer.read().active.read().clone();
-                                                if let Some(active) = active {
+                                                if let Some(active) = drag_layer.read().active.read().clone() {
                                                     if let DragPayload::GridPane { space_id, source_slot, .. } = active {
                                                         if space_id == space_id_cell {
                                                             workspace.write().swap_pane_slots(&space_id, source_slot, my_slot);
