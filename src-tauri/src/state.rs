@@ -604,7 +604,6 @@ impl AppState {
                 }
             }
         });
-        notification_service.flush_pending_events();
     }
 
     /// Wire plan manager events to Tauri event emissions.

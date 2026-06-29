@@ -97,7 +97,6 @@ pub struct NotificationService {
     history: Arc<parking_lot::RwLock<Vec<NotificationRecord>>>,
     event_emitter:
         Arc<parking_lot::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
-    pending_events: Arc<parking_lot::Mutex<Vec<(String, serde_json::Value)>>>,
 }
 
 impl std::fmt::Debug for NotificationService {
@@ -114,7 +113,6 @@ impl Clone for NotificationService {
         Self {
             history: Arc::clone(&self.history),
             event_emitter: Arc::clone(&self.event_emitter),
-            pending_events: Arc::clone(&self.pending_events),
         }
     }
 }
@@ -130,7 +128,6 @@ impl NotificationService {
         Self {
             history: Arc::new(parking_lot::RwLock::new(Vec::new())),
             event_emitter: Arc::new(parking_lot::Mutex::new(None)),
-            pending_events: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
@@ -147,27 +144,9 @@ impl NotificationService {
         let guard = self.event_emitter.lock();
         if let Some(ref emitter) = *guard {
             emitter(channel, data);
-            drop(guard);
             return;
         }
-        drop(guard);
         log::debug!("[notification] {} -> {}", channel, data);
-        let mut pending = self.pending_events.lock();
-        pending.push((channel.to_string(), data.clone()));
-    }
-
-    /// Flush any events that were queued before the event emitter was wired.
-    pub fn flush_pending_events(&self) {
-        let mut pending = self.pending_events.lock();
-        if pending.is_empty() {
-            return;
-        }
-        let guard = self.event_emitter.lock();
-        if let Some(ref emitter) = *guard {
-            for (channel, data) in pending.drain(..) {
-                emitter(&channel, &data);
-            }
-        }
     }
 
     fn now() -> u64 {
