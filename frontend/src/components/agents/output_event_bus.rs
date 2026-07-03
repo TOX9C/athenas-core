@@ -123,7 +123,10 @@ pub fn OutputEventBus() -> Element {
                         session_id,
                         payload,
                     } => {
-                        use_terminal_store().write().on_data(&session_id, &payload);
+                        let registry = crate::stores::terminal::use_terminal_registry();
+                        use_terminal_store()
+                            .write()
+                            .on_data(&registry, &session_id, &payload);
                     }
                     OutputBusEvent::AgentConnected { pane_id, now } => {
                         agent_status.write().connect_agent(pane_id, now);
@@ -471,7 +474,6 @@ pub fn OutputEventBus() -> Element {
         {
             register_unlistens.borrow_mut().push(u);
         }
-
     });
 
     // Cleanup: unlisten all event listeners on component unmount.

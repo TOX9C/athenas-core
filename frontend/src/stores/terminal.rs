@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -370,10 +372,20 @@ pub struct TerminalUpdateDelta {
 // TerminalStore — global state for all terminal sessions
 // ---------------------------------------------------------------------------
 
-/// Global terminal store holding all active sessions.
+/// Global terminal store holding *whole-store* terminal state.
+///
+/// Phase 4 (Item 3): per-pane `TerminalSession` data lives entirely in the
+/// context-provided `TerminalRegistry`'s per-session signals; this store only
+/// tracks **membership** (`known_pane_ids`) and the cross-session **active id**.
+/// `generation` is bumped ONLY for cross-session invalidation (membership
+/// add/remove, active-id change, exit) — never per `terminal:data` event.
+/// This is what stops a single pane's foreground/cell update from re-rendering
+/// every other pane.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TerminalStore {
-    pub sessions: HashMap<String, TerminalSession>,
+    /// Pane ids known to be alive (mirrors the registry's keys). Used for O(1)
+    /// membership checks (`contains_key`) and close-fallback active selection.
+    pub known_pane_ids: HashSet<String>,
     pub active_session_id: Option<String>,
     pub generation: u64,
 }
@@ -383,27 +395,36 @@ pub struct TerminalStore {
 impl TerminalStore {
     /// Ensure a session exists without doing any async work.
     /// Returns true if a new session was inserted.
-    pub fn ensure_session(&mut self, id: impl Into<String>, cols: u16, rows: u16) -> bool {
+    ///
+    /// Phase 4 (Item 3): the per-pane `TerminalSession` data is created in the
+    /// registry's inner signal; this store records the pane id in
+    /// `known_pane_ids` (membership, O(1)) and bumps `generation` for
+    /// cross-session invalidation, and sets the active id if none is set.
+    pub fn ensure_session(
+        &mut self,
+        registry: &TerminalRegistry,
+        id: impl Into<String>,
+        cols: u16,
+        rows: u16,
+    ) -> bool {
         let id_str: String = id.into();
-        if !self.sessions.contains_key(&id_str) {
-            self.sessions.insert(
-                id_str.clone(),
-                TerminalSession::new(id_str.clone(), cols, rows),
-            );
+        let was_new = registry.ensure_session(id_str.clone(), cols, rows);
+        if was_new {
+            self.known_pane_ids.insert(id_str.clone());
             if self.active_session_id.is_none() {
                 self.active_session_id = Some(id_str);
             }
             self.generation = self.generation.wrapping_add(1);
-            true
-        } else {
-            false
         }
+        was_new
     }
 
     /// Mark a session as being backed by xterm.js (or not).
-    pub fn set_session_xterm(&mut self, id: &str, is_xterm: bool) {
-        if let Some(session) = self.sessions.get_mut(id) {
-            session.is_xterm = is_xterm;
+    /// Phase 4: per-pane only — writes the inner signal; the slimmed store
+    /// tracks only membership/active, which `is_xterm` doesn't change.
+    pub fn set_session_xterm(&mut self, registry: &TerminalRegistry, id: &str, is_xterm: bool) {
+        if let Some(mut inner) = registry.write_session(id) {
+            inner.is_xterm = is_xterm;
         }
     }
 
@@ -434,20 +455,26 @@ impl TerminalStore {
     }
 
     /// Kill a PTY session.
-    pub async fn kill(&mut self, id: &str) {
+    /// Phase 4: removes from registry + `known_pane_ids`, reassigns active if
+    /// needed (fallback to another known pane), bumps `generation` (membership).
+    pub async fn kill(&mut self, registry: &TerminalRegistry, id: &str) {
         if let Err(e) = tauri_bridge::pty_kill(id).await {
             web_sys::console::error_1(&format!("pty_kill failed: {:?}", e).into());
         }
-        self.sessions.remove(id);
+        registry.remove(id);
+        self.known_pane_ids.remove(id);
         if self.active_session_id.as_deref() == Some(id) {
-            self.active_session_id = self.sessions.keys().next().cloned();
+            self.active_session_id = self.known_pane_ids.iter().next().cloned();
         }
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Resize a PTY session.
-    pub async fn resize(&mut self, id: &str, cols: u16, rows: u16) {
-        if let Some(session) = self.sessions.get_mut(id) {
-            session.resize(cols, rows);
+    /// Phase 4: per-pane grid resize lives on the inner signal only;
+    /// the backend `pty_resize` IPC call is unchanged.
+    pub async fn resize(&mut self, registry: &TerminalRegistry, id: &str, cols: u16, rows: u16) {
+        if let Some(mut inner) = registry.write_session(id) {
+            inner.resize(cols, rows);
         }
         if let Err(e) = tauri_bridge::pty_resize(id, cols, rows).await {
             web_sys::console::error_1(&format!("pty_resize failed: {:?}", e).into());
@@ -455,7 +482,14 @@ impl TerminalStore {
     }
 
     /// Handle incoming data from the backend.
-    pub fn on_data(&mut self, id: &str, payload: &str) {
+    ///
+    /// Phase 3 (Item 3): the per-pane state lives in the registry's inner
+    /// `Signal<TerminalSession>`. `on_data` writes that inner signal ONLY — no
+    /// whole-store `generation` bump — so a `terminal:data` event for pane A
+    /// re-renders only pane A's subscribers (the hot path, up to ~125/sec/pane).
+    /// The legacy `self.sessions` map is no longer touched here. (Phase 4 will
+    /// remove `self.sessions` entirely.)
+    pub fn on_data(&mut self, registry: &TerminalRegistry, id: &str, payload: &str) {
         let event: TerminalDataEvent = match serde_json::from_str(payload) {
             Ok(e) => e,
             Err(err) => {
@@ -466,81 +500,116 @@ impl TerminalStore {
             }
         };
 
-        if let Some(session) = self.sessions.get_mut(id) {
-            // For xterm-managed sessions, skip grid updates and generation bump.
-            // Cursor position and visibility are still updated in case other
-            // UI reads them (e.g. restore_term_from_session).
-            if session.is_xterm {
-                session.cursor_x = event.cursorCol;
-                session.cursor_y = event.cursorRow;
-                if let Some(visible) = event.cursorVisible {
-                    session.cursor_visible = visible;
-                }
-                return;
-            }
+        let Some(mut inner) = registry.write_session(id) else {
+            // Pane not registered (e.g. closed between the PTY event and this
+            // write). Nothing to update — no fallback store read either, since
+            // the registry is now the source of truth for per-pane data.
+            return;
+        };
 
-            // Resize grid if the backend reports different dimensions.
-            if event.rows as u16 != session.rows || event.cols as u16 != session.cols {
-                session.resize(event.cols as u16, event.rows as u16);
-            }
-
-            // Apply each cell delta to the grid.
-            for delta in &event.deltas {
-                let row = delta.row;
-                let col = delta.col;
-                if row < session.grid.len() && col < session.grid[row].len() {
-                    session.grid[row][col] = TerminalCell::from_delta(delta);
-                    session.dirty_rows.insert(row);
-                }
-            }
-
-            // Update cursor position and visibility.
-            session.cursor_x = event.cursorCol;
-            session.cursor_y = event.cursorRow;
+        // For xterm-managed sessions, skip grid updates and the generation bump.
+        // Cursor position and visibility are still updated in case other UI reads
+        // them (e.g. restore_term_from_session).
+        if inner.is_xterm {
+            inner.cursor_x = event.cursorCol;
+            inner.cursor_y = event.cursorRow;
             if let Some(visible) = event.cursorVisible {
-                session.cursor_visible = visible;
+                inner.cursor_visible = visible;
             }
-
-            session.generation = session.generation.wrapping_add(1);
-            session.last_update_ms = js_sys::Date::now();
+            return;
         }
 
-        self.generation = self.generation.wrapping_add(1);
+        // Resize grid if the backend reports different dimensions.
+        if event.rows as u16 != inner.rows || event.cols as u16 != inner.cols {
+            inner.resize(event.cols as u16, event.rows as u16);
+        }
+
+        // Apply each cell delta to the grid.
+        for delta in &event.deltas {
+            let row = delta.row;
+            let col = delta.col;
+            if row < inner.grid.len() && col < inner.grid[row].len() {
+                inner.grid[row][col] = TerminalCell::from_delta(delta);
+                inner.dirty_rows.insert(row);
+            }
+        }
+
+        // Update cursor position and visibility.
+        inner.cursor_x = event.cursorCol;
+        inner.cursor_y = event.cursorRow;
+        if let Some(visible) = event.cursorVisible {
+            inner.cursor_visible = visible;
+        }
+
+        inner.generation = inner.generation.wrapping_add(1);
+        inner.last_update_ms = js_sys::Date::now();
+        // No whole-store `self.generation` bump: pane subscribers already
+        // invalidated by the inner-signal write above; other panes stay idle.
     }
 
     /// Handle session exit from the backend.
-    pub fn on_exit(&mut self, id: &str) {
-        if let Some(session) = self.sessions.get_mut(id) {
-            session.exited = true;
+    pub fn on_exit(&mut self, registry: &TerminalRegistry, id: &str) {
+        if let Some(mut inner) = registry.write_session(id) {
+            inner.exited = true;
         }
         self.generation = self.generation.wrapping_add(1);
     }
 
     /// Update the detected foreground process + scraped task title for a pane.
     ///
-    /// Called on a slow timer (the central `AgentInfoPoller`) for every pane,
-    /// so it guards against spurious re-renders by only bumping `generation`
-    /// when one of the values actually changed.
+    /// Called on a slow timer (the central `AgentInfoPoller`) for every pane.
+    /// Phase 5 (Item 3): writes the per-pane inner signal ONLY — no whole-store
+    /// `generation` bump — so a foreground/title change in one pane doesn't
+    /// invalidate other panes' subscribers.
+    ///
+    /// **Change detection restored at the registry level.** A `Signal::write()`
+    /// guard's drop marks the signal's subscribers dirty *unconditionally*
+    /// (dioxus-signals 0.7.9 `SignalSubscriberDrop::drop` calls
+    /// `update_subscribers()` on every write, not only on value change). So we
+    /// `peek()` (non-subscribing) first and only take a write guard when an
+    /// observable field (`foreground_process`/`task_title`) or a stored field
+    /// (`session_id`/`raw_prompt`) actually differs — otherwise an identical
+    /// 1500ms poll would re-evaluate this pane's pill memo every cycle.
     pub fn update_agent_info(
         &mut self,
+        registry: &TerminalRegistry,
         id: &str,
         fg_process: Option<String>,
         task_title: Option<String>,
         session_id: Option<String>,
         raw_prompt: Option<String>,
     ) {
-        if let Some(session) = self.sessions.get_mut(id) {
-            if session.foreground_process != fg_process || session.task_title != task_title {
-                session.foreground_process = fg_process;
-                session.task_title = task_title;
-                session.generation = session.generation.wrapping_add(1);
-                self.generation = self.generation.wrapping_add(1);
+        // Non-subscribing snapshot to decide whether a write is needed at all.
+        let Some(current) = registry.peek_session(id) else {
+            // Pane not registered (closed between poll and write): drop the info.
+            return;
+        };
+        let fg_changed = current.foreground_process != fg_process;
+        let title_changed = current.task_title != task_title;
+        let sid_changed = session_id
+            .as_ref()
+            .is_some_and(|sid| current.session_id.as_deref() != Some(sid.as_str()));
+        let prompt_changed = raw_prompt
+            .as_ref()
+            .is_some_and(|p| current.raw_prompt.as_deref() != Some(p.as_str()));
+        if !(fg_changed || title_changed || sid_changed || prompt_changed) {
+            return;
+        }
+
+        if let Some(mut inner) = registry.write_session(id) {
+            if fg_changed || title_changed {
+                inner.foreground_process = fg_process;
+                inner.task_title = task_title;
+                // Inner `generation` is bump-only/never-read; the signal write
+                // itself invalidates the pill memo, but keep the bump for parity
+                // with the legacy field's documented semantics.
+                inner.generation = inner.generation.wrapping_add(1);
             }
             if let Some(sid) = session_id {
-                session.session_id = Some(sid);
+                inner.session_id = Some(sid);
             }
             if let Some(prompt) = raw_prompt {
-                session.raw_prompt = Some(prompt);
+                inner.raw_prompt = Some(prompt);
             }
         }
     }
@@ -556,6 +625,98 @@ impl TerminalStore {
 }
 
 // ---------------------------------------------------------------------------
+// TerminalRegistry — per-session reactive signals (decomposition Item 3)
+// ---------------------------------------------------------------------------
+
+/// A per-pane reactive signal registry.
+///
+/// `TerminalStore` holds the *whole-store* state (membership, active id) behind
+/// a single `Signal<TerminalStore>`, so every `.read()` subscribes to every
+/// change. A single pane's foreground/title update bumps the whole-store
+/// `generation`, re-rendering every `PaneItem` memo on every `terminal:data`
+/// event (up to ~125/sec/pane).
+///
+/// The registry holds a lazily-created `Signal<TerminalSession>` **per pane**.
+/// Components fetch the registry via context (a free lookup, no subscription),
+/// then `.read()` one pane's inner signal → subscribe to *only* that pane. A
+/// change in pane A no longer invalidates pane B's subscribers.
+///
+/// `Rc<RefCell<…>>` is the WASM-safe interior-mutability choice already used in
+/// `xterm_mount.rs` and `output_event_bus.rs` (single-threaded WASM, no `Send`
+/// requirement).
+#[derive(Clone)]
+pub struct TerminalRegistry {
+    sessions: Rc<RefCell<HashMap<String, Signal<TerminalSession>>>>,
+}
+
+impl Default for TerminalRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TerminalRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self {
+            sessions: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+
+    /// Lazily create the inner `Signal<TerminalSession>` for `id` if absent.
+    /// Returns `true` if a new signal was inserted.
+    pub fn ensure_session(&self, id: impl Into<String>, cols: u16, rows: u16) -> bool {
+        let id_str: String = id.into();
+        let mut map = self.sessions.borrow_mut();
+        if map.contains_key(&id_str) {
+            return false;
+        }
+        map.insert(
+            id_str.clone(),
+            Signal::new(TerminalSession::new(id_str, cols, rows)),
+        );
+        true
+    }
+
+    /// Returns the reactive per-session signal, or `None` if no session for `id`.
+    pub fn session_signal(&self, id: &str) -> Option<Signal<TerminalSession>> {
+        self.sessions.borrow().get(id).cloned()
+    }
+
+    /// Returns a write guard for the session's inner signal, or `None`.
+    /// Dropping the guard invalidates *only* this pane's subscribers.
+    pub fn write_session(&self, id: &str) -> Option<WritableRef<'static, Signal<TerminalSession>>> {
+        // `write_unchecked` takes `&self` (Signal is `Copy`-like via
+        // generational-box) and returns a `'static` guard, sidestepping the
+        // borrow-guard-vs-return-lifetime conflict that `Signal::write()` (which
+        // needs `&mut self`) creates. Runtime borrow checking still applies.
+        let signal = self.sessions.borrow().get(id).cloned()?;
+        Some(signal.write_unchecked())
+    }
+
+    /// Read the session without subscribing (one-shot snapshots).
+    pub fn peek_session(&self, id: &str) -> Option<TerminalSession> {
+        let signal = self.sessions.borrow().get(id).cloned()?;
+        let guard = signal.peek();
+        Some((*guard).clone())
+    }
+    /// Remove a session's signal (on kill / close-pane).
+    pub fn remove(&self, id: &str) {
+        self.sessions.borrow_mut().remove(id);
+    }
+
+    /// Snapshot of known pane ids (e.g. for close-fallback active selection).
+    pub fn known_ids(&self) -> Vec<String> {
+        self.sessions.borrow().keys().cloned().collect()
+    }
+
+    /// Is a session registered for `id`?
+    pub fn contains(&self, id: &str) -> bool {
+        self.sessions.borrow().contains_key(id)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Context helpers
 // ---------------------------------------------------------------------------
 
@@ -564,7 +725,124 @@ pub fn use_terminal_store() -> Signal<TerminalStore> {
     use_context::<Signal<TerminalStore>>()
 }
 
-/// Initialize the terminal store as a context provider.
+/// Obtain the per-session terminal registry from Dioxus context.
+pub fn use_terminal_registry() -> TerminalRegistry {
+    use_context::<TerminalRegistry>()
+}
+
+/// Returns the reactive per-session signal for `id`, if registered.
+pub fn use_session_signal(id: &str) -> Option<Signal<TerminalSession>> {
+    use_terminal_registry().session_signal(id)
+}
+
+/// Initialize the terminal store and per-session registry as context providers.
 pub fn provide_terminal_store() {
     use_context_provider(|| Signal::new(TerminalStore::default()));
+    use_context_provider(|| TerminalRegistry::new());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dioxus::prelude::VirtualDom;
+
+    /// Per-test body stashed in a thread-local so the root component closure —
+    /// which `VirtualDom::new` requires as a non-capturing `fn()`
+    /// pointer — can still access it. The body runs once on rebuild inside the
+    /// live signal runtime, then is cleared for the next test.
+    thread_local! {
+        static PENDING_BODY:
+            std::cell::RefCell<
+                Option<Box<dyn FnOnce(&TerminalRegistry)>>,
+            > = std::cell::RefCell::new(None);
+    }
+
+    /// Run `body` inside a fresh `VirtualDom` so signals attach to a live
+    /// runtime. Dioxus signals panic outside one, so the `VirtualDom` harness is
+    /// required even for unit-level registry tests (mirrors how dioxus-signals'
+    /// own tests bootstrap — `tests/create.rs`).
+    fn run_in_dom(body: impl FnOnce(&TerminalRegistry) + 'static) {
+        PENDING_BODY.with(|cell| cell.replace(Some(Box::new(body))));
+        let mut dom = VirtualDom::new(|| {
+            use_context_provider(|| Signal::new(TerminalStore::default()));
+            let registry: TerminalRegistry = use_context_provider(TerminalRegistry::new);
+            PENDING_BODY.with(|cell| {
+                if let Some(b) = cell.borrow_mut().take() {
+                    b(&registry);
+                }
+            });
+            rsx! {}
+        });
+        dom.rebuild_to_vec();
+    }
+
+    #[test]
+    fn ensure_session_inserts_once_and_reports_new() {
+        run_in_dom(|r| {
+            assert!(r.ensure_session("pane-a", 80, 24), "first insert is new");
+            assert!(!r.ensure_session("pane-a", 80, 24), "second insert not new");
+            assert!(r.contains("pane-a"));
+            assert!(!r.contains("pane-b"));
+        });
+    }
+
+    #[test]
+    fn session_signal_round_trips_after_ensure() {
+        run_in_dom(|r| {
+            assert!(r.session_signal("pane-x").is_none(), "absent before ensure");
+            r.ensure_session("pane-x", 80, 24);
+            let sig = r.session_signal("pane-x").expect("present after ensure");
+            // Non-subscribing peek returns the seeded dimensions.
+            let snap = r.peek_session("pane-x").unwrap();
+            assert_eq!(snap.id, "pane-x");
+            assert_eq!(snap.cols, 80);
+            assert_eq!(snap.rows, 24);
+            // The signal reads back the same id.
+            assert_eq!(sig.read().id, "pane-x");
+        });
+    }
+
+    #[test]
+    fn write_session_mutates_only_this_pane() {
+        run_in_dom(|r| {
+            r.ensure_session("pane-a", 80, 24);
+            r.ensure_session("pane-b", 80, 24);
+            if let Some(mut a) = r.write_session("pane-a") {
+                a.is_xterm = true;
+                a.foreground_process = Some("claude".to_string());
+            }
+            assert!(r.peek_session("pane-a").unwrap().is_xterm);
+            assert_eq!(
+                r.peek_session("pane-a")
+                    .unwrap()
+                    .foreground_process
+                    .as_deref(),
+                Some("claude"),
+            );
+            // pane-b untouched
+            assert!(!r.peek_session("pane-b").unwrap().is_xterm);
+            assert_eq!(r.peek_session("pane-b").unwrap().foreground_process, None,);
+        });
+    }
+
+    #[test]
+    fn remove_drops_session_and_known_ids() {
+        run_in_dom(|r| {
+            r.ensure_session("pane-a", 80, 24);
+            r.ensure_session("pane-b", 80, 24);
+            assert_eq!(r.known_ids().len(), 2);
+            r.remove("pane-a");
+            assert!(!r.contains("pane-a"));
+            assert!(r.session_signal("pane-a").is_none());
+            assert!(r.contains("pane-b"));
+        });
+    }
+
+    #[test]
+    fn write_session_for_missing_pane_is_none() {
+        run_in_dom(|r| {
+            assert!(r.write_session("ghost").is_none());
+            assert!(r.peek_session("ghost").is_none());
+        });
+    }
 }

@@ -15,7 +15,7 @@
 
 use dioxus::prelude::*;
 
-use crate::stores::terminal::use_terminal_store;
+use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge::{pty_agent_info, summarize_agent_title};
@@ -40,17 +40,26 @@ pub fn AgentInfoPoller() -> Element {
         let mut terminal_store = terminal_store.clone();
         let workspace = workspace.clone();
         let mut summarized_pairs = summarized_pairs.clone();
+        // Clone the registry (cheap Rc clone) so the inner async loop can route
+        // per-pane writes into the inner signals without re-entering context
+        // on every poll.
+        let registry = use_terminal_registry();
         async move {
             loop {
                 // Snapshot the pane ids of every space (not just the active
                 // one) so a background space keeps its detection fresh too.
                 let (pane_ids, pane_types) = {
                     let ws = workspace.read();
-                    let ids: Vec<String> = ws.spaces
+                    let ids: Vec<String> = ws
+                        .spaces
                         .iter()
                         .flat_map(|s| s.panes.iter().map(|p| p.id.clone()))
                         .collect();
-                    let types: std::collections::HashMap<String, crate::types::workspace::AgentType> = ws.spaces
+                    let types: std::collections::HashMap<
+                        String,
+                        crate::types::workspace::AgentType,
+                    > = ws
+                        .spaces
                         .iter()
                         .flat_map(|s| s.panes.iter().map(|p| (p.id.clone(), p.agent_type.clone())))
                         .collect();
@@ -75,16 +84,16 @@ pub fn AgentInfoPoller() -> Element {
 
                             // Detect session change and reset title state when
                             // the user starts a new agent run in this pane.
+                            // Phase 2: writes the per-pane inner signal only — no
+                            // whole-store generation bump, so other panes don't
+                            // re-render on this pane's title-state reset.
                             {
-                                let mut g = terminal_store.write();
-                                if let Some(session) = g.sessions.get_mut(pane_id) {
-                                    let old_sid =
-                                        session.session_id.as_deref().unwrap_or_default();
+                                if let Some(mut inner) = registry.write_session(pane_id) {
+                                    let old_sid = inner.session_id.as_deref().unwrap_or_default();
                                     if old_sid != sid {
-                                        session.title_state =
+                                        inner.title_state =
                                             crate::utils::pane_label::TitleState::Idle;
-                                        session.generation =
-                                            session.generation.wrapping_add(1);
+                                        inner.generation = inner.generation.wrapping_add(1);
                                     }
                                 }
                             }
@@ -100,27 +109,34 @@ pub fn AgentInfoPoller() -> Element {
                                 if !summarized_pairs.read().contains(&key) {
                                     summarized_pairs.write().insert(key);
                                     let raw_prompt = raw.to_string();
-                                    let mut store = terminal_store.clone();
                                     let pane = pane_id.clone();
 
                                     // Idle -> Pending. The pill renders empty while waiting.
+                                    // Phase 2: inner-signal only; no whole-store bump.
                                     {
-                                        let mut g = store.write();
-                                        if let Some(session) = g.sessions.get_mut(&pane) {
-                                            session.title_state =
+                                        if let Some(mut inner) = registry.write_session(&pane) {
+                                            inner.title_state =
                                                 crate::utils::pane_label::TitleState::Pending;
-                                            session.generation =
-                                                session.generation.wrapping_add(1);
+                                            inner.generation = inner.generation.wrapping_add(1);
                                         }
                                     }
 
+                                    // Clone the registry into the fire-and-forget closure so the
+                                    // LLM result writes the inner signal. Phase 2: the sole write
+                                    // path is the registry; the store is not touched here, so we
+                                    // don't need a separate store clone.
+                                    let registry_for_spawn = registry.clone();
                                     // Fire-and-forget. The backend command retries transient
                                     // failures internally, so this single await yields a final
                                     // result (title, "Sensitive prompt", or Err).
                                     wasm_bindgen_futures::spawn_local(async move {
                                         let result = summarize_agent_title(&raw_prompt).await;
-                                        let mut g = store.write();
-                                        let Some(session) = g.sessions.get_mut(&pane) else {
+                                        // Write the LLM result into the per-pane inner signal.
+                                        // If the pane was already closed (no signal), drop the
+                                        // result — there's nothing left to title.
+                                        let Some(mut inner) =
+                                            registry_for_spawn.write_session(&pane)
+                                        else {
                                             return;
                                         };
                                         match result {
@@ -133,7 +149,7 @@ pub fn AgentInfoPoller() -> Element {
                                                     )
                                                     .into(),
                                                 );
-                                                session.title_state =
+                                                inner.title_state =
                                                     crate::utils::pane_label::TitleState::Done(
                                                         cleaned,
                                                     );
@@ -147,15 +163,16 @@ pub fn AgentInfoPoller() -> Element {
                                                     .into(),
                                                 );
                                                 // Failed is terminal: the pill stays empty.
-                                                session.title_state =
+                                                inner.title_state =
                                                     crate::utils::pane_label::TitleState::Failed;
                                             }
                                         }
-                                        session.generation = session.generation.wrapping_add(1);
+                                        inner.generation = inner.generation.wrapping_add(1);
                                     });
                                 }
                             }
                             terminal_store.write().update_agent_info(
+                                &registry,
                                 pane_id,
                                 fg,
                                 info.task_title.clone(),

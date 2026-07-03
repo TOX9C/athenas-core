@@ -1,5 +1,5 @@
-use crate::stores::terminal::use_terminal_store;
 use crate::stores::terminal::TerminalSession;
+use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
@@ -116,10 +116,10 @@ pub fn XtermMount(
         // this async block so we can `await` the backend spawn first.
         spawn(async move {
             let mut store = use_terminal_store();
-            let has_session = {
-                let s = store.read();
-                s.sessions.contains_key(&mount_id_for_spawn)
-            };
+            let registry = use_terminal_registry();
+            // One-shot membership check via the per-pane registry (Item 3): no
+            // subscription is created inside this spawn.
+            let has_session = registry.contains(&mount_id_for_spawn);
             let has_backend = pty_has_session(&mount_id_for_spawn).await.unwrap_or(false);
             let reusing_existing_session = has_session || has_backend;
             if !has_session {
@@ -151,7 +151,9 @@ pub fn XtermMount(
                         .into(),
                     );
                 }
-                store.write().ensure_session(&mount_id_for_spawn, 80, 24);
+                store
+                    .write()
+                    .ensure_session(&use_terminal_registry(), &mount_id_for_spawn, 80, 24);
 
                 // NOTE: We intentionally do NOT auto-run `claude --resume <id>`
                 // here. A stored `resume_id` is surfaced to the user as a
@@ -194,7 +196,9 @@ pub fn XtermMount(
             }
 
             let mount_id = mount_id_for_spawn;
-            store.write().set_session_xterm(&mount_id, true);
+            store
+                .write()
+                .set_session_xterm(&use_terminal_registry(), &mount_id, true);
 
             // Tell the backend this session is xterm-managed so it can skip
             // emitting `terminal:data` cell-delta events (xterm.js parses
@@ -323,7 +327,11 @@ pub fn XtermMount(
                 let key = event.key();
 
                 // Cmd+V (macOS) / Ctrl+V (others) → paste via Tauri clipboard with bracketed paste sequences
-                if key == "v" && ((is_mac && meta && !ctrl) || (!is_mac && ctrl && !meta)) && !shift && !alt {
+                if key == "v"
+                    && ((is_mac && meta && !ctrl) || (!is_mac && ctrl && !meta))
+                    && !shift
+                    && !alt
+                {
                     event.prevent_default();
                     event.stop_propagation();
                     let pane_id = pane_id_keydown.clone();
@@ -333,13 +341,18 @@ pub fn XtermMount(
                                 let bracketed = format!("\x1b[200~{}\x1b[201~", text);
                                 if let Err(e) = pty_write(&pane_id, &bracketed).await {
                                     web_sys::console::error_1(
-                                        &format!("XtermMount: bracketed paste write failed: {:?}", e).into(),
+                                        &format!(
+                                            "XtermMount: bracketed paste write failed: {:?}",
+                                            e
+                                        )
+                                        .into(),
                                     );
                                 }
                             }
                             Err(e) => {
                                 web_sys::console::error_1(
-                                    &format!("XtermMount: read_clipboard_text failed: {:?}", e).into(),
+                                    &format!("XtermMount: read_clipboard_text failed: {:?}", e)
+                                        .into(),
                                 );
                             }
                         }
@@ -426,11 +439,15 @@ pub fn XtermMount(
                                 write_bytes_to_term(&t_for_closure, &chunk);
                             }
                             *s_for_closure.borrow_mut() = false;
-                        }) as Box<dyn FnOnce()>);
+                        })
+                            as Box<dyn FnOnce()>);
 
                         let mut raf_failed = true;
                         if let Some(window) = web_sys::window() {
-                            if window.request_animation_frame(closure.as_ref().unchecked_ref()).is_ok() {
+                            if window
+                                .request_animation_frame(closure.as_ref().unchecked_ref())
+                                .is_ok()
+                            {
                                 raf_failed = false;
                             }
                         }
@@ -507,10 +524,8 @@ pub fn XtermMount(
             };
 
             if reusing_existing_session {
-                let existing_session = {
-                    let s = store.read();
-                    s.sessions.get(&mount_id).cloned()
-                };
+                // One-shot snapshot via the registry (peek, no subscription).
+                let existing_session = registry.peek_session(&mount_id);
                 if let Some(session) = existing_session.as_ref() {
                     restore_term_from_session(&term_val, session);
                 }
