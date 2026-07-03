@@ -1390,6 +1390,15 @@ pub(crate) async fn pty_read_loop(
     // Coalescing buffer for `pty:raw` PTY output. Pre-allocate to 32 KB
     // to avoid reallocation churn during active output.
     let mut coalesce_buf: Vec<u8> = Vec::with_capacity(32 * 1024);
+    // Reusable base64 output buffer. `flush_pty_raw` can fire up to 125×/sec
+    // per session; without reuse each flush allocates a fresh base64 String.
+    // We instead encode into this buffer with `encode_slice` (zero-alloc) and
+    // grow it lazily — capacity is a monotonic high-water mark, so steady-state
+    // flushes hit zero reallocs.
+    let mut encode_buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    // Reusable JSON event string. Same rationale — avoids a per-flush String
+    // + serde_json::Value tree allocation. Cleared (not freed) between flushes.
+    let mut raw_event_buf: String = String::with_capacity(64 * 1024);
     // Hard cap on coalescing buffer (1 MB).  If the buffer ever exceeds
     // this size we emit immediately to avoid unbounded memory growth.
     const MAX_COALESCE_SIZE: usize = 1024 * 1024; // 1 MB
@@ -1399,7 +1408,19 @@ pub(crate) async fn pty_read_loop(
     flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     /// Flush accumulated raw PTY bytes as a single `pty:raw` event.
-    fn flush_pty_raw(coalesce_buf: &mut Vec<u8>, app_handle: &tauri::AppHandle, session_id: &str) {
+    ///
+    /// `encode_buf` and `raw_event_buf` are reusable scratch buffers threaded
+    /// in by the caller so this hot path (up to 125×/sec per session) performs
+    /// zero allocations after warmup — previously each flush allocated a fresh
+    /// base64 `String`, a full `serde_json::Value` tree, and a fresh JSON
+    /// `String`.
+    fn flush_pty_raw(
+        coalesce_buf: &mut Vec<u8>,
+        encode_buf: &mut Vec<u8>,
+        raw_event_buf: &mut String,
+        app_handle: &tauri::AppHandle,
+        session_id: &str,
+    ) {
         if coalesce_buf.is_empty() {
             return;
         }
@@ -1411,31 +1432,48 @@ pub(crate) async fn pty_read_loop(
         // transfer (ZeroCopy) over Tauri's `postMessage` IPC is not
         // supported by `tauri::Emitter::emit`, so base64 is the optimal
         // serialization for this event type.
-        let encoded = base64::engine::general_purpose::STANDARD.encode(coalesce_buf.as_slice());
-        let raw_event = serde_json::json!({
-            "sessionId": session_id,
-            "data": encoded,
-        });
-        // Serialize to a fully-owned String before calling emit. Passing
-        // `&raw_event` (a `&serde_json::Value`) to emit captured a borrow
-        // that, across concurrent tokio tasks, was observed to be read
-        // after a later task had overwritten the underlying buffer — all
-        // listeners then received payloads whose `sessionId` field matched
-        // whichever task had last serialized. Owning the String forces
-        // serialization to happen on this task, eliminating the race.
-        let raw_event_str = match serde_json::to_string(&raw_event) {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!(
-                    "pty_read_loop[{}]: failed to serialize raw_event: {}",
-                    session_id,
-                    e
-                );
-                coalesce_buf.clear();
-                return;
+        //
+        // Encode directly into `encode_buf` (zero-alloc after warmup). base64
+        // expands input by ~4/3, so ceil(len/3)*4 covers any output. `resize`
+        // grows capacity as needed; the buffer never shrinks, so steady-state
+        // flushes (hot path) hit zero reallocs.
+        encode_buf.clear();
+        let cap = (coalesce_buf.len() / 3 + 1) * 4;
+        encode_buf.resize(cap, 0);
+        let len = match base64::engine::general_purpose::STANDARD
+            .encode_slice(coalesce_buf.as_slice(), encode_buf.as_mut_slice())
+        {
+            Ok(n) => n,
+            // Unreachable given the cap sizing above, but never drop PTY
+            // output — fall back to a plain encode.
+            Err(_) => {
+                let fallback =
+                    base64::engine::general_purpose::STANDARD.encode(coalesce_buf.as_slice());
+                encode_buf.clear();
+                encode_buf.extend_from_slice(fallback.as_bytes());
+                encode_buf.len()
             }
         };
-        if let Err(e) = app_handle.emit("pty:raw", raw_event_str) {
+        encode_buf.truncate(len);
+        let encoded = encode_buf.as_slice();
+
+        // Build the JSON event directly into `raw_event_buf` — avoids allocating
+        // a full serde_json::Value tree (+ heap Map + String) on every flush.
+        // Reused across flushes; cleared (capacity retained) here.
+        //
+        // Ownership of the String before `emit` is still required to avoid the
+        // cross-task borrow race documented below, so we serialize into the
+        // reused owned String rather than into a borrowed Value.
+        raw_event_buf.clear();
+        // {"sessionId":"<id>","data":"<b64>"}  → 16 + id + 9 + b64 + 2
+        raw_event_buf.reserve(session_id.len() + encoded.len() + 32);
+        raw_event_buf.push_str("{\"sessionId\":\"");
+        raw_event_buf.push_str(session_id);
+        raw_event_buf.push_str("\",\"data\":\"");
+        // SAFETY-ish: base64 STANDARD output is ASCII-only, valid UTF-8.
+        raw_event_buf.push_str(std::str::from_utf8(encoded).unwrap_or(""));
+        raw_event_buf.push_str("\"}");
+        if let Err(e) = app_handle.emit("pty:raw", raw_event_buf.as_str()) {
             log::warn!("Failed to emit pty:raw event: {}", e);
         }
         coalesce_buf.clear();
@@ -1456,7 +1494,7 @@ pub(crate) async fn pty_read_loop(
                         // pending coalesced data so the frontend gets prompt
                         // feedback after a burst of output.
                         if !coalesce_buf.is_empty() {
-                            flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+                            flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
                         }
                         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
                         continue;
@@ -1466,7 +1504,7 @@ pub(crate) async fn pty_read_loop(
                         // Flush any pending data before handling the error
                         // so the frontend doesn't lose the tail of output.
                         if !coalesce_buf.is_empty() {
-                            flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+                            flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
                         }
                         log::warn!("PTY read error for {}: {}", session_id, e);
                         if e.kind() == std::io::ErrorKind::BrokenPipe
@@ -1485,7 +1523,7 @@ pub(crate) async fn pty_read_loop(
                 // at least every 8 ms, even during a slow trickle where
                 // `read_bytes` never returns `Ok(0)`.
                 if !coalesce_buf.is_empty() {
-                    flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+                    flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
                 }
                 continue;
             }
@@ -1552,9 +1590,9 @@ pub(crate) async fn pty_read_loop(
         // commands like `yes` produce continuous output.
         // Emergency flush at the hard 1 MB cap, normal flush at 32 KB.
         if coalesce_buf.len() >= MAX_COALESCE_SIZE {
-            flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+            flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
         } else if coalesce_buf.len() >= 32 * 1024 {
-            flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+            flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
         }
 
         // Rate limit: yield after each successful read to prevent CPU spin
@@ -1567,7 +1605,7 @@ pub(crate) async fn pty_read_loop(
     // Flush any remaining coalesced data before signaling exit so the
     // frontend doesn't miss the tail of the session's output.
     if !coalesce_buf.is_empty() {
-        flush_pty_raw(&mut coalesce_buf, &app_handle, &session_id);
+        flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
     }
 
     if let Err(e) = app_handle.emit("terminal:exit", session_id) {
