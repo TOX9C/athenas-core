@@ -5,7 +5,9 @@ use crate::components::shared::icon::{
     IconCheck, IconClose, IconCopy, IconFullscreen, IconMinimize,
 };
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
-use crate::stores::terminal::{use_terminal_store, TerminalCell, TerminalColor};
+use crate::stores::terminal::{
+    use_session_signal, use_terminal_registry, use_terminal_store, TerminalCell, TerminalColor,
+};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType, Space};
 use crate::tauri_bridge::{pty_agent_info, pty_kill, pty_write};
@@ -308,18 +310,19 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let mut editing_title = use_signal(|| false);
     let mut temp_title = use_signal(|| String::new());
 
-    // Read current foreground process and title state from terminal store
-    let (fg_process, title_state) = {
-        let ts = terminal_store.read();
-        if let Some(session) = ts.sessions.get(&props.pane_id) {
-            (
-                session.foreground_process.clone(),
-                session.title_state.clone(),
-            )
-        } else {
-            (None, crate::utils::pane_label::TitleState::default())
-        }
-    };
+    // Read current foreground process and title state for THIS pane from its
+    // per-session inner signal (Item 3 decomposition). Subscribing to the inner
+    // signal means a foreground/title change in pane A doesn't re-evaluate
+    // pane B's memo. Falls back to defaults if the pane isn't registered.
+    let pane_id_for_pill = props.pane_id.clone();
+    let (fg_process, title_state) = use_memo(move || {
+        use_session_signal(&pane_id_for_pill)
+            .map(|s| {
+                let r = s.read();
+                (r.foreground_process.clone(), r.title_state.clone())
+            })
+            .unwrap_or_else(|| (None, crate::utils::pane_label::TitleState::default()))
+    })();
 
     // ── Resume banner state ──────────────────────────────────────────────
     // If the pane has a captured resume command (from PTY output for Shell
@@ -597,10 +600,20 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                     ws.remove_pane_from_space(&space_id_for_close, &pane_id_for_close);
                                 }
                                 {
+                                    let registry = use_terminal_registry();
                                     let mut term = terminal_store.write();
-                                    term.sessions.remove(&pane_id_for_close);
-                                    if term.active_session_id.as_deref() == Some(&pane_id_for_close) {
-                                        term.active_session_id = term.sessions.keys().next().cloned();
+                                    // Phase 4 (Item 3): per-pane data lives in the
+                                    // registry; remove the pane's inner signal, drop
+                                    // the id from the slimmed store's membership set,
+                                    // reassign active if needed, and bump the
+                                    // whole-store generation (cross-session change).
+                                    registry.remove(&pane_id_for_close);
+                                    term.known_pane_ids.remove(&pane_id_for_close);
+                                    if term.active_session_id.as_deref()
+                                        == Some(&pane_id_for_close)
+                                    {
+                                        term.active_session_id =
+                                            term.known_pane_ids.iter().next().cloned();
                                     }
                                     term.generation = term.generation.wrapping_add(1);
                                 }
@@ -816,14 +829,14 @@ fn PaneItem(props: PaneItemProps) -> Element {
 
 #[component]
 fn TerminalPaneBody(pane_id: String) -> Element {
-    let store = use_terminal_store();
-    let Bud = {
-        let s = store.read();
-        s.sessions
-            .get(&pane_id)
-            .map(|session| session.grid.clone())
+    // Subscribe to THIS pane's inner signal for grid snapshots (Item 3). A
+    // cell delta in pane A re-clones only pane A's grid here; pane B's memo
+    // doesn't re-evaluate. `use_memo` caches the clone until the signal moves.
+    let Bud = use_memo(move || {
+        use_session_signal(&pane_id)
+            .map(|s| s.read().grid.clone())
             .unwrap_or_default()
-    };
+    })();
 
     rsx! {
         div {
