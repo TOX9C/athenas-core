@@ -202,6 +202,12 @@ impl TerminalSession {
         let buf = data.to_vec();
         tokio::task::spawn_blocking(move || {
             let mut total_written = 0usize;
+            // The master fd is O_NONBLOCK (set at spawn time), so the kernel
+            // returns EAGAIN/EWOULDBLOCK when the PTY pipe buffer fills mid-write.
+            // When that happens we `poll(2)` for `POLLOUT` — which blocks this
+            // blocking task until the reader drains space — then retry, instead
+            // of dropping the remainder. Without this a large paste would be
+            // truncated and its tail silently lost.
             while total_written < buf.len() {
                 let written = unsafe {
                     libc::write(
@@ -212,12 +218,43 @@ impl TerminalSession {
                 };
                 if written < 0 {
                     let err = io::Error::last_os_error();
-                    if err.raw_os_error() == Some(libc::EINTR) {
+                    let code = err.raw_os_error();
+                    if code == Some(libc::EINTR) {
+                        continue;
+                    }
+                    // Pipe full / would block: wait until the fd is writable.
+                    if code == Some(libc::EAGAIN) || code == Some(libc::EWOULDBLOCK) {
+                        let mut pfd = libc::pollfd {
+                            fd,
+                            events: libc::POLLOUT,
+                            revents: 0,
+                        };
+                        // Bounded wait so a dead PTY surfaces a clean error
+                        // instead of hanging forever. 30s is far beyond any
+                        // realistic paste drain time.
+                        let pr = unsafe {
+                            libc::poll(
+                                &mut pfd as *mut libc::pollfd,
+                                1,
+                                30_000_i32,
+                            )
+                        };
+                        if pr < 0 {
+                            let perr = io::Error::last_os_error();
+                            if perr.raw_os_error() == Some(libc::EINTR) {
+                                continue;
+                            }
+                            return Err(perr);
+                        }
+                        if pr == 0 {
+                            // Timed out waiting for writability.
+                            return Err(io::Error::new(io::ErrorKind::WouldBlock, err));
+                        }
                         continue;
                     }
                     // EIO on a fresh PTY usually means the child hasn't finished exec yet;
                     // treat as WouldBlock so callers can retry.
-                    if err.raw_os_error() == Some(5) {
+                    if code == Some(5) {
                         return Err(io::Error::new(io::ErrorKind::WouldBlock, err));
                     }
                     return Err(err);
@@ -863,5 +900,72 @@ mod tests {
             -1,
             "sentinel should remain -1 on second close"
         );
+    }
+
+    /// Regression test for the large-paste data-loss bug.
+    ///
+    /// The PTY master fd is opened O_NONBLOCK, so a write larger than the
+    /// kernel pipe buffer (~64 KB on macOS) returns EAGAIN when the buffer
+    /// fills mid-write. The `do_write` loop must retry on EAGAIN instead of
+    /// returning a fatal error — otherwise a paste >~10 lines is truncated
+    /// and the tail silently dropped (the original symptom).
+    ///
+    /// This test writes a 256 KB payload (far exceeding any pipe buffer) to a
+    /// real PTY running `cat`, while a background reader drains `cat`'s echoed
+    /// stdout so the PTY output pipe doesn't fill and block the child. It
+    /// asserts every byte was reported written. Without the EAGAIN retry,
+    /// `write()` returns a `WouldBlock` error and the test fails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn large_write_retries_on_eagain_and_lands_full_payload() {
+        let manager = SessionManager::new();
+        let session = manager
+            .spawn("large_paste".to_string(), "/bin/cat", "/", 80, 24)
+            .await
+            .expect("spawn should succeed");
+
+        // Ensure the child has exec'd so the PTY is ready.
+        session.mark_ready().await;
+
+        // Drain cat's echoed stdout in the background so the output side of the
+        // PTY never fills and stalls the child (which would in turn stall our
+        // stdin write). Read until the deadline.
+        let drain_session = session.clone();
+        let drain_handle = tokio::spawn(async move {
+            let mut buf = [0u8; 8192];
+            // Drain for up to 10s; errors/EOF are expected once the session is
+            // killed at the end of the test.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                match tokio::time::timeout_at(deadline, drain_session.read_bytes(&mut buf)).await {
+                    Err(_) => break, // deadline elapsed
+                    Ok(Err(_)) => break, // fd closed
+                    Ok(Ok(_)) => continue,
+                }
+            }
+        });
+
+        // 256 KB of repeated line content — larger than any OS pipe buffer.
+        let lines: Vec<String> = (0..4096).map(|i| format!("paste-line-{i:04}\n")).collect();
+        let payload: String = lines.join("");
+
+        let written = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            session.write(payload.as_bytes()),
+        )
+        .await
+        .expect("write should not hang or return a WouldBlock error on a full pipe")
+        .expect("write should not return a WouldBlock error on a full pipe");
+
+        assert_eq!(
+            written,
+            payload.len(),
+            "expected the full {}-byte paste to be written, got {} (EAGAIN retry dropped data)",
+            payload.len(),
+            written,
+        );
+
+        // Cleanup: kill the session and let the drain reader exit.
+        let _ = manager.kill("large_paste").await;
+        let _ = drain_handle.await;
     }
 }
