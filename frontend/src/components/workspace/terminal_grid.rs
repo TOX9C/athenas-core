@@ -119,6 +119,10 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     let mut row_heights = use_signal(|| vec![1.0_f64; actual_row_count.max(1)]);
     let drag = use_signal(|| None::<DragInfo>);
     let fullscreen_pane_id = use_signal(|| None::<String>);
+    // Pane-pill drag-and-drop: live drag-session state. `None` when idle.
+    // The fullscreen `PillDragOverlay` (mounted below) owns pointermove/up for
+    // the duration of a drag, mirroring the resize `DragOverlay` pattern.
+    let pill_drag = use_signal(|| None::<crate::components::workspace::pill_drag::PillDrag>);
     let terminal_store = use_terminal_store();
     let active_pane_id = terminal_store.read().active_session_id.clone();
     // Note: active pane selection is stored in TerminalStore (single source of truth).
@@ -206,9 +210,25 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                         s
                                     };
 
+                                    // DnD target highlight: gold ring while this pane is
+                                    // the hit-tested drop target of an in-flight pill drag.
+                                    let is_dnd_target = pill_drag
+                                        .read()
+                                        .as_ref()
+                                        .and_then(|d| d.target_pane_id.as_ref())
+                                        .map(|t| t == &pane.id)
+                                        .unwrap_or(false);
+                                    let wrapper_class = if is_dnd_target {
+                                        "pane-wrap is-dnd-target"
+                                    } else {
+                                        "pane-wrap"
+                                    };
+
                                     rsx! {
                                         div {
                                             key: "pane-wrap-{space.id}-{pane.id}",
+                                            class: "{wrapper_class}",
+                                            "data-pane-id": "{pane.id}",
                                             style: "{wrapper_style}",
 
                                             if is_active && !is_fullscreenmode {
@@ -229,6 +249,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 custom_agent_id: pane.custom_agent_id.clone(),
                                                 label: pane.label.clone(),
                                                 fullscreen_pane_id: fullscreen_pane_id,
+                                                pill_drag: pill_drag,
                                             }
                                         }
 
@@ -268,6 +289,22 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                 row_heights: row_heights,
             }
         }
+
+        // Pill drag-and-drop. The fullscreen overlay mounts only while a drag
+        // is in flight (so it doesn't intercept normal pointer events when
+        // idle); the ghost renders nothing when idle, so mounting it
+        // unconditionally avoids a key-flip and keeps it outside the grid's
+        // flex layout.
+        if pill_drag.read().is_some() {
+            crate::components::workspace::pill_drag::PillDragOverlay {
+                drag: pill_drag,
+                workspace: workspace,
+                terminal_store: terminal_store,
+            }
+        }
+        crate::components::workspace::pill_drag::PillDragGhost {
+            drag: pill_drag,
+        }
     }
 }
 
@@ -289,6 +326,7 @@ struct PaneItemProps {
     custom_agent_id: Option<String>,
     label: Option<String>,
     fullscreen_pane_id: Signal<Option<String>>,
+    pill_drag: Signal<Option<crate::components::workspace::pill_drag::PillDrag>>,
 }
 
 #[component]
@@ -297,6 +335,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let mut terminal_store = use_terminal_store();
     let ui_state = use_ui_store();
     let mut fullscreen_pane_id = props.fullscreen_pane_id;
+    let mut pill_drag = props.pill_drag;
 
     let pane_id_for_close = props.pane_id.clone();
     let space_id_for_close = props.space_id.clone();
@@ -305,6 +344,13 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let _display_id: String = props.pane_id.chars().take(10).collect();
     let is_fullscreen = fullscreen_pane_id.read().as_deref() == Some(&props.pane_id);
     let pane_id_for_fullscreen = props.pane_id.clone();
+
+    // Drag-source locals for the pill drag-and-drop swap (clone once so the
+    // grab-surface `onpointerdown` closure can move them without re-borrowing
+    // `props` each render).
+    let drag_pane_id = props.pane_id.clone();
+    let drag_space_id = props.space_id.clone();
+    let drag_agent_type = props.agent_type.clone();
 
     // Editable title state
     let mut editing_title = use_signal(|| false);
@@ -511,7 +557,47 @@ fn PaneItem(props: PaneItemProps) -> Element {
                 style: "flex-shrink: 0; padding: 6px 8px 0 8px;",
 
                 div {
-                    style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 999px; flex-shrink: 0;",
+                    // Grab surface for the pill drag-and-drop swap. The entire
+                    // pill is the handle (no six-dot grip). A pointerdown
+                    // records the source data; the fullscreen `PillDragOverlay`
+                    // (mounted in `WorkspaceGrid` while `pill_drag.is_some()`)
+                    // owns pointermove/up and commits a `swap_pane_agents` on
+                    // drop. Only the primary pointer/button starts a drag so
+                    // right-click and middle-click stay unaffected.
+                    onpointerdown: move |e: dioxus::prelude::PointerEvent| {
+                        // Only the primary pointer + primary button (left mouse
+                        // / first touch) starts a drag — right-click and
+                        // middle-click stay unaffected.
+                        let is_primary_button = e
+                            .data
+                            .trigger_button()
+                            .map(|b| {
+                                matches!(
+                                    b,
+                                    dioxus::html::input_data::MouseButton::Primary
+                                )
+                            })
+                            .unwrap_or(true);
+                        if !e.data.is_primary() || !is_primary_button {
+                            return;
+                        }
+                        let coords = e.data.client_coordinates();
+                        let label_text = display_label.clone();
+                        let color = crate::utils::agent_commands::get_agent_color(&drag_agent_type);
+                        pill_drag.set(Some(crate::components::workspace::pill_drag::PillDrag {
+                            source_pane_id: drag_pane_id.clone(),
+                            source_space_id: drag_space_id.clone(),
+                            source_label: label_text,
+                            source_color: color.to_string(),
+                            start_x: coords.x,
+                            start_y: coords.y,
+                            cur_x: coords.x,
+                            cur_y: coords.y,
+                            moved: false,
+                            target_pane_id: None,
+                        }));
+                    },
+                    style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 999px; cursor: grab; flex-shrink: 0;",
 
                     // Left: editable title
                     {
@@ -575,6 +661,12 @@ fn PaneItem(props: PaneItemProps) -> Element {
                         button {
                             class: "icon-btn",
                             title: if is_fullscreen { "Exit Fullscreen" } else { "Fullscreen" },
+                            // Stop the pill-drag grab surface from intercepting
+                            // pointerdown on the icon (so clicking the icon
+                            // never starts a swap drag).
+                            onpointerdown: move |e: dioxus::prelude::PointerEvent| {
+                                e.stop_propagation();
+                            },
                             onclick: move |e| {
                                 e.stop_propagation();
                                 if is_fullscreen {
@@ -593,6 +685,11 @@ fn PaneItem(props: PaneItemProps) -> Element {
                         button {
                             class: "icon-btn",
                             title: "Close pane",
+                            // Stop the pill-drag grab surface from intercepting
+                            // pointerdown on the close icon.
+                            onpointerdown: move |e: dioxus::prelude::PointerEvent| {
+                                e.stop_propagation();
+                            },
                             onclick: move |e| {
                                 e.stop_propagation();
                                 {
