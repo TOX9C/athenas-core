@@ -1618,15 +1618,25 @@ pub(crate) async fn pty_read_loop(
 pub async fn pty_write(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
     validate_session_id(&id)?;
     validate_data_size(data.as_bytes(), "pty_write data")?;
-    let session_manager = state.session_manager.lock().await;
-    let written = session_manager
-        .write(&id, data.as_bytes())
+    // Grab the session Arc under a short lock, then release the global
+    // session_manager mutex before the (potentially blocking) write. This
+    // stops one big paste from serializing every other pane's keystrokes
+    // behind it. `get_session` returns a cloned Arc and drops its read lock
+    // before returning, so the write below is lock-free.
+    let session = {
+        let session_manager = state.session_manager.lock().await;
+        session_manager
+            .get_session(&id)
+            .await
+            .ok_or_else(|| "session not found".to_string())?
+    };
+    let written = session
+        .write(data.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
-    drop(session_manager);
     if written != data.len() {
         return Err(format!(
-            "pty_write partial write: {} of {} bytes",
+            "pty_write partial write: {} of {} bytes (would-block retries exhausted on full PTY pipe)",
             written,
             data.len()
         ));
