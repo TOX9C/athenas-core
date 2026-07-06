@@ -30,6 +30,10 @@ pub struct PillDrag {
     pub source_label: String,
     /// Agent color shown on the ghost (CSS color string).
     pub source_color: String,
+    /// Originating pointer id. While a drag is in flight, `pointermove`/`up`
+    /// events from any other pointer are ignored — guards multi-touch so a
+    /// second finger can't hijack or cancel the drag.
+    pub pointer_id: i32,
     /// pointer-down position (client coords).
     pub start_x: f64,
     /// pointer-down position (client coords).
@@ -171,6 +175,12 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
             Some(d) => d,
             None => return,
         };
+        // Multi-touch guard: only the originating pointer drives the drag.
+        // A second finger pressing mid-drag must not reposition the ghost
+        // or change the drop target.
+        if e.data.pointer_id() != current.pointer_id {
+            return;
+        }
         // First move past the threshold commits the drag (lets a pure click
         // — for rename/focus — pass through without starting a swap).
         if !current.moved {
@@ -187,7 +197,17 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
         drag.set(Some(current));
     };
 
-    let onpointerup = move |_e: PointerEvent| {
+    let onpointerup = move |e: PointerEvent| {
+        // Multi-touch guard: ignore pointerup from any pointer other than the
+        // one that started the drag. (The originating pointer's up commits.)
+        let is_origin = drag
+            .read()
+            .as_ref()
+            .map(|d| e.data.pointer_id() == d.pointer_id)
+            .unwrap_or(true);
+        if !is_origin {
+            return;
+        }
         let finished = drag.read().clone();
         drag.set(None);
         let Some(d) = finished else {
