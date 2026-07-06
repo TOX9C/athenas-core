@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use thiserror::Error;
 
 /// Represents the state of an agent session.
@@ -165,8 +166,7 @@ impl OutputBuffer {
     ) -> Result<(), OutputBufferError> {
         let mut buffers = self
             .buffers
-            .write()
-            .map_err(|_| OutputBufferError::LockPoison("buffers".to_string()))?;
+            .write();
         if !buffers.contains_key(pane_id) {
             let now = Self::now();
             buffers.insert(
@@ -297,16 +297,11 @@ impl OutputBuffer {
     /// Append output to a pane buffer.
     /// Acquires the write lock once: creates the buffer if needed, then appends.
     pub fn append_output(&self, pane_id: &str, raw_data: &str, agent_type: Option<&str>) {
-        let mut buffers = match self.buffers.write() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!(
-                    "OutputBuffer: lock poisoned while appending to pane {}",
-                    pane_id
-                );
-                return;
-            }
-        };
+        // Strip ANSI outside the lock — this is the expensive byte-scanner.
+        let stripped = Self::strip_ansi(raw_data);
+        let raw_lines: Vec<&str> = stripped.split('\n').collect();
+
+        let mut buffers = self.buffers.write();
 
         // Create buffer if it does not yet exist (single lock scope)
         if !buffers.contains_key(pane_id) {
@@ -338,9 +333,6 @@ impl OutputBuffer {
                 buf.agent_type = at.to_string();
             }
         }
-
-        let stripped = Self::strip_ansi(raw_data);
-        let raw_lines: Vec<&str> = stripped.split('\n').collect();
 
         let mut emitted_lines: Vec<(u32, String)> = Vec::new();
 
@@ -394,13 +386,7 @@ impl OutputBuffer {
 
     /// Get output lines from a pane buffer.
     pub fn get_output(&self, pane_id: &str, options: Option<&GetOutputOptions>) -> Vec<OutputLine> {
-        let buffers = match self.buffers.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("OutputBuffer: lock poisoned while reading pane {}", pane_id);
-                return Vec::new();
-            }
-        };
+        let buffers = self.buffers.read();
         let buf = match buffers.get(pane_id) {
             Some(b) => b,
             None => return Vec::new(),
@@ -447,13 +433,7 @@ impl OutputBuffer {
 
     /// Get a list of all agents (panes) with their metadata.
     pub fn get_agent_list(&self) -> Vec<AgentListEntry> {
-        let buffers = match self.buffers.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("OutputBuffer: lock poisoned while listing agents");
-                return Vec::new();
-            }
-        };
+        let buffers = self.buffers.read();
         buffers
             .values()
             .map(|buf| AgentListEntry {
@@ -468,16 +448,7 @@ impl OutputBuffer {
 
     /// Get info for a specific pane buffer.
     pub fn get_pane_buffer_info(&self, pane_id: &str) -> Option<PaneBufferInfo> {
-        let buffers = match self.buffers.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!(
-                    "OutputBuffer: lock poisoned while getting pane info for {}",
-                    pane_id
-                );
-                return None;
-            }
-        };
+        let buffers = self.buffers.read();
         let buf = buffers.get(pane_id)?;
         Some(PaneBufferInfo {
             pane_id: buf.pane_id.clone(),
@@ -494,10 +465,7 @@ impl OutputBuffer {
     /// Mark a pane as dead (PTY exited) without clearing the buffer history.
     /// Returns true if the pane existed, false otherwise.
     pub fn mark_pane_dead(&self, pane_id: &str) -> bool {
-        let mut buffers = match self.buffers.write() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
+        let mut buffers = self.buffers.write();
         if let Some(buf) = buffers.get_mut(pane_id) {
             buf.dead = true;
             true
@@ -510,20 +478,14 @@ impl OutputBuffer {
     /// Call this when a PTY session exits and you no longer need its buffer.
     /// Returns true if the pane existed, false otherwise.
     pub fn remove_pane(&self, pane_id: &str) -> bool {
-        let mut buffers = match self.buffers.write() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
+        let mut buffers = self.buffers.write();
         buffers.remove(pane_id).is_some()
     }
 
     /// Remove all panes that are marked as dead.
     /// Returns the number of panes removed.
     pub fn cleanup_dead_panes(&self) -> usize {
-        let mut buffers = match self.buffers.write() {
-            Ok(g) => g,
-            Err(_) => return 0,
-        };
+        let mut buffers = self.buffers.write();
         let dead_ids: Vec<String> = buffers
             .iter()
             .filter(|(_, buf)| buf.dead)
@@ -538,16 +500,7 @@ impl OutputBuffer {
 
     /// Clear all lines and reset bytes for a pane buffer.
     pub fn clear_pane_buffer(&self, pane_id: &str) -> bool {
-        let mut buffers = match self.buffers.write() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!(
-                    "OutputBuffer: lock poisoned while clearing pane {}",
-                    pane_id
-                );
-                return false;
-            }
-        };
+        let mut buffers = self.buffers.write();
         if let Some(buf) = buffers.get_mut(pane_id) {
             buf.lines.clear();
             buf.total_bytes = 0;
@@ -559,48 +512,24 @@ impl OutputBuffer {
 
     /// Shutdown the service and clear all buffers.
     pub fn shutdown(&self) {
-        let mut buffers = match self.buffers.write() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("OutputBuffer: lock poisoned during shutdown");
-                return;
-            }
-        };
+        let mut buffers = self.buffers.write();
         buffers.clear();
     }
 
     /// Capture the last `n` lines of a pane buffer as an exit snapshot.
     pub fn capture_exit_snapshot(&self, pane_id: &str, n: usize) {
-        let buffers = match self.buffers.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("OutputBuffer: lock poisoned while capturing exit snapshot");
-                return;
-            }
-        };
+        let buffers = self.buffers.read();
         if let Some(buf) = buffers.get(pane_id) {
             let snapshot: Vec<OutputLine> = buf.lines.iter().rev().take(n).rev().cloned().collect();
             drop(buffers);
-            let mut exit_snapshots = match self.exit_snapshots.write() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    log::error!("OutputBuffer: lock poisoned while storing exit snapshot");
-                    return;
-                }
-            };
+            let mut exit_snapshots = self.exit_snapshots.write();
             exit_snapshots.insert(pane_id.to_string(), snapshot);
         }
     }
 
     /// Get the exit snapshot for a pane.
     pub fn get_exit_snapshot(&self, pane_id: &str) -> Vec<OutputLine> {
-        let exit_snapshots = match self.exit_snapshots.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::error!("OutputBuffer: lock poisoned while getting exit snapshot");
-                return Vec::new();
-            }
-        };
+        let exit_snapshots = self.exit_snapshots.read();
         exit_snapshots.get(pane_id).cloned().unwrap_or_default()
     }
 
@@ -608,8 +537,7 @@ impl OutputBuffer {
     pub fn save_to_disk(&self, path: &std::path::Path) -> Result<(), OutputBufferError> {
         let exit_snapshots = self
             .exit_snapshots
-            .read()
-            .map_err(|_| OutputBufferError::LockPoison("exit_snapshots".to_string()))?;
+            .read();
         let json = serde_json::to_string_pretty(&*exit_snapshots)?;
         drop(exit_snapshots);
         std::fs::write(path, json)?;
@@ -622,21 +550,14 @@ impl OutputBuffer {
         let deserialized: HashMap<String, Vec<OutputLine>> = serde_json::from_str(&data)?;
         let mut exit_snapshots = self
             .exit_snapshots
-            .write()
-            .map_err(|_| OutputBufferError::LockPoison("exit_snapshots".to_string()))?;
+            .write();
         *exit_snapshots = deserialized;
         Ok(())
     }
 
     /// Set the session state on a pane buffer.
     pub fn mark_pane_state(&self, pane_id: &str, state: AgentSessionState) {
-        let mut buffers = match self.buffers.write() {
-            Ok(g) => g,
-            Err(_) => {
-                log::error!("OutputBuffer: lock poisoned while marking pane state");
-                return;
-            }
-        };
+        let mut buffers = self.buffers.write();
         if let Some(buf) = buffers.get_mut(pane_id) {
             buf.session_state = state;
         }
@@ -644,13 +565,7 @@ impl OutputBuffer {
 
     /// Set the resume id on a pane buffer.
     pub fn set_pane_resume_id(&self, pane_id: &str, resume_id: Option<String>) {
-        let mut buffers = match self.buffers.write() {
-            Ok(g) => g,
-            Err(_) => {
-                log::error!("OutputBuffer: lock poisoned while setting pane resume id");
-                return;
-            }
-        };
+        let mut buffers = self.buffers.write();
         if let Some(buf) = buffers.get_mut(pane_id) {
             buf.resume_id = resume_id;
         }

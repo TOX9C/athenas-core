@@ -589,6 +589,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
                             source_space_id: drag_space_id.clone(),
                             source_label: label_text,
                             source_color: color.to_string(),
+                            pointer_id: e.data.pointer_id(),
                             start_x: coords.x,
                             start_y: coords.y,
                             cur_x: coords.x,

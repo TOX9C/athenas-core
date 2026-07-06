@@ -576,211 +576,91 @@ impl AppState {
         // PTY read loops are started per-session in pty_spawn command.
     }
 
-    /// Wire notification service events to Tauri event emissions.
-    fn wire_notification_events(&self) {
-        let handle = self.app_handle.lock().clone();
-        let handle = match handle {
+    /// Generic helper to wire a service's event emitter to the Tauri app handle.
+    ///
+    /// Serializes the `&serde_json::Value` to an owned `String` before
+    /// calling `handle.emit` to avoid Tauri 2 race conditions where borrows
+    /// are shared across concurrent emit() calls.
+    fn wire_emitter(
+        &self,
+        name: &str,
+        setter: impl FnOnce(Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>),
+    ) {
+        let handle = match self.app_handle.lock().clone() {
             Some(h) => h,
             None => {
-                log::error!("wire_notification_events called before set_app_handle");
+                log::error!("wire_{name}_events called before set_app_handle");
                 return;
             }
         };
-        let notification_service = Arc::clone(&self.notification_service);
-        notification_service.set_event_emitter(move |channel: &str, data: &serde_json::Value| {
-            // Serialize to an owned String: `&Value` borrows shared across concurrent emit() calls have been observed to race in Tauri 2.
+        let name = name.to_string();
+        setter(Box::new(move |channel: &str, data: &serde_json::Value| {
             match serde_json::to_string(data) {
                 Ok(data_str) => {
                     if let Err(e) = handle.emit(channel, data_str) {
-                        log::warn!("failed to emit notification event {}: {}", channel, e);
+                        log::warn!("failed to emit {name} event {channel}: {e}");
                     }
                 }
                 Err(e) => {
-                    log::error!(
-                        "failed to serialize data for notification event {}: {}",
-                        channel,
-                        e
-                    );
+                    log::error!("failed to serialize data for {name} event {channel}: {e}");
                 }
             }
+        }));
+    }
+
+    /// Wire notification service events to Tauri event emissions.
+    fn wire_notification_events(&self) {
+        let service = Arc::clone(&self.notification_service);
+        self.wire_emitter("notification", move |emitter| {
+            service.set_event_emitter(emitter);
         });
     }
 
     /// Wire plan manager events to Tauri event emissions.
     fn wire_plan_manager_events(&self) {
-        let handle = self.app_handle.lock().clone();
-        let handle = match handle {
-            Some(h) => h,
-            None => {
-                log::error!("wire_plan_manager_events called before set_app_handle");
-                return;
-            }
-        };
-        let plan_manager = Arc::clone(&self.plan_manager);
-        plan_manager.set_event_emitter(move |channel: &str, data: &serde_json::Value| {
-            // Serialize to an owned String: `&Value` borrows shared across concurrent emit() calls have been observed to race in Tauri 2.
-            match serde_json::to_string(data) {
-                Ok(data_str) => {
-                    if let Err(e) = handle.emit(channel, data_str) {
-                        log::warn!("failed to emit plan event {}: {}", channel, e);
-                    }
-                }
-                Err(e) => {
-                    log::error!("failed to serialize data for plan event {}: {}", channel, e);
-                }
-            }
+        let service = Arc::clone(&self.plan_manager);
+        self.wire_emitter("plan", move |emitter| {
+            service.set_event_emitter(emitter);
         });
     }
 
     /// Wire output buffer events to Tauri event emissions.
     fn wire_output_buffer_events(&self) {
-        let handle = self.app_handle.lock().clone();
-        let handle = match handle {
-            Some(h) => h,
-            None => {
-                log::error!("wire_output_buffer_events called before set_app_handle");
-                return;
-            }
-        };
-        let output_buffer = Arc::clone(&self.output_buffer);
-        output_buffer.set_event_emitter(move |channel: &str, data: &serde_json::Value| {
-            // Serialize to an owned String: `&Value` borrows shared across concurrent emit() calls have been observed to race in Tauri 2.
-            match serde_json::to_string(data) {
-                Ok(data_str) => {
-                    if let Err(e) = handle.emit(channel, data_str) {
-                        log::warn!("failed to emit output buffer event {}: {}", channel, e);
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "failed to serialize data for output buffer event {}: {}",
-                        channel,
-                        e
-                    );
-                }
-            }
+        let service = Arc::clone(&self.output_buffer);
+        self.wire_emitter("output_buffer", move |emitter| {
+            service.set_event_emitter(emitter);
         });
     }
 
     /// Wire agent comms events to Tauri event emissions.
     fn wire_agent_comms_events(&self) {
-        let handle = self.app_handle.lock().clone();
-        let handle = match handle {
-            Some(h) => h,
-            None => {
-                log::error!("wire_agent_comms_events called before set_app_handle");
-                return;
-            }
-        };
-        let agent_comms = Arc::clone(&self.agent_comms);
-        agent_comms.set_event_emitter(move |channel: &str, data: &serde_json::Value| {
-            // Serialize to an owned String: `&Value` borrows shared across concurrent emit() calls have been observed to race in Tauri 2.
-            match serde_json::to_string(data) {
-                Ok(data_str) => {
-                    if let Err(e) = handle.emit(channel, data_str) {
-                        log::warn!("failed to emit agent comms event {}: {}", channel, e);
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "failed to serialize data for agent comms event {}: {}",
-                        channel,
-                        e
-                    );
-                }
-            }
+        let service = Arc::clone(&self.agent_comms);
+        self.wire_emitter("agent_comms", move |emitter| {
+            service.set_event_emitter(emitter);
         });
     }
 
     /// Wire swarm coordinator events to Tauri event emissions.
     fn wire_swarm_events(&self) {
-        let handle = self.app_handle.lock().clone();
-        let handle = match handle {
-            Some(h) => h,
-            None => {
-                log::error!("wire_swarm_events called before set_app_handle");
-                return;
-            }
-        };
-        let swarm_coordinator = self.swarm_coordinator.clone();
-        // Need to lock the tokio mutex to get a reference
-        let swarm = swarm_coordinator.blocking_lock().clone();
-        swarm.set_event_emitter(move |channel: &str, data: &serde_json::Value| {
-            // Serialize to an owned String: `&Value` borrows shared across concurrent emit() calls have been observed to race in Tauri 2.
-            match serde_json::to_string(data) {
-                Ok(data_str) => {
-                    if let Err(e) = handle.emit(channel, data_str) {
-                        log::warn!("failed to emit swarm event {}: {}", channel, e);
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "failed to serialize data for swarm event {}: {}",
-                        channel,
-                        e
-                    );
-                }
-            }
+        let swarm = self.swarm_coordinator.clone().blocking_lock().clone();
+        self.wire_emitter("swarm", move |emitter| {
+            swarm.set_event_emitter(emitter);
         });
     }
 
     /// Wire browser manager events to Tauri event emissions.
     fn wire_browser_events(&self) {
-        let handle = self.app_handle.lock().clone();
-        let handle = match handle {
-            Some(h) => h,
-            None => {
-                log::error!("wire_browser_events called before set_app_handle");
-                return;
-            }
-        };
-        let browser_manager = self.browser_manager.clone();
-        browser_manager.set_event_emitter(move |channel: &str, data: &serde_json::Value| {
-            // Serialize to an owned String: `&Value` borrows shared across concurrent emit() calls have been observed to race in Tauri 2.
-            match serde_json::to_string(data) {
-                Ok(data_str) => {
-                    if let Err(e) = handle.emit(channel, data_str) {
-                        log::warn!("failed to emit browser event {}: {}", channel, e);
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "failed to serialize data for browser event {}: {}",
-                        channel,
-                        e
-                    );
-                }
-            }
+        let service = self.browser_manager.clone();
+        self.wire_emitter("browser", move |emitter| {
+            service.set_event_emitter(emitter);
         });
     }
 
     /// Wire plugin manager events to Tauri event emissions.
     fn wire_plugin_events(&self) {
-        let handle = self.app_handle.lock().clone();
-        let handle = match handle {
-            Some(h) => h,
-            None => {
-                log::error!("wire_plugin_events called before set_app_handle");
-                return;
-            }
-        };
-        let plugin_manager = self.plugin_manager.clone();
-        plugin_manager.set_event_emitter(move |channel: &str, data: &serde_json::Value| {
-            // Serialize to an owned String: `&Value` borrows shared across concurrent emit() calls have been observed to race in Tauri 2.
-            match serde_json::to_string(data) {
-                Ok(data_str) => {
-                    if let Err(e) = handle.emit(channel, data_str) {
-                        log::warn!("failed to emit plugin event {}: {}", channel, e);
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "failed to serialize data for plugin event {}: {}",
-                        channel,
-                        e
-                    );
-                }
-            }
+        let service = self.plugin_manager.clone();
+        self.wire_emitter("plugin", move |emitter| {
+            service.set_event_emitter(emitter);
         });
     }
 }

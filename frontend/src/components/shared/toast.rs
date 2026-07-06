@@ -58,16 +58,6 @@ pub fn provide_toast_store() {
     use_context_provider(|| Signal::new(ToastState::default()));
 }
 
-/// Show a notification toast programmatically.
-pub fn show_notification_toast(
-    _toast_type: ToastType,
-    _title: &str,
-    _message: &str,
-    _agent_type: Option<&str>,
-) {
-    // TODO: wire to Tauri IPC or global signal for toast dispatch
-}
-
 #[component]
 pub fn ToastContainer() -> Element {
     let toast_state = use_toast_store();
