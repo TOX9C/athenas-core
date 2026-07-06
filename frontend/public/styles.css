@@ -652,7 +652,7 @@ body::after {
   font-weight: 600;
   color: var(--text);
   background: linear-gradient(180deg, rgba(20, 22, 30, 0.94), rgba(10, 11, 16, 0.97));
-  border: 1px solid var(--accent);
+  border: 1px solid var(--dnd-ghost-color, var(--accent));
   border-radius: var(--radius-pill);
   box-shadow:
     0 6px 20px rgba(0, 0, 0, 0.45),

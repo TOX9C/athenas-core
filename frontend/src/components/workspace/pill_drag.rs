@@ -275,7 +275,13 @@ pub fn PillDragGhost(props: PillDragGhostProps) -> Element {
     rsx! {
         div {
             class: "dnd-ghost",
-            style: "left: {d.cur_x:.0}px; top: {d.cur_y:.0}px; border-color: {d.source_color};",
+            // Per-frame: only the cursor position changes. `source_color` is
+            // constant for the whole drag, so it goes on a CSS custom property
+            // (read by `.dnd-ghost` for the border color) rather than restated
+            // as a per-frame `border-color` declaration. Keeping the dynamic
+            // string to two integers avoids a per-frame `format!` allocation
+            // of the full style in the ~60fps pointermove hot path.
+            style: "--dnd-ghost-color: {d.source_color}; left: {d.cur_x:.0}px; top: {d.cur_y:.0}px;",
             "{d.source_label}"
         }
     }
