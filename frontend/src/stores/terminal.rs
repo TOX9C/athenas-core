@@ -665,6 +665,22 @@ impl TerminalRegistry {
 
     /// Lazily create the inner `Signal<TerminalSession>` for `id` if absent.
     /// Returns `true` if a new signal was inserted.
+    ///
+    /// The signal is bound to `ScopeId::APP` (the app-root scope, app-lifetime)
+    /// via `Signal::new_in_scope`, NOT to whatever scope is current when this
+    /// runs. `ensure_session` is typically called from inside `XtermMount`'s
+    /// `spawn(async move {...})` block. `Signal::new` would bind the signal's
+    /// storage to the scope active at that moment; when `XtermMount` later
+    /// unmounts (e.g. a pane-pill drag-swap changes the `xterm-{pane_id}`
+    /// keyed element, or a panel switch remounts the grid), Dioxus reclaims
+    /// that scope's owned signals — but the `TerminalRegistry` (held by the
+    /// app-root context) still references the now-dropped signal. The next
+    /// `PaneItem`/`TerminalPaneBody` `use_memo` that reads it panics with
+    /// `Dropped(ValueDroppedError)` at `terminal_grid.rs:386`. Anchoring to
+    /// `ScopeId::APP` keeps the signal alive for the whole app regardless of
+    /// which component created or later unmounted it. (Same root-cause family
+    /// as the prior panel-switch ValueDropped panic; fix per dioxus-core's own
+    /// `ScopeId::APP` guidance for long-lived dynamic state.)
     pub fn ensure_session(&self, id: impl Into<String>, cols: u16, rows: u16) -> bool {
         let id_str: String = id.into();
         let mut map = self.sessions.borrow_mut();
@@ -673,7 +689,7 @@ impl TerminalRegistry {
         }
         map.insert(
             id_str.clone(),
-            Signal::new(TerminalSession::new(id_str, cols, rows)),
+            Signal::new_in_scope(TerminalSession::new(id_str, cols, rows), ScopeId::APP),
         );
         true
     }

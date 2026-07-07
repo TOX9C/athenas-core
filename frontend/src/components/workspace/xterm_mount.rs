@@ -62,11 +62,16 @@ pub fn XtermMount(
     let is_initialized = use_hook(|| Rc::new(RefCell::new(false)));
     let term_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let mut terminal_store = use_terminal_store();
+    let terminal_registry = use_terminal_registry();
     let workspace_store = use_workspace_store();
     let ui_state = use_ui_store();
 
     use_effect(move || {
-        if *is_initialized.borrow() {
+        let already_init = *is_initialized.borrow();
+        web_sys::console::log_1(
+            &format!("[XtermMount] use_effect triggered for id={}, is_initialized={}", mount_id, already_init).into(),
+        );
+        if already_init {
             return;
         }
 
@@ -110,13 +115,25 @@ pub fn XtermMount(
         let mut term_ref = term_ref.clone();
         let window = window.clone();
         let container = container.clone();
+        // Clone the registry for the spawned task. `TerminalRegistry` is a
+        // cheap `Rc`-bump clone; cloning avoids a double-move through the
+        // `use_effect` → `spawn` `move` captures.
+        let terminal_registry = terminal_registry.clone();
 
         // Ensure a PTY session exists before initializing xterm, then set up
         // the terminal. Everything that touches the xterm instance happens in
         // this async block so we can `await` the backend spawn first.
         spawn(async move {
-            let mut store = use_terminal_store();
-            let registry = use_terminal_registry();
+            // `terminal_store` and `terminal_registry` are captured at the
+            // top of the component ABOVE (use_terminal_store() /
+            // use_terminal_registry()), NOT re-fetched here. Dioxus hooks
+            // (which `use_terminal_store` / `use_terminal_registry` /
+            // `use_context` are) may only run synchronously during render;
+            // calling them inside a `spawn(async move {...})` block panics at
+            // mount with "hook list is already borrowed". Use the captured
+            // bindings instead.
+            let mut store = terminal_store;
+            let registry = &terminal_registry;
             // One-shot membership check via the per-pane registry (Item 3): no
             // subscription is created inside this spawn.
             let has_session = registry.contains(&mount_id_for_spawn);
@@ -153,7 +170,7 @@ pub fn XtermMount(
                 }
                 store
                     .write()
-                    .ensure_session(&use_terminal_registry(), &mount_id_for_spawn, 80, 24);
+                    .ensure_session(&terminal_registry, &mount_id_for_spawn, 80, 24);
 
                 // NOTE: We intentionally do NOT auto-run `claude --resume <id>`
                 // here. A stored `resume_id` is surfaced to the user as a
@@ -198,7 +215,7 @@ pub fn XtermMount(
             let mount_id = mount_id_for_spawn;
             store
                 .write()
-                .set_session_xterm(&use_terminal_registry(), &mount_id, true);
+                .set_session_xterm(&terminal_registry, &mount_id, true);
 
             // Tell the backend this session is xterm-managed so it can skip
             // emitting `terminal:data` cell-delta events (xterm.js parses
@@ -290,6 +307,11 @@ pub fn XtermMount(
                         return;
                     }
                 };
+
+            // Wait until the container has a non-zero size before opening
+            // xterm.js. On remount after a pane swap, the flex grid may not
+            // have laid out yet, so the container rect can be 0×0.
+            wait_for_container_size(&container).await;
 
             let open_fn_val = js_sys::Reflect::get(&term_val, &JsValue::from_str("open"))
                 .unwrap_or(JsValue::UNDEFINED);
@@ -527,8 +549,18 @@ pub fn XtermMount(
                 // One-shot snapshot via the registry (peek, no subscription).
                 let existing_session = registry.peek_session(&mount_id);
                 if let Some(session) = existing_session.as_ref() {
-                    restore_term_from_session(&term_val, session);
+                    // Xterm grid is never populated (on_data skips it), so restore would
+                    // only clear the terminal. Skip it to keep the display intact.
+                    if !session.is_xterm {
+                        restore_term_from_session(&term_val, session);
+                    }
                 }
+                force_redraw(&term_val);
+            } else if let Ok(clear_val) = js_sys::Reflect::get(&term_val, &JsValue::from_str("clear")) {
+                if let Ok(clear_fn) = clear_val.dyn_into::<js_sys::Function>() {
+                    let _ = clear_fn.call0(&term_val);
+                }
+                force_redraw(&term_val);
             }
 
             let pane_id_for_data = mount_id.clone();
@@ -978,6 +1010,67 @@ fn schedule_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &we
 // `debounced_fit` was deleted: it was dead code (never called) and leaked a
 // Closure per invocation via forget(). schedule_fit (above) + the
 // ResizeObserver's own 50ms timer in ro_closure handle debouncing.
+
+// ---------------------------------------------------------------------------
+// Force a full xterm.js repaint + fit.
+// Used by IntersectionObserver (visibility restore) and by the post-mount
+// size-gate path after a pane swap.
+// ---------------------------------------------------------------------------
+fn force_redraw(term_val: &JsValue) {
+    let rows = js_sys::Reflect::get(term_val, &JsValue::from_str("rows"))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|v| v as i32)
+        .unwrap_or(24);
+    if rows > 0 {
+        if let Ok(refresh_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("refresh")) {
+            if let Ok(refresh_fn) = refresh_val.dyn_into::<js_sys::Function>() {
+                let _ = refresh_fn.call2(
+                    term_val,
+                    &JsValue::from_f64(0.0),
+                    &JsValue::from_f64((rows - 1) as f64),
+                );
+            }
+        }
+    }
+    if let Ok(fit_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("fit")) {
+        if let Ok(fit_fn) = fit_val.dyn_into::<js_sys::Function>() {
+            let _ = fit_fn.call0(term_val);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wait until the container has a non-zero size before opening xterm.
+// On remount after a pane swap, the flex grid may not have laid out yet,
+// so the container rect can be 0×0. Polling with RAF gives the browser a
+// chance to reflow. Capped at ~300ms to avoid hanging indefinitely.
+// ---------------------------------------------------------------------------
+async fn wait_for_container_size(container: &web_sys::Element) {
+    for _ in 0..15 {
+        let rect = container.get_bounding_client_rect();
+        if rect.width() > 0.0 && rect.height() > 0.0 {
+            return;
+        }
+        // Yield to the browser so it can process the layout task queue.
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        // Use setTimeout to yield control back to the browser; a naive
+        // Promise without resolving would deadlock forever.
+        let promise = js_sys::Promise::new(&mut move |resolve, _reject| {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                &resolve,
+                20,
+            );
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+    web_sys::console::warn_1(
+        &"[XtermMount] container still 0-sized after 15 frames; proceeding anyway".into(),
+    );
+}
 
 // scan_for_resume_id has been replaced by ResumeScanner in utils::resume_scanner.
 // Kept out to prevent stale references.

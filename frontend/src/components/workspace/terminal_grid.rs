@@ -6,7 +6,7 @@ use crate::components::shared::icon::{
 };
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::terminal::{
-    use_session_signal, use_terminal_registry, use_terminal_store, TerminalCell, TerminalColor,
+    use_terminal_registry, use_terminal_store, TerminalCell, TerminalColor,
 };
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType, Space};
@@ -334,6 +334,13 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let mut workspace = use_workspace_store();
     let mut terminal_store = use_terminal_store();
     let ui_state = use_ui_store();
+    // Per-session terminal registry — captured once, synchronously, at render
+    // top. The lookup `registry.session_signal(&pane_id)` is a plain method
+    // (not a hook), so it may run inside the `use_memo` closure below without
+    // re-entering the hook list (which `use_session_signal` would, since it
+    // calls `use_context` — a hook — and "hook inside hook" panics Dioxus at
+    // mount with "hook list already borrowed"). Fix for the merge #6 panic.
+    let terminal_registry = use_terminal_registry();
     let mut fullscreen_pane_id = props.fullscreen_pane_id;
     let mut pill_drag = props.pill_drag;
 
@@ -360,12 +367,25 @@ fn PaneItem(props: PaneItemProps) -> Element {
     // per-session inner signal (Item 3 decomposition). Subscribing to the inner
     // signal means a foreground/title change in pane A doesn't re-evaluate
     // pane B's memo. Falls back to defaults if the pane isn't registered.
+    //
+    // Uses `terminal_registry.session_signal(...)` (a plain method) instead of
+    // `use_session_signal(...)` (a hook) so this memo doesn't re-enter the hook
+    // list mid-closure — calling a hook inside another hook's compute closure
+    // panics Dioxus at mount with "hook list already borrowed".
     let pane_id_for_pill = props.pane_id.clone();
+    // Clone the registry into the memo's closure so the render-top binding
+    // `terminal_registry` is NOT moved into it (it's reused by the close-pane
+    // `onclick` handler further down). `TerminalRegistry` is a cheap `Rc`-bump
+    // clone, and `use_memo` only re-evaluates on signal change, so this is
+    // not per-render churn.
+    let registry_for_memo = terminal_registry.clone();
     let (fg_process, title_state) = use_memo(move || {
-        use_session_signal(&pane_id_for_pill)
-            .map(|s| {
-                let r = s.read();
-                (r.foreground_process.clone(), r.title_state.clone())
+        registry_for_memo
+            .session_signal(&pane_id_for_pill)
+            .and_then(|s| {
+                s.try_read()
+                    .ok()
+                    .map(|r| (r.foreground_process.clone(), r.title_state.clone()))
             })
             .unwrap_or_else(|| (None, crate::utils::pane_label::TitleState::default()))
     })();
@@ -698,7 +718,12 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                     ws.remove_pane_from_space(&space_id_for_close, &pane_id_for_close);
                                 }
                                 {
-                                    let registry = use_terminal_registry();
+                                    // `use_terminal_registry()` is a Dioxus hook
+                                    // and may NOT be called inside an event handler
+                                    // (runs outside render → "hook list already
+                                    // borrowed" panic on click). Use the registry
+                                    // captured synchronously at the top of PaneItem.
+                                    let registry = &terminal_registry;
                                     let mut term = terminal_store.write();
                                     // Phase 4 (Item 3): per-pane data lives in the
                                     // registry; remove the pane's inner signal, drop
@@ -930,9 +955,17 @@ fn TerminalPaneBody(pane_id: String) -> Element {
     // Subscribe to THIS pane's inner signal for grid snapshots (Item 3). A
     // cell delta in pane A re-clones only pane A's grid here; pane B's memo
     // doesn't re-evaluate. `use_memo` caches the clone until the signal moves.
+    //
+    // `use_terminal_registry()` is a hook — captured once, synchronously, at
+    // render top; `registry.session_signal(...)` is a plain method safe to
+    // call inside the `use_memo` closure. Calling `use_session_signal(...)`
+    // here would re-enter the hook list (it warps `use_context`) and panic
+    // Dioxus at mount with "hook list already borrowed".
+    let terminal_registry = use_terminal_registry();
     let Bud = use_memo(move || {
-        use_session_signal(&pane_id)
-            .map(|s| s.read().grid.clone())
+        terminal_registry
+            .session_signal(&pane_id)
+            .and_then(|s| s.try_read().ok().map(|r| r.grid.clone()))
             .unwrap_or_default()
     })();
 

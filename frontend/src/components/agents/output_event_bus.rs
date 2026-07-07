@@ -3,7 +3,7 @@ use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentS
 use crate::stores::notification::{
     add_notification, use_notification_store, NotificationRecord, NotificationType,
 };
-use crate::stores::terminal::use_terminal_store;
+use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 use std::cell::RefCell;
@@ -77,6 +77,14 @@ pub fn OutputEventBus() -> Element {
     let agent_status = use_agent_status_store();
     let agent_output = use_agent_output_store();
     let notifications = use_notification_store();
+    // `use_terminal_store()` and `use_terminal_registry()` are Dioxus hooks
+    // (`use_context`). They may only run synchronously during render — calling
+    // them inside the `use_coroutine` async body (which runs after render, on
+    // every `TerminalData` event from the PTY) re-enters the hook list and
+    // panics at mount with "hook list already borrowed". Capture both here and
+    // move cheap clones into the coroutine below.
+    let terminal_store = use_terminal_store();
+    let terminal_registry = use_terminal_registry();
     let mut mounted = use_signal(|| false);
 
     let unlistens: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
@@ -85,12 +93,20 @@ pub fn OutputEventBus() -> Element {
     // Dispatcher coroutine: receives parsed events from the Tauri listen
     // callbacks and performs all signal writes inside the reactive runtime.
     let dispatcher = use_coroutine(
-        move |mut rx: UnboundedReceiver<OutputBusEvent>| async move {
-            let mut agent_status = agent_status;
-            let mut agent_output = agent_output;
-            let mut notifications = notifications;
-            while let Ok(event) = rx.recv().await {
-                match event {
+        move |mut rx: UnboundedReceiver<OutputBusEvent>| {
+            // Clone the non-`Copy` registry capture in the OUTER closure
+            // scope (before `async move`), so the async block owns a fresh
+            // clone and the `FnMut` outer closure never moves the render-top
+            // capture out twice. `Signal`s are `Copy`, so the store/status
+            // captures below don't need this treatment.
+            let terminal_registry = terminal_registry.clone();
+            async move {
+                let mut agent_status = agent_status;
+                let mut agent_output = agent_output;
+                let mut notifications = notifications;
+                let mut terminal_store = terminal_store.clone();
+                while let Ok(event) = rx.recv().await {
+                    match event {
                     OutputBusEvent::AgentStatus {
                         pane_id,
                         status,
@@ -123,10 +139,9 @@ pub fn OutputEventBus() -> Element {
                         session_id,
                         payload,
                     } => {
-                        let registry = crate::stores::terminal::use_terminal_registry();
-                        use_terminal_store()
+                        terminal_store
                             .write()
-                            .on_data(&registry, &session_id, &payload);
+                            .on_data(&terminal_registry, &session_id, &payload);
                     }
                     OutputBusEvent::AgentConnected { pane_id, now } => {
                         agent_status.write().connect_agent(pane_id, now);
@@ -182,6 +197,7 @@ pub fn OutputEventBus() -> Element {
                         agent_output.write().register_pane(pane_id, agent_type, now);
                     }
                 }
+            }
             }
         },
     );

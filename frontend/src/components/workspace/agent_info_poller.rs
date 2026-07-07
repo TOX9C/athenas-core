@@ -29,6 +29,12 @@ const POLL_INTERVAL_MS: u64 = 1500;
 #[allow(non_snake_case)]
 pub fn AgentInfoPoller() -> Element {
     let terminal_store = use_terminal_store();
+    // Capture the registry synchronously at render top. `use_terminal_registry()`
+    // is a Dioxus hook (wraps `use_context`); calling it inside the `use_future`
+    // body (which runs after render) re-enters the hook list and panics at mount
+    // with "hook list already borrowed". Clone the cheap `Rc`-backed handle into
+    // the future instead.
+    let terminal_registry = use_terminal_registry();
     let workspace = use_workspace_store();
     let ui_state = use_ui_store();
 
@@ -40,10 +46,8 @@ pub fn AgentInfoPoller() -> Element {
         let mut terminal_store = terminal_store.clone();
         let workspace = workspace.clone();
         let mut summarized_pairs = summarized_pairs.clone();
-        // Clone the registry (cheap Rc clone) so the inner async loop can route
-        // per-pane writes into the inner signals without re-entering context
-        // on every poll.
-        let registry = use_terminal_registry();
+        // Cheap `Rc`-bump clone of the render-top-captured registry.
+        let registry = terminal_registry.clone();
         async move {
             loop {
                 // Snapshot the pane ids of every space (not just the active
