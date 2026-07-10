@@ -22,12 +22,17 @@ pub fn SkillsPanel() -> Element {
 
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; height: 100%;",
+            class: "pane-astrolabe-mark",
+            style: "display: flex; flex-direction: column; height: 100%; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden;",
 
             // Header
             div {
-                style: "padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
-                span { style: "font-size: 13px; font-weight: 600; color: var(--text);", "Skills" }
+                style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
+                span { style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: 0.04em;", "AST" }
+                span {
+                    style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                    "Skills"
+                }
             }
 
             // Add skill
@@ -53,7 +58,7 @@ pub fn SkillsPanel() -> Element {
                 }
 
                 button {
-                    class: "icon-btn",
+                    class: "icon-btn lit-sweep",
                     title: "Add skill",
                     onclick: add_skill_name,
                     IconPlus { size: Some(14), color: Some("currentColor".to_string()) }
@@ -74,7 +79,8 @@ pub fn SkillsPanel() -> Element {
                     for (i, skill) in skills().iter().enumerate() {
                         div {
                             key: "{i}",
-                            style: "display: flex; align-items: center; gap: 6px; padding: 4px 0;",
+                            class: "lit-sweep",
+                            style: "display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--radius-sm);",
 
                             span {
                                 style: "flex: 1; font-size: 11px; color: var(--textMuted);",

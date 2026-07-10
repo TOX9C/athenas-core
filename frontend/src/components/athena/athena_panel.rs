@@ -2,7 +2,7 @@ use super::athena_input::AthenaInput;
 use super::chat_message::AthenaChatMessage;
 use super::session_switcher::SessionSwitcher;
 use super::thinking::AthenaThinkingIndicator;
-use crate::components::shared::icon::IconClose;
+use crate::components::shared::icon::{IconClose, IconSeal};
 use crate::components::shared::illustration::OwlMark;
 use crate::stores::athena::{
     use_athena_store, AskUserOption, AthenaMessage, MessageRole, PlanStatus, PlanStepStatus,
@@ -381,6 +381,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         None => ("var(--textDim)", "Checking configuration…"),
     };
 
+
     let wrapper_style = match mode {
         AthenaPanelMode::Overlay => "position: absolute; bottom: 0; left: 0; right: 0; height: 35vh; display: flex; flex-direction: row; background: var(--bg); color: var(--text); border-top: 1px solid var(--border); z-index: 100;",
         AthenaPanelMode::Compact => "flex: 1; display: flex; flex-direction: row; min-width: 0; min-height: 0; background: var(--bg); color: var(--text); overflow: hidden;",
@@ -395,12 +396,17 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
             div {
                 style: "flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;",
 
-                // Header
+                // Header — panel crown with Θ seal + session switcher + status dot.
                 div {
                     style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
 
                     span {
-                        style: "font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex-shrink: 0;",
+                        class: "seal-mark",
+                        IconSeal { size: Some(16), color: Some("var(--accent)".to_string()) }
+                    }
+
+                    span {
+                        style: "font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); flex-shrink: 0;",
                         "Athena"
                     }
 
@@ -426,6 +432,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                             "streaming..."
                         }
                     }
+
                 }
 
                 // Keyring failure warning — shows when the keychain is locked
@@ -473,6 +480,9 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     }
                 }
 
+                // Great-circle rule — meridian divider between the header band and the message log.
+                hr { class: "great-circle-rule", style: "margin: 0; width: 100%;" }
+
                 // Messages
                 div {
                     style: "flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px;",
@@ -499,6 +509,9 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                         AthenaThinkingIndicator { status: state.streaming_status.clone() }
                     }
                 }
+
+                // Great-circle rule — meridian divider between the message log and the input.
+                hr { class: "great-circle-rule", style: "margin: 0; width: 100%;" }
 
                 // Input
                 AthenaInput {}

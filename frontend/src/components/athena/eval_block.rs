@@ -24,7 +24,7 @@ pub fn EvaluationBlockView(props: EvaluationBlockViewProps) -> Element {
 
     rsx! {
         div {
-            style: "margin-top: 8px; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bgTertiary);",
+            style: "margin-top: 8px; padding: 12px; border-radius: var(--radius-md); border: none; background: transparent;",
 
             // Header
             div {
@@ -41,7 +41,7 @@ pub fn EvaluationBlockView(props: EvaluationBlockViewProps) -> Element {
                 }
 
                 span {
-                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex: 1;",
+                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); flex: 1;",
                     "Evaluation"
                 }
 

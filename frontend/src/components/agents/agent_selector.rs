@@ -44,7 +44,10 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
             div {
                 style: "display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: var(--text-xs); color: var(--textDim);",
                 span { style: "width: 6px; height: 6px; border-radius: var(--radius-pill); opacity: 0.4; background: var(--textDim);" }
-                "No agents with output"
+                span {
+                    style: "font-family: var(--font-display); letter-spacing: 0.04em;",
+                    "No agents with output"
+                }
             }
         };
     }
@@ -69,7 +72,8 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
         div { style: "position: relative;",
 
             button {
-                style: "display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: var(--radius-sm); border: none; background: transparent; cursor: pointer; width: 100%;",
+                class: "lit-sweep",
+                style: "display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); cursor: pointer; width: 100%;",
                 onclick: move |_| open.set(!open()),
 
                 span {
@@ -77,7 +81,7 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                 }
 
                 span {
-                    style: "font-size: var(--text-sm); font-weight: 500; flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);",
+                    style: "font-size: var(--text-sm); font-weight: 500; font-family: var(--font-display); letter-spacing: 0.04em; flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);",
                     "{selected_display}"
                 }
 
@@ -86,7 +90,7 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
 
             if open() {
                 div {
-                    style: "position: absolute; top: 100%; left: 0; right: 0; z-index: 50; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); max-height: 240px; overflow-y: auto; margin-top: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);",
+                    style: "position: absolute; top: 100%; left: 0; right: 0; z-index: 50; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); box-shadow: var(--shadow-md); max-height: 240px; overflow-y: auto; margin-top: 4px;",
 
                     for agent in agents.iter() {
                         {
@@ -96,14 +100,16 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                             let label = get_agent_label(&agent.agent_type).to_string();
                             let display_id: String = agent.pane_id.chars().take(12).collect();
                             let lc = agent.line_count;
-                            let item_bg = if is_selected { "var(--bgTertiary)" } else { "transparent" };
+                            let item_bg = "transparent";
+                            let item_text_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
+                            let id_text_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
                             let color_bg = format!("{}22", color);
                             let pane_id_for_select = agent.pane_id.clone();
                             rsx! {
                                 button {
                                     key: "{agent.pane_id}",
-                                    class: "agent-selector-row",
-                                    style: "display: flex; align-items: center; gap: 8px; padding: 7px 12px; width: 100%; text-align: left; border: none; background: {item_bg}; cursor: pointer;",
+                                    class: "agent-selector-row lit-sweep",
+                                    style: "display: flex; align-items: center; gap: 8px; padding: 7px 12px; width: 100%; text-align: left; border: none; border-bottom: 1px solid var(--border); background: {item_bg}; cursor: pointer;",
                                     onclick: move |_| {
                                         props.on_select.call(pane_id_for_event.clone());
                                         agent_output.write().select_agent(Some(pane_id_for_select.clone()));
@@ -115,7 +121,7 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                                     }
 
                                     span {
-                                        style: "font-size: var(--text-2xs); font-family: var(--fontFamily); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--textDim);",
+                                        style: "font-size: var(--text-2xs); font-family: var(--fontFamily); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: {id_text_color};",
                                         "{display_id}"
                                     }
 
@@ -126,7 +132,7 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                                     }
 
                                     span {
-                                        style: "font-size: var(--text-2xs); color: var(--textDim);",
+                                        style: "font-size: var(--text-2xs); color: {item_text_color};",
                                         "{lc} lines"
                                     }
                                 }

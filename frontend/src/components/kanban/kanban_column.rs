@@ -16,16 +16,19 @@ pub fn KanbanColumn(props: KanbanColumnProps) -> Element {
     rsx! {
         div {
             class: "kanban-column",
-            style: "display: flex; flex-direction: column; min-width: 248px; max-width: 288px;",
+            // Flat opaque slab — no frost/gradient/lit-edge (more DnD-stable:
+            // hit-testing and layout boxes stay byte-identical without a tilt
+            // or translucent overlay).
+            style: "display: flex; flex-direction: column; min-width: 248px; max-width: 288px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); overflow: hidden;",
 
-            // Column header
+            // Column header — flat, gold accent rule + accent title
             div {
                 style: "padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px;",
                 span {
-                    style: "width: 3px; height: 14px; border-radius: var(--radius-pill); background: var(--accentSubtle); flex-shrink: 0;",
+                    style: "width: 3px; height: 14px; border-radius: var(--radius-pill); background: var(--accent); flex-shrink: 0;",
                 }
                 span {
-                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex: 1;",
+                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; letter-spacing: 0.04em; color: var(--accent); flex: 1;",
                     "{props.title}"
                 }
                 span {
@@ -43,7 +46,7 @@ pub fn KanbanColumn(props: KanbanColumnProps) -> Element {
                 }
             }
 
-            // Add task input
+            // Add task input — flat top seam
             div {
                 style: "padding: 8px; border-top: 1px solid var(--border);",
                 div {

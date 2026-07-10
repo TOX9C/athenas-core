@@ -22,15 +22,19 @@ pub fn ThemePicker() -> Element {
 
             // Header
             div {
-                style: "padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 8px;",
+                style: "padding-bottom: 12px; margin-bottom: 8px;",
                 div {
-                    style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
-                    "Themes"
+                    style: "display: flex; align-items: center; gap: 8px;",
+                    div {
+                        style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                        "Themes"
+                    }
                 }
                 div {
-                    style: "font-size: var(--text-xs); color: var(--textDim); margin-top: 4px; line-height: 1.5;",
+                    style: "font-size: var(--text-xs); color: var(--textDim); margin-top: 4px; line-height: 1.5; padding-left: 18px;",
                     "Choose a color scheme for your Athena environment."
                 }
+                hr { class: "great-circle-rule", style: "margin-top: 8px;" }
             }
 
             ThemeGroup { title: "Dark", themes: dark_themes }
@@ -52,8 +56,11 @@ fn ThemeGroup(props: ThemeGroupProps) -> Element {
     rsx! {
         div {
             div {
-                style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--textMuted); margin-bottom: 12px; padding-left: 2px; letter-spacing: 0.02em;",
-                "{props.title}"
+                style: "display: flex; align-items: center; gap: 6px; margin-bottom: 12px; padding-left: 2px;",
+                div {
+                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                    "{props.title}"
+                }
             }
             div {
                 style: "display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;",
@@ -113,14 +120,15 @@ struct ThemeSwatchProps {
 fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
     let mut ui_state = use_ui_store();
     let ring = if props.is_selected {
-        "border-color: var(--accent); box-shadow: 0 0 0 2px var(--accentSubtle), 0 2px 8px rgba(0,0,0,0.1); transform: translateY(-2px);"
+        "border-color: var(--accent); box-shadow: 0 0 0 2px var(--accentSubtle);"
     } else {
-        "border-color: var(--border); box-shadow: 0 1px 2px rgba(0,0,0,0.04); transform: translateY(0);"
+        "border-color: var(--border);"
     };
 
     rsx! {
         button {
-            style: "padding: 0; border: 1px solid; {ring} border-radius: var(--radius-md); background: transparent; cursor: pointer; text-align: left; overflow: hidden; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);",
+            class: "lit-sweep",
+            style: "padding: 0; border: 1px solid; {ring} border-radius: var(--radius-md); background: var(--bgSecondary); cursor: pointer; text-align: left; overflow: hidden; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);",
             onmouseenter: move |_| {},
             onclick: move |_| {
                 ui_state.write().theme = props.theme;
@@ -144,13 +152,13 @@ fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
                 }
             }
             div {
-                style: "padding: 8px 10px; background: var(--bgSecondary); display: flex; align-items: center; justify-content: space-between;",
+                style: "padding: 8px 10px; background: var(--bgTertiary); display: flex; align-items: center; justify-content: space-between;",
                 span {
-                    style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--text);",
+                    style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: 0.02em;",
                     "{props.label}"
                 }
                 if props.is_selected {
-                    span { style: "font-size: 9px; color: var(--accent); font-weight: 600; background: var(--accentSubtle); padding: 2px 6px; border-radius: var--radius-sm);", "ACTIVE" }
+                    span { style: "font-size: 9px; color: var(--accent); font-weight: 700; background: var(--accentSubtle); padding: 2px 6px; border-radius: var(--radius-sm); border: 1px solid var(--accent); letter-spacing: 0.04em;", "ACTIVE" }
                 }
             }
         }

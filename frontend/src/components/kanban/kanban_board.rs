@@ -18,8 +18,8 @@ pub fn KanbanBoard() -> Element {
 
     rsx! {
         div {
-            class: "kanban-board",
-            style: "display: flex; height: 100%; gap: 12px; padding: 12px; overflow-x: auto; background: transparent; color: var(--text);",
+            class: "kanban-board pane-astrolabe-mark",
+            style: "display: flex; height: 100%; gap: 12px; padding: 12px; overflow-x: auto; background: var(--bg); color: var(--text);",
 
             if is_empty {
                 EmptyState {

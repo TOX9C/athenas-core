@@ -139,6 +139,7 @@ pub fn AgentInspector() -> Element {
 
     rsx! {
         div {
+            class: "pane-astrolabe-mark",
             style: "display: flex; flex-direction: column; border-left: 1px solid var(--border); width: 360px; background: var(--bgSecondary); flex-shrink: 0; position: absolute; right: 0; top: 0; bottom: 0; z-index: 90;",
 
             // Header
@@ -185,7 +186,10 @@ pub fn AgentInspector() -> Element {
                                             InspectorTab::Status => rsx! { IconHelmet { size: Some(13), color: Some("currentColor".to_string()) } },
                                             InspectorTab::Notifications => rsx! { IconBell { size: Some(13), color: Some("currentColor".to_string()) } },
                                         }}
-                                        "{label}"
+                                        span {
+                                            style: "font-family: var(--font-display); letter-spacing: 0.04em;",
+                                            "{label}"
+                                        }
                                     }
                                 }
                             }
@@ -211,7 +215,7 @@ pub fn AgentInspector() -> Element {
 
                                     div {
                                         class: "card",
-                                        style: "display: flex; flex-direction: column; gap: 10px;",
+                                        style: "display: flex; flex-direction: column; gap: 10px; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md);",
 
                                         StatusRow { label: "Pane".to_string(), value: st.pane_id.clone() }
                                         StatusRow { label: "Status".to_string(), value: st.status.clone(), dot_color: status_dot_color(&st.status).to_string() }
@@ -223,14 +227,14 @@ pub fn AgentInspector() -> Element {
                                         if let Some(progress) = &st.progress {
                                             div {
                                                 div {
-                                                    style: "font-size: var(--text-2xs); margin-bottom: 5px; color: var(--textDim); text-transform: uppercase; letter-spacing: 0.06em;",
+                                                    style: "display: flex; align-items: center; gap: 6px; font-size: var(--text-2xs); margin-bottom: 5px; color: var(--accent); font-family: var(--font-display); letter-spacing: 0.04em; text-transform: uppercase;",
                                                     "Progress"
                                                 }
                                                 div {
                                                     style: "display: flex; align-items: center; gap: 8px;",
 
                                                     div {
-                                                        style: "flex: 1; height: 4px; overflow: hidden; background: var(--bg); border-radius: var(--radius-pill);",
+                                                        style: "flex: 1; height: 4px; overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-pill);",
 
                                                         div {
                                                             style: "height: 100%; background: var(--accent); border-radius: var(--radius-pill); width: {((progress.current * 100) / progress.total.max(1))}%;",
@@ -316,6 +320,7 @@ pub fn AgentInspector() -> Element {
                                         rsx! {
                                             div {
                                                 key: "{n_id}",
+                                                class: "lit-sweep",
                                                 style: "padding: 10px 12px; border-bottom: 1px solid var(--border); overflow-x: hidden;",
 
                                                 div {
@@ -372,7 +377,7 @@ fn StatusRow(props: StatusRowProps) -> Element {
             style: "display: flex; align-items: baseline; gap: 8px; overflow-x: hidden;",
 
             span {
-                style: "font-size: var(--text-2xs); flex-shrink: 0; width: 64px; color: var(--textDim); text-transform: uppercase; letter-spacing: 0.06em;",
+                style: "display: inline-flex; align-items: center; gap: 5px; font-size: var(--text-2xs); flex-shrink: 0; width: 64px; color: var(--accent); font-family: var(--font-display); letter-spacing: 0.04em; text-transform: uppercase;",
                 "{props.label}"
             }
 

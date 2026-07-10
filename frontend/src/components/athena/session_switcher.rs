@@ -186,7 +186,7 @@ pub fn SessionSwitcher() -> Element {
             // Trigger button
             button {
                 class: "btn-ghost btn-sm",
-                style: "display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bgSecondary); color: var(--text); font-family: var(--font-ui); font-size: var(--text-xs); cursor: pointer; transition: background var(--dur-fast) var(--ease);",
+                style: "display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: var(--radius-sm); border: none; background: transparent; color: var(--text); font-family: var(--font-ui); font-size: var(--text-xs); cursor: pointer; transition: background var(--dur-fast) var(--ease);",
                 onclick: move |_| { is_open.toggle(); },
 
                 span {
@@ -204,7 +204,7 @@ pub fn SessionSwitcher() -> Element {
             // Dropdown panel
             if is_dropdown_open {
                 div {
-                    style: "position: absolute; top: calc(100% + 6px); left: 0; z-index: 200; width: 280px; max-height: 360px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: 0 8px 24px rgba(0,0,0,0.25); overflow: hidden;",
+                    style: "position: absolute; top: calc(100% + 6px); left: 0; z-index: 200; width: 280px; max-height: 360px; display: flex; flex-direction: column; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-md); overflow: hidden;",
 
                     // New chat button
                     div {
@@ -260,11 +260,8 @@ pub fn SessionSwitcher() -> Element {
                                     let session_id_for_click = session.id.clone();
                                     let session_id_for_delete = session.id.clone();
                                     let is_active = current_id.as_deref() == Some(&session.id);
-                                    let row_style = format!(
-                                        "display: flex; align-items: center; gap: 6px; padding: 8px 10px 8px 12px; {} {} cursor: pointer; transition: background var(--dur-fast) var(--ease);"
-                                        , if is_active { "background: var(--bgHover);" } else { "background: transparent;" }
-                                        , if is_active { "border-left: 3px solid var(--accent);" } else { "border-left: 3px solid transparent;" }
-                                    );
+                                    let title_color = if is_active { "var(--accent)" } else { "var(--text)" };
+                                    let row_style = "display: flex; align-items: center; gap: 6px; padding: 8px 10px 8px 12px; cursor: pointer; transition: color var(--dur-fast) var(--ease);".to_string();
                                     let preview_text = if session.last_message_preview.is_empty() {
                                         "No messages".to_string()
                                     } else {
@@ -296,7 +293,7 @@ pub fn SessionSwitcher() -> Element {
                                             div {
                                                 style: "flex: 1; min-width: 0;",
                                                 div {
-                                                    style: "font-size: var(--text-xs); font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                                                    style: "font-size: var(--text-xs); font-weight: 500; color: {title_color}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                                                     "{title}"
                                                 }
                                                 div {

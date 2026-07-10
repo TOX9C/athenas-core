@@ -311,14 +311,15 @@ pub fn BrowserSurface(expanded: bool) -> Element {
 
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; height: 100%; min-height: 0;",
+            class: "pane-astrolabe-mark",
+            style: "display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden;",
 
             // ── Toolbar ──────────────────────────────────────────────────────
             div {
-                style: "display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
+                style: "display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
 
                 button {
-                    class: "icon-btn",
+                    class: "icon-btn lit-sweep",
                     title: "Back",
                     onclick: move |_| {
                         let mut url_clone = url;
@@ -333,7 +334,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                 }
 
                 button {
-                    class: "icon-btn",
+                    class: "icon-btn lit-sweep",
                     title: "Forward",
                     onclick: move |_| {
                         let mut url_clone = url;
@@ -348,7 +349,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                 }
 
                 button {
-                    class: "icon-btn",
+                    class: "icon-btn lit-sweep",
                     title: "Reload",
                     onclick: move |_| {
                         wasm_bindgen_futures::spawn_local(async move {
@@ -386,7 +387,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
 
                 // Expand / dock toggle
                 button {
-                    class: "icon-btn",
+                    class: "icon-btn lit-sweep",
                     title: "{toggle_title}",
                     onclick: move |_| {
                         if expanded {
@@ -416,7 +417,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     IconGlobe { size: Some(40), color: Some("var(--textDim)".to_string()) }
                 }
                 div {
-                    style: "font-family: var(--font-display); font-size: 16px; font-weight: 600; color: var(--text);",
+                    style: "font-family: var(--font-display); font-size: 16px; font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
                     "Loading browser…"
                 }
                 div {
@@ -429,11 +430,11 @@ pub fn BrowserSurface(expanded: bool) -> Element {
             // Quick Access + Localhost entries collapsed into a single button
             // that opens a popover menu, restoring viewport height.
             div {
-                style: "position: relative; border-top: 1px solid var(--border); padding: 8px 12px; background: var(--bgSecondary); flex-shrink: 0;",
+                style: "position: relative; border-top: 1px solid var(--border); padding: 8px 12px; flex-shrink: 0;",
 
                 button {
                     id: "quick-links-trigger",
-                    class: "icon-btn",
+                    class: "icon-btn lit-sweep",
                     style: "width: 100%; justify-content: space-between; padding: 5px 10px; font-size: 12px; color: var(--text);",
                     title: "Quick links",
                     onclick: move |_| show_quick_menu.toggle(),
@@ -461,7 +462,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                         }
                         for (name, url_str) in quick_urls.iter().cloned() {
                             button {
-                                class: "quick-menu-row",
+                                class: "quick-menu-row lit-sweep",
                                 onclick: move |_| {
                                     show_quick_menu.set(false);
                                     let target = url_str.to_string();
@@ -486,7 +487,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                         }
                         for (label, url_str) in localhost_urls.iter().cloned() {
                             button {
-                                class: "quick-menu-row",
+                                class: "quick-menu-row lit-sweep",
                                 onclick: move |_| {
                                     show_quick_menu.set(false);
                                     let target = url_str.to_string();

@@ -38,43 +38,42 @@
    The theme engine (themes/mod.rs) overrides the color + atmosphere tokens at
    runtime. These defaults render correctly before the WASM theme pass runs. */
 :root {
-  /* surfaces */
-  --bg: #0E0E11;
-  --bgSecondary: #16161A;
-  --bgTertiary: #1E1E23;
-  --bgHover: #26262C;
-  --border: #2A2A31;
-  --borderActive: #3A3A43;
+  /* surfaces — near-black NEUTRAL (was midnight-blue) */
+  --bg: #0B0B0C;
+  --bgSecondary: #111114;
+  --bgTertiary: #16171A;
+  --bgHover: #1C1D21;
+  --border: #1F2024;                /* neutral hairline, only for grouped outlines */
+  --borderActive: var(--accent);    /* gold when active */
 
-  /* text */
-  --text: #ECEAE3;
-  --textMuted: #9A968C;
-  --textDim: #6A675E;
+  /* text — neutral */
+  --text: #E6E6E6;
+  --textMuted: #8A8A90;
+  --textDim: #5A5A60;
+  --text-secondary: var(--textMuted); /* alias for secondary text (used by terminal_grid badge spans) */
 
-  /* signature accent — aged bronze-gold */
+  /* signature accent — the ONE gold, used sparingly */
   --accent: #C9A24B;
-  --accentHover: #E0BC6A;
-  --accentSubtle: rgba(201, 162, 75, 0.12);
-  --accentTeal: #4FA39E;          /* Aegean secondary (info / links) */
-  --goldLeaf: #E7CE8F;
+  --accentHover: #E2C26C;
+  --accentSubtle: rgba(201, 162, 75, 0.10);
+
+  /* counter-accent kept defined but retired from active chrome (contract) */
+  --accentLapis: #4F70B4;
+  --lapisGlow: rgba(79, 112, 180, 0.10);
+  --accentTeal: #4FA39E;
+  --goldLeaf: var(--accent);        /* collapsed into accent (kept defined for callers) */
   --ring: rgba(201, 162, 75, 0.55);
 
-  /* semantic — tuned to the palette */
-  --success: #7BAE5A;   /* olive */
-  --error:   #C5654D;   /* terracotta */
-  --warning: #D2973C;   /* ochre */
-  --green:  #7BAE5A;
-  --blue:   #6FA6C9;
-  --orange: #D2973C;
-  --red:    #C5654D;
-  --purple: #A98BC9;
-  --cyan:   #4FA39E;
+  /* semantic — same as pass-2 */
+  --success: #7BAE5A;   --error: #C5654D;   --warning: #D2973C;
+  --green: #7BAE5A;     --blue: #6FA6C9;   --orange: #D2973C;
+  --red: #C5654D;       --purple: #A98BC9;  --cyan: #4FA39E;
 
-  /* terminal */
-  --terminalBg: #0E0E11;
-  --terminalFg: #ECEAE3;
+  /* terminal — neutral black, gold cursor */
+  --terminalBg: #0B0B0C;
+  --terminalFg: #E6E6E6;
   --terminalCursor: #C9A24B;
-  --terminalSelection: rgba(201, 162, 75, 0.22);
+  --terminalSelection: rgba(201, 162, 75, 0.18);
 
   /* type families */
   --font-display: 'Cormorant', 'Iowan Old Style', Georgia, serif;
@@ -117,13 +116,39 @@
   --dur: 200ms;
   --dur-slow: 320ms;
 
-  /* atmosphere (theme-driven; defaults give Nyx a faint gold lamp glow) */
-  --themeGlowColor: rgba(201, 162, 75, 0.10);
-  --themeGlowOpacity: 1;
-  --themeNoiseOpacity: 0.022;
+  /* atmosphere (theme-driven; flat-quiet defaults: transparent, zero opacity) */
+  --themeGlowColor: transparent;
+  --themeGlowOpacity: 0;
+  --themeNoiseOpacity: 0;
 
   --scrollbar-width: 6px;
   --scrollbar-height: 6px;
+
+  /* ── Retired atmosphere tokens (names frozen; values neutralized to inert) ─ */
+  --great-circle: url("");
+  --starfield: url("");
+  --line-lapis: 1px solid transparent;
+  --lit-edge: none;
+
+  /* frost — inert (backdrop-filter blur(0) is a no-op; kept defined for callers) */
+  --frost: 0;
+  --frost-heavy: 0;
+  --frost-medium: 0;
+  --frost-light: 0;
+  --frost-dense: 0;
+
+  --rete-rpm: 0;
+  --themeStarOpacity: 0;
+
+  /* monospace degree-tick micro-type (instrument chrome) */
+  --mono-tick: var(--font-mono);
+  --mono-tick-tracking: 0.08em;
+
+  /* titlebar geometry (tokens, not inline literals) */
+  --tb-height: 40px;
+  --tb-tab-height: 30px;
+  --tb-tab-font: var(--text-xs);
+  --tb-switcher-font: var(--text-2xs);
 }
 
 /* ── 3. Base ─────────────────────────────────────────────────────────────── */
@@ -147,12 +172,10 @@ html, body, #main {
   font-family: var(--fontFamily);
 }
 
-/* Root app surface carries the lamp glow (shows through transparent regions,
-   e.g. the welcome screen + panel gutters). */
+/* Root app surface — flat. No gradient, no rete. */
 .app-root {
-  background:
-    radial-gradient(135% 90% at 50% -12%, var(--themeGlowColor) 0%, transparent 60%),
-    var(--bg) !important;
+  position: relative;
+  background: var(--bg) !important;
 }
 
 ::-webkit-scrollbar { width: var(--scrollbar-width); height: var(--scrollbar-height); }
@@ -174,25 +197,22 @@ button { cursor: pointer; border: none; background: none; font-family: inherit; 
 
 h1, h2, h3, .display { font-family: var(--font-display); font-weight: 600; letter-spacing: 0.01em; }
 
-/* ── 4. Atmosphere — grain overlay on top of everything (pointer-safe) ─────── */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 9000;
-  pointer-events: none;
-  opacity: var(--themeNoiseOpacity);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+/* ── 4. Atmosphere — retired (starfield/grain structure removed; tokens inert) ── */
+
+/* Greek-key (meander) hairline rule — neutral hairline (retired gold Greek-key). */
+.meander-rule {
+  height: 1px;
+  border: 0;
+  background: var(--border);
+  opacity: 1;
 }
 
-/* Greek-key (meander) hairline rule — opt-in decorative divider. */
-.meander-rule {
-  height: 6px;
+/* Great-circle astrolabe hairline — neutral section divider (retired three-circle motif). */
+.great-circle-rule {
+  height: 1px;
   border: 0;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='6'%3E%3Cpath d='M0 5h4V1h4v4h4V1h4v4h4' fill='none' stroke='%23C9A24B' stroke-opacity='0.5' stroke-width='1'/%3E%3C/svg%3E");
-  background-repeat: repeat-x;
-  background-position: center;
-  opacity: 0.5;
+  background: var(--border);
+  opacity: 1;
 }
 
 /* ── 5. Motion ───────────────────────────────────────────────────────────── */
@@ -202,15 +222,12 @@ body::after {
 @keyframes modal-rise { from { opacity: 0; transform: translateY(12px) scale(0.985); } to { opacity: 1; transform: none; } }
 @keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes toast-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
-@keyframes lamp-glow {
-  0%, 100% { opacity: 0.55; filter: drop-shadow(0 0 2px var(--accentSubtle)); }
-  50%      { opacity: 1;    filter: drop-shadow(0 0 8px var(--accent)); }
-}
 @keyframes pulse-soft { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
 
 .animate-rise { animation: reveal-rise var(--dur-slow) var(--ease) both; }
 .animate-fade { animation: reveal-fade var(--dur-slow) var(--ease) both; }
-.lamp-glow { animation: lamp-glow 2.4s ease-in-out infinite; }
+.lamp-glow {}
+.orbit-glow {}
 .pulse-soft { animation: pulse-soft 1.6s ease-in-out infinite; }
 
 /* staggered page-load reveal (applied to chrome regions) */
@@ -298,68 +315,45 @@ body::after {
 .gap-2 { gap: 2px; } .gap-4 { gap: 4px; } .gap-8 { gap: 8px; }
 .gap-12 { gap: 12px; } .gap-16 { gap: 16px; } .gap-24 { gap: 24px; }
 
+/* pill / badge — text-only, no box. */
 .pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 9px;
-  border-radius: var(--radius-pill);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  background-color: var(--bgTertiary);
-  color: var(--textMuted);
-  border: 1px solid var(--border);
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px;
+  border: none; background: transparent; color: var(--textMuted);
+  font-size: var(--text-xs); font-weight: 500; border-radius: var(--radius-pill);
 }
-
 .badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 1px 7px;
-  border-radius: var(--radius-pill);
-  font-size: var(--text-2xs);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  background-color: var(--accentSubtle);
-  color: var(--accent);
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 0 6px; border: none; background: transparent; color: var(--accent);
+  font-size: var(--text-2xs); font-weight: 600; border-radius: var(--radius-pill);
 }
 
-/* Buttons — token-driven, with hover/active/focus motion */
+/* Buttons — text-first, no resting box. Gold hairline (::after) on hover. */
 .btn-primary, .btn-ghost, .btn-secondary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border-radius: var(--radius-md);
-  font-size: var(--text-base);
-  font-weight: 600;
-  font-family: var(--font-ui);
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: background-color var(--dur-fast) var(--ease),
-              border-color var(--dur-fast) var(--ease),
-              transform var(--dur-fast) var(--ease),
-              color var(--dur-fast) var(--ease);
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px; padding: 6px 12px; border-radius: var(--radius-md);
+  font-size: var(--text-base); font-weight: 500; font-family: var(--font-ui);
+  cursor: pointer; border: none; background: transparent;
+  color: var(--text); position: relative;
+  transition: color var(--dur-fast) var(--ease);
 }
-.btn-primary { background-color: var(--accent); color: #1A150A; }
-.btn-primary:hover { background-color: var(--accentHover); }
+.btn-primary { color: var(--accent); font-weight: 600; }
+.btn-primary:hover { color: var(--accentHover); }
 .btn-primary:active { transform: translateY(1px); }
 
-.btn-secondary { background-color: var(--bgTertiary); color: var(--text); border-color: var(--border); }
-.btn-secondary:hover { background-color: var(--bgHover); border-color: var(--borderActive); }
+.btn-secondary { color: var(--text); }
+.btn-secondary:hover { color: var(--text); }
 .btn-secondary:active { transform: translateY(1px); }
 
-.btn-ghost { background-color: transparent; color: var(--text); border-color: var(--border); }
-.btn-ghost:hover { background-color: var(--bgHover); }
+.btn-ghost { color: var(--textMuted); }
+.btn-ghost:hover { color: var(--text); }
 .btn-ghost:active { transform: translateY(1px); }
 
-.btn-danger { background-color: transparent; color: var(--error); border-color: var(--border); }
-.btn-danger:hover { background-color: color-mix(in srgb, var(--error) 14%, transparent); border-color: var(--error); }
+/* danger — text-only. */
+.btn-danger { background: transparent; color: var(--error); border: none; }
+.btn-danger:hover { color: var(--error); }
 .btn-danger:active { transform: translateY(1px); }
 
-.btn-sm { padding: 5px 11px; font-size: var(--text-sm); }
+.btn-sm { padding: 4px 10px; font-size: var(--text-sm); }
 
 /* Disabled buttons: not-allowed cursor, dimmed, no hover/active response. */
 .btn-primary:disabled, .btn-secondary:disabled, .btn-ghost:disabled,
@@ -367,30 +361,25 @@ body::after {
   cursor: not-allowed;
   opacity: 0.5;
 }
-.btn-primary:disabled:hover { background: var(--accent); }
-.btn-secondary:disabled:hover { background: var(--bgTertiary); border-color: var(--border); }
-.btn-ghost:disabled:hover { background: transparent; }
+.btn-primary:disabled:hover { color: var(--accent); }
+.btn-secondary:disabled:hover { color: var(--text); }
+.btn-ghost:disabled:hover { color: var(--textMuted); }
+.btn-danger:disabled:hover { color: var(--error); }
 .btn-primary:disabled:active, .btn-secondary:disabled:active,
 .btn-ghost:disabled:active, .btn-danger:disabled:active { transform: none; }
 
-/* Icon-only button — the workhorse for chrome/toolbars. */
+/* Icon-only button — ghost resting, no underline. */
 .icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  border: none; border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--textMuted);
-  cursor: pointer;
-  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  color: var(--textMuted); cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
 }
-.icon-btn:hover { background: var(--bgHover); color: var(--text); }
-.icon-btn:active { transform: translateY(1px); }
-.icon-btn.is-active { color: var(--accent); background: var(--accentSubtle); }
+.icon-btn:hover { color: var(--text); }
+.icon-btn:active { color: var(--accent); }
+.icon-btn.is-active { color: var(--accent); }
 
 /* Class-based disabled state for icon-btn / btn-secondary that drive their
    disabled visual via `class:` (no `disabled:` HTML attribute). */
@@ -400,21 +389,18 @@ body::after {
   pointer-events: none;
 }
 
-/* Token-driven form field. */
+/* Token-driven form field — flat, single bottom hairline (editor-input look). */
 .field {
-  width: 100%;
-  padding: 8px 11px;
-  background: var(--bg);
+  width: 100%; padding: 7px 10px;
+  background: transparent;
   color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  font-family: var(--font-ui);
-  font-size: var(--text-base);
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+  border: none; border-bottom: 1px solid var(--border);
+  border-radius: 0; font-family: var(--font-ui); font-size: var(--text-base);
   outline: none;
+  transition: border-color var(--dur-fast) var(--ease);
 }
 .field::placeholder { color: var(--textDim); }
-.field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accentSubtle); }
+.field:focus { border-color: var(--accent); }
 
 /* Browser quick-links popover — collapses the Quick Access + Localhost rows
    into a compact dropdown. No new tokens; reuses existing surfaces. */
@@ -456,41 +442,51 @@ body::after {
 }
 .quick-menu-row:hover { background: var(--bgHover); color: var(--accent); }
 
-/* Card surface. */
+/* Card surface — flat, hairline only on hover (interactive). */
 .card {
-  background: var(--bgSecondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  background: transparent;
+  border: 1px solid transparent; border-radius: var(--radius-md);
+  box-shadow: none;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .card.is-interactive { cursor: pointer; }
-.card.is-interactive:hover { border-color: var(--borderActive); background: var(--bgTertiary); }
 
 /* Sidebar / list rows. */
-.workspace-row { transition: background-color var(--dur-fast) var(--ease); }
-.workspace-row:hover { background: var(--bgHover); }
+.workspace-row {}
 
-/* Tooltip bubble (positioned by the Tooltip component). */
+/* Tooltip bubble (positioned by the Tooltip component) — flat, shadow kept. */
 .tip-bubble {
-  position: absolute;
-  z-index: 9500;
-  padding: 4px 9px;
-  background: var(--bgTertiary);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-  font-family: var(--font-ui);
-  white-space: nowrap;
+  position: absolute; z-index: 9500; padding: 4px 9px;
+  background: var(--bgSecondary); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: var(--text-sm); font-family: var(--font-ui); white-space: nowrap;
   box-shadow: var(--shadow-md);
-  pointer-events: none;
-  animation: reveal-fade var(--dur-fast) var(--ease) both;
+  pointer-events: none; animation: reveal-fade var(--dur-fast) var(--ease) both;
 }
 
-/* Modal scrim + container motion. */
-.modal-scrim { animation: scrim-in var(--dur) var(--ease) both; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-.modal-card { animation: modal-rise var(--dur) var(--ease) both; box-shadow: var(--shadow-lg); }
-.toast-card { animation: toast-in var(--dur) var(--ease) both; box-shadow: var(--shadow-md); }
+/* Modal scrim + container motion — the ONE place shadows live (raised surfaces). */
+.modal-scrim { animation: scrim-in var(--dur) var(--ease) both; background: rgba(0,0,0,0.55); }
+.modal-card {
+  animation: modal-rise var(--dur) var(--ease) both;
+  background: var(--bgSecondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.toast-card {
+  animation: toast-in var(--dur) var(--ease) both;
+  background: var(--bgSecondary);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+}
+
+.lit-sweep {}
+
+/* Θ seal — the brand mark. Sizes the IconSeal disc + gold halo. */
+.seal-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  filter: drop-shadow(0 0 3px var(--accentSubtle));
+}
 
 /* Resize handle — hairline at rest with no hover effect. */
 .resize-handle { background: var(--border); }
@@ -515,39 +511,45 @@ body::after {
   background: var(--border);
 }
 
-/* Pane focus ring — the clicked terminal gets a subtle gold outline. */
+/* Pane focus ring — gold inset outline (lit-edge dropped). */
 .pane-focus-ring {
   position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 4;
-  box-shadow: inset 0 0 0 1.5px var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-/* Segmented control. */
+/* Pane corner ornaments — retired (was astrolabe quarter-circles). Class kept
+   (no DOM churn); rules are no-ops so callers render clean. */
+.pane-astrolabe-mark { position: relative; }
+.pane-astrolabe-mark::before,
+.pane-astrolabe-mark::after { content: none; }
+
+/* Segmented control — flat, gold text on active. */
 .segmented {
   display: inline-flex;
-  padding: 2px;
-  gap: 2px;
-  background: var(--bgTertiary);
-  border: 1px solid var(--border);
+  padding: 0;
+  gap: 4px;
+  background: transparent;
+  border: none;
   border-radius: var(--radius-md);
+  box-shadow: none;
 }
 .segmented-item {
   padding: 4px 12px;
-  border: none;
-  background: transparent;
+  border: none; background: transparent;
   color: var(--textMuted);
-  font-size: var(--text-sm);
-  font-weight: 500;
+  font-size: var(--text-sm); font-weight: 500;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  position: relative;
+  transition: color var(--dur-fast) var(--ease);
 }
 .segmented-item:hover { color: var(--text); }
-.segmented-item.is-active { background: var(--accent); color: var(--bg); }
+.segmented-item.is-active { color: var(--accent); }
 
-/* Context menu. */
+/* Context menu — flat menu (shadow kept, no frost). */
 .context-menu {
   position: fixed;
   z-index: 9600;
@@ -617,12 +619,17 @@ body::after {
 }
 @media (max-width: 520px) {
   .tb-extra-btn { display: none !important; }
+  /* Keep the Θ seal at narrow widths, hide the "ATHENA" letters to make room
+     for the workspace tabs. The seal-mark stays; the sibling wordmark span
+     drops out. Spec §4.2 — the wordmark clips gracefully. */
+  .titlebar .seal-mark + span { display: none; }
 }
 
 /* ── XTERM.JS overrides ──────────────────────────────────────────────────── */
 .xterm .xterm-viewport { background-color: var(--bg) !important; }
 .xterm-mount { contain: layout paint; }
 .xterm-mount .xterm { overflow: hidden; }
+
 
 /* ── Pane-pill drag-and-drop swap ────────────────────────────────────────── */
 

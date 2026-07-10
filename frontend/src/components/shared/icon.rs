@@ -262,6 +262,7 @@ pub fn IconZap(size: Option<u8>, color: Option<String>) -> Element {
 pub fn IconSwarm(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(18);
     let c = color.as_deref().unwrap_or("currentColor");
+    let gold = "var(--goldLeaf)";
     inline_svg(
         rsx! {
             // spokes from the center hub to each satellite
@@ -269,8 +270,8 @@ pub fn IconSwarm(size: Option<u8>, color: Option<String>) -> Element {
             path { d: "M12 12 L18 8" }
             path { d: "M12 12 L18 16" }
             path { d: "M12 12 L6 16" }
-            // central hub
-            circle { cx: "12", cy: "12", r: "2", fill: c }
+            // central hub — gold-leaf focal (the coordinating core)
+            circle { cx: "12", cy: "12", r: "2.1", fill: gold }
             // satellite nodes
             circle { cx: "12", cy: "5", r: "1.4", fill: c }
             circle { cx: "18", cy: "8", r: "1.4", fill: c }
@@ -732,11 +733,13 @@ pub fn IconPlay(size: Option<u8>, color: Option<String>) -> Element {
 // Classical motifs for brand, sections, and accents. Drawn in the
 // same smooth line style so they read as one family with the UI icons.
 
-/// Owl of Athena — the brand mark / wisdom motif.
+/// Owl of Athena — the brand mark / wisdom motif. The engraved line body keeps
+/// `currentColor`; the pupils are gold-leaf (the lamp lit in the wise eye).
 #[component]
 pub fn IconOwl(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(18);
     let c = color.as_deref().unwrap_or("currentColor");
+    let gold = "var(--goldLeaf)";
     inline_svg(
         rsx! {
             // facial disc / body
@@ -744,11 +747,12 @@ pub fn IconOwl(size: Option<u8>, color: Option<String>) -> Element {
             // ear tufts rising from brows
             path { d: "M6.6 9.2 C6.2 6.8 7.1 5.2 8.6 4.9 C9.6 5.7 10 7 9.7 8.4" }
             path { d: "M17.4 9.2 C17.8 6.8 16.9 5.2 15.4 4.9 C14.4 5.7 14 7 14.3 8.4" }
-            // eyes
+            // eyes — engraved rings
             circle { cx: "9", cy: "10.6", r: "2.4" }
             circle { cx: "15", cy: "10.6", r: "2.4" }
-            circle { cx: "9", cy: "10.6", r: "0.75", fill: c }
-            circle { cx: "15", cy: "10.6", r: "0.75", fill: c }
+            // pupils — gold-leaf focal
+            circle { cx: "9", cy: "10.6", r: "0.85", fill: gold }
+            circle { cx: "15", cy: "10.6", r: "0.85", fill: gold }
             // beak
             path { d: "M12 12.4 L10.9 14.2 H13.1 Z" }
             // talons
@@ -769,6 +773,7 @@ pub fn IconOwl(size: Option<u8>, color: Option<String>) -> Element {
 pub fn IconAthena(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(16);
     let c = color.as_deref().unwrap_or("currentColor");
+    let gold = "var(--goldLeaf)";
     inline_svg(
         rsx! {
             // facial disc / head
@@ -776,11 +781,12 @@ pub fn IconAthena(size: Option<u8>, color: Option<String>) -> Element {
             // ear tufts rising from the brows
             path { d: "M7.2 9 C6.9 7 7.6 5.6 8.9 5.3 C9.7 6 10 7.1 9.8 8.3" }
             path { d: "M16.8 9 C17.1 7 16.4 5.6 15.1 5.3 C14.3 6 14 7.1 14.2 8.3" }
-            // eyes
+            // eyes — engraved rings
             circle { cx: "9.4", cy: "10.6", r: "2.1" }
             circle { cx: "14.6", cy: "10.6", r: "2.1" }
-            circle { cx: "9.4", cy: "10.6", r: "0.7", fill: c }
-            circle { cx: "14.6", cy: "10.6", r: "0.7", fill: c }
+            // pupils — gold-leaf focal
+            circle { cx: "9.4", cy: "10.6", r: "0.78", fill: gold }
+            circle { cx: "14.6", cy: "10.6", r: "0.78", fill: gold }
             // beak
             path { d: "M12 12.3 L11.1 13.8 H12.9 Z" }
         },
@@ -794,6 +800,7 @@ pub fn IconAthena(size: Option<u8>, color: Option<String>) -> Element {
 pub fn IconLaurel(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(18);
     let c = color.as_deref().unwrap_or("currentColor");
+    let gold = "var(--goldLeaf)";
     inline_svg(
         rsx! {
             // central stem
@@ -805,6 +812,8 @@ pub fn IconLaurel(size: Option<u8>, color: Option<String>) -> Element {
             path { d: "M12 14 C14.3 14 16 12.8 16.6 10.6 C14.3 10.2 12.5 11.1 12 14 Z" }
             path { d: "M12 19 C9.4 19 7.5 17.6 6.8 15 C9.4 14.5 11.5 15.6 12 19 Z" }
             path { d: "M12 19 C14.6 19 16.5 17.6 17.2 15 C14.6 14.5 12.5 15.6 12 19 Z" }
+            // crown berry at the apex — gold-leaf focal
+            circle { cx: "12", cy: "5", r: "1", fill: gold }
         },
         s,
         c,
@@ -840,13 +849,17 @@ pub fn IconColumn(size: Option<u8>, color: Option<String>) -> Element {
 pub fn IconAegis(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(18);
     let c = color.as_deref().unwrap_or("currentColor");
+    let gold = "var(--goldLeaf)";
     inline_svg(
         rsx! {
             // shield outline
             path { d: "M12 2 L20 5 V11 C20 16 16.5 20 12 22 C7.5 20 4 16 4 11 V5 Z" }
-            // Gorgon face — eyes
-            circle { cx: "9.5", cy: "9.5", r: "0.9", fill: c }
-            circle { cx: "14.5", cy: "9.5", r: "0.9", fill: c }
+            // Gorgon face — engraved eye sockets
+            circle { cx: "9.5", cy: "9.5", r: "1.4" }
+            circle { cx: "14.5", cy: "9.5", r: "1.4" }
+            // Gorgon eyes — gold-leaf focal (the Gorgon's petrifying gaze)
+            circle { cx: "9.5", cy: "9.5", r: "0.95", fill: gold }
+            circle { cx: "14.5", cy: "9.5", r: "0.95", fill: gold }
             // mouth (curved frown)
             path { d: "M10 13.5 C11 12.5 13 12.5 14 13.5" }
         },
@@ -860,11 +873,14 @@ pub fn IconAegis(size: Option<u8>, color: Option<String>) -> Element {
 pub fn IconAmphora(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(18);
     let c = color.as_deref().unwrap_or("currentColor");
+    let gold = "var(--goldLeaf)";
     inline_svg(
         rsx! {
             // neck + rim
             path { d: "M9 3 H15" }
             path { d: "M10 3 C10 5 7.5 6 7.5 9 A5.5 5.5 0 0 0 16.5 9 C16.5 6 14 5 14 3" }
+            // neck band — gold-leaf focal (the amphora's maker-seal at the throat)
+            path { d: "M10 3.7 H14 V4.9 H10 Z", fill: gold, stroke: "none" }
             // handles
             path { d: "M7.5 9 C5.8 9 4.5 10 4.5 11.5" }
             path { d: "M16.5 9 C18.2 9 19.5 10 19.5 11.5" }
@@ -883,6 +899,7 @@ pub fn IconAmphora(size: Option<u8>, color: Option<String>) -> Element {
 pub fn IconHelmet(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(18);
     let c = color.as_deref().unwrap_or("currentColor");
+    let gold = "var(--goldLeaf)";
     inline_svg(
         rsx! {
             // dome
@@ -892,8 +909,10 @@ pub fn IconHelmet(size: Option<u8>, color: Option<String>) -> Element {
             path { d: "M18.5 13.5 C18.5 16 17 17.5 15 17.5 V13" }
             // nose guard
             path { d: "M12 8 V16.5" }
-            // crest
+            // crest plume
             path { d: "M8 6.5 C9 3.5 15 3.5 16 6.5" }
+            // crest-mount rivet at the brow — gold-leaf focal
+            circle { cx: "12", cy: "6.5", r: "1", fill: gold }
         },
         s,
         c,
@@ -905,6 +924,7 @@ pub fn IconHelmet(size: Option<u8>, color: Option<String>) -> Element {
 pub fn IconScroll(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(18);
     let c = color.as_deref().unwrap_or("currentColor");
+    let gold = "var(--goldLeaf)";
     inline_svg(
         rsx! {
             // rolled body
@@ -915,6 +935,8 @@ pub fn IconScroll(size: Option<u8>, color: Option<String>) -> Element {
             // text lines
             path { d: "M9 11 H14" }
             path { d: "M9 14 H13" }
+            // rolled-rod end boss — gold-leaf focal (the wax-sealed scroll cap)
+            circle { cx: "18.5", cy: "16", r: "1.1", fill: gold }
         },
         s,
         c,
@@ -935,4 +957,41 @@ pub fn IconMeander(size: Option<u8>, color: Option<String>) -> Element {
         s,
         c,
     )
+}
+
+/// The Θ seal — the bronze theta-disc brand mark. One instance per surface
+/// (titlebar, modal header, OwlMark halo, welcome pendant, new-session button).
+/// The outer disc is engraved gold; the central theta bar + dot are gold-leaf
+/// filled; a faint lapis tick sits at the crown as an instrument degree-mark.
+/// Drawn on its own 24×24 viewBox (not via `inline_svg`, which hard-codes
+/// `currentColor` as the only stroke — the seal needs gold leaf + lapis
+/// together, so it composes the SVG directly).
+#[component]
+pub fn IconSeal(size: Option<u8>, color: Option<String>) -> Element {
+    let s = size.unwrap_or(16);
+    let c = color.as_deref().unwrap_or("currentColor");
+    let gold = "var(--goldLeaf)";
+    let lapis = "var(--accentLapis)";
+    let size_str = format!("{s}px");
+    rsx! {
+        svg {
+            view_box: "0 0 24 24",
+            fill: "none",
+            stroke: c,
+            stroke_width: "1.5",
+            stroke_linecap: "round",
+            stroke_linejoin: "round",
+            style: "width: {size_str}; height: {size_str}; display: inline-block; vertical-align: middle; overflow: visible;",
+            // engraved outer ring (the disc rim)
+            circle { cx: "12", cy: "12", r: "10", stroke: c, fill: "none" }
+            // inner engraved guide ring (the almucantar)
+            circle { cx: "12", cy: "12", r: "6.5", stroke: c, fill: "none", stroke_opacity: "0.45" }
+            // theta bar (gold-leaf)
+            path { d: "M5 12 H19", stroke: gold, stroke_width: "2" }
+            // theta dot (gold-leaf filled)
+            circle { cx: "12", cy: "12", r: "2.4", fill: gold, stroke: "none" }
+            // faint lapis degree-tick at the crown (instrument mark)
+            path { d: "M12 1.5 V3.5", stroke: lapis, stroke_width: "1" }
+        }
+    }
 }

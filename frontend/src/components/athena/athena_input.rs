@@ -192,13 +192,13 @@ pub fn AthenaInput() -> Element {
 
     rsx! {
         div {
-            style: "border-top: 1px solid var(--border); padding: 10px 14px; background: var(--bgSecondary); flex-shrink: 0;",
+            style: "padding: 10px 14px; background: var(--bg); border-top: 1px solid var(--border); flex-shrink: 0;",
 
             // Banner shown when no API key is configured. Replaces the
             // "silently fails to send" experience with an actionable prompt.
             if is_blocked {
                 div {
-                    style: "display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--warning); border-radius: var(--radius-sm); background: var(--bgTertiary);",
+                    style: "display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--warning); border-radius: var(--radius-sm); background: rgba(235, 145, 19, 0.10);",
                     span {
                         style: "font-size: var(--text-xs); color: var(--warning);",
                         "No API key set — Athena can't send messages yet."

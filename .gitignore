@@ -81,3 +81,4 @@ coverage/
 # Compiled/binary artifacts
 *.rsbak
 *.scpt
+.superpowers/

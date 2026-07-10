@@ -290,6 +290,38 @@ pub fn SwarmBoard() -> Element {
         None => (Vec::new(), Vec::new()),
     };
 
+    // Constellation map geometry — derived purely from the agents vector
+    // enumeration index `i`. NO new state, signals, props, or handlers: this
+    // is a pure read of the existing agents list, recomputed each render.
+    //
+    // Star position (percent of the field):
+    //   top  = 14 + (i % 5) * 19        → rows of 5
+    //   left = 16 + (i / 5) * 26 + (i % 3) * 12
+    // The arc map reuses the SAME formula so stars + arcs line up. Anchored
+    // into a 100x100 SVG viewBox with preserveAspectRatio="none" so the
+    // percentages map 1:1 to the absolutely-positioned star wrappers.
+    let star_positions: Vec<(f32, f32)> = agents
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            let top = 14.0 + ((i % 5) as f32) * 19.0;
+            let left = 16.0 + ((i / 5) as f32) * 26.0 + ((i % 3) as f32) * 12.0;
+            (left, top)
+        })
+        .collect();
+    let arc_path: String = star_positions
+        .windows(2)
+        .map(|w| {
+            // Slight quadratic curve up so the constellation reads as an arc
+            // rather than a polyline.
+            let (x1, y1) = w[0];
+            let (x2, y2) = w[1];
+            let cx = (x1 + x2) / 2.0;
+            let cy = ((y1 + y2) / 2.0) - 4.0;
+            format!("M{x1:.2},{y1:.2} Q{cx:.2},{cy:.2} {x2:.2},{y2:.2} ")
+        })
+        .collect();
+
     rsx! {
         div {
             class: "swarm-board",
@@ -315,10 +347,44 @@ pub fn SwarmBoard() -> Element {
                         hint: Some("Launch a swarm to coordinate agents.".to_string()),
                     }
                 } else {
+                    // Constellation map — see star_positions / arc_path docs above.
                     div {
-                        style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px;",
-                        for agent in agents.iter() {
-                            AgentCard { key: "{agent.id}", agent: agent.clone() }
+                        style: "position: relative; flex: 1; min-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
+
+                        // Gold great-circle arcs between consecutive agents —
+                        // the constellation lines linking the stars.
+                        if star_positions.len() >= 2 {
+                            svg {
+                                style: "position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;",
+                                view_box: "0 0 100 100",
+                                preserve_aspect_ratio: "none",
+                                path {
+                                    d: "{arc_path}",
+                                    fill: "none",
+                                    stroke: "var(--accent)",
+                                    stroke_width: "0.4",
+                                    stroke_opacity: "0.55",
+                                    stroke_dasharray: "1.2 1.6",
+                                    stroke_linecap: "round",
+                                }
+                            }
+                        }
+
+                        // Agent "stars" — each wrapped at position: absolute
+                        // at the deterministic coord, with the existing
+                        // AgentCard (props + handlers byte-identical) inside.
+                        for (i, agent) in agents.iter().enumerate() {
+                            {
+                                let top = 14.0 + ((i % 5) as f32) * 19.0;
+                                let left = 16.0 + ((i / 5) as f32) * 26.0 + ((i % 3) as f32) * 12.0;
+                                rsx! {
+                                    div {
+                                        key: "{agent.id}",
+                                        style: "position: absolute; top: {top:.2}%; left: {left:.2}%; width: 168px; transform: translate(-50%, -50%); z-index: 2;",
+                                        AgentCard { agent: agent.clone() }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

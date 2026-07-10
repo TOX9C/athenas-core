@@ -12,14 +12,16 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
     let (status_color, status_label) = match props.plugin.status.as_str() {
         "active" => ("var(--success)", "Active".to_string()),
         "error" => ("var(--error)", "Error".to_string()),
-        "installing" | "updating" => ("var(--accent)", props.plugin.status.clone()),
+        "installing" | "updating" => ("var(--warning)", props.plugin.status.clone()),
         _ => ("var(--textDim)", "Inactive".to_string()),
     };
 
-    let border_color = if props.plugin.status == "error" {
-        "var(--error)"
+    // Active plugin → accent title only (text-shift, no rail/tint — flat-quiet).
+    let is_active = props.plugin.enabled && props.plugin.status == "active";
+    let title_color = if is_active {
+        "var(--accent)"
     } else {
-        "var(--border)"
+        "var(--text)"
     };
     let opacity = if props.plugin.enabled { "1" } else { "0.6" };
     let toggle_label = if props.plugin.enabled { "ON" } else { "OFF" };
@@ -40,8 +42,8 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
 
     rsx! {
         div {
-            class: "card",
-            style: "border-color: {border_color}; opacity: {opacity}; display: flex; flex-direction: column; gap: 10px;",
+            class: "card lit-sweep",
+            style: "border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); opacity: {opacity}; display: flex; flex-direction: column; gap: 10px;",
 
             // Header
             div {
@@ -51,13 +53,13 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
                     style: "display: flex; align-items: center; gap: 8px;",
 
                     div {
-                        style: "width: 28px; height: 28px; border-radius: var(--radius-md); background: var(--accentSubtle); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 14px; font-weight: 600; color: var(--accent); flex-shrink: 0;",
+                        style: "width: 28px; height: 28px; border-radius: var(--radius-md); background: var(--accentSubtle); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 14px; font-weight: 600; color: var(--accent); flex-shrink: 0; border: 1px solid var(--border);",
                         "{initial}"
                     }
 
                     div {
                         span {
-                            style: "font-size: var(--text-sm); font-weight: 600; color: var(--text); display: block;",
+                            style: "font-size: var(--text-sm); font-weight: 600; color: {title_color}; font-family: var(--font-ui); display: block;",
                             "{props.plugin.name}"
                         }
                         span {
@@ -95,7 +97,7 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
                         style: "width: 6px; height: 6px; border-radius: var(--radius-pill); background: {status_color}; flex-shrink: 0;",
                     }
                     span {
-                        style: "font-size: var(--text-2xs); color: {status_color};",
+                        style: "font-size: var(--text-2xs); padding: 1px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, {status_color} 12%, transparent); border: 1px solid color-mix(in srgb, {status_color} 32%, transparent); color: {status_color}; font-weight: 500;",
                         "{status_label}"
                     }
                     if props.plugin.agent_count > 0 {
@@ -124,7 +126,7 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
             // Error display
             if let Some(err) = &props.plugin.error {
                 div {
-                    style: "font-size: var(--text-2xs); padding: 6px 10px; border-radius: var(--radius-sm); background: var(--accentSubtle); color: var(--error); border: 1px solid var(--error);",
+                    style: "font-size: var(--text-2xs); padding: 6px 10px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--error) 12%, transparent); color: var(--error); border: 1px solid color-mix(in srgb, var(--error) 32%, transparent);",
                     "{err}"
                 }
             }

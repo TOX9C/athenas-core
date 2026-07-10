@@ -157,6 +157,19 @@ pub fn NotificationBell() -> Element {
 
     let unread_count: u32 = notifications.read().iter().filter(|n| !n.read).count() as u32;
 
+    // Snapshot the visible notifications into an owned Vec BEFORE the rsx! tree.
+    // Holding `notifications.read()` alive across child components (IconClose /
+    // button) inside the `for` body re-borrows Dioxus's hook list during render
+    // → mount panic "The hook list is already borrowed" (BorrowMutError). Cloning
+    // ≤10 records drops the RefCell borrow before any child mounts.
+    let visible: Vec<NotificationRecord> = notifications
+        .read()
+        .iter()
+        .rev()
+        .take(10)
+        .cloned()
+        .collect();
+
     rsx! {
         div {
             class: "notification-bell",
@@ -172,7 +185,7 @@ pub fn NotificationBell() -> Element {
 
                 if unread_count > 0 {
                     span {
-                        style: "position: absolute; top: -4px; right: -4px; background: var(--accent); color: var(--bg); font-size: var(--text-2xs); font-weight: 700; padding: 1px 4px; border-radius: var(--radius-pill); min-width: 14px; text-align: center; line-height: 1.3; border: 1px solid var(--bgSecondary);",
+                        style: "position: absolute; top: -4px; right: -4px; background: var(--accent); color: var(--bg); font-size: var(--text-2xs); font-weight: 700; padding: 1px 4px; border-radius: var(--radius-pill); min-width: 14px; text-align: center; line-height: 1.3; border: var(--border);",
                         "{unread_count}"
                     }
                 }
@@ -180,10 +193,11 @@ pub fn NotificationBell() -> Element {
 
             if dropdown_open() {
                 div {
-                    style: "position: absolute; top: 100%; right: 0; width: 300px; max-height: 400px; overflow-y: auto; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); z-index: 50; margin-top: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);",
+                    class: "pane-astrolabe-mark",
+                    style: "position: absolute; top: 100%; right: 0; width: 300px; max-height: 400px; overflow-y: auto; background: var(--bgSecondary); border: var(--border); border-radius: var(--radius-md); z-index: 50; margin-top: 6px; box-shadow: var(--shadow-md);",
 
                     div {
-                        style: "padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--text); background: var(--bgTertiary); display: flex; align-items: center; justify-content: space-between;",
+                        style: "padding: 10px 14px; border-bottom: var(--border); font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em; background: var(--bgSecondary); display: flex; align-items: center; justify-content: space-between; gap: 6px;",
                         "Notifications"
                         if unread_count > 0 {
                             span {
@@ -195,13 +209,13 @@ pub fn NotificationBell() -> Element {
                     }
 
                     div {
-                        if notifications.read().is_empty() {
+                        if visible.is_empty() {
                             div {
                                 style: "padding: 22px; text-align: center; color: var(--textDim); font-size: var(--text-xs);",
                                 "No notifications"
                             }
                         } else {
-                            for n in notifications.read().iter().rev().take(10) {
+                            for n in visible.iter() {
                                 {
                                     let id = n.id.clone();
                                     let title = n.title.clone();
@@ -220,11 +234,14 @@ pub fn NotificationBell() -> Element {
                                         NotificationType::Success | NotificationType::TaskComplete => "var(--success)",
                                         _ => "var(--accentTeal)",
                                     };
+                                    // Unread rows pop via gold title + bold weight only — no rail, no wash (flat-quiet).
+                                    let row_extra = "";
+                                    let title_color = if is_read { "var(--text)" } else { "var(--accent)" };
                                     rsx! {
                                         div {
                                             key: "{id}",
-                                            class: "notif-item",
-                                            style: "padding: 10px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; align-items: flex-start; gap: 8px;",
+                                            class: "notif-item lit-sweep",
+                                            style: "padding: 10px 10px 10px 12px; border-bottom: var(--border); cursor: pointer; display: flex; align-items: flex-start; gap: 8px; {row_extra}",
 
                                             // Type dot
                                             div {
@@ -235,7 +252,7 @@ pub fn NotificationBell() -> Element {
                                             div {
                                                 style: "flex: 1; min-width: 0;",
                                                 div {
-                                                    style: "font-size: var(--text-sm); font-weight: {weight}; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                                                    style: "font-size: var(--text-sm); font-weight: {weight}; color: {title_color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
                                                     "{display_title}"
                                                 }
                                                 div {

@@ -127,7 +127,7 @@ pub fn AgentStatusBar(props: AgentStatusBarProps) -> Element {
 
     rsx! {
         div {
-            style: "display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-top: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0; overflow-x: hidden;",
+            style: "display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-top: 1px solid var(--border); flex-shrink: 0; overflow-x: hidden;",
 
             // Agent helmet glyph
             span {
@@ -137,13 +137,13 @@ pub fn AgentStatusBar(props: AgentStatusBarProps) -> Element {
 
             // Status chip — dot + readable word
             span {
-                style: "display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: var(--radius-pill); background: var(--bgTertiary); flex-shrink: 0;",
+                style: "display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: var(--radius-pill); border: 1px solid var(--border); flex-shrink: 0;",
                 div {
                     class: "{dot_class}",
                     style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {color}; flex-shrink: 0;",
                 }
                 span {
-                    style: "font-size: var(--text-2xs); font-weight: 600; color: {color}; letter-spacing: 0.02em;",
+                    style: "font-size: var(--text-2xs); font-weight: 600; font-family: var(--font-display); letter-spacing: 0.04em; color: {color};",
                     title: "{label}",
                     "{word}"
                 }

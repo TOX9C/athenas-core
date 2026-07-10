@@ -49,7 +49,7 @@ pub fn WorkspaceTabs(props: WorkspaceTabsProps) -> Element {
     rsx! {
         div {
             class: "workspace-tabs",
-            style: "display: flex; align-items: center; height: 32px; padding: 0 4px; overflow-x: auto; min-width: 0; flex: 0 1 auto;",
+            style: "display: flex; align-items: center; height: var(--tb-height); padding: 0 4px; overflow-x: auto; min-width: 0; flex: 0 1 auto;",
 
             {items.into_iter()}
 

@@ -19,7 +19,8 @@ use components::right_sidebar::BrowserSurface;
 use components::settings::settings_modal::SettingsModal;
 use components::settings::SettingsPanel;
 use components::shared::icon::{
-    IconAgents, IconAthena, IconFiles, IconGrid, IconPlugins, IconPlus, IconSettings, IconSwarm,
+    IconAgents, IconAthena, IconFiles, IconGrid, IconPlugins, IconPlus, IconSeal, IconSettings,
+    IconSwarm,
 };
 use components::shared::illustration::OwlMark;
 use components::shared::toast::{provide_toast_store, ToastContainer};
@@ -525,11 +526,24 @@ pub fn App() -> Element {
             // Title bar
             div {
                 class: "titlebar reveal-1",
-                style: "height: 38px; -webkit-app-region: drag; display: flex; align-items: center; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
+                style: "height: var(--tb-height); -webkit-app-region: drag; display: flex; align-items: center; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
 
                 // Mac spacer for traffic lights
                 if is_mac {
                     div { style: "width: 80px; flex-shrink: 0;" }
+                }
+
+                // Θ seal + ATHENA wordmark — inside the drag region, never blocks clicks.
+                div {
+                    style: "display: flex; align-items: center; gap: 8px; padding: 0 14px; -webkit-app-region: drag; pointer-events: none;",
+                    span {
+                        class: "seal-mark",
+                        IconSeal { size: Some(18), color: Some("var(--accent)".to_string()) }
+                    }
+                    span {
+                        style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; letter-spacing: 0.14em; color: var(--accent); text-transform: uppercase;",
+                        "Athena"
+                    }
                 }
 
                 // Workspace tabs (centered, flex-1)
@@ -555,7 +569,7 @@ pub fn App() -> Element {
                                     rsx! {
                                         button {
                                             key: "{label}",
-                                            style: "height: 28px; padding: 0 10px; border: none; background: transparent; color: {color}; cursor: pointer; font-size: 10px; font-weight: {weight};",
+                                            style: "height: var(--tb-tab-height); padding: 0 12px; border: none; background: transparent; color: {color}; cursor: pointer; font-size: var(--tb-tab-font); font-weight: {weight}; letter-spacing: 0.04em; text-transform: uppercase;",
                                             onclick: move |_| ui_state.write().panel = panel,
                                             "{label}"
                                         }
@@ -723,19 +737,26 @@ pub fn App() -> Element {
 
                             // Active panel or empty state
                             if active_space.is_none() {
-                                // Branded welcome — the lamp glow on .app-root shows through here.
+                                // Branded welcome — frost-heavy plaque over the starfield sky.
                                 div {
                                     class: "animate-rise",
-                                    style: "flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;",
+                                    style: "flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; padding: 40px; margin: 24px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bgSecondary); box-shadow: var(--shadow-lg);",
 
                                     div {
                                         style: "display: flex; flex-direction: column; align-items: center; gap: 14px;",
 
-                                        div { class: "lamp-glow", OwlMark { size: Some(64) } }
+                                        // Θ pendant — the bronze theta-seal above the owl, orbit-glow breathing.
+                                        div { style: "display: flex; align-items: center; justify-content: center; margin-bottom: 4px;",
+                                            span { class: "seal-mark",
+                                                IconSeal { size: Some(28), color: Some("var(--accent)".to_string()) }
+                                            }
+                                        }
+
+                                        div { OwlMark { size: Some(64) } }
 
                                         div { style: "display: flex; flex-direction: column; align-items: center; gap: 6px;",
                                             h2 {
-                                                style: "font-family: var(--font-display); font-size: 34px; font-weight: 600; margin: 0; color: var(--text); letter-spacing: 0.02em;",
+                                                style: "font-family: var(--font-display); font-size: 34px; font-weight: 600; margin: 0; color: var(--accent); letter-spacing: 0.04em;",
                                                 "Athena\u{2019}s Core"
                                             }
                                             p {
@@ -744,6 +765,9 @@ pub fn App() -> Element {
                                             }
                                         }
                                     }
+
+                                    // Great-circle rule — the meridian divider before the action.
+                                    hr { class: "great-circle-rule", style: "width: 60%; margin: 4px 0;" }
 
                                     button {
                                         class: "btn-primary",
@@ -758,30 +782,39 @@ pub fn App() -> Element {
                             } else {
                                 div {
                                     style: "flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;",
-                                    // Panels rendered with true conditional mounting
-                                    // instead of display: none — inactive panels are
-                                    // never mounted, so they don't subscribe to
-                                    // stores or run their hooks.
-                                    if active_panel == Panel::Workspace {
-                                        div {
-                                            style: "flex: 1; display: flex; min-width: 0; min-height: 0; position: relative;",
-                                            for space in mounted_workspaces.iter() {
-                                                div {
-                                                    key: "workspace-view-{space.id}",
-                                                    style: if active_space_id.as_deref() == Some(space.id.as_str()) {
-                                                        "position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0;"
-                                                    } else {
-                                                        "position: absolute; inset: 0; display: none; min-width: 0; min-height: 0;"
-                                                    },
-                                                    WorkspaceGrid {
-                                                        key: "workspace-grid-{space.id}",
-                                                        active_space: Some(space.clone()),
-                                                        active_space_id: active_space_id.clone(),
-                                                    }
+                                    // Workspace branch is ALWAYS mounted and toggled
+                                    // with display:none — switching to Kanban/Swarm/etc.
+                                    // unmounts the WorkspaceGrid subtree otherwise, and
+                                    // remounting hits per-pane Signal<TerminalSession>
+                                    // reads whose generational-box backing storage was
+                                    // reclaimed during the unmount, panicking with
+                                    // `Err(Dropped(ValueDroppedError))` (wasm unreachable).
+                                    // Other panels remain conditionally mounted (their
+                                    // hooks are cheap and carry no cross-panel signal
+                                    // refs that would suffer the same remount hazard).
+                                    div {
+                                        style: if active_panel == Panel::Workspace {
+                                            "flex: 1; display: flex; min-width: 0; min-height: 0; position: relative;"
+                                        } else {
+                                            "flex: 1; display: none; min-width: 0; min-height: 0; position: relative;"
+                                        },
+                                        for space in mounted_workspaces.iter() {
+                                            div {
+                                                key: "workspace-view-{space.id}",
+                                                style: if active_space_id.as_deref() == Some(space.id.as_str()) {
+                                                    "position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0;"
+                                                } else {
+                                                    "position: absolute; inset: 0; display: none; min-width: 0; min-height: 0;"
+                                                },
+                                                WorkspaceGrid {
+                                                    key: "workspace-grid-{space.id}",
+                                                    active_space: Some(space.clone()),
+                                                    active_space_id: active_space_id.clone(),
                                                 }
                                             }
                                         }
-                                    } else if active_panel == Panel::Editor {
+                                    }
+                                    if active_panel == Panel::Editor {
                                         div {
                                             style: "flex: 1; display: flex; min-width: 0; min-height: 0;",
                                             div { style: "flex: 1; overflow: hidden;", "Editor panel" }

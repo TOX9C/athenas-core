@@ -18,8 +18,12 @@ pub fn KanbanCard(props: KanbanCardProps) -> Element {
 
     rsx! {
         div {
-            class: "kanban-card card is-interactive",
-            style: "border-left: 3px solid {accent_color}; cursor: grab;",
+            // Flat card — opaque fill, hairline border, gold-edge hover via
+            // .lit-sweep. The left accent rule keeps the assigned/unassigned
+            // distinction (accent_color stays the same source of truth).
+            // Class + handlers byte-identical — only the visual layer retuned.
+            class: "kanban-card card is-interactive lit-sweep",
+            style: "border-left: 3px solid {accent_color}; border-top: 1px solid var(--border); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); cursor: grab;",
 
             div {
                 style: "display: flex; align-items: center; gap: 6px;",

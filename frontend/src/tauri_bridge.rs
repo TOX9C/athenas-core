@@ -342,7 +342,8 @@ pub async fn plan_update_step(
 ) -> TauriResult<String> {
     invoke(
         "plan_update_step",
-        &serde_json::json!({ "step_id": step_id, "status": status, "pane_id": pane_id }).to_string(),
+        &serde_json::json!({ "step_id": step_id, "status": status, "pane_id": pane_id })
+            .to_string(),
     )
     .await
 }
@@ -359,7 +360,8 @@ pub async fn agent_comms_sessions() -> TauriResult<String> {
 pub async fn agent_comms_send(agent_id: &str, method: &str, params: &str) -> TauriResult<String> {
     invoke(
         "agent_comms_send",
-        &serde_json::json!({ "agent_id": agent_id, "method": method, "params": params }).to_string(),
+        &serde_json::json!({ "agent_id": agent_id, "method": method, "params": params })
+            .to_string(),
     )
     .await
 }
@@ -885,7 +887,8 @@ pub async fn plugin_get(plugin_id: &str) -> TauriResult<String> {
 pub async fn plugin_register(plugin_id: &str, name: &str, version: &str) -> TauriResult<String> {
     invoke(
         "plugin_register",
-        &serde_json::json!({ "plugin_id": plugin_id, "name": name, "version": version }).to_string(),
+        &serde_json::json!({ "plugin_id": plugin_id, "name": name, "version": version })
+            .to_string(),
     )
     .await
 }

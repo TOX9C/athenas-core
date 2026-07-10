@@ -16,14 +16,15 @@ pub fn RightEditorPanel() -> Element {
         .iter()
         .map(|file| {
             let is_active = editor_state.read().active_file_path.as_deref() == Some(&file.path);
-            let bg = if is_active { "var(--bg)" } else { "transparent" };
-            let color = if is_active { "var(--text)" } else { "var(--textDim)" };
-            let border = if is_active { "1px solid var(--border)" } else { "1px solid transparent" };
+            let bg = if is_active { "var(--bgSecondary)" } else { "transparent" };
+            let color = if is_active { "var(--accent)" } else { "var(--textMuted)" };
+            let border = if is_active { "2px solid var(--accent)" } else { "2px solid transparent" };
+            let surface_border = if is_active { "border-bottom: 1px solid var(--border);" } else { "border-bottom: 1px solid transparent;" };
             TabEntry {
                 path: file.path.clone(),
                 filename: file.path.split('/').last().unwrap_or(&file.path).to_string(),
                 style: format!(
-                    "display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:{border};background:{bg};color:{color};font-size:11px;cursor:pointer;white-space:nowrap;transition:background 0.15s ease;",
+                    "display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:{border};{surface_border}background:{bg};color:{color};font-size:11px;cursor:pointer;white-space:nowrap;letter-spacing:0.04em;transition:background 0.15s ease, color 0.15s ease;",
                 ),
             }
         })
@@ -33,7 +34,8 @@ pub fn RightEditorPanel() -> Element {
 
     rsx! {
         div {
-            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); color: var(--text); overflow: hidden;",
+            class: "pane-astrolabe-mark",
+            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text); overflow: hidden;",
 
             if editor_state.read().open_files.is_empty() {
                 EmptyState {
@@ -44,11 +46,12 @@ pub fn RightEditorPanel() -> Element {
             } else {
                 // Tab bar
                 div {
-                    style: "display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0; overflow-x: auto;",
+                    style: "display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto;",
 
                     for entry in tabs {
                         div {
                             key: "{entry.path}",
+                            class: "lit-sweep",
                             style: "{entry.style}",
                             onclick: {
                                 let p = entry.path.clone();
@@ -83,7 +86,7 @@ pub fn RightEditorPanel() -> Element {
                             div {
                                 style: "display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px;",
                                 span {
-                                    style: "font-size: 11px; font-weight: 600; color: var(--text); flex: 1;",
+                                    style: "flex: 1; font-size: 11px; font-weight: 600; color: var(--accent); letter-spacing: 0.04em; text-transform: none;",
                                     "{file.path}"
                                 }
                                 span {
@@ -93,7 +96,7 @@ pub fn RightEditorPanel() -> Element {
                             }
 
                             div {
-                                style: "flex: 1; overflow: auto; padding: 8px; background: var(--bg); border-radius: 4px; border: 1px solid var(--border);",
+                                style: "flex: 1; overflow: auto; padding: 8px; background: var(--bg); border-radius: var(--radius-sm); border: 1px solid var(--border);",
                                 pre {
                                     style: "margin: 0; padding: 0; font-family: var(--fontFamily, 'JetBrains Mono', monospace); font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; tab-size: 4;",
                                     "{file.content}"

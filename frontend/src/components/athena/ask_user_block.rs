@@ -14,11 +14,11 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
 
     rsx! {
         div {
-            style: "margin-top: 8px; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bgTertiary);",
+            style: "margin-top: 8px; padding: 12px; border-radius: var(--radius-md); border: none; background: transparent;",
 
             // Question
             div {
-                style: "font-size: 13px; color: var(--text); margin-bottom: 10px; line-height: 1.5;",
+                style: "font-family: var(--font-display); font-size: 13px; color: var(--accent); margin-bottom: 10px; line-height: 1.5; letter-spacing: 0.02em;",
                 "{ask.question}"
             }
 

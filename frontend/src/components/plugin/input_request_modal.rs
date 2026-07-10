@@ -65,21 +65,21 @@ pub fn InputRequestModal() -> Element {
                 div {
                     style: "display: flex; align-items: center; gap: 8px;",
                     div {
-                        style: "width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--accent);",
+                        style: "width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--accent); flex-shrink: 0;",
                     }
                     span {
-                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text); font-family: var(--font-ui);",
                         "Agent"
                     }
                     span {
-                        style: "font-size: var(--text-2xs); padding: 2px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning);",
+                        style: "font-size: var(--text-2xs); padding: 1px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--warning) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warning) 32%, transparent); color: var(--warning); font-weight: 500;",
                         "Needs Input"
                     }
                 }
 
-                // Prompt
+                // Prompt — flat plaque; .modal-card owns the chrome.
                 div {
-                    style: "padding: 12px; border-radius: var(--radius-md); background: var(--bgTertiary); border: 1px solid var(--border);",
+                    style: "padding: 12px; border-radius: var(--radius-md); background: var(--bgSecondary); border: 1px solid var(--border);",
                     p {
                         style: "font-size: var(--text-sm); color: var(--text); margin: 0; line-height: 1.5;",
                         "{prompt_text}"

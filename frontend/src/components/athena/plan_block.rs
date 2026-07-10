@@ -35,7 +35,7 @@ pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
 
     rsx! {
         div {
-            style: "margin-top: 8px; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bgTertiary);",
+            style: "margin-top: 8px; padding: 12px; border-radius: var(--radius-md); border: none; background: transparent;",
 
             // Header
             div {
@@ -52,7 +52,7 @@ pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
                 }
 
                 span {
-                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); flex: 1;",
+                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); flex: 1;",
                     "Plan: {plan.goal}"
                 }
 
@@ -63,7 +63,7 @@ pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
                 }
             }
 
-            // Progress bar
+            // Progress bar — lapis-tinted track.
             div {
                 style: "margin-top: 6px; width: 100%; height: 3px; border-radius: 2px; background: var(--bgTertiary); overflow: hidden;",
                 div {

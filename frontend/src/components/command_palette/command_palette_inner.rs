@@ -199,7 +199,8 @@ pub fn CommandPalette() -> Element {
 
             // Palette container
             div {
-                style: "position: relative; z-index: 1; width: 520px; max-height: 400px; display: flex; flex-direction: column; overflow: hidden; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: 0 24px 60px rgba(0,0,0,0.45);",
+                class: "pane-astrolabe-mark",
+                style: "position: relative; z-index: 1; width: 520px; max-height: 400px; display: flex; flex-direction: column; overflow: hidden; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);",
                 role: "dialog",
                 "aria-modal": "true",
                 "aria-label": "Command palette",
@@ -211,7 +212,7 @@ pub fn CommandPalette() -> Element {
                     IconSearch { size: Some(15), color: Some("var(--textDim)".to_string()) }
 
                     input {
-                        style: "flex: 1; background: transparent; border: none; outline: none; font-size: 14px; color: var(--text); caret-color: var(--accentTeal);",
+                        style: "flex: 1; background: transparent; border: none; outline: none; font-size: 14px; color: var(--text); font-family: var(--font-ui); caret-color: var(--accent);",
                         role: "searchbox",
                         "aria-label": "Search commands",
                         value: "{query}",
@@ -317,6 +318,9 @@ pub fn CommandPalette() -> Element {
                     }
                 }
 
+                // Great-circle rule — gold seam between input header and results.
+                div { class: "great-circle-rule" }
+
                 // Command list
                 div {
                     style: "flex: 1; overflow-y: auto;",
@@ -340,7 +344,7 @@ pub fn CommandPalette() -> Element {
                                 items.push(rsx! {
                                     div {
                                         key: "group-{group_label}",
-                                        style: "padding: 8px 14px 4px 14px; font-family: var(--font-display); font-size: var(--text-2xs); font-weight: 600; color: var(--textMuted); text-transform: uppercase; letter-spacing: 0.14em;",
+                                        style: "display: flex; align-items: center; gap: 6px; padding: 10px 14px 4px 14px; font-family: var(--font-display); font-size: var(--text-2xs); font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em;",
                                         "{group_label}"
                                     }
                                 });
@@ -349,15 +353,16 @@ pub fn CommandPalette() -> Element {
                                     running_idx += 1;
                                     let is_selected = idx == selected_idx();
                                     let shortcut_str = cmd.shortcut.as_ref().map(|s| format_shortcut(s));
-                                    let cmd_bg = if is_selected { "var(--accentSubtle)" } else { "transparent" };
-                                    let bar = if is_selected { "var(--accent)" } else { "transparent" };
+                                    // selection now carried by text + icon color-shift only (flat-quiet)
                                     let icon_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
+                                    let cmd_text_color = if is_selected { "var(--accent)" } else { "var(--text)" };
                                     let cmd_id = cmd.id.clone();
                                     let cmd_label = cmd.label.clone();
                                     items.push(rsx! {
                                         button {
                                             key: "{cmd_id}",
-                                            style: "display: flex; align-items: center; gap: 10px; padding: 7px 14px; width: 100%; text-align: left; border: none; border-left: 2px solid {bar}; background: {cmd_bg}; cursor: pointer; font-size: var(--text-sm); color: var(--text);",
+                                            class: "lit-sweep",
+                                            style: "display: flex; align-items: center; gap: 10px; padding: 7px 14px; width: 100%; text-align: left; border: none; background: transparent; cursor: pointer; font-size: var(--text-sm); color: {cmd_text_color};",
                                             onmouseenter: move |_| selected_idx.set(idx),
 
                                             span {

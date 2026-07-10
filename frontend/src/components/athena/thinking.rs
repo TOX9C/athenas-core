@@ -36,11 +36,10 @@ pub fn AthenaThinkingIndicator(props: ThinkingProps) -> Element {
     rsx! {
         div {
             class: "thinking-indicator",
-            style: "display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bgSecondary); border-radius: var(--radius-md); border: 1px solid var(--border);",
+            style: "display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: transparent; border-radius: var(--radius-md); border: none;",
 
-            // Brand owl with a pulsing gold lamp-glow
+            // Brand owl — the thinking dot traces its orbital halo while Athena is streaming.
             span {
-                class: "lamp-glow",
                 style: "display: inline-flex; align-items: center; justify-content: center;",
                 OwlMark { size: Some(14) }
             }
@@ -53,7 +52,7 @@ pub fn AthenaThinkingIndicator(props: ThinkingProps) -> Element {
                     "{status_label}{dot_str}"
                 }
 
-                // Pulse bar
+                // Pulse bar — lapis-tinted track with an accent sweep.
                 div {
                     style: "width: 120px; height: 3px; border-radius: 2px; background: var(--bgTertiary); overflow: hidden;",
                     div {

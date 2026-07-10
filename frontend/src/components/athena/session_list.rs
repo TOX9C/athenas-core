@@ -161,7 +161,7 @@ pub fn SessionList() -> Element {
             div {
                 style: "padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;",
                 span {
-                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: 0.01em; color: var(--text);",
+                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent);",
                     "Sessions"
                 }
                 button {
@@ -217,11 +217,7 @@ pub fn SessionList() -> Element {
                             let sid_for_click = sid.clone();
                             let is_active = current_session_id.as_deref() == Some(&sid);
                             let title_color = if is_active { "var(--accent)" } else { "var(--text)" };
-                            let row_style = if is_active {
-                                "padding: 10px 12px 10px 9px; border-bottom: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--bgHover); cursor: pointer; transition: background var(--dur-fast) var(--ease);"
-                            } else {
-                                "padding: 10px 12px 10px 12px; border-bottom: 1px solid var(--border); border-left: 3px solid transparent; cursor: pointer; transition: background var(--dur-fast) var(--ease);"
-                            };
+                            let row_style = "padding: 10px 12px; border-bottom: 1px solid var(--border); background: transparent; cursor: pointer; transition: color var(--dur-fast) var(--ease);";
                             let title = session.title.clone();
                             let msg_count = session.message_count;
                             let updated = format_time_ago(session.updated_at);

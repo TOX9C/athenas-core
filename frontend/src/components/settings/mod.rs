@@ -9,8 +9,8 @@ use settings_modal::SettingsContent;
 pub fn SettingsPanel() -> Element {
     rsx! {
         div {
-            class: "settings-panel",
-            style: "height: 100%; display: flex; flex-direction: column; background: var(--bg); color: var(--text);",
+            class: "settings-panel pane-astrolabe-mark",
+            style: "height: 100%; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border); color: var(--text);",
 
             // Full settings within the panel (embedded, no modal)
             div {

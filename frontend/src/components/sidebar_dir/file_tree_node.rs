@@ -41,6 +41,7 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
             class: "file-tree-node",
 
             div {
+                class: "lit-sweep",
                 style: "display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px {indent}px; cursor: pointer; border-radius: var(--radius-sm); transition: background var(--dur-fast) var(--ease); font-size: var(--text-sm); color: var(--textMuted);",
                 background: if hovered() { "var(--bgHover)" } else { "transparent" },
 

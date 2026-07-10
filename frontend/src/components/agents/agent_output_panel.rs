@@ -26,7 +26,8 @@ pub fn AgentOutputPanel() -> Element {
     if selected_id.is_none() {
         return rsx! {
             div {
-                style: "display: flex; flex-direction: column; height: 100%;",
+                class: "pane-astrolabe-mark",
+                style: "display: flex; flex-direction: column; height: 100%; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md);",
 
                 div {
                     style: "padding: 8px 10px; border-bottom: 1px solid var(--border);",
@@ -73,7 +74,8 @@ pub fn AgentOutputPanel() -> Element {
 
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; height: 100%;",
+            class: "pane-astrolabe-mark",
+            style: "display: flex; flex-direction: column; height: 100%; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md);",
 
             // Toolbar
             div {
@@ -135,7 +137,7 @@ pub fn AgentOutputPanel() -> Element {
 
             // Footer
             div {
-                style: "display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; border-top: 1px solid var(--border); background: var(--bgSecondary); font-size: var(--text-2xs); color: var(--textDim); font-family: var(--fontFamily); flex-shrink: 0;",
+                style: "display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; border-top: 1px solid var(--border); font-size: var(--text-2xs); color: var(--textDim); font-family: var(--fontFamily); flex-shrink: 0;",
                 span { "{line_count} lines" }
                 span { "{pane_id_display}" }
             }

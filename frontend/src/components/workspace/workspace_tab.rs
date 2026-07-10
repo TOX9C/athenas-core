@@ -15,15 +15,16 @@ pub struct WorkspaceTabProps {
 #[component]
 pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
     let agent_status = use_agent_status_store();
-    let bg = if props.is_active {
-        "var(--bgTertiary)"
+    let text_color = if props.is_active {
+        "var(--accent)"
+    } else {
+        "var(--textMuted)"
+    };
+    let weight = if props.is_active { "600" } else { "400" };
+    let underline = if props.is_active {
+        "var(--accent)"
     } else {
         "transparent"
-    };
-    let text_color = if props.is_active {
-        "var(--text)"
-    } else {
-        "var(--textDim)"
     };
 
     // Compute aggregate agent status for this space's panes.
@@ -56,11 +57,11 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
     rsx! {
         div {
             class: "workspace-tab",
-            style: "display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; background: {bg}; flex-shrink: 0; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);",
+            style: "display: flex; align-items: center; gap: 6px; height: var(--tb-tab-height); padding: 0 10px; border: none; border-radius: var(--radius-sm); cursor: pointer; background: transparent; box-shadow: inset 0 -1px 0 {underline}; flex-shrink: 0; transition: color var(--dur-fast) var(--ease);",
             onclick: move |_| props.on_select.call(()),
 
             span {
-                style: "font-size: var(--text-xs); color: {text_color}; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                style: "font-size: var(--tb-tab-font); font-weight: {weight}; color: {text_color}; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0.02em;",
                 "{props.space.name}"
             }
 

@@ -42,33 +42,36 @@ pub fn SettingsContent() -> Element {
 
     rsx! {
         div {
+            class: "pane-astrolabe-mark",
             style: "display: flex; height: 100%; overflow: hidden;",
 
             /* ── Left vertical tab bar ────────────────────── */
             div {
-                style: "width: 200px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; padding: 20px 12px; border-right: 1px solid var(--border); background: var(--bg);",
+                style: "width: 200px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; padding: 20px 12px; border-right: 1px solid var(--border); background: var(--bgSecondary);",
 
                 div {
                     style: "display: flex; align-items: center; gap: 8px; padding: 0 8px 16px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px;",
-                    IconSettings { size: Some(18), color: Some("var(--textDim)".to_string()) }
+                    IconSettings { size: Some(18), color: Some("var(--accent)".to_string()) }
                     div {
-                        style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
-                        "Settings"
+                        style: "display: flex; align-items: center; gap: 6px;",
+                        div {
+                            style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                            "Settings"
+                        }
                     }
                 }
 
                 for (label, idx) in tabs {
                     {
                         let is_active = active_tab() == idx;
-                        let color = if is_active { "var(--accent)" } else { "var(--textDim)" };
+                        let color = if is_active { "var(--accent)" } else { "var(--textMuted)" };
                         let font_weight = if is_active { "600" } else { "400" };
-                        let bg = if is_active { "var(--accentSubtle)" } else { "transparent" };
-                        let border = if is_active { "1px solid var(--accent)" } else { "1px solid transparent" };
+                        let bg = "transparent";
+                        let accent_side = "var(--textMuted)";
                         rsx! {
                             button {
                                 key: "{label}",
-                                class: if is_active { "settings-tab-btn active" } else { "settings-tab-btn" },
-                                style: "display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: {border}; border-radius: var(--radius-md); background: {bg}; color: {color}; cursor: pointer; font-size: var(--text-sm); text-align: left; width: 100%; font-weight: {font_weight}; transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;",
+                                style: "display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: none; border-radius: var(--radius-md); background: {bg}; color: {color}; cursor: pointer; font-size: var(--text-sm); text-align: left; width: 100%; font-weight: {font_weight}; transition: color 0.18s ease;",
                                 onclick: move |_| active_tab.set(idx),
                                 {tab_icon(idx, color)}
                                 "{label}"
@@ -150,14 +153,14 @@ fn GeneralSettings() -> Element {
                                 let is_selected = *font == current_font;
                                 let bg = if is_selected { &theme_accent } else { &theme_bg_tertiary };
                                 let fg = if is_selected { "var(--bg)" } else { "var(--textMuted)" };
-                                let border = if is_selected { "var(--accent)" } else { "var(--border)" };
-                                let shadow = if is_selected { "0 0 0 2px var(--accentSubtle), 0 2px 4px rgba(0,0,0,0.1)" } else { "0 1px 2px rgba(0,0,0,0.05)" };
+                                let border = if is_selected { "var(--accent)" } else { "1px solid var(--border)" };
+                                let shadow = if is_selected { "0 0 0 2px var(--accentSubtle)" } else { "none" };
                                 let font_str = font.to_string();
                                 rsx! {
                                     button {
                                         key: "{font}",
-                                        class: "font-option-btn",
-                                        style: "padding: 8px 16px; border-radius: var(--radius-md); border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; font-size: var(--text-sm); font-family: '{font}', monospace; box-shadow: {shadow}; transition: all 0.18s ease; transform: scale(1);",
+                                        class: "font-option-btn lit-sweep",
+                                        style: "padding: 8px 16px; border-radius: var(--radius-md); border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; font-size: var(--text-sm); font-family: '{font}', monospace; box-shadow: {shadow}; transition: border-color 0.18s ease, box-shadow 0.18s ease; transform: scale(1);",
                                         onmouseenter: move |_| {},
                                         onclick: move |_| {
                                             let font_clone = font_str.clone();
@@ -200,7 +203,7 @@ fn GeneralSettings() -> Element {
                     },
                 }
                 span {
-                    style: "font-family: var(--fontFamily); font-size: var(--text-sm); font-weight: 600; color: var(--text); min-width: 40px; text-align: center; background: var(--bgTertiary); padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);",
+                    style: "font-family: var(--fontFamily); font-size: var(--text-sm); font-weight: 600; color: var(--accent); min-width: 40px; text-align: center; background: var(--bgTertiary); padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);",
                     "{ui_state.read().font_size}px"
                 }
             }
@@ -221,7 +224,7 @@ fn GeneralSettings() -> Element {
                         style: "width: 10px; height: 10px; border-radius: 50%; background: var(--success);",
                     }
                     div {
-                        style: "font-size: var(--text-2xs); color: var(--textDim); margin-left: auto; font-weight: 500;",
+                        style: "font-size: var(--text-2xs); color: var(--textDim); margin-left: auto; font-weight: 500; font-family: var(--font-display); letter-spacing: 0.04em; text-transform: uppercase;",
                         "Preview"
                     }
                 }
@@ -242,11 +245,14 @@ fn GeneralSettings() -> Element {
                 div {
                     style: "display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-right: 8px;",
                     div {
-                        style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--text);",
-                        "Smart pane titles"
+                        style: "display: flex; align-items: center; gap: 6px;",
+                        div {
+                            style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                            "Smart pane titles"
+                        }
                     }
                     div {
-                        style: "font-size: var(--text-xs); color: var(--textMuted); line-height: 1.5;",
+                        style: "font-size: var(--text-xs); color: var(--textMuted); line-height: 1.5; padding-left: 14px;",
                         "Auto-generate names for idle shells and summarize agent titles via LLM."
                     }
                 }
@@ -257,7 +263,7 @@ fn GeneralSettings() -> Element {
                     let knob_bg = if enabled { "var(--bg)" } else { "var(--textDim)" };
                     rsx! {
                         button {
-                            style: "position: relative; width: 48px; height: 26px; border-radius: 999px; border: 1px solid var(--border); background: {bg}; cursor: pointer; padding: 0; flex-shrink: 0; transition: background 0.2s ease; box-shadow: inset 0 1px 2px rgba(0,0,0,0.15);",
+                            style: "position: relative; width: 48px; height: 26px; border-radius: 999px; border: 1px solid var(--border); background: {bg}; cursor: pointer; padding: 0; flex-shrink: 0; transition: background 0.2s ease;",
                             onclick: move |_| {
                                 let next = !ui_state.read().smart_pane_titles;
                                 ui_state.write().smart_pane_titles = next;
@@ -561,8 +567,11 @@ fn AgentsSettings() -> Element {
                 div {
                     style: "display: flex; align-items: center; justify-content: space-between;",
                     div {
-                        style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--text);",
-                        "Custom Agents"
+                        style: "display: flex; align-items: center; gap: 6px;",
+                        div {
+                            style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                            "Custom Agents"
+                        }
                     }
                     if !show_form() {
                         button {
@@ -577,10 +586,13 @@ fn AgentsSettings() -> Element {
                 if show_form() {
                     div {
                         class: "card",
-                        style: "display: flex; flex-direction: column; gap: 14px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bgSecondary); box-shadow: 0 2px 8px rgba(0,0,0,0.04);",
+                        style: "display: flex; flex-direction: column; gap: 14px; padding: 20px;",
                         div {
-                            style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--text); margin-bottom: 4px;",
-                            "New Agent"
+                            style: "display: flex; align-items: center; gap: 6px; margin-bottom: 4px;",
+                            div {
+                                style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                                "New Agent"
+                            }
                         }
                         div {
                             style: "display: flex; flex-direction: column; gap: 10px;",
@@ -606,11 +618,11 @@ fn AgentsSettings() -> Element {
                             div {
                                 style: "display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-right: 8px;",
                                 span {
-                                    style: "font-family: var(--font-ui); font-size: var(--text-sm); font-weight: 600; color: var(--text);",
+                                    style: "display: flex; align-items: center; gap: 6px; font-family: var(--font-ui); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
                                     "Treat as Claude"
                                 }
                                 span {
-                                    style: "font-family: var(--font-ui); font-size: var(--text-xs); color: var(--textDim);",
+                                    style: "font-family: var(--font-ui); font-size: var(--text-xs); color: var(--textDim); padding-left: 14px;",
                                     "Show resume variants + running detection"
                                 }
                             }
@@ -624,11 +636,11 @@ fn AgentsSettings() -> Element {
                                 div {
                                     style: "display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-right: 8px;",
                                     span {
-                                        style: "font-family: var(--font-ui); font-size: var(--text-sm); font-weight: 600; color: var(--text);",
+                                        style: "display: flex; align-items: center; gap: 6px; font-family: var(--font-ui); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
                                         "Set as Priority"
                                     }
                                     span {
-                                        style: "font-family: var(--font-ui); font-size: var(--text-xs); color: var(--textDim);",
+                                        style: "font-family: var(--font-ui); font-size: var(--text-xs); color: var(--textDim); padding-left: 14px;",
                                         "Default resume option for Claude sessions"
                                     }
                                 }
@@ -690,8 +702,11 @@ fn AgentsSettings() -> Element {
             div {
                 style: "margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);",
                 div {
-                    style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--text); margin-bottom: 8px;",
-                    "Built-in Agents"
+                    style: "display: flex; align-items: center; gap: 6px; margin-bottom: 8px;",
+                    div {
+                        style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                        "Built-in Agents"
+                    }
                 }
                 div {
                     style: "display: flex; flex-direction: column; gap: 6px;",
@@ -704,6 +719,7 @@ fn AgentsSettings() -> Element {
                     ] {
                         div {
                             key: "{name}",
+                            class: "lit-sweep",
                             style: "display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
                             span {
                                 style: "font-size: var(--text-sm); font-weight: 500; color: var(--text);",
@@ -763,6 +779,7 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
     rsx! {
         div {
             key: "{id}",
+            class: "lit-sweep",
             style: "display: flex; flex-direction: column; gap: 6px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); transition: border-color 0.18s ease;",
             onmouseenter: move |_| {},
             div {
@@ -837,7 +854,7 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
                 }
             }
             div {
-                style: "font-size: var(--text-xs); color: var(--textDim); font-family: var(--fontFamily); background: var(--bg); padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                style: "font-size: var(--text-xs); color: var(--textDim); font-family: var(--fontFamily); background: var(--bgTertiary); padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                 "{cmd}"
             }
         }
@@ -884,15 +901,19 @@ struct SectionHeaderProps {
 fn SectionHeader(props: SectionHeaderProps) -> Element {
     rsx! {
         div {
-            style: "margin-bottom: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border);",
+            style: "margin-bottom: 8px; padding-bottom: 12px;",
             div {
-                style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
-                "{props.title}"
+                style: "display: flex; align-items: center; gap: 8px;",
+                div {
+                    style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                    "{props.title}"
+                }
             }
             div {
-                style: "font-size: var(--text-xs); color: var(--textDim); margin-top: 4px; line-height: 1.5;",
+                style: "font-size: var(--text-xs); color: var(--textDim); margin-top: 4px; line-height: 1.5; padding-left: 18px;",
                 "{props.desc}"
             }
+            hr { class: "great-circle-rule", style: "margin-top: 8px;" }
         }
     }
 }
@@ -909,12 +930,15 @@ fn SettingsSection(props: SettingsSectionProps) -> Element {
         div {
             style: "display: flex; flex-direction: column; gap: 2px;",
             div {
-                style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color lattice: var(--text);",
-                "{props.label}"
+                style: "display: flex; align-items: center; gap: 6px;",
+                div {
+                    style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                    "{props.label}"
+                }
             }
             if let Some(desc) = &props.description {
                 div {
-                    style: "font-size: var(--text-xs); color: var(--textDim); line-height: 1.5;",
+                    style: "font-size: var(--text-xs); color: var(--textDim); line-height: 1.5; padding-left: 14px;",
                     "{desc}"
                 }
             }
@@ -930,12 +954,24 @@ struct CustomToggleProps {
 
 #[component]
 fn CustomToggle(props: CustomToggleProps) -> Element {
-    let bg = if props.active { "var(--accent)" } else { "var(--bgTertiary)" };
-    let knob = if props.active { "translateX(22px)" } else { "translateX(2px)" };
-    let knob_bg = if props.active { "var(--bg)" } else { "var(--textDim)" };
+    let bg = if props.active {
+        "var(--accent)"
+    } else {
+        "var(--bgTertiary)"
+    };
+    let knob = if props.active {
+        "translateX(22px)"
+    } else {
+        "translateX(2px)"
+    };
+    let knob_bg = if props.active {
+        "var(--bg)"
+    } else {
+        "var(--textDim)"
+    };
     rsx! {
         div {
-            style: "flex-shrink: 0; width: 48px; height: 26px; border-radius: 999px; background: {bg}; border: 1px solid var(--border); position: relative; box-shadow: inset 0 1px 2px rgba(0,0,0,0.12); transition: background 0.18s ease, border-color 0.18s ease; pointer-events: none;",
+            style: "flex-shrink: 0; width: 48px; height: 26px; border-radius: 999px; background: {bg}; border: 1px solid var(--border); position: relative; transition: background 0.18s ease, border-color 0.18s ease; pointer-events: none;",
             div {
                 style: "position: absolute; top: 2px; left: 0px; width: 20px; height: 20px; border-radius: 50%; background: {knob_bg}; transform: {knob}; box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), background 0.18s ease; will-change: transform;",
             }

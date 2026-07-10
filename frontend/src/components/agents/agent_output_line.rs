@@ -45,6 +45,7 @@ pub fn AgentOutputLine(props: AgentOutputLineProps) -> Element {
 
     rsx! {
         div {
+            class: "lit-sweep",
             style: "display: flex; align-items: flex-start; gap: 8px; padding: 0 8px; font-family: var(--fontFamily); font-size: var(--text-xs); line-height: 1.6; color: {color}; {row_bg}",
 
             if props.show_line_numbers {

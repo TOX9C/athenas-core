@@ -202,10 +202,10 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                             flex_weight
                                         );
                                         if has_right {
-                                            s.push_str(" border-right: 1px solid color-mix(in srgb, var(--border, #888) 58%, transparent);");
+                                            s.push_str(" border-right: 1px solid var(--border);");
                                         }
                                         if has_bottom {
-                                            s.push_str(" border-bottom: 1px solid color-mix(in srgb, var(--border, #888) 58%, transparent);");
+                                            s.push_str(" border-bottom: 1px solid var(--border);");
                                         }
                                         s
                                     };
@@ -226,8 +226,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
 
                                     rsx! {
                                         div {
-                                            key: "pane-wrap-{space.id}-{pane.id}",
-                                            class: "{wrapper_class}",
+                                            class: "{wrapper_class} pane-astrolabe-mark",
                                             "data-pane-id": "{pane.id}",
                                             style: "{wrapper_style}",
 

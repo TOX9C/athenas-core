@@ -17,7 +17,7 @@ pub fn AgentPanel() -> Element {
                 style: "padding: 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px;",
                 IconAgents { size: Some(15), color: Some("var(--accent)".to_string()) }
                 span {
-                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
+                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
                     "Agents"
                 }
             }

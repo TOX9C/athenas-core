@@ -33,14 +33,14 @@ pub fn NotificationPanel() -> Element {
 
     rsx! {
         div {
-            class: "notification-panel",
-            style: "display: flex; flex-direction: column; height: 100%; background: var(--bg); color: var(--text);",
+            class: "notification-panel pane-astrolabe-mark",
+            style: "display: flex; flex-direction: column; height: 100%; background: var(--bgSecondary); color: var(--text); border: var(--border);",
 
             // Header
             div {
-                style: "padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); display: flex; align-items: center; gap: 8px;",
+                style: "padding: 12px 14px; border-bottom: var(--border); background: var(--bgSecondary); display: flex; align-items: center; gap: 8px;",
                 span {
-                    style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
+                    style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
                     "Alerts"
                 }
                 if unread_count > 0 {
@@ -52,9 +52,12 @@ pub fn NotificationPanel() -> Element {
                 }
             }
 
+            // Great-circle rule between header and body
+            div { class: "great-circle-rule" }
+
             // Filter tabs — segmented
             div {
-                style: "display: flex; padding: 8px 12px; border-bottom: 1px solid var(--border);",
+                style: "display: flex; padding: 8px 12px; border-bottom: var(--border);",
 
                 div {
                     class: "segmented",
@@ -109,10 +112,13 @@ pub fn NotificationPanel() -> Element {
                             };
                             let weight = if n_read { "400" } else { "600" };
                             let opacity = if n_read { "0.6" } else { "1" };
+                            let title_color = if n_read { "var(--text)" } else { "var(--accent)" };
+                            let unread_rule = String::new();
                             rsx! {
                                 div {
                                     key: "{n_id}",
-                                    style: "padding: 10px 12px; border-bottom: 1px solid var(--border); opacity: {opacity}; display: flex; align-items: flex-start; gap: 8px;",
+                                    class: "lit-sweep",
+                                    style: "padding: 10px 12px; border-bottom: var(--border); opacity: {opacity}; display: flex; align-items: flex-start; gap: 8px; {unread_rule}",
 
                                     // Type dot
                                     div {
@@ -125,7 +131,7 @@ pub fn NotificationPanel() -> Element {
                                         div {
                                             style: "display: flex; align-items: center; gap: 4px;",
                                             span {
-                                                style: "font-size: var(--text-sm); font-weight: {weight}; color: var(--text);",
+                                                style: "font-size: var(--text-sm); font-weight: {weight}; color: {title_color};",
                                                 "{display_title}"
                                             }
                                         }
@@ -158,7 +164,7 @@ pub fn NotificationPanel() -> Element {
 
             // Actions
             div {
-                style: "display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border);",
+                style: "display: flex; gap: 8px; padding: 8px 12px; border-top: var(--border);",
                 button {
                     class: "btn-ghost btn-sm",
                     onclick: move |_| {

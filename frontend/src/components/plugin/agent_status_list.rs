@@ -10,8 +10,8 @@ pub fn AgentStatusList() -> Element {
 
     rsx! {
         div {
-            class: "agent-status-list",
-            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto; overflow-x: hidden;",
+            class: "agent-status-list pane-astrolabe-mark",
+            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto; overflow-x: hidden; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-md);",
 
             if statuses.is_empty() {
                 EmptyState {
@@ -20,6 +20,11 @@ pub fn AgentStatusList() -> Element {
                     hint: Some("Running agents will appear here.".to_string()),
                 }
             } else {
+                // Feed header — accent + font-display.
+                div {
+                    style: "display: flex; align-items: center; gap: 6px; padding: 10px 14px; color: var(--accent); font-family: var(--font-display); font-weight: 600; letter-spacing: 0.04em; border-bottom: 1px solid var(--border);",
+                    "Agents"
+                }
                 for (id, status) in statuses.iter() {
                     {
                         let (status_color, status_label, is_working) = match status.status {
@@ -39,7 +44,8 @@ pub fn AgentStatusList() -> Element {
                         rsx! {
                             div {
                                 key: "{entry_id}",
-                                style: "display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border);",
+                                class: "lit-sweep",
+                                style: "display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); transition: box-shadow var(--dur-fast) var(--ease);",
 
                                 div {
                                     class: "{dot_class}",
@@ -55,7 +61,7 @@ pub fn AgentStatusList() -> Element {
                                             "{entry_name}"
                                         }
                                         span {
-                                            style: "font-size: var(--text-2xs); padding: 1px 6px; border-radius: var(--radius-pill); background: color-mix(in srgb, {status_color} 16%, transparent); color: {status_color};",
+                                            style: "font-size: var(--text-2xs); padding: 1px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, {status_color} 12%, transparent); border: 1px solid color-mix(in srgb, {status_color} 32%, transparent); color: {status_color}; font-weight: 500;",
                                             "{status_label}"
                                         }
                                     }

@@ -26,8 +26,12 @@ pub fn WorkspaceList() -> Element {
                 for space in spaces.iter() {
                     {
                         let is_active = active_space_id.as_deref() == Some(&space.id);
-                        let bg = if is_active { "var(--bgTertiary)" } else { "transparent" };
-                        let text_color = if is_active { "var(--text)" } else { "var(--textMuted)" };
+                        let bg = if is_active {
+                            "var(--bgHover)"
+                        } else {
+                            "transparent"
+                        };
+                        let text_color = if is_active { "var(--accent)" } else { "var(--textMuted)" };
                         let font_weight = if is_active { "600" } else { "400" };
                         let space_id = space.id.clone();
                         let space_id_close = space.id.clone();

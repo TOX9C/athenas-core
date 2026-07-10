@@ -1,4 +1,4 @@
-use crate::components::shared::icon::{IconMinus, IconPlus, IconSwarm, IconTerminal};
+use crate::components::shared::icon::{IconMinus, IconPlus, IconSeal, IconSwarm, IconTerminal};
 use crate::components::shared::modal::Modal;
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{
@@ -213,11 +213,22 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
         .unwrap_or(false);
 
     let total_panes: usize = pane_agents.read().iter().map(|r| r.count).sum();
+    // Snapshot the per-row agent state into an owned Vec BEFORE the rsx! tree.
+    // Holding `pane_agents.read()` alive across IconMinus/IconPlus button children
+    // re-borrows Dioxus's hook list during render → open panic
+    // "The hook list is already borrowed" (BorrowMutError). Same idiom as
+    // `total_panes` above: clone here so the RefCell borrow drops before rsx!.
+    let pane_rows_snapshot: Vec<AgentRowState> = pane_agents.read().iter().cloned().collect();
+
     let coordinator_count = slots
         .read()
         .iter()
         .filter(|s| s.role == AgentRole::Coordinator)
         .count();
+    // Snapshot the swarm slots (same reason as pane_rows_snapshot —
+    // IconMinus/select children re-borrow the hook list if `slots.read()` is
+    // held alive across the for body).
+    let slots_snapshot: Vec<AgentSlot> = slots.read().iter().cloned().collect();
     let builder_count = slots
         .read()
         .iter()
@@ -465,14 +476,19 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
             width: 560,
             footer: Some(footer_el),
 
-            // Step indicator dots
+            // Step indicator dots — Θ seal pendant at the leading edge.
             if step() > 0 {
                 div {
                     style: "display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border);",
 
+                    span {
+                        class: "seal-mark",
+                        IconSeal { size: Some(14), color: Some("var(--accent)".to_string()) }
+                    }
+
                     for i in 1..=total_steps {
                         {
-                            let dot_bg = if step() >= i { "var(--accent)" } else { "var(--border)" };
+                            let dot_bg = if step() >= i { "var(--accent)" } else { "var(--bgTertiary)" };
                             rsx! {
                                 div {
                                     key: "{i}",
@@ -640,13 +656,21 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                             }
                         }
 
-                        for (idx, row) in pane_agents.read().iter().enumerate() {
+                        for (idx, row) in pane_rows_snapshot.iter().enumerate() {
                             {
                                 let count_val = row.count;
                                 let has_any = count_val > 0;
                                 let color = get_agent_color(&row.agent_type);
-                                let row_bg = if has_any { "var(--bgTertiary)" } else { "var(--bg)" };
-                                let row_border = if has_any { "color-mix(in srgb, var(--accent) 50%, var(--border))" } else { "var(--border)" };
+                                let row_bg = if has_any {
+                                    "var(--bgSecondary)"
+                                } else {
+                                    "transparent"
+                                };
+                                let row_border = if has_any {
+                                    "1px solid var(--border)"
+                                } else {
+                                    "1px solid var(--border)"
+                                };
                                 let dot_bg = if has_any { color } else { "var(--textDim)" };
                                 let text_color = if has_any { "var(--text)" } else { "var(--textMuted)" };
                                 let minus_disabled_class = if count_val == 0 { "btn-disabled" } else { "" };
@@ -734,12 +758,12 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                 }
                             }
                         }
-                    }
+                        }
 
                     // Summary
                     div {
-                        style: "padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgTertiary); margin-top: 4px;",
-                        div { style: "font-size: var(--text-2xs); color: var(--textMuted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em;", "Summary" }
+                        style: "padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); margin-top: 4px;",
+                        div { style: "font-size: var(--text-2xs); color: var(--accent); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em;", "Summary" }
                         div {
                             style: "font-size: var(--text-sm); color: var(--text);",
                             {space_name.read().clone()}
@@ -779,7 +803,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                 }
                             }
 
-                            for (idx, slot) in slots.read().iter().enumerate() {
+                            for (idx, slot) in slots_snapshot.iter().enumerate() {
                                 {
                                     let slot_role_val = agent_role_str(&slot.role);
                                     let slot_agent_val = slot_value(&slot);
@@ -789,7 +813,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     rsx! {
                                         div {
                                             key: "{idx}",
-                                            style: "display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg);",
+                                            style: "display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
 
                                             div {
                                                 style: "width: 8px; height: 8px; border-radius: var(--radius-pill); background: {dot_c}; flex-shrink: 0;",

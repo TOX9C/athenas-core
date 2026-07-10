@@ -17,7 +17,7 @@ pub fn SwarmActivityFeed(props: SwarmActivityFeedProps) -> Element {
             div {
                 style: "padding: 12px 14px; border-bottom: 1px solid var(--border);",
                 span {
-                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; letter-spacing: 0.01em; color: var(--text);",
+                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; letter-spacing: 0.04em; color: var(--accent);",
                     "Activity"
                 }
             }
