@@ -63,6 +63,7 @@ pub fn XtermMount(
     let term_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let mut terminal_store = use_terminal_store();
     let terminal_registry = use_terminal_registry();
+    let registry_for_drop = terminal_registry.clone();
     let workspace_store = use_workspace_store();
     let ui_state = use_ui_store();
 
@@ -554,6 +555,14 @@ pub fn XtermMount(
                     if !session.is_xterm {
                         restore_term_from_session(&term_val, session);
                     }
+                    // Replay the captured xterm.js buffer snapshot if one was
+                    // stashed by a previous mount's use_drop (pane swap).
+                    // This restores the visible terminal content that would
+                    // otherwise be lost when the old xterm.js instance was
+                    // disposed during the key-flip remount.
+                    if let Some(ref snapshot) = session.xterm_buffer_snapshot {
+                        replay_xterm_buffer(&term_val, snapshot);
+                    }
                 }
                 force_redraw(&term_val);
             } else if let Ok(clear_val) = js_sys::Reflect::get(&term_val, &JsValue::from_str("clear")) {
@@ -561,6 +570,10 @@ pub fn XtermMount(
                     let _ = clear_fn.call0(&term_val);
                 }
                 force_redraw(&term_val);
+            }
+            // Clear any stashed snapshot after replay (one-shot).
+            if let Some(mut session) = registry.write_session(&mount_id) {
+                session.xterm_buffer_snapshot = None;
             }
 
             let pane_id_for_data = mount_id.clone();
@@ -836,8 +849,16 @@ pub fn XtermMount(
         }
     });
 
+    let mount_id_for_drop = pane_id.clone();
     use_drop(move || {
         if let Some(mut c) = cleanup.take() {
+            // Capture the xterm.js buffer content before disposing, so a
+            // remount after pane swap can replay it instead of showing blank.
+            if let Some(snapshot) = capture_xterm_buffer(&c.term) {
+                if let Some(mut session) = registry_for_drop.write_session(&mount_id_for_drop) {
+                    session.xterm_buffer_snapshot = Some(snapshot);
+                }
+            }
             if let Some(unlisten) = c.unlisten.take() {
                 unlisten();
             }
@@ -1038,6 +1059,89 @@ fn force_redraw(term_val: &JsValue) {
             let _ = fit_fn.call0(term_val);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Capture xterm.js buffer content before unmount, and replay it into a
+// fresh terminal on remount after a pane swap.  Without this, swapping
+// pane positions disposes the old xterm.js Terminal (destroying its
+// scrollback buffer) and the new mount shows a blank screen.
+// ---------------------------------------------------------------------------
+
+/// Read the visible portion of the xterm.js buffer (viewport + a few
+/// scrollback lines) as a string suitable for `term.write()`.  Returns
+/// an ANSI cursor-home + clear-screen prefix so the replay starts clean.
+fn capture_xterm_buffer(term_val: &JsValue) -> Option<String> {
+    let buffer = js_sys::Reflect::get(term_val, &JsValue::from_str("buffer"))
+        .ok()?;
+    let active = js_sys::Reflect::get(&buffer, &JsValue::from_str("active"))
+        .ok()?;
+
+    // buffer.active.length is the total number of lines (scrollback + viewport).
+    let length = js_sys::Reflect::get(&active, &JsValue::from_str("length"))
+        .ok()?
+        .as_f64()? as i32;
+    if length <= 0 {
+        return None;
+    }
+
+    // We want the visible rows, not the entire scrollback (which can be
+    // 10000 lines).  Capture the last N lines where N = terminal rows + a
+    // small scrollback margin (typically what the user sees).
+    let rows = js_sys::Reflect::get(term_val, &JsValue::from_str("rows"))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|v| v as i32)
+        .unwrap_or(24);
+    // Capture viewport + 50 lines of scrollback (enough context without
+    // dumping the entire 10k buffer).
+    let capture_lines = (rows + 50).min(length);
+    let start = (length - capture_lines).max(0);
+
+    let get_line = js_sys::Reflect::get(&active, &JsValue::from_str("getLine"))
+        .ok()?;
+    let get_line_fn = get_line.dyn_into::<js_sys::Function>().ok()?;
+
+    let mut snapshot = String::from("\u{1b}[2J\u{1b}[H");
+    let mut any_content = false;
+
+    for i in start..length {
+        let line_val = get_line_fn.call1(&active, &JsValue::from_f64(i as f64)).ok()?;
+        if line_val.is_null() || line_val.is_undefined() {
+            snapshot.push_str("\r\n");
+            continue;
+        }
+
+        // line.translateToString(true) returns the cell text with wide
+        // chars handled.  `true` = trim trailing whitespace.
+        let translate = js_sys::Reflect::get(&line_val, &JsValue::from_str("translateToString"))
+            .ok()?;
+        let translate_fn = translate.dyn_into::<js_sys::Function>().ok()?;
+        let text = translate_fn
+            .call2(&line_val, &JsValue::from_bool(true), &JsValue::from_f64(0.0))
+            .ok()?;
+        let text_str = text.as_string().unwrap_or_default();
+
+        if !text_str.is_empty() {
+            any_content = true;
+        }
+        snapshot.push_str(&text_str);
+        if i + 1 < length {
+            snapshot.push_str("\r\n");
+        }
+    }
+
+    if any_content {
+        Some(snapshot)
+    } else {
+        None
+    }
+}
+
+/// Write a previously captured buffer snapshot into a freshly opened terminal.
+fn replay_xterm_buffer(term_val: &JsValue, snapshot: &str) {
+    write_str_to_term(term_val, snapshot);
+    force_redraw(term_val);
 }
 
 // ---------------------------------------------------------------------------
