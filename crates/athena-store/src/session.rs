@@ -87,6 +87,22 @@ impl SessionStore {
         })
     }
 
+    /// Construct a SessionStore rooted at a caller-provided base directory.
+    /// Creates `athena-sessions/` and `athena-images/` subdirs.  Used by
+    /// integration tests (`session_tests.rs`) to get isolated temp dirs
+    /// without touching the user's real data directory.
+    #[cfg(test)]
+    pub(crate) fn new_at_base(base: &std::path::Path) -> Self {
+        let sessions_dir = base.join("athena-sessions");
+        let images_dir = base.join("athena-images");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::create_dir_all(&images_dir).unwrap();
+        SessionStore {
+            sessions_dir,
+            images_dir,
+        }
+    }
+
     fn session_path(&self, id: &str) -> PathBuf {
         self.sessions_dir.join(format!("{id}.json"))
     }
