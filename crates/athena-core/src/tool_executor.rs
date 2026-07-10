@@ -562,6 +562,11 @@ pub struct ToolExecutor {
     kanban_backend: KanbanBackend,
     store: Arc<athena_store::KeyValueStore>,
     notification_service: Option<Arc<crate::notification::NotificationService>>,
+    /// Override for workspace root — used by tests to avoid mutating the
+    /// process-global CWD via `std::env::set_current_dir`. When `Some`,
+    /// `get_workspace_root` returns this path directly.
+    #[allow(dead_code)]
+    workspace_root_override: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ToolExecutor {
@@ -588,7 +593,17 @@ impl ToolExecutor {
             kanban_backend,
             store,
             notification_service,
+            workspace_root_override: None,
         }
+    }
+
+    /// Set the workspace root override (for tests).  Avoids mutating the
+    /// process-global CWD from parallel `#[tokio::test]` cases which race
+    /// on `std::env::set_current_dir`.
+    #[cfg(test)]
+    pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
+        self.workspace_root_override = Some(root);
+        self
     }
 
     /// Execute a tool call by name with the given arguments.
@@ -1154,6 +1169,9 @@ impl ToolExecutor {
     // -- Kanban tools -------------------------------------------------------
 
     fn get_workspace_root(&self) -> Result<PathBuf, ToolExecutorError> {
+        if let Some(ref root) = self.workspace_root_override {
+            return Ok(root.clone());
+        }
         std::env::current_dir()
             .and_then(|p| p.canonicalize())
             .map_err(|e| {
@@ -1650,21 +1668,15 @@ mod tests {
         )
     }
 
-    struct CurrentDirGuard {
-        original: std::path::PathBuf,
-    }
-
-    impl Drop for CurrentDirGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.original);
-        }
-    }
+    // CurrentDirGuard removed — tests now use with_workspace_root() to inject
+    // the temp dir directly via ToolExecutor's override field, avoiding any
+    // mutation of the process-global CWD (which races under parallel test
+    // execution).
 
     #[test]
     fn path_validation_security() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
-        // Create the workspace marker so get_workspace_root() can find a root.
+        // Create the workspace marker so PathValidator can find a root.
         let marker = temp_dir.path().join("src-tauri").join("tauri.conf.json");
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(
@@ -1672,12 +1684,9 @@ mod tests {
             r##"{ "build": { "beforeBuildCommand": "echo" } }"##,
         )
         .unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
-        let _guard = CurrentDirGuard {
-            original: original_dir,
-        };
 
-        let executor = create_executor();
+        let executor = create_executor()
+            .with_workspace_root(temp_dir.path().to_path_buf());
 
         // Test absolute path escape
         assert!(
@@ -1720,16 +1729,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_fs_search_uses_async_search_code() {
         let tmp = tempfile::tempdir().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
-        let _guard = CurrentDirGuard {
-            original: original_dir,
-        };
+        // Create the workspace marker.
+        let marker = tmp.path().join("src-tauri").join("tauri.conf.json");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, r##"{ "build": { "beforeBuildCommand": "echo" } }"##).unwrap();
 
-        // Write a file inside the workspace (current_dir)
+        // Write a file inside the workspace
         std::fs::write(tmp.path().join("target.txt"), "needle in haystack\n").unwrap();
 
-        let executor = create_executor();
+        let executor = create_executor()
+            .with_workspace_root(tmp.path().to_path_buf());
+
         let args = ToolInput {
             pattern: Some("needle".to_string()),
             path: Some("target.txt".to_string()),
