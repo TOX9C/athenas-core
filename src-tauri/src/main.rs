@@ -12,7 +12,7 @@ use tauri::Manager;
 
 fn main() {
     let app_state = state::AppState::new();
-    let builder = tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Debug)

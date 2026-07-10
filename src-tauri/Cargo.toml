@@ -41,7 +41,6 @@ athena-browser = { path = "../crates/athena-browser" }
 athena-plugins = { path = "../crates/athena-plugins" }
 athena-terminal = { path = "../crates/athena-terminal" }
 
-[target.'cfg(debug_assertions)'.dependencies]
 tauri-plugin-webdriver-automation = "0.1.3"
 
 [build-dependencies]
