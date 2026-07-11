@@ -267,10 +267,6 @@ pub struct TerminalSession {
     /// while the LLM call is in flight, Failed if it exhausted retries, Done
     /// once a title (or "Sensitive prompt") is available. See utils/pane_label.
     pub title_state: crate::utils::pane_label::TitleState,
-    /// Serialized xterm.js buffer content captured before unmount (e.g. when
-    /// a pane swap changes the component key).  Replayed into the fresh
-    /// xterm.js instance on remount so the terminal isn't blank after swap.
-    pub xterm_buffer_snapshot: Option<String>,
 }
 
 impl TerminalSession {
@@ -300,7 +296,6 @@ impl TerminalSession {
             session_id: None,
             raw_prompt: None,
             title_state: crate::utils::pane_label::TitleState::default(),
-            xterm_buffer_snapshot: None,
         }
     }
 
