@@ -267,6 +267,13 @@ pub struct TerminalSession {
     /// while the LLM call is in flight, Failed if it exhausted retries, Done
     /// once a title (or "Sensitive prompt") is available. See utils/pane_label.
     pub title_state: crate::utils::pane_label::TitleState,
+    /// VT escape string produced by `@xterm/addon-serialize` just before the
+    /// xterm.js Terminal is disposed on a pane swap / unmount. The next mount's
+    /// reuse-session branch writes this back into the fresh Terminal (after
+    /// fit()), restoring colors, scrollback, alt-screen state, DEC modes, and
+    /// cursor position. `None` for non-xterm sessions or when no capture ran.
+    /// See xterm_mount.rs `serialize_buffer` / the use_drop capture hook.
+    pub serialized_snapshot: Option<String>,
 }
 
 impl TerminalSession {
@@ -296,6 +303,7 @@ impl TerminalSession {
             session_id: None,
             raw_prompt: None,
             title_state: crate::utils::pane_label::TitleState::default(),
+            serialized_snapshot: None,
         }
     }
 

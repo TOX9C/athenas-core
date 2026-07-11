@@ -43,6 +43,11 @@ struct XtermCleanup {
     _visibility_observer: Option<JsValue>,
     /// Rooted IntersectionObserver callback closure.
     _vis_callback: Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>>,
+    /// Rooted `@xterm/addon-serialize` instance. Kept alive for the mount so
+    /// `serialize_buffer` can read the live buffer in `use_drop` *before*
+    /// `term.dispose()` destroys it. Dropping this JsValue after dispose lets
+    /// the addon's own disposables (registered against the terminal) run.
+    _serialize_addon: Option<JsValue>,
 }
 
 /// Mount an xterm.js Terminal into a div with id `pane_id`.
@@ -64,14 +69,14 @@ pub fn XtermMount(
     let fit_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let mut terminal_store = use_terminal_store();
     let terminal_registry = use_terminal_registry();
+    // Clone for use_drop BEFORE use_effect moves the original terminal_registry
+    // into its own closure (the effect re-binds `terminal_registry` internally).
+    let registry_for_drop = terminal_registry.clone();
     let workspace_store = use_workspace_store();
     let ui_state = use_ui_store();
 
     use_effect(move || {
         let already_init = *is_initialized.borrow();
-        web_sys::console::log_1(
-            &format!("[XtermMount] use_effect triggered for id={}, is_initialized={}", mount_id, already_init).into(),
-        );
         if already_init {
             return;
         }
@@ -583,19 +588,40 @@ pub fn XtermMount(
                 // One-shot snapshot via the registry (peek, no subscription).
                 let existing_session = registry.peek_session(&mount_id);
                 if let Some(session) = existing_session.as_ref() {
-                    // Xterm grid is never populated (on_data skips it), so restore would
-                    // only clear the terminal. Skip it to keep the display intact.
+                    // Xterm grid is never populated (on_data skips it), so the
+                    // legacy grid-based restore would only clear the terminal.
                     if !session.is_xterm {
                         restore_term_from_session(&term_val, session);
+                    }
+                }
+                // Replay the serialized VT snapshot captured by use_drop
+                // before the previous terminal was disposed. The serialized
+                // string re-enters the alt buffer / DEC modes and rewrites
+                // colors + scrollback + cursor position. Write synchronously
+                // here (same tick as the subscribe Ok arm) so it lands in the
+                // write-coalescer ahead of the raw_paused burst flush — the
+                // addon's CSI sequences win the final paint even if the burst
+                // arrives mid-replay. The snapshot is consumed once and
+                // cleared so it's never replayed again on a later remount.
+                let snapshot = registry
+                    .peek_session(&mount_id)
+                    .and_then(|s| s.serialized_snapshot);
+                if let Some(snapshot) = snapshot {
+                    write_str_to_term(&term_val, &snapshot);
+                    if let Some(mut session) = registry.write_session(&mount_id) {
+                        session.serialized_snapshot = None;
                     }
                 }
                 // No explicit unpause here: the `pty_attach_listener` call
                 // above (in the subscribe Ok arm) already cleared `raw_paused`.
                 // The backend read loop detects the true→false transition on
                 // its next iteration and flushes the accumulated burst into
-                // the JS write-coalescer, which writes directly into the fresh
-                // (blank) terminal — no snapshot to clobber.
-            } else if let Ok(clear_val) = js_sys::Reflect::get(&term_val, &JsValue::from_str("clear")) {
+                // the JS write-coalescer, which writes directly into the
+                // replayed terminal — the addon's buffer-switch sequences
+                // ensure the burst paints into the right buffer.
+            } else if let Ok(clear_val) =
+                js_sys::Reflect::get(&term_val, &JsValue::from_str("clear"))
+            {
                 if let Ok(clear_fn) = clear_val.dyn_into::<js_sys::Function>() {
                     let _ = clear_fn.call0(&term_val);
                 }
@@ -650,12 +676,19 @@ pub fn XtermMount(
             }
 
             let _ = try_activate_addon(&window, "CanvasAddon", &term_val);
+            // SerializeAddon captures the live buffer (SGR colors, scrollback,
+            // alt-screen, DEC modes, cursor) to a VT escape string. Used by
+            // `use_drop` (via serialize_buffer) to snapshot the terminal just
+            // before dispose, so the next mount's reuse-session branch can
+            // replay it into the fresh terminal — surviving the pane-swap
+            // remount (use_drop fires on every swap; see project-swap-remount).
+            let serialize_addon = try_activate_addon(&window, "SerializeAddon", &term_val);
 
             let mut resize_observer_holder: Option<JsValue> = None;
             let mut ro_closure_holder: Option<wasm_bindgen::closure::Closure<dyn FnMut()>> = None;
             if let Some(fit_instance) = try_activate_addon(&window, "FitAddon", &term_val) {
                 // Initial fit so the terminal has correct cols/rows before any data arrives.
-                schedule_fit(&window, &fit_instance, &container);
+                schedule_fit(&window, &fit_instance, &container, &term_val);
                 // Publish the fit addon instance so reactive effects (the font
                 // family/size effect below) can refit after pushing option
                 // changes — a font change resizes glyph cells, so the container
@@ -664,6 +697,7 @@ pub fn XtermMount(
 
                 let fit_for_ro = fit_instance.clone();
                 let container_for_ro = container.clone();
+                let term_for_ro = term_val.clone();
                 let ro_timer: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
                 let ro_timer_for_cb = ro_timer.clone();
                 let ro_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
@@ -673,12 +707,18 @@ pub fn XtermMount(
                         }
                         let fit_for_cb = fit_for_ro.clone();
                         let container_for_cb = container_for_ro.clone();
+                        let term_for_cb = term_for_ro.clone();
                         // Single-fire timer closure — once_into_js auto-frees
                         // after the timeout fires, so this no longer leaks one
                         // Closure per resize tick.
                         let timer = wasm_bindgen::closure::Closure::once_into_js(move || {
                             if let Some(win) = web_sys::window() {
-                                schedule_fit(&win, &fit_for_cb, &container_for_cb);
+                                // fit() then refresh() in the same rAF tick — on
+                                // a pure pane-swap relayout (only flex weight
+                                // changes, no new PTY data) fit alone leaves the
+                                // canvas stale; the refresh forces a repaint
+                                // against the recomputed cell grid.
+                                schedule_fit(&win, &fit_for_cb, &container_for_cb, &term_for_cb);
                             }
                         });
                         let handle = w.set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -723,11 +763,19 @@ pub fn XtermMount(
                 // calling fit() during scroll / continuous output.
             }
             // ── IntersectionObserver: redraw when container becomes visible ──
-            // When the terminal is hidden inside a display:none subtree (e.g. panel
-            // switch), the browser discards the <canvas> backing store, leaving the
-            // terminal blank. Detect visibility restoration and force a full redraw.
+            // When the terminal is hidden inside a display:none subtree (e.g.
+            // panel switch, fullscreen exit, multi-space tab switch), the
+            // browser discards the canvas/DOM backing store, leaving the
+            // terminal blank on restore. Detect visibility restoration and
+            // refit + repaint. Order matters: fit() FIRST (recompute cols/rows
+            // from the now-visible container rect), THEN refresh(0, rows-1)
+            // with rows read post-fit so the repainted range matches the new
+            // cell grid. Calling refresh-then-fit (the old code) painted with
+            // stale rows, and calling term.fit() (the old code) was a no-op
+            // because fit() lives on the FitAddon, not the Terminal.
             let term_for_vis = term_val.clone();
-            let term_for_vis_fit = term_val.clone();
+            let fit_ref_for_vis = fit_ref; // Signal<Option<JsValue>> is Copy
+            let container_for_vis = container.clone();
             let vis_closure =
                 wasm_bindgen::closure::Closure::wrap(Box::new(move |entries: JsValue| {
                     let Ok(arr) = entries.dyn_into::<js_sys::Array>() else {
@@ -740,49 +788,23 @@ pub fn XtermMount(
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
                         if is_intersecting {
-                            let rows =
-                                js_sys::Reflect::get(&term_for_vis, &JsValue::from_str("rows"))
-                                    .ok()
-                                    .and_then(|v| v.as_f64())
-                                    .map(|v| v as i32)
-                                    .unwrap_or(24);
-                            if rows > 0 {
-                                if let Ok(refresh_val) = js_sys::Reflect::get(
+                            if let (Some(win), Some(fit_instance)) =
+                                (web_sys::window(), fit_ref_for_vis())
+                            {
+                                // fit-then-refresh, same rAF tick. call_fit
+                                // skips on zero-dims (container not laid out
+                                // yet) and refreshes the full post-fit range.
+                                schedule_fit(
+                                    &win,
+                                    &fit_instance,
+                                    &container_for_vis,
                                     &term_for_vis,
-                                    &JsValue::from_str("refresh"),
-                                ) {
-                                    if let Ok(refresh_fn) =
-                                        refresh_val.dyn_into::<js_sys::Function>()
-                                    {
-                                        let _ = refresh_fn.call2(
-                                            &term_for_vis,
-                                            &JsValue::from_f64(0.0),
-                                            &JsValue::from_f64((rows - 1) as f64),
-                                        );
-                                    }
-                                }
+                                );
+                            } else {
+                                // No FitAddon on record (activation failed) —
+                                // still force a repaint of whatever rows exist.
+                                force_redraw(&term_for_vis);
                             }
-                            // Also refit after becoming visible again:
-                            let fit_ref = term_for_vis_fit.clone();
-                            let _ = web_sys::window().and_then(|w| {
-                                w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                                    Closure::once_into_js(Box::new(move || {
-                                        if let Ok(fit_val) = js_sys::Reflect::get(
-                                            &fit_ref,
-                                            &JsValue::from_str("fit"),
-                                        ) {
-                                            if let Ok(fit_fn) =
-                                                fit_val.dyn_into::<js_sys::Function>()
-                                            {
-                                                let _ = fit_fn.call0(&fit_ref);
-                                            }
-                                        }
-                                    }))
-                                    .unchecked_ref(),
-                                    50,
-                                )
-                                .ok()
-                            });
                             break;
                         }
                     }
@@ -821,6 +843,7 @@ pub fn XtermMount(
                 _keydown_handler: Some(keydown_handler_js),
                 _visibility_observer: vis_observer_holder,
                 _vis_callback: vis_callback_holder,
+                _serialize_addon: serialize_addon,
             }));
         });
     });
@@ -929,34 +952,47 @@ pub fn XtermMount(
                 }
             }
 
-            // Refit so cols/rows match the new glyph cell dimensions, then
-            // force a repaint of the canvas. Without fit() the terminal keeps
-            // stale cols/rows and xterm's renderer misaligns; without the
-            // redraw the old glyphs stay on screen until the next data burst.
+            // font change resizes glyph cells, so fit() must recompute cols/rows
+            // and refresh() must repaint against that fresh grid — in that order,
+            // in one rAF tick. (The old code fit-deferred-then-refresh-now,
+            // painting stale rows until the next data burst.)
             if let Some(fit) = fit_ref_for_font() {
                 if let Some(doc) = window.document() {
                     if let Some(el) = doc.get_element_by_id(&mount_id_for_font) {
-                        schedule_fit(&window, &fit, &el);
+                        schedule_fit(&window, &fit, &el, &term);
                     }
                 }
             }
-            force_redraw(&term);
         }
     });
 
     let mount_id_for_drop = pane_id.clone();
     use_drop(move || {
         if let Some(mut c) = cleanup.take() {
-        // Pause backend raw emission BEFORE unlistening — closes the
-        // stream-gap desync window. The backend keeps reading the PTY fd
-        // (shell doesn't block) but suppresses pty:raw events so no bytes are
-        // lost to a dead listener during the remount gap. The new mount
-        // unpauses via pty_attach_listener on re-subscribe. This must fire
-        // even if the cleanup below fails, so it's the first thing.
-        let mid = mount_id_for_drop.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            let _ = pty_set_raw_paused(&mid, true).await;
-        });
+            // Pause backend raw emission BEFORE unlistening — closes the
+            // stream-gap desync window. The backend keeps reading the PTY fd
+            // (shell doesn't block) but suppresses pty:raw events so no bytes are
+            // lost to a dead listener during the remount gap. The new mount
+            // unpauses via pty_attach_listener on re-subscribe. This must fire
+            // even if the cleanup below fails, so it's the first thing.
+            let mid = mount_id_for_drop.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = pty_set_raw_paused(&mid, true).await;
+            });
+            // Capture the live buffer BEFORE term.dispose() destroys it.
+            // The next mount's reuse-session branch replays this string into
+            // the fresh terminal, surviving the pane-swap remount (use_drop
+            // fires on every within-space swap — confirmed at runtime; see
+            // project-swap-remount). Colors, scrollback, alt-screen, DEC
+            // modes, and cursor position are all preserved by the addon's
+            // defaults (excludeAltBuffer:false, excludeModes:false).
+            if let Some(ref serialize_addon) = c._serialize_addon {
+                if let Some(snapshot) = serialize_buffer(serialize_addon) {
+                    if let Some(mut session) = registry_for_drop.write_session(&mount_id_for_drop) {
+                        session.serialized_snapshot = Some(snapshot);
+                    }
+                }
+            }
             if let Some(unlisten) = c.unlisten.take() {
                 unlisten();
             }
@@ -1073,6 +1109,35 @@ fn write_str_to_term(term_val: &JsValue, text: &str) {
     let _ = write_fn.call1(term_val, &JsValue::from_str(text));
 }
 
+/// Serialize the live xterm.js buffer to a VT escape string via
+/// `@xterm/addon-serialize`. Returns `None` if the addon isn't loaded or the
+/// call fails. MUST run BEFORE `term.dispose()` — once dispose() runs the
+/// buffer (colors, scrollback, alt-screen, modes, cursor) is gone.
+///
+/// `excludeAltBuffer:false, excludeModes:false` (the defaults) preserve the
+/// alt-screen state and DEC private modes so vim/htop round-trip correctly:
+/// the serialized output begins with the buffer-switch + mode-set sequences
+/// needed to re-enter that state on replay.
+fn serialize_buffer(serialize_addon: &JsValue) -> Option<String> {
+    let serialize_val =
+        js_sys::Reflect::get(serialize_addon, &JsValue::from_str("serialize")).ok()?;
+    let serialize_fn = serialize_val.dyn_into::<js_sys::Function>().ok()?;
+    // { excludeAltBuffer: false, excludeModes: false } — preserve everything.
+    let opts = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &opts,
+        &JsValue::from_str("excludeAltBuffer"),
+        &JsValue::from_bool(false),
+    );
+    let _ = js_sys::Reflect::set(
+        &opts,
+        &JsValue::from_str("excludeModes"),
+        &JsValue::from_bool(false),
+    );
+    let result = serialize_fn.call1(serialize_addon, &opts).ok()?;
+    result.as_string()
+}
+
 fn restore_term_from_session(term_val: &JsValue, session: &TerminalSession) {
     let mut snapshot = String::from("\u{1b}[2J\u{1b}[H");
 
@@ -1097,7 +1162,14 @@ fn restore_term_from_session(term_val: &JsValue, session: &TerminalSession) {
     write_str_to_term(term_val, &snapshot);
 }
 
-fn call_fit(fit_instance: &JsValue, container: &web_sys::Element) {
+// fit() recomputes cols/rows from the container rect, but on a pure geometry
+// change with no new PTY bytes flowing the CanvasAddon does not always emit a
+// full repaint frame — leaving the canvas showing stale glyph geometry (the
+// "blank until resize" symptom after a pane drag-swap, since Dioxus only moves
+// the keyed node and changes its flex weight, no remount, no new data).
+// Forcing refresh(0, rows-1) with rows read *after* fit() in the same rAF tick
+// repaints the whole row range against the fresh cell grid.
+fn call_fit(fit_instance: &JsValue, container: &web_sys::Element, term_val: &JsValue) {
     let rect = container.get_bounding_client_rect();
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
@@ -1109,21 +1181,28 @@ fn call_fit(fit_instance: &JsValue, container: &web_sys::Element) {
         return;
     };
     let _ = fit_fn.call0(fit_instance);
+
+    // Refresh must follow fit (not precede it) and read rows *after* fit so the
+    // row range matches the new cell grid. Same rAF tick — no deferral.
+    refresh_full(term_val);
 }
 
-fn schedule_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &web_sys::Element) {
+fn schedule_fit(
+    window: &web_sys::Window,
+    fit_instance: &JsValue,
+    container: &web_sys::Element,
+    term_val: &JsValue,
+) {
     let fit_for_raf = fit_instance.clone();
     let container_for_raf = container.clone();
+    let term_for_raf = term_val.clone();
     // RAF callbacks fire exactly once, so use once_into_js which auto-frees
     // the closure after invocation. The previous Closure::wrap + forget()
     // leaked one closure per call (per resize tick).
     let raf_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
-        call_fit(&fit_for_raf, &container_for_raf);
+        call_fit(&fit_for_raf, &container_for_raf, &term_for_raf);
     });
     let _ = window.request_animation_frame(raf_closure.as_ref().unchecked_ref());
-    // raf_closure is a JsValue here; keep it alive in this scope until the
-    // RAF fires by... actually once_into_js hands ownership to JS. The RAF
-    // holds a reference until it fires, then the closure frees itself.
 }
 
 // `debounced_fit` was deleted: it was dead code (never called) and leaked a
@@ -1131,32 +1210,40 @@ fn schedule_fit(window: &web_sys::Window, fit_instance: &JsValue, container: &we
 // ResizeObserver's own 50ms timer in ro_closure handle debouncing.
 
 // ---------------------------------------------------------------------------
-// Force a full xterm.js repaint + fit.
-// Used by IntersectionObserver (visibility restore) and by the post-mount
-// size-gate path after a pane swap.
+// Force a full xterm.js repaint of the visible row range: refresh(0, rows-1).
+// refresh() just re-runs the renderer over the current buffer (normal *or*
+// alt-screen) — it touches no buffer state, scrollback, modes, or cursor, so
+// it is safe to call after any dimension change. Callers MUST have already
+// run FitAddon.fit() (which recomputes cols/rows) before this, so the row
+// range here matches the new cell grid. This is the post-fit half of the
+// fit-then-refresh invariant used by IntersectionObserver, the font effect,
+// and the post-mount size-gate path.
 // ---------------------------------------------------------------------------
-fn force_redraw(term_val: &JsValue) {
+fn refresh_full(term_val: &JsValue) {
     let rows = js_sys::Reflect::get(term_val, &JsValue::from_str("rows"))
         .ok()
         .and_then(|v| v.as_f64())
         .map(|v| v as i32)
         .unwrap_or(24);
-    if rows > 0 {
-        if let Ok(refresh_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("refresh")) {
-            if let Ok(refresh_fn) = refresh_val.dyn_into::<js_sys::Function>() {
-                let _ = refresh_fn.call2(
-                    term_val,
-                    &JsValue::from_f64(0.0),
-                    &JsValue::from_f64((rows - 1) as f64),
-                );
-            }
+    if rows <= 0 {
+        return;
+    }
+    if let Ok(refresh_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("refresh")) {
+        if let Ok(refresh_fn) = refresh_val.dyn_into::<js_sys::Function>() {
+            let _ = refresh_fn.call2(
+                term_val,
+                &JsValue::from_f64(0.0),
+                &JsValue::from_f64((rows - 1) as f64),
+            );
         }
     }
-    if let Ok(fit_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("fit")) {
-        if let Ok(fit_fn) = fit_val.dyn_into::<js_sys::Function>() {
-            let _ = fit_fn.call0(term_val);
-        }
-    }
+}
+
+// Kept for the IntersectionObserver visibility-restore path. Now refresh-only
+// (fit is run separately via the FitAddon instance the observer captures),
+// preserving the fit-then-refresh ordering invariant.
+fn force_redraw(term_val: &JsValue) {
+    refresh_full(term_val);
 }
 
 // ---------------------------------------------------------------------------
@@ -1179,10 +1266,7 @@ async fn wait_for_container_size(container: &web_sys::Element) {
         // Use setTimeout to yield control back to the browser; a naive
         // Promise without resolving would deadlock forever.
         let promise = js_sys::Promise::new(&mut move |resolve, _reject| {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                &resolve,
-                20,
-            );
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 20);
         });
         let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
     }
