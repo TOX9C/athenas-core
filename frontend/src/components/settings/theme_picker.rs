@@ -119,17 +119,15 @@ struct ThemeSwatchProps {
 #[component]
 fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
     let mut ui_state = use_ui_store();
-    let ring = if props.is_selected {
-        "border-color: var(--accent); box-shadow: 0 0 0 2px var(--accentSubtle);"
-    } else {
-        "border-color: var(--border);"
-    };
+    // Selection is conveyed by fill + text (footer accentSubtle tint + the
+    // ACTIVE badge), not a border or halo ring. No outline, no box-shadow,
+    // so the border is constant regardless of selection.
+    let footer_bg = if props.is_selected { "var(--accentSubtle)" } else { "var(--bgTertiary)" };
 
     rsx! {
         button {
-            class: "lit-sweep",
-            style: "padding: 0; border: 1px solid; {ring} border-radius: var(--radius-md); background: var(--bgSecondary); cursor: pointer; text-align: left; overflow: hidden; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);",
-            onmouseenter: move |_| {},
+            class: "lit-sweep theme-swatch-btn",
+            style: "padding: 0; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); cursor: pointer; text-align: left; overflow: hidden; transition: border-color var(--dur-fast) var(--ease);",
             onclick: move |_| {
                 ui_state.write().theme = props.theme;
                 apply_theme_and_persist(props.theme);
@@ -152,13 +150,13 @@ fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
                 }
             }
             div {
-                style: "padding: 8px 10px; background: var(--bgTertiary); display: flex; align-items: center; justify-content: space-between;",
+                style: "padding: 8px 10px; background: {footer_bg}; display: flex; align-items: center; justify-content: space-between;",
                 span {
                     style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: 0.02em;",
                     "{props.label}"
                 }
                 if props.is_selected {
-                    span { style: "font-size: 9px; color: var(--accent); font-weight: 700; background: var(--accentSubtle); padding: 2px 6px; border-radius: var(--radius-sm); border: 1px solid var(--accent); letter-spacing: 0.04em;", "ACTIVE" }
+                    span { style: "font-size: 9px; color: var(--accent); font-weight: 700; background: var(--accentSubtle); padding: 2px 6px; border-radius: var(--radius-sm); letter-spacing: 0.04em;", "ACTIVE" }
                 }
             }
         }

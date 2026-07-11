@@ -153,15 +153,15 @@ fn GeneralSettings() -> Element {
                                 let is_selected = *font == current_font;
                                 let bg = if is_selected { &theme_accent } else { &theme_bg_tertiary };
                                 let fg = if is_selected { "var(--bg)" } else { "var(--textMuted)" };
-                                let border = if is_selected { "var(--accent)" } else { "1px solid var(--border)" };
-                                let shadow = if is_selected { "0 0 0 2px var(--accentSubtle)" } else { "none" };
+                                // Selection is conveyed by fill + text (solid gold
+                                // background with dark text), not a border or halo.
+                                // No outline, no box-shadow — constant border.
                                 let font_str = font.to_string();
                                 rsx! {
                                     button {
                                         key: "{font}",
                                         class: "font-option-btn lit-sweep",
-                                        style: "padding: 8px 16px; border-radius: var(--radius-md); border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; font-size: var(--text-sm); font-family: '{font}', monospace; box-shadow: {shadow}; transition: border-color 0.18s ease, box-shadow 0.18s ease; transform: scale(1);",
-                                        onmouseenter: move |_| {},
+                                        style: "padding: 8px 16px; border-radius: var(--radius-md); border: 1px solid var(--border); background: {bg}; color: {fg}; cursor: pointer; font-size: var(--text-sm); font-family: '{font}', monospace; transition: background 0.18s ease, color 0.18s ease; transform: scale(1);",
                                         onclick: move |_| {
                                             let font_clone = font_str.clone();
                                             ui_state.write().font_family = font_clone;
