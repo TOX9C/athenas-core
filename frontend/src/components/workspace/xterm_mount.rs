@@ -3,8 +3,8 @@ use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
-    pty_default_shell_cached, pty_has_session, pty_listen_raw, pty_resize, pty_set_xterm,
-    pty_spawn, pty_write, read_clipboard_text,
+    pty_default_shell_cached, pty_has_session, pty_listen_raw, pty_resize, pty_set_raw_paused,
+    pty_set_xterm, pty_spawn, pty_write, read_clipboard_text,
 };
 use crate::utils::resume_scanner::ResumeScanner;
 use dioxus::prelude::*;
@@ -440,6 +440,14 @@ pub fn XtermMount(
             let wq_scheduled: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
             let wq_flush = wq_queue.clone();
             let wq_sched = wq_scheduled.clone();
+            // Gate: when true, incoming PTY bytes are enqueued but NOT written
+            // to the terminal. Set before replay_xterm_buffer so the replay's
+            // clear+rewrite isn't clobbered by live bytes landing between
+            // pty_listen_raw subscribe and replay completion. Cleared after
+            // replay + unpause, so the backend's accumulated burst writes
+            // cleanly on top of the replayed snapshot.
+            let is_replaying: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+            let wq_replaying = is_replaying.clone();
 
             let mount_id_for_scan = mount_id.clone();
             let workspace_for_scan = workspace_store.clone();
@@ -452,14 +460,18 @@ pub fn XtermMount(
                     let q = wq_flush.clone();
                     let s = wq_sched.clone();
                     let t = wq_term.clone();
+                    let r = wq_replaying.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         let q_for_closure = q.clone();
                         let s_for_closure = s.clone();
                         let t_for_closure = t.clone();
+                        let r_for_closure = r.clone();
                         let closure = Closure::once_into_js(Box::new(move || {
                             let chunks = q_for_closure.borrow_mut().drain(..).collect::<Vec<_>>();
-                            for chunk in chunks {
-                                write_bytes_to_term(&t_for_closure, &chunk);
+                            if !*r_for_closure.borrow() {
+                                for chunk in chunks {
+                                    write_bytes_to_term(&t_for_closure, &chunk);
+                                }
                             }
                             *s_for_closure.borrow_mut() = false;
                         })
@@ -476,8 +488,10 @@ pub fn XtermMount(
                         }
                         if raf_failed {
                             let chunks = q.borrow_mut().drain(..).collect::<Vec<_>>();
-                            for chunk in chunks {
-                                write_bytes_to_term(&t, &chunk);
+                            if !*r.borrow() {
+                                for chunk in chunks {
+                                    write_bytes_to_term(&t, &chunk);
+                                }
                             }
                             *s.borrow_mut() = false;
                         }
@@ -560,11 +574,25 @@ pub fn XtermMount(
                     // This restores the visible terminal content that would
                     // otherwise be lost when the old xterm.js instance was
                     // disposed during the key-flip remount.
-                    if let Some(ref snapshot) = session.xterm_buffer_snapshot {
+                    if let Some(snapshot) = &session.xterm_buffer_snapshot {
+                        // Gate the write coalescer so live bytes landing
+                        // between subscribe and replay don't clobber the
+                        // replay's ESC[2J ESC[H clear+rewrite.
+                        *is_replaying.borrow_mut() = true;
                         replay_xterm_buffer(&term_val, snapshot);
+                        force_redraw(&term_val);
+                        *is_replaying.borrow_mut() = false;
                     }
                 }
-                force_redraw(&term_val);
+                // Unpause the backend — accumulated raw bytes flush as a
+                // single burst to the new listener, writing cleanly on top
+                // of the replayed snapshot (or an empty terminal for new
+                // sessions). This must happen AFTER pty_listen_raw has
+                // subscribed and AFTER any snapshot replay completes.
+                let mid = mount_id.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = pty_set_raw_paused(&mid, false).await;
+                });
             } else if let Ok(clear_val) = js_sys::Reflect::get(&term_val, &JsValue::from_str("clear")) {
                 if let Ok(clear_fn) = clear_val.dyn_into::<js_sys::Function>() {
                     let _ = clear_fn.call0(&term_val);
@@ -852,6 +880,16 @@ pub fn XtermMount(
     let mount_id_for_drop = pane_id.clone();
     use_drop(move || {
         if let Some(mut c) = cleanup.take() {
+        // Pause backend raw emission BEFORE capturing/unlistening — closes
+        // the stream-gap desync window. The backend keeps reading the PTY fd
+        // (shell doesn't block) but suppresses pty:raw events so no bytes are
+        // lost to a dead listener during the remount gap. The new mount
+        // unpauses after re-subscribe + snapshot replay. This must fire
+        // even if the capture below fails, so it's the first thing.
+        let mid = mount_id_for_drop.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = pty_set_raw_paused(&mid, true).await;
+        });
             // Capture the xterm.js buffer content before disposing, so a
             // remount after pane swap can replay it instead of showing blank.
             if let Some(snapshot) = capture_xterm_buffer(&c.term) {

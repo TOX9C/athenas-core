@@ -97,6 +97,13 @@ pub struct TerminalSession {
     /// When true, the `terminal:data` event (cell deltas) is skipped
     /// because xterm.js parses raw ANSI bytes itself.
     pub is_xterm: AtomicBool,
+    /// When true, the PTY read loop keeps reading from the fd (so the shell
+    /// process doesn't block on a full pipe) but suppresses `pty:raw` event
+    /// emission. Accumulated bytes are flushed as a single burst when the
+    /// flag is cleared. This closes the stream-gap desync during xterm.js
+    /// remount (pane swap): the old mount pauses the backend before unlisten,
+    /// and the new mount unpauses after re-subscribe + snapshot replay.
+    pub raw_paused: AtomicBool,
     pub pending_writes: Mutex<VecDeque<Vec<u8>>>,
     /// Persistent VTE parser state.
     ///
@@ -146,6 +153,7 @@ impl TerminalSession {
             cwd,
             status: Mutex::new(PtyStatus::Spawning),
             is_xterm: AtomicBool::new(false),
+            raw_paused: AtomicBool::new(false),
             pending_writes: Mutex::new(VecDeque::new()),
             parser: Mutex::new(Parser::new()),
         }

@@ -80,6 +80,7 @@ fn main() {
             pty_spawn_agent,
             pty_default_shell,
             pty_set_xterm,
+            pty_set_raw_paused,
             pty_foreground_process,
             pty_agent_info,
             // Trusted workspace roots

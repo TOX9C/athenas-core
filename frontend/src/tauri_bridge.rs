@@ -593,6 +593,21 @@ pub async fn pty_set_xterm(id: &str, is_xterm: bool) -> TauriResult<()> {
     .await
 }
 
+/// Pause/resume raw `pty:raw` event emission for a session.
+///
+/// When paused, the backend read loop keeps reading from the PTY fd (so the
+/// shell doesn't block on a full pipe) but suppresses `pty:raw` emission.
+/// Accumulated bytes are flushed as a single burst when unpaused. Used by
+/// the xterm.js remount path to close the stream-gap desync during pane swaps:
+/// pause before unlisten on unmount, unpause after replay on remount.
+pub async fn pty_set_raw_paused(id: &str, paused: bool) -> TauriResult<()> {
+    invoke(
+        "pty_set_raw_paused",
+        &serde_json::json!({ "id": id, "paused": paused }).to_string(),
+    )
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Trusted workspace roots
 // ---------------------------------------------------------------------------

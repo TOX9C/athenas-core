@@ -1493,7 +1493,9 @@ pub(crate) async fn pty_read_loop(
                         // available (EAGAIN) — a lull in output. Flush any
                         // pending coalesced data so the frontend gets prompt
                         // feedback after a burst of output.
-                        if !coalesce_buf.is_empty() {
+                        if !coalesce_buf.is_empty()
+                            && !session.raw_paused.load(std::sync::atomic::Ordering::Relaxed)
+                        {
                             flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
                         }
                         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
@@ -1503,7 +1505,9 @@ pub(crate) async fn pty_read_loop(
                     Err(e) => {
                         // Flush any pending data before handling the error
                         // so the frontend doesn't lose the tail of output.
-                        if !coalesce_buf.is_empty() {
+                        if !coalesce_buf.is_empty()
+                            && !session.raw_paused.load(std::sync::atomic::Ordering::Relaxed)
+                        {
                             flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
                         }
                         log::warn!("PTY read error for {}: {}", session_id, e);
@@ -1520,9 +1524,9 @@ pub(crate) async fn pty_read_loop(
 
             _ = flush_interval.tick() => {
                 // Timer-based flush: guarantees the frontend receives data
-                // at least every 8 ms, even during a slow trickle where
-                // `read_bytes` never returns `Ok(0)`.
-                if !coalesce_buf.is_empty() {
+                if !coalesce_buf.is_empty()
+                    && !session.raw_paused.load(std::sync::atomic::Ordering::Relaxed)
+                {
                     flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
                 }
                 continue;
@@ -1589,10 +1593,17 @@ pub(crate) async fn pty_read_loop(
         // Step 3: size-threshold flush — prevents unbounded growth when
         // commands like `yes` produce continuous output.
         // Emergency flush at the hard 1 MB cap, normal flush at 32 KB.
-        if coalesce_buf.len() >= MAX_COALESCE_SIZE {
-            flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
-        } else if coalesce_buf.len() >= 32 * 1024 {
-            flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
+        // Skip ALL threshold flushes when raw_paused — the coalesce_buf
+        // accumulates until the frontend unpauses after remount. 1 MB is
+        // ~10k lines, far more than any swap window (typically <300ms).
+        // If we flushed while paused, the bytes would hit a dead listener
+        // and be lost — the exact desync we're fixing.
+        if !session.raw_paused.load(std::sync::atomic::Ordering::Relaxed) {
+            if coalesce_buf.len() >= MAX_COALESCE_SIZE {
+                flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
+            } else if coalesce_buf.len() >= 32 * 1024 {
+                flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
+            }
         }
 
         // Rate limit: yield after each successful read to prevent CPU spin
@@ -2218,6 +2229,31 @@ pub async fn pty_set_xterm(
             .is_xterm
             .store(is_xterm, std::sync::atomic::Ordering::Relaxed);
         log::debug!("pty_set_xterm: {} -> {}", id, is_xterm);
+        Ok(())
+    } else {
+        Err(format!("Session {} not found", id))
+    }
+}
+
+/// Pause/resume raw `pty:raw` event emission for a session.
+///
+/// When paused, the read loop keeps reading from the PTY fd (so the shell
+/// process doesn't block on a full pipe) but suppresses `pty:raw` event
+/// emission. Accumulated bytes are flushed as a single burst when the flag
+/// is cleared. Used by the xterm.js remount path to close the stream-gap
+/// desync during pane swaps.
+#[tauri::command]
+pub async fn pty_set_raw_paused(
+    state: State<'_, AppState>,
+    id: String,
+    paused: bool,
+) -> Result<(), String> {
+    let sm = state.session_manager.lock().await;
+    if let Some(session) = sm.get_session(&id).await {
+        session
+            .raw_paused
+            .store(paused, std::sync::atomic::Ordering::Relaxed);
+        log::debug!("pty_set_raw_paused: {} -> {}", id, paused);
         Ok(())
     } else {
         Err(format!("Session {} not found", id))
