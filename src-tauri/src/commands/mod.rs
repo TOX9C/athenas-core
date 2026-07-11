@@ -1403,6 +1403,27 @@ pub(crate) async fn pty_read_loop(
     // this size we emit immediately to avoid unbounded memory growth.
     const MAX_COALESCE_SIZE: usize = 1024 * 1024; // 1 MB
 
+    // Backstop cap while `raw_paused` is true. All threshold flushes (incl.
+    // the 1 MB `MAX_COALESCE_SIZE` emergency flush) are skipped while paused,
+    // so without this cap a chatty shell (`yes`, `find /`) during a slow or
+    // stalled remount would grow `coalesce_buf` without bound. 4 MB is ~40k
+    // lines — far beyond any real swap window (<300 ms, typically <2 KB). If
+    // a remount stalls long enough to hit this, we drop the oldest half
+    // rather than keep growing: a paused remount means no listener is ready
+    // anyway, and the alternative (holding 4 MB+ per pane) risks OOM across
+    // many panes. Drop-oldest preserves the most recent output the remount
+    // will actually surface.
+    const PAUSED_MAX_COALESCE_SIZE: usize = 4 * 1024 * 1024; // 4 MB
+
+    // Tracks `raw_paused` across loop iterations so the read loop detects the
+    // true → false transition and flushes the accumulated buffer on that
+    // iteration. This makes the unpause self-healing: ANY caller that clears
+    // `raw_paused` (the frontend remount, or `pty_attach_listener`) gets the
+    // burst automatically, decoupling the flush from who cleared the flag.
+    let mut was_paused = session
+        .raw_paused
+        .load(std::sync::atomic::Ordering::Relaxed);
+
     // 8 ms flush interval — balances latency with batching efficiency.
     let mut flush_interval = tokio::time::interval(tokio::time::Duration::from_millis(8));
     flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1598,13 +1619,56 @@ pub(crate) async fn pty_read_loop(
         // ~10k lines, far more than any swap window (typically <300ms).
         // If we flushed while paused, the bytes would hit a dead listener
         // and be lost — the exact desync we're fixing.
-        if !session.raw_paused.load(std::sync::atomic::Ordering::Relaxed) {
+        let now_paused = session
+            .raw_paused
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if now_paused {
+            // Self-heal: detect the true → false transition on a *later*
+            // iteration (the flag is cleared by the remount's
+            // `pty_set_raw_paused(id, false)` or `pty_attach_listener` from
+            // another task). On the first iteration where we observe it
+            // cleared, flush everything accumulated while paused as a single
+            // burst — exactly the behavior the remount expects. This decouples
+            // the burst flush from *who* cleared the flag and makes a stuck-
+            // paused-then-revived session recover automatically.
+            if was_paused {
+                // Still paused: enforce the backstop cap. All real thresholds
+                // are skipped while paused, so without this `coalesce_buf`
+                // grows unboundedly under a chatty shell during a stalled
+                // remount. Drop the oldest half (preserving the most recent
+                // output the remount will surface) instead of holding multi-MB
+                // per pane. See `PAUSED_MAX_COALESCE_SIZE` rationale above.
+                if coalesce_buf.len() >= PAUSED_MAX_COALESCE_SIZE {
+                    let keep_from = coalesce_buf.len() / 2;
+                    coalesce_buf.drain(..keep_from);
+                    log::warn!(
+                        "pty_read_loop[{}]: paused coalesce_buf hit {} KB backstop, dropped oldest half",
+                        session_id,
+                        PAUSED_MAX_COALESCE_SIZE / 1024
+                    );
+                }
+            }
+        } else {
+            if was_paused {
+                // true → false transition: flush the burst accumulated while
+                // paused, writing cleanly on top of the remount's replayed
+                // snapshot (or empty terminal). This runs regardless of how
+                // the flag was cleared — frontend remount or backend attach.
+                flush_pty_raw(
+                    &mut coalesce_buf,
+                    &mut encode_buf,
+                    &mut raw_event_buf,
+                    &app_handle,
+                    &session_id,
+                );
+            }
             if coalesce_buf.len() >= MAX_COALESCE_SIZE {
                 flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
             } else if coalesce_buf.len() >= 32 * 1024 {
                 flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
             }
         }
+        was_paused = now_paused;
 
         // Rate limit: yield after each successful read to prevent CPU spin
         // when commands like `yes` produce infinite output.
@@ -2257,6 +2321,40 @@ pub async fn pty_set_raw_paused(
         Ok(())
     } else {
         Err(format!("Session {} not found", id))
+    }
+}
+
+/// Signal that a frontend listener has (re)subscribed to `pty:raw` for `id`.
+///
+/// This is the explicit "someone is listening again" handshake, called by the
+/// xterm.js mount right after `pty_listen_raw` subscribes. It clears
+/// `raw_paused` so the read loop's next iteration observes the true → false
+/// transition and flushes the accumulated burst (see `pty_read_loop`). The
+/// flush itself runs in the read loop, not here — `coalesce_buf` is owned by
+/// the read task, so the flag is the only IPC needed.
+///
+/// Belt-and-suspenders: the remount path also calls `pty_set_raw_paused(id,
+/// false)` directly. This command exists so a session revived by *any* path
+/// (not just the remount branch) self-heals — closing the stuck-paused gap
+/// where a pane is dropped without remount and later re-shown. If the session
+/// was never paused, this is a no-op store(false) the loop already observed.
+#[tauri::command]
+pub async fn pty_attach_listener(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    validate_session_id(&id)?;
+    let sm = state.session_manager.lock().await;
+    if let Some(session) = sm.get_session(&id).await {
+        session
+            .raw_paused
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        log::debug!("pty_attach_listener: {} unpaused (listener attached)", id);
+        Ok(())
+    } else {
+        // Session may not exist yet on a brand-new spawn — not an error,
+        // a fresh session starts unpaused regardless.
+        Ok(())
     }
 }
 

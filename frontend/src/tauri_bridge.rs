@@ -608,6 +608,21 @@ pub async fn pty_set_raw_paused(id: &str, paused: bool) -> TauriResult<()> {
     .await
 }
 
+/// Tell the backend a `pty:raw` listener has (re)subscribed for `id` — the
+/// "someone is listening again" handshake. Clears `raw_paused`; the backend
+/// read loop detects the true→false transition on its next iteration and
+/// flushes the accumulated burst. Call this right after `pty_listen_raw`
+/// subscribes. Makes a session that was paused (e.g. pane dropped without
+/// remount) self-heal on the next re-show, closing the stuck-paused gap.
+/// No-op (and Ok) if the session does not exist yet on a brand-new spawn.
+pub async fn pty_attach_listener(id: &str) -> TauriResult<()> {
+    invoke(
+        "pty_attach_listener",
+        &serde_json::json!({ "id": id }).to_string(),
+    )
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Trusted workspace roots
 // ---------------------------------------------------------------------------

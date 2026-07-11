@@ -3,8 +3,8 @@ use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
-    pty_default_shell_cached, pty_has_session, pty_listen_raw, pty_resize, pty_set_raw_paused,
-    pty_set_xterm, pty_spawn, pty_write, read_clipboard_text,
+    pty_attach_listener, pty_default_shell_cached, pty_has_session, pty_listen_raw, pty_resize,
+    pty_set_raw_paused, pty_set_xterm, pty_spawn, pty_write, read_clipboard_text,
 };
 use crate::utils::resume_scanner::ResumeScanner;
 use dioxus::prelude::*;
@@ -571,7 +571,21 @@ pub fn XtermMount(
                     });
                 }
             }) {
-                Ok(u) => u,
+                Ok(u) => {
+                    // A listener is now attached — tell the backend so it
+                    // clears `raw_paused` and the read loop flushes any burst
+                    // accumulated while paused. This makes every (re)subscribe
+                    // self-heal: a session paused by a previous mount's drop
+                    // (incl. a pane dropped without remount, later re-shown)
+                    // revives here even if the remount takes the new-session
+                    // branch. No-op if the session was never paused or doesn't
+                    // exist yet on a brand-new spawn.
+                    let mid_attach = mount_id.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = pty_attach_listener(&mid_attach).await;
+                    });
+                    u
+                }
                 Err(e) => {
                     web_sys::console::error_1(
                         &format!("XtermMount: pty_listen_raw failed: {e:?}").into(),
@@ -604,15 +618,13 @@ pub fn XtermMount(
                         *is_replaying.borrow_mut() = false;
                     }
                 }
-                // Unpause the backend — accumulated raw bytes flush as a
-                // single burst to the new listener, writing cleanly on top
-                // of the replayed snapshot (or an empty terminal for new
-                // sessions). This must happen AFTER pty_listen_raw has
-                // subscribed and AFTER any snapshot replay completes.
-                let mid = mount_id.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    let _ = pty_set_raw_paused(&mid, false).await;
-                });
+                // No explicit unpause here: the `pty_attach_listener` call
+                // above (in the subscribe Ok arm) already cleared `raw_paused`.
+                // The backend read loop detects the true→false transition on
+                // its next iteration and flushes the accumulated burst into
+                // the JS write-coalescer, which is gated by `is_replaying`
+                // during replay and released by the rAF flush — so the burst
+                // writes cleanly on top of the replayed snapshot.
             } else if let Ok(clear_val) = js_sys::Reflect::get(&term_val, &JsValue::from_str("clear")) {
                 if let Ok(clear_fn) = clear_val.dyn_into::<js_sys::Function>() {
                     let _ = clear_fn.call0(&term_val);
