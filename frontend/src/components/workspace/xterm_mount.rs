@@ -61,6 +61,7 @@ pub fn XtermMount(
     let mut cleanup: Signal<Option<XtermCleanup>> = use_signal(|| None);
     let is_initialized = use_hook(|| Rc::new(RefCell::new(false)));
     let term_ref: Signal<Option<JsValue>> = use_signal(|| None);
+    let fit_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let mut terminal_store = use_terminal_store();
     let terminal_registry = use_terminal_registry();
     let registry_for_drop = terminal_registry.clone();
@@ -114,6 +115,7 @@ pub fn XtermMount(
         };
         let mut cleanup = cleanup.clone();
         let mut term_ref = term_ref.clone();
+        let mut fit_ref = fit_ref.clone();
         let window = window.clone();
         let container = container.clone();
         // Clone the registry for the spawned task. `TerminalRegistry` is a
@@ -266,15 +268,33 @@ pub fn XtermMount(
             }
 
             let options = js_sys::Object::new();
+            // Font comes from the same source of truth the rest of the UI uses:
+            // the --fontFamily / --fontSize CSS vars, which apply_font_to_dom
+            // sets on launch (persisted) and on each picker/slider change.
+            // xterm.js renders to a canvas and ignores CSS font-family, so it
+            // must be fed options.fontFamily / fontSize explicitly (a hardcoded
+            // value here would freeze the terminal on JetBrains Mono @ 14 and
+            // ignore the Settings font picker + size slider entirely).
+            let saved_font = read_css_var(&window, "--fontFamily");
+            let font_family_val = if saved_font.is_empty() {
+                "'JetBrains Mono', monospace".to_string()
+            } else {
+                saved_font
+            };
+            let saved_size = read_css_var(&window, "--fontSize");
+            let font_size_val = saved_size
+                .trim_end_matches("px")
+                .parse::<f64>()
+                .unwrap_or(14.0);
             let _ = js_sys::Reflect::set(
                 &options,
                 &JsValue::from_str("fontFamily"),
-                &JsValue::from_str("'JetBrains Mono', 'Cascadia Code', monospace"),
+                &JsValue::from_str(&font_family_val),
             );
             let _ = js_sys::Reflect::set(
                 &options,
                 &JsValue::from_str("fontSize"),
-                &JsValue::from_f64(14.0),
+                &JsValue::from_f64(font_size_val),
             );
             let _ = js_sys::Reflect::set(
                 &options,
@@ -658,6 +678,11 @@ pub fn XtermMount(
             if let Some(fit_instance) = try_activate_addon(&window, "FitAddon", &term_val) {
                 // Initial fit so the terminal has correct cols/rows before any data arrives.
                 schedule_fit(&window, &fit_instance, &container);
+                // Publish the fit addon instance so reactive effects (the font
+                // family/size effect below) can refit after pushing option
+                // changes — a font change resizes glyph cells, so the container
+                // no longer holds an integer cell grid until fit() re-runs.
+                fit_ref.set(Some(fit_instance.clone()));
 
                 let fit_for_ro = fit_instance.clone();
                 let container_for_ro = container.clone();
@@ -874,6 +899,70 @@ pub fn XtermMount(
 
         if let Ok(options) = js_sys::Reflect::get(&term, &JsValue::from_str("options")) {
             let _ = js_sys::Reflect::set(&options, &JsValue::from_str("theme"), &new_theme);
+        }
+    });
+
+    // ── Reactive font update ───────────────────────────────────────────────
+    // Mirrors the theme effect above. The Settings font picker + size slider
+    // update the --fontFamily / --fontSize CSS vars via apply_font_to_dom, but
+    // xterm.js renders to a canvas and ignores CSS, so we must push the new
+    // font family/size into term.options live and refit (a font change resizes
+    // glyph cells, which changes cols/rows for a fixed container size).
+    // Read ui_state.* to subscribe to the Signals; read the CSS vars for the
+    // actual values (apply_font_to_dom is the writer that keeps them coherent
+    // with the persisted store).
+    let term_ref_for_font = term_ref.clone();
+    let fit_ref_for_font = fit_ref.clone();
+    let mount_id_for_font = pane_id.clone();
+    use_effect(move || {
+        // Subscribe to the Signals so this effect re-runs on change.
+        let _fam = ui_state.read().font_family.clone();
+        let _size = ui_state.read().font_size;
+
+        let term_opt = term_ref_for_font();
+        let Some(term) = term_opt else {
+            return;
+        };
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+
+        let new_family = read_css_var(&window, "--fontFamily");
+        let new_size = read_css_var(&window, "--fontSize");
+        if new_family.is_empty() && new_size.is_empty() {
+            return;
+        }
+
+        if let Ok(options) = js_sys::Reflect::get(&term, &JsValue::from_str("options")) {
+            if !new_family.is_empty() {
+                let _ = js_sys::Reflect::set(
+                    &options,
+                    &JsValue::from_str("fontFamily"),
+                    &JsValue::from_str(&new_family),
+                );
+            }
+            if !new_size.is_empty() {
+                if let Ok(px) = new_size.trim_end_matches("px").parse::<f64>() {
+                    let _ = js_sys::Reflect::set(
+                        &options,
+                        &JsValue::from_str("fontSize"),
+                        &JsValue::from_f64(px),
+                    );
+                }
+            }
+
+            // Refit so cols/rows match the new glyph cell dimensions, then
+            // force a repaint of the canvas. Without fit() the terminal keeps
+            // stale cols/rows and xterm's renderer misaligns; without the
+            // redraw the old glyphs stay on screen until the next data burst.
+            if let Some(fit) = fit_ref_for_font() {
+                if let Some(doc) = window.document() {
+                    if let Some(el) = doc.get_element_by_id(&mount_id_for_font) {
+                        schedule_fit(&window, &fit, &el);
+                    }
+                }
+            }
+            force_redraw(&term);
         }
     });
 
