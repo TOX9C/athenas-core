@@ -15,17 +15,15 @@ pub struct WorkspaceTabProps {
 #[component]
 pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
     let agent_status = use_agent_status_store();
+    // Selected space is marked by gold + bold text only — no bottom-edge
+    // hairline underline. Matches the app vocabulary (.icon-btn.is-active,
+    // .segmented-item.is-active both signal active via color, not a rule).
     let text_color = if props.is_active {
         "var(--accent)"
     } else {
         "var(--textMuted)"
     };
     let weight = if props.is_active { "600" } else { "400" };
-    let underline = if props.is_active {
-        "var(--accent)"
-    } else {
-        "transparent"
-    };
 
     // Compute aggregate agent status for this space's panes.
     let mut idle_count = 0usize;
@@ -57,7 +55,7 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
     rsx! {
         div {
             class: "workspace-tab",
-            style: "display: flex; align-items: center; gap: 6px; height: var(--tb-tab-height); padding: 0 10px; border: none; border-radius: var(--radius-sm); cursor: pointer; background: transparent; box-shadow: inset 0 -1px 0 {underline}; flex-shrink: 0; transition: color var(--dur-fast) var(--ease);",
+            style: "display: flex; align-items: center; gap: 6px; height: var(--tb-tab-height); padding: 0 10px; border: none; border-radius: var(--radius-sm); cursor: pointer; background: transparent; flex-shrink: 0; transition: color var(--dur-fast) var(--ease);",
             onclick: move |_| props.on_select.call(()),
 
             span {
