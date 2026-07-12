@@ -1022,7 +1022,7 @@ fn CodexSection(props: CodexSectionProps) -> Element {
 }
 
 #[derive(Props, Clone, PartialEq)]
-struct GroupLabelProps {
+pub struct GroupLabelProps {
     label: &'static str,
     /// When true, suppresses the top margin (first group in a section).
     #[props(default)]
@@ -1030,7 +1030,7 @@ struct GroupLabelProps {
 }
 
 #[component]
-fn GroupLabel(props: GroupLabelProps) -> Element {
+pub fn GroupLabel(props: GroupLabelProps) -> Element {
     let cls = if props.first { "group-label label-first" } else { "group-label" };
     rsx! {
         div { class: "{cls}",

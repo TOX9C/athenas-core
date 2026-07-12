@@ -1,3 +1,4 @@
+use crate::components::settings::settings_modal::GroupLabel;
 use crate::stores::ui::{use_ui_store, UITheme};
 use crate::themes::{get_theme, ALL_THEMES};
 use dioxus::prelude::*;
@@ -18,34 +19,17 @@ pub fn ThemePicker() -> Element {
 
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; gap: 32px;",
-
-            // Header
-            div {
-                style: "padding-bottom: 12px; margin-bottom: 8px;",
-                div {
-                    style: "display: flex; align-items: center; gap: 8px;",
-                    div {
-                        style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
-                        "Themes"
-                    }
-                }
-                div {
-                    style: "font-size: var(--text-xs); color: var(--textDim); margin-top: 4px; line-height: 1.5; padding-left: 18px;",
-                    "Choose a color scheme for your Athena environment."
-                }
-                hr { class: "great-circle-rule", style: "margin-top: 8px;" }
-            }
-
-            ThemeGroup { title: "Dark", themes: dark_themes }
-            ThemeGroup { title: "Light", themes: light_themes }
+            style: "display: flex; flex-direction: column; gap: 18px;",
+            ThemeGroup { first: true, label: "Dark", themes: dark_themes }
+            ThemeGroup { first: false, label: "Light", themes: light_themes }
         }
     }
 }
 
 #[derive(Props, Clone, PartialEq)]
 struct ThemeGroupProps {
-    title: String,
+    first: bool,
+    label: &'static str,
     themes: Vec<(&'static str, &'static str)>,
 }
 
@@ -54,32 +38,24 @@ fn ThemeGroup(props: ThemeGroupProps) -> Element {
     let ui_state = use_ui_store();
 
     rsx! {
+        GroupLabel { label: props.label, first: props.first }
         div {
-            div {
-                style: "display: flex; align-items: center; gap: 6px; margin-bottom: 12px; padding-left: 2px;",
-                div {
-                    style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
-                    "{props.title}"
-                }
-            }
-            div {
-                style: "display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;",
-                for (id, label) in &props.themes {
-                    {
-                        let theme_enum = UITheme::from_name(id);
-                        let is_selected = theme_enum == ui_state.read().theme;
-                        let colors = get_theme(id);
-                        rsx! {
-                            ThemeSwatch {
-                                key: "{id}",
-                                id: id.to_string(),
-                                label: label.to_string(),
-                                bg: colors.bg.clone(),
-                                accent: colors.accent.clone(),
-                                bg_secondary: colors.bg_secondary.clone(),
-                                is_selected,
-                                theme: theme_enum,
-                            }
+            style: "display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;",
+            for (id, label) in &props.themes {
+                {
+                    let theme_enum = UITheme::from_name(id);
+                    let is_selected = theme_enum == ui_state.read().theme;
+                    let colors = get_theme(id);
+                    rsx! {
+                        ThemeSwatch {
+                            key: "{id}",
+                            id: id.to_string(),
+                            label: label.to_string(),
+                            bg: colors.bg.clone(),
+                            accent: colors.accent.clone(),
+                            bg_secondary: colors.bg_secondary.clone(),
+                            is_selected,
+                            theme: theme_enum,
                         }
                     }
                 }
