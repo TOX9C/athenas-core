@@ -883,6 +883,434 @@ button:disabled {
   box-shadow: var(--shadow-md);
 }
 
+/* =====================================================
+   Settings codex — token-only, mirrors the design spec
+   Geometry (radius, padding) pinned in these static
+   classes for every control whose inline `style` is
+   rewritten by Dioxus on state flip (selection, open).
+   ===================================================== */
+
+.codex-index {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  width: 72px;
+  flex-shrink: 0;
+  background: var(--bgSecondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 22px 0;
+  /* allow it to span the full body height for the
+     vertical-spacing rhythm of six numbered items. */
+}
+
+.codex-tome {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 26px 34px 40px 34px;
+  scroll-behavior: smooth;
+}
+
+.codex-tome::-webkit-scrollbar {
+  width: 6px;
+}
+.codex-tome::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+}
+
+.codex-index-item {
+  position: relative;
+  padding: 13px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  color: var(--textDim);
+  font-family: var(--font-display);
+  font-size: 14px;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+}
+
+.codex-index-item .glyph {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.55;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.codex-index-item.is-active {
+  color: var(--accent);
+}
+
+.codex-index-item.is-active .glyph {
+  opacity: 1;
+  border-color: var(--accent);
+  background: var(--accentSubtle);
+  box-shadow: 0 0 8px var(--accentSubtle);
+}
+
+.codex-index-item.is-active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 26px;
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  box-shadow: 0 0 8px var(--accentSubtle);
+}
+
+.codex-section {
+  scroll-margin-top: 20px;
+  margin-bottom: 40px;
+}
+
+.codex-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+
+.codex-section-num {
+  font-family: var(--font-display);
+  color: var(--accent);
+  font-size: 26px;
+  font-weight: 600;
+  opacity: 0.85;
+  line-height: 1;
+}
+
+.codex-section-title {
+  font-family: var(--font-display);
+  color: var(--text);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.codex-section-epi {
+  margin-left: auto;
+  color: var(--textDim);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 12px;
+  max-width: 240px;
+  text-align: right;
+}
+
+.codex-section-intro {
+  color: var(--textMuted);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+/* 1px --border hr with a 48px gold prefix on the left edge. */
+.codex-rule {
+  height: 1px;
+  background: var(--border);
+  margin-bottom: 20px;
+  position: relative;
+}
+
+.codex-rule::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 48px;
+  height: 1px;
+  background: var(--accent);
+}
+
+/* Cormorant small-caps label with a trailing hairline
+   (the section dividers within a section like Typography / Pane Titles). */
+.group-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 12px;
+  font-family: var(--font-display);
+  color: var(--textMuted);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.group-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.group-label.label-first {
+  margin-top: 0;
+}
+
+/* Toggle — engraved-lever pill. Static-class geometry,
+   no border-radius in inline style. The "on" variant
+   swaps track tint + border + knob translation. */
+.toggle {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--bgTertiary);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  padding: 0;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.toggle.is-active {
+  background: var(--accentSubtle);
+  border-color: var(--accent);
+}
+
+.toggle .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--textDim);
+  transition:
+    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.toggle.is-active .knob {
+  transform: translateX(18px);
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accentSubtle);
+}
+
+/* Save button — solid gold, the new Save affordance for
+   Athena (replaces the text-only .btn-primary array). */
+.save-btn {
+  padding: 7px 18px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.save-btn:hover {
+  background: var(--accentHover);
+  border-color: var(--accentHover);
+}
+.save-btn:active {
+  transform: translateY(1px);
+}
+.save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Settings-preview card — the live font/size preview area.
+   Composed of token surfaces; .settings-preview did not exist
+   in styles.css before this change. */
+.settings-preview {
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bgSecondary);
+  position: relative;
+  overflow: hidden;
+}
+
+.settings-preview-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-preview-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.settings-preview-tag {
+  margin-left: auto;
+  font-family: var(--font-display);
+  color: var(--textDim);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.settings-preview-code {
+  margin-top: 12px;
+  color: var(--text);
+  line-height: 1.75;
+  /* font-family + font-size applied inline — these are user-controlled. */
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* Font-family dropdown affordance + popover. Geometry stays
+   in the static class (the .font-option-btn radius pitfall). */
+.font-dropdown-afford {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bgSecondary);
+  cursor: pointer;
+  gap: 8px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text);
+  transition:
+    border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.font-dropdown-afford:hover {
+  border-color: var(--accent);
+}
+.font-dropdown-afford .chevron {
+  color: var(--accent);
+  font-size: 11px;
+  transition: transform 0.18s ease;
+}
+
+.font-dropdown-afford.is-open .chevron {
+  transform: rotate(180deg);
+}
+
+.font-dropdown-pop {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bgSecondary);
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.font-dropdown-opt {
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--textMuted);
+  font-family: var(--fontFamily);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.font-dropdown-opt:hover {
+  background: var(--bgHover);
+  color: var(--text);
+}
+
+.font-dropdown-opt.is-selected {
+  color: var(--accent);
+}
+.font-dropdown-opt .check {
+  color: var(--accent);
+  opacity: 0;
+  font-size: 13px;
+}
+.font-dropdown-opt.is-selected .check {
+  opacity: 1;
+}
+
+/* Font-size ± stepper. Geometry in the static class. */
+.size-stepper {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bgSecondary);
+  overflow: hidden;
+}
+
+.size-step {
+  width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-ui);
+  font-size: 18px;
+  color: var(--textMuted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+}
+
+.size-step:hover:not(:disabled) {
+  background: var(--bgHover);
+  color: var(--accent);
+}
+
+.size-step:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.size-step-value {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+}
+
+.size-step-value .px {
+  color: var(--accent);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.size-step-value .unit {
+  color: var(--textDim);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  margin-top: 2px;
+}
+
 .lit-sweep {
 }
 
