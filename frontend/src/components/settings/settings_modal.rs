@@ -15,6 +15,11 @@ pub fn SettingsContent() -> Element {
     // 0..=5 — the topmost visible section index. Updated by the scroll
     // listener (Task 7). Initial value 0 (General) so the index shows
     // item one as active before the first scroll event.
+    //
+    // The signal handle is `let mut` because clones of it (e.g. `let mut onidx =
+    // active_idx.clone();` inside the index-button onclick) need to call `.set()`.
+    // The binding itself is not mutated here — see the `// mut` note below.
+    #[allow(unused_mut)]
     let mut active_idx = use_signal(|| 0u8);
 
     let section_i = rsx! {
@@ -120,7 +125,8 @@ pub fn SettingsContent() -> Element {
                             let idx_u8 = idx as u8;
                             let active = active_idx() == idx_u8;
                             let cls = if active { "codex-index-item is-active" } else { "codex-index-item" };
-                            let onidx = active_idx.clone();
+                            // `mut` is required: Signal::set takes &mut.
+                            let mut onidx = active_idx.clone();
                             let section_id = match idx_u8 {
                                 0 => "s-i",
                                 1 => "s-ii",
@@ -158,9 +164,14 @@ pub fn SettingsContent() -> Element {
                 div {
                     id: "codex-tome-scroll",
                     class: "codex-tome",
-                    for (idx, section) in sections.iter().enumerate() {
+                    for (idx, sec) in sections.iter().enumerate() {
                         // Each element is already a CodexSection-wrapped <section> with id s-i..s-vi.
-                        section
+                        // The binding is named `sec` (not `section`) because `section` is
+                        // a reserved rsx! element-name and would shadow the value-binder.
+                        {
+                            let _ = idx;
+                            sec
+                        }
                     }
                 }
             }
@@ -623,7 +634,10 @@ fn AgentsSettings() -> Element {
                                     "Show resume variants + running detection"
                                 }
                             }
-                            CustomToggle { active: new_is_claude() }
+                            Toggle {
+                                active: new_is_claude(),
+                                on_toggle: move |_| new_is_claude.set(!new_is_claude()),
+                            }
                         }
                         // Priority toggle
                         if new_is_claude() {
@@ -641,7 +655,10 @@ fn AgentsSettings() -> Element {
                                         "Default resume option for Claude sessions"
                                     }
                                 }
-                                CustomToggle { active: new_priority() }
+                                Toggle {
+                                    active: new_priority(),
+                                    on_toggle: move |_| new_priority.set(!new_priority()),
+                                }
                             }
                         }
                         div {
@@ -1092,7 +1109,10 @@ fn FontDropdown(props: FontDropdownProps) -> Element {
                     for (idx, font) in fonts.iter().enumerate() {
                         {
                             let font_str: &'static str = font;
-                            let selected = *font_str == props.current.as_str();
+                            // Compare two &str via deref-equality; the prior
+                            // (*font_str == props.current.as_str()) compared
+                            // a `str` (deref target) with a `&str` and broke.
+                            let selected = *font_str == *props.current.as_str();
                             let font_for_click = font_str.to_string();
                             rsx! {
                                 div {
