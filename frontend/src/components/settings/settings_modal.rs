@@ -545,9 +545,7 @@ fn AgentsSettings() -> Element {
 
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; gap: 24px; max-width: 620px;",
-
-            SectionHeader { title: "Agents", desc: "Manage your agent configurations. Create custom agents with aliases and commands that launch them." }
+            style: "display: flex; flex-direction: column; gap: 18px; max-width: 620px;",
 
             // New Agent form
             div {
@@ -864,78 +862,22 @@ Tab: About
 fn AboutSettings() -> Element {
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 40px 20px; color: var(--textDim); max-width: 620px;",
-
+            style: "display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 36px 20px; color: var(--textDim); max-width: 620px; margin: 0 auto;",
+            span {
+                style: "width: 54px; height: 54px; border-radius: 50%; border: 1px solid var(--accent); display: inline-flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-display); font-size: 32px; box-shadow: 0 0 18px var(--accentSubtle), inset 0 0 10px var(--accentSubtle); margin-bottom: 16px;",
+                "\u{0398}"
+            }
             div {
-                style: "font-family: var(--font-display); font-size: 36px; font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
+                style: "font-family: var(--font-display); color: var(--text); font-size: 40px; font-weight: 600; letter-spacing: 0.01em; line-height: 1;",
                 "Athena"
             }
             div {
-                style: "font-size: var(--text-sm); color: var(--textMuted); margin-top: 4px;",
-                "v0.1.0"
+                style: "font-family: var(--font-display); color: var(--accent); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; margin-top: 6px;",
+                "v 0.1.0"
             }
             div {
-                style: "font-size: var(--text-xs); color: var(--textDim); margin-top: 8px; text-align: center; line-height: 1.6; max-width: 400px;",
+                style: "font-family: var(--font-display); font-style: italic; color: var(--textDim); font-size: 13px; margin-top: 14px; max-width: 380px; text-align: center; line-height: 1.6;",
                 "AI-powered software orchestration and development environment. Built with Tauri, Dioxus, and a lot of coffee."
-            }
-        }
-    }
-}
-
-/* =============================================================
-Shared primitives
-============================================================ */
-
-#[derive(Props, Clone, PartialEq)]
-struct SectionHeaderProps {
-    title: String,
-    desc: String,
-}
-
-#[component]
-fn SectionHeader(props: SectionHeaderProps) -> Element {
-    rsx! {
-        div {
-            style: "margin-bottom: 8px; padding-bottom: 12px;",
-            div {
-                style: "display: flex; align-items: center; gap: 8px;",
-                div {
-                    style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
-                    "{props.title}"
-                }
-            }
-            div {
-                style: "font-size: var(--text-xs); color: var(--textDim); margin-top: 4px; line-height: 1.5; padding-left: 18px;",
-                "{props.desc}"
-            }
-            hr { class: "great-circle-rule", style: "margin-top: 8px;" }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct SettingsSectionProps {
-    label: String,
-    description: Option<String>,
-}
-
-#[component]
-fn SettingsSection(props: SettingsSectionProps) -> Element {
-    rsx! {
-        div {
-            style: "display: flex; flex-direction: column; gap: 2px;",
-            div {
-                style: "display: flex; align-items: center; gap: 6px;",
-                div {
-                    style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
-                    "{props.label}"
-                }
-            }
-            if let Some(desc) = &props.description {
-                div {
-                    style: "font-size: var(--text-xs); color: var(--textDim); line-height: 1.5; padding-left: 14px;",
-                    "{desc}"
-                }
             }
         }
     }
