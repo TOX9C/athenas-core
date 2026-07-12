@@ -30,21 +30,35 @@ pub fn SettingsContent() -> Element {
     // that index into `active_idx`. The Codex-index reads `active_idx` and
     // renders the matching numeral.
     //
+    // The listener is torn down on unmount via `use_drop` (Spec §3.3 /
+    // project-redesign-mount-panic-hooks — without explicit removal the
+    // listener would keep firing and writing into a stale signal after
+    // the modal closes).
+    //
+    // Storage pattern: A component-scoped `Rc<RefCell<Option<...>>>` slot
+    // holds the (scroller_element, closure) pair. The `use_effect` installs
+    // the listener and stashes the pair; the `use_drop` reads it back out
+    // and removes the JS-side listener on unmount, freeing the closure.
+    //
     // Implementation constraints (Dioxus 0.7 hooks-at-mount):
-    //   - We never call `use_signal` / `use_effect` inside the scroll closure.
-    //   - The closure captures a `Signal<u8>` clone of `active_idx`, set via
-    //     `.set(best_idx)` only.
-    //   - The `Closure` is held alive via `use_signal(Some(cl))` inside the
-    //     effect body, so the JS callback is not freed mid-mount.
-    use_effect(move || {
-        let mut active_idx = active_idx.clone();
-        let Some(window) = web_sys::window() else { return; };
-        let Some(document) = window.document() else { return; };
-        let Some(scroller) = document.get_element_by_id("codex-tome-scroll") else {
-            return;
-        };
+    //   - `use_signal`/`use_effect`/`use_hook`/`use_drop` only inside component body.
+    //   - The scroll closure captures a `Signal<u8>` clone of `active_idx`.
+    //   - No hooks are called inside the scroll closure.
+    let scroll_listener: ::std::rc::Rc<
+        ::std::cell::RefCell<
+            Option<(
+                web_sys::Element,
+                wasm_bindgen::closure::Closure<dyn FnMut()>,
+            )>,
+        >,
+    > = use_hook(|| {
+        ::std::rc::Rc::new(::std::cell::RefCell::new(None))
+    });
 
-        let cl = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+    use_effect({
+        let scroll_listener = ::std::rc::Rc::clone(&scroll_listener);
+        move || {
+            let mut active_idx = active_idx.clone();
             let Some(window) = web_sys::window() else { return; };
             let Some(document) = window.document() else { return; };
             let Some(scroller) = document.get_element_by_id("codex-tome-scroll") else {
@@ -53,43 +67,77 @@ pub fn SettingsContent() -> Element {
             let Ok(scroller_el) = scroller.dyn_into::<web_sys::Element>() else {
                 return;
             };
-            let rect = scroller_el.get_bounding_client_rect();
-            let scroller_top = rect.top();
 
-            // For each section root, pick the one whose top is closest-
-            // above/on the scroller's own top. If the scroller has not
-            // scrolled (everything still above the fold), the first
-            // section wins.
-            let mut best_idx: u8 = 0;
-            let mut best_top: f64 = f64::NEG_INFINITY;
-            let ids = ["s-i", "s-ii", "s-iii", "s-iv", "s-v", "s-vi"];
-            for (i, id) in ids.iter().enumerate() {
-                let Some(el) = document.get_element_by_id(id) else {
-                    continue;
-                };
-                let Ok(el) = el.dyn_into::<web_sys::Element>() else {
-                    continue;
-                };
-                let rect = el.get_bounding_client_rect();
-                let top = rect.top();
-                if top <= scroller_top + 1.0 && top > best_top {
-                    best_top = top;
-                    best_idx = i as u8;
-                }
+            // Defensive: if a prior listener exists (rebind path), remove it.
+            if let Some((old_scroller, old_cl)) =
+                scroll_listener.borrow_mut().take()
+            {
+                let _ = old_scroller.remove_event_listener_with_callback(
+                    "scroll",
+                    old_cl.as_ref().unchecked_ref(),
+                );
             }
-            active_idx.set(best_idx);
-        }) as Box<dyn FnMut()>);
 
-        let _ = scroller.add_event_listener_with_callback(
-            "scroll",
-            cl.as_ref().unchecked_ref(),
-        );
+            let cl = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                let Some(window) = web_sys::window() else { return; };
+                let Some(document) = window.document() else { return; };
+                let Some(scroller) = document.get_element_by_id("codex-tome-scroll") else {
+                    return;
+                };
+                let Ok(scroller_el) = scroller.dyn_into::<web_sys::Element>() else {
+                    return;
+                };
+                let rect = scroller_el.get_bounding_client_rect();
+                let scroller_top = rect.top();
 
-        // Hold the Closure alive for the lifetime of the component. Without
-        // this, the Closure would Drop after `use_effect`, freeing the JS
-        // callback. `use_signal` inside `use_effect` is supported in Dioxus
-        // 0.7 — the closure type cannot be leaked otherwise.
-        let _keep = use_signal(|| Some(cl));
+                // For each section root, pick the one whose top is closest-
+                // above/on the scroller's own top. If the scroller has not
+                // scrolled (everything still above the fold), the first
+                // section wins.
+                let mut best_idx: u8 = 0;
+                let mut best_top: f64 = f64::NEG_INFINITY;
+                let ids = ["s-i", "s-ii", "s-iii", "s-iv", "s-v", "s-vi"];
+                for (i, id) in ids.iter().enumerate() {
+                    let Some(el) = document.get_element_by_id(id) else {
+                        continue;
+                    };
+                    let Ok(el) = el.dyn_into::<web_sys::Element>() else {
+                        continue;
+                    };
+                    let rect = el.get_bounding_client_rect();
+                    let top = rect.top();
+                    if top <= scroller_top + 1.0 && top > best_top {
+                        best_top = top;
+                        best_idx = i as u8;
+                    }
+                }
+                active_idx.set(best_idx);
+            }) as Box<dyn FnMut()>);
+
+            let _ = scroller_el.add_event_listener_with_callback(
+                "scroll",
+                cl.as_ref().unchecked_ref(),
+            );
+
+            // Stash for the unmount-cleanup hook to consume later.
+            *scroll_listener.borrow_mut() = Some((scroller_el, cl));
+        }
+    });
+
+    // Cleanup on unmount: take the scroller+closure pair out of the slot
+    // and remove the JS-side listener. Once the closure (and its slot entry)
+    // drops here, the wasm_bindgen JS callback handle is freed.
+    use_drop({
+        let scroll_listener = ::std::rc::Rc::clone(&scroll_listener);
+        move || {
+            if let Some((scroller_el, cl)) = scroll_listener.borrow_mut().take()
+            {
+                let _ = scroller_el.remove_event_listener_with_callback(
+                    "scroll",
+                    cl.as_ref().unchecked_ref(),
+                );
+            }
+        }
     });
 
     let section_i = rsx! {
@@ -1088,9 +1136,14 @@ fn FontDropdown(props: FontDropdownProps) -> Element {
 
     rsx! {
         div {
-            // Close on outside click — implemented in Task 6 via a global
-            // mousedown listener; for now the popover uses an Escape or
-            // a second click on the affordance to close.
+            // The popover currently closes only via a second click on the
+            // affordance. Outside-click close was discussed (the spec kept
+            // this as a deferred-for-v2 behavior — see `docs/superpowers/
+            // specs/2026-07-12-settings-codex-redesign-design.md` §10) and
+            // is not implemented yet. The Esc-key close path gets added with
+            // a future outside-click global mousedown listener (mirroring
+            // the existing IntersectionObserver pattern in
+            // `xterm_mount.rs:765-834`).
             div {
                 class: if open() { "font-dropdown-afford is-open" } else { "font-dropdown-afford" },
                 onclick: move |_| open.toggle(),
