@@ -1101,7 +1101,6 @@ button:disabled {
 .toggle.is-active .knob {
   transform: translateX(18px);
   background: var(--accent);
-  box-shadow: 0 0 7px var(--accentSubtle);
 }
 
 /* Save button — solid gold, the new Save affordance for
