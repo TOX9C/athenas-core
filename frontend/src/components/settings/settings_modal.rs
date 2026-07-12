@@ -978,3 +978,219 @@ fn CustomToggle(props: CustomToggleProps) -> Element {
         }
     }
 }
+
+/* =============================================================
+Codex of Settings — shared presentation primitives
+============================================================= */
+
+#[derive(Props, Clone, PartialEq)]
+struct CodexSectionProps {
+    /// Roman numeral shown in the section header, e.g. "I", "II".
+    numeral: &'static str,
+    /// Title text shown next to the numeral in --text + --font-display.
+    title: &'static str,
+    /// Short italic Cormorant line aligned to the right of the header.
+    epigraph: &'static str,
+    /// Optional intro line under the rule (--textMuted, --text-base).
+    intro: Option<&'static str>,
+    /// DOM id used by the floating index to scroll/jump-active. e.g. "s-i".
+    id: &'static str,
+    children: Element,
+}
+
+#[component]
+fn CodexSection(props: CodexSectionProps) -> Element {
+    rsx! {
+        section {
+            class: "codex-section",
+            id: "{props.id}",
+            div {
+                class: "codex-section-head",
+                span { class: "codex-section-num", "{props.numeral}." }
+                span { class: "codex-section-title", "{props.title}" }
+                span { class: "codex-section-epi", "{props.epigraph}" }
+            }
+            if let Some(intro) = props.intro {
+                div { class: "codex-section-intro", "{intro}" }
+            } else {
+                div { class: "codex-section-intro" } /* keeps spacing rhythm */
+            }
+            hr { class: "codex-rule" }
+            {props.children}
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct GroupLabelProps {
+    label: &'static str,
+    /// When true, suppresses the top margin (first group in a section).
+    #[props(default)]
+    first: bool,
+}
+
+#[component]
+fn GroupLabel(props: GroupLabelProps) -> Element {
+    let cls = if props.first { "group-label label-first" } else { "group-label" };
+    rsx! {
+        div { class: "{cls}",
+            span { "{props.label}" }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct LabeledFieldProps {
+    label: &'static str,
+    description: Option<&'static str>,
+    children: Element,
+}
+
+#[component]
+fn LabeledField(props: LabeledFieldProps) -> Element {
+    rsx! {
+        div {
+            style: "display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px;",
+            div {
+                style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--accent);",
+                "{props.label}"
+            }
+            if let Some(desc) = props.description {
+                div {
+                    style: "color: var(--textDim); font-size: 11px; padding-left: 12px;",
+                    "{desc}"
+                }
+            }
+            {props.children}
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ToggleProps {
+    active: bool,
+    on_toggle: EventHandler<MouseEvent>,
+}
+
+#[component]
+fn Toggle(props: ToggleProps) -> Element {
+    let cls = if props.active { "toggle is-active" } else { "toggle" };
+    rsx! {
+        button {
+            class: "{cls}",
+            r#type: "button",
+            aria_pressed: "{props.active}",
+            onclick: move |e| props.on_toggle.call(e),
+            div { class: "knob" }
+        }
+    }
+}
+
+/// Font-family dropdown popover. Each option is rendered in its own
+/// typeface (`font-family` per option) so the user previews the face
+/// they are about to pick. State (open/closed) is local to the dropdown.
+///
+/// The popover defaults closed and is local to this component. Selection
+/// is one-way from child → parent via `on_select`.
+#[derive(Props, Clone, PartialEq)]
+struct FontDropdownProps {
+    /// Current selection (the option rendered as the active affordance).
+    current: String,
+    /// Called with the chosen family name when the user picks one.
+    on_select: EventHandler<String>,
+}
+
+#[component]
+fn FontDropdown(props: FontDropdownProps) -> Element {
+    // Local signal: is the popover open?
+    let mut open = use_signal(|| false);
+
+    // Local signal: the option count, used as the loop range. We keep it
+    // as a `Vec<&'static str>` mirroring AVAILABLE_FONTS but capture it
+    // inside the component as a local constant Vec — this avoids re-creating
+    // the list on every render (use_signal(|| …) for closures is fine; this
+    // is set once and never mutated).
+    let fonts: Vec<&'static str> = AVAILABLE_FONTS.to_vec();
+
+    rsx! {
+        div {
+            // Close on outside click — implemented in Task 6 via a global
+            // mousedown listener; for now the popover uses an Escape or
+            // a second click on the affordance to close.
+            div {
+                class: if open() { "font-dropdown-afford is-open" } else { "font-dropdown-afford" },
+                onclick: move |_| open.toggle(),
+                span { class: "name", style: "font-family: '{props.current}', monospace;", "{props.current}" }
+                span { class: "chevron", "▾" }
+            }
+            if open() {
+                div { class: "font-dropdown-pop",
+                    for (idx, font) in fonts.iter().enumerate() {
+                        {
+                            let font_str: &'static str = font;
+                            let selected = *font_str == props.current.as_str();
+                            let font_for_click = font_str.to_string();
+                            rsx! {
+                                div {
+                                    key: "{idx}",
+                                    class: if selected { "font-dropdown-opt is-selected" } else { "font-dropdown-opt" },
+                                    style: "font-family: '{font_str}', monospace;",
+                                    onclick: move |_| {
+                                        open.set(false);
+                                        props.on_select.call(font_for_click.clone());
+                                    },
+                                    span { "{font_str}" }
+                                    span { class: "check", "✓" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Font-size ± stepper. Value clamped to 10..=24 inclusive. Single click
+/// only (no hold-to-repeat in v1).
+#[derive(Props, Clone, PartialEq)]
+struct SizeStepperProps {
+    value: u8,
+    on_change: EventHandler<u8>,
+}
+
+#[component]
+fn SizeStepper(props: SizeStepperProps) -> Element {
+    let step = |delta: i8| {
+        move |_| {
+            let next = (props.value as i16 + delta as i16).clamp(10, 24) as u8;
+            if next != props.value {
+                props.on_change.call(next);
+            }
+        }
+    };
+    rsx! {
+        div { class: "size-stepper",
+            button {
+                class: "size-step",
+                r#type: "button",
+                aria_label: "Decrease font size",
+                disabled: props.value <= 10,
+                onclick: step(-1),
+                "−"
+            }
+            div { class: "size-step-value",
+                span { class: "px", "{props.value}" }
+                span { class: "unit", "PIXELS" }
+            }
+            button {
+                class: "size-step",
+                r#type: "button",
+                aria_label: "Increase font size",
+                disabled: props.value >= 24,
+                onclick: step(1),
+                "+"
+            }
+        }
+    }
+}
