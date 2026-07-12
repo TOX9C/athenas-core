@@ -161,7 +161,7 @@ fn GeneralSettings() -> Element {
                                     button {
                                         key: "{font}",
                                         class: "font-option-btn lit-sweep",
-                                        style: "padding: 8px 16px; border-radius: var(--radius-md); border: 1px solid var(--border); background: {bg}; color: {fg}; cursor: pointer; font-size: var(--text-sm); font-family: '{font}', monospace; transition: background 0.18s ease, color 0.18s ease; transform: scale(1);",
+                                        style: "background: {bg}; color: {fg}; font-family: '{font}', monospace;",
                                         onclick: move |_| {
                                             let font_clone = font_str.clone();
                                             ui_state.write().font_family = font_clone;

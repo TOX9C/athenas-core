@@ -72,6 +72,21 @@
   src: url('./fonts/MonaspaceNeon-500.woff2') format('woff2');
 }
 
+@font-face {
+  font-family: 'JetBrainsMono Nerd Font';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMonoNerdFont-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrainsMono Nerd Font';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMonoNerdFont-Bold.woff2') format('woff2');
+}
+
 *,
 *::before,
 *::after {
@@ -869,6 +884,24 @@ button:disabled {
 }
 
 .lit-sweep {
+}
+
+/* Font-family picker button. Constant geometry lives here in a static class
+   (not in the inline `style`) so the rounded corners survive Dioxus re-renders.
+   Dioxus 0.7 re-writes the inline `style` attribute on the two buttons whose
+   background/color change when selection flips; when border-radius rode in the
+   inline string it visually reverted to square on those two buttons. Pinning
+   the constant CSS to the class keeps the radius out of the dynamic diff. */
+.font-option-btn {
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  transform: scale(1);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
 }
 
 /* Θ seal — the brand mark. Sizes the IconSeal disc + gold halo. */

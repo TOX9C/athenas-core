@@ -365,6 +365,7 @@ pub const ALL_THEMES: &[(&str, &str)] = &[
 
 pub const AVAILABLE_FONTS: &[&str] = &[
     "Monaspace Neon",
+    "JetBrainsMono Nerd Font",
     "JetBrains Mono",
     "Fira Code",
     "Cascadia Code",
