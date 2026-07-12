@@ -1,100 +1,167 @@
 use super::shortcuts_ref::ShortcutsRef;
 use super::theme_picker::ThemePicker;
-use crate::components::shared::icon::{
-    IconAmphora, IconColumn, IconHelmet, IconScroll, IconSettings, IconTerminal,
-};
 use crate::components::shared::modal::Modal;
 use crate::stores::athena::use_athena_store;
 use crate::stores::ui::use_ui_store;
-use crate::themes::{get_theme, AVAILABLE_FONTS};
+use crate::themes::AVAILABLE_FONTS;
 use dioxus::prelude::*;
 
 /* =============================================================
-SettingsContent – shared by modal overlay and full-page panel
+SettingsContent – the codex of settings (six sections + floating index)
 ============================================================= */
-
-/// Icon for a settings tab by index.
-fn tab_icon(idx: u8, color: &str) -> Element {
-    let c = color.to_string();
-    match idx {
-        0 => rsx! { IconSettings { size: Some(16), color: Some(c) } },
-        1 => rsx! { IconTerminal { size: Some(16), color: Some(c) } },
-        2 => rsx! { IconHelmet { size: Some(16), color: Some(c) } },
-        3 => rsx! { IconColumn { size: Some(16), color: Some(c) } },
-        4 => rsx! { IconScroll { size: Some(16), color: Some(c) } },
-        5 => rsx! { IconAmphora { size: Some(16), color: Some(c) } },
-        _ => rsx! { IconSettings { size: Some(16), color: Some(c) } },
-    }
-}
 
 #[component]
 pub fn SettingsContent() -> Element {
-    let mut active_tab = use_signal(|| 0u8);
+    // 0..=5 — the topmost visible section index. Updated by the scroll
+    // listener (Task 7). Initial value 0 (General) so the index shows
+    // item one as active before the first scroll event.
+    let mut active_idx = use_signal(|| 0u8);
 
-    let tabs = [
-        ("General", 0u8),
-        ("Athena", 1u8),
-        ("Agents", 2u8),
-        ("Themes", 3u8),
-        ("Shortcuts", 4u8),
-        ("About", 5u8),
+    let section_i = rsx! {
+        CodexSection {
+            numeral: "I",
+            title: "General",
+            epigraph: "The forge — where the type is struck.",
+            intro: Some("Configure your Athena environment — type, size, pane titles."),
+            id: "s-i",
+            GeneralSettings {}
+        }
+    };
+    let section_ii = rsx! {
+        CodexSection {
+            numeral: "II",
+            title: "Athena",
+            epigraph: "The oracle — to whom the questions are put.",
+            intro: Some("Configure your LLM provider. Works with any OpenAI-compatible API or Anthropic."),
+            id: "s-ii",
+            AthenaSettings {}
+        }
+    };
+    let section_iii = rsx! {
+        CodexSection {
+            numeral: "III",
+            title: "Agents",
+            epigraph: "The order — those who act on your behalf.",
+            intro: Some("Manage custom agents with aliases and commands that launch them."),
+            id: "s-iii",
+            AgentsSettings {}
+        }
+    };
+    let section_iv = rsx! {
+        CodexSection {
+            numeral: "IV",
+            title: "Themes",
+            epigraph: "The aspect — how the temple catches the light.",
+            intro: Some("Choose a color scheme for your Athena environment."),
+            id: "s-iv",
+            ThemePicker {}
+        }
+    };
+    let section_v = rsx! {
+        CodexSection {
+            numeral: "V",
+            title: "Shortcuts",
+            epigraph: "The craft — the gestures by which the hand moves.",
+            intro: Some("Quick reference for the most common keyboard shortcuts in Athena."),
+            id: "s-v",
+            ShortcutsRef {}
+        }
+    };
+    let section_vi = rsx! {
+        CodexSection {
+            numeral: "VI",
+            title: "About",
+            epigraph: "The keystone — the temple knows itself.",
+            intro: Some(""),
+            id: "s-vi",
+            AboutSettings {}
+        }
+    };
+
+    let sections = [section_i, section_ii, section_iii, section_iv, section_v, section_vi];
+    let numerals: [&'static str; 6] = ["I", "II", "III", "IV", "V", "VI"];
+    let glyphs: [&'static str; 6] = [
+        "\u{2699}", "\u{03A6}", "\u{232C}", "\u{25D1}", "\u{2318}", "\u{0398}",
     ];
+    // U+2699 GEAR, U+03A6 PHI, U+232C BENZENE, U+25D1 CIRCLE WITH LEFT
+    // HALF BLACK, U+2318 PLACE OF INTEREST SIGN, U+0398 GREEK CAPITAL
+    // THETA. Glyphs render via Unicode in --font-display (Cormorant).
 
     rsx! {
         div {
             class: "pane-astrolabe-mark",
-            style: "display: flex; height: 100%; overflow: hidden;",
+            style: "display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--bgSecondary); color: var(--text);",
 
-            /* ── Left vertical tab bar ────────────────────── */
+            /* ── Interior masthead (decorative; modal close button is owned by Modal) ── */
             div {
-                style: "width: 200px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; padding: 20px 12px; border-right: 1px solid var(--border); background: var(--bgSecondary);",
-
-                div {
-                    style: "display: flex; align-items: center; gap: 8px; padding: 0 8px 16px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px;",
-                    IconSettings { size: Some(18), color: Some("var(--accent)".to_string()) }
-                    div {
-                        style: "display: flex; align-items: center; gap: 6px;",
-                        div {
-                            style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
-                            "Settings"
-                        }
-                    }
+                style: "display: flex; align-items: center; gap: 12px; padding: 18px 24px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
+                span {
+                    style: "width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--accent); display: inline-flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-display); font-size: 18px; box-shadow: 0 0 10px var(--accentSubtle), inset 0 0 6px var(--accentSubtle);",
+                    "\u{0398}"
                 }
+                span {
+                    style: "font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--accent); letter-spacing: 0.03em;",
+                    "Codex of Settings"
+                }
+                span {
+                    style: "margin-left: auto; color: var(--textDim); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;",
+                    "Bronze Relief \u{2022} ✦"
+                }
+            }
 
-                for (label, idx) in tabs {
-                    {
-                        let is_active = active_tab() == idx;
-                        let color = if is_active { "var(--accent)" } else { "var(--textMuted)" };
-                        let font_weight = if is_active { "600" } else { "400" };
-                        let bg = "transparent";
-                        let accent_side = "var(--textMuted)";
-                        rsx! {
-                            button {
-                                key: "{label}",
-                                style: "display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: none; border-radius: var(--radius-md); background: {bg}; color: {color}; cursor: pointer; font-size: var(--text-sm); text-align: left; width: 100%; font-weight: {font_weight}; transition: color 0.18s ease;",
-                                onclick: move |_| active_tab.set(idx),
-                                {tab_icon(idx, color)}
-                                "{label}"
+            /* ── Body: index on the left, scroll tome on the right ── */
+            div {
+                style: "display: flex; flex: 1; min-height: 0;",
+
+                /* Floating left index (sticky) */
+                div { class: "codex-index",
+                    for (idx, _section) in sections.iter().enumerate() {
+                        {
+                            let idx_u8 = idx as u8;
+                            let active = active_idx() == idx_u8;
+                            let cls = if active { "codex-index-item is-active" } else { "codex-index-item" };
+                            let onidx = active_idx.clone();
+                            let section_id = match idx_u8 {
+                                0 => "s-i",
+                                1 => "s-ii",
+                                2 => "s-iii",
+                                3 => "s-iv",
+                                4 => "s-v",
+                                _ => "s-vi",
+                            };
+                            let section_id_for_click = section_id.to_string();
+                            rsx! {
+                                button {
+                                    key: "{idx}",
+                                    class: "{cls}",
+                                    r#type: "button",
+                                    aria_label: "Jump to section {numerals[idx]}",
+                                    onclick: move |_| {
+                                        onidx.set(idx_u8);
+                                        if let Some(window) = web_sys::window() {
+                                            if let Some(doc) = window.document() {
+                                                if let Some(el) = doc.get_element_by_id(&section_id_for_click) {
+                                                    let _ = el.scroll_into_view();
+                                                }
+                                            }
+                                        }
+                                    },
+                                    span { "{numerals[idx]}" }
+                                    span { class: "glyph", "{glyphs[idx]}" }
+                                }
                             }
                         }
                     }
                 }
 
-                div { style: "flex: 1;" }
-            }
-
-            /* ── Right content area ───────────────────────── */
-            div {
-                style: "flex: 1; padding: 24px 32px; min-width: 0; overflow-y: auto;",
-
-                match active_tab() {
-                    0 => rsx! { GeneralSettings {} },
-                    1 => rsx! { AthenaSettings {} },
-                    2 => rsx! { AgentsSettings {} },
-                    3 => rsx! { ThemePicker {} },
-                    4 => rsx! { ShortcutsRef {} },
-                    5 => rsx! { AboutSettings {} },
-                    _ => rsx! { GeneralSettings {} },
+                /* Scroll tome */
+                div {
+                    id: "codex-tome-scroll",
+                    class: "codex-tome",
+                    for (idx, section) in sections.iter().enumerate() {
+                        // Each element is already a CodexSection-wrapped <section> with id s-i..s-vi.
+                        section
+                    }
                 }
             }
         }
@@ -131,155 +198,85 @@ fn GeneralSettings() -> Element {
     let mut ui_state = use_ui_store();
 
     rsx! {
-        div {
-            style: "display: flex; flex-direction: column; gap: 24px; max-width: 620px;",
+        GroupLabel { label: "Typography", first: true }
 
-            SectionHeader { title: "General", desc: "Configure your Athena environment" }
-
-            /* ── Font Family ── */
-            SettingsSection { label: "Font Family", description: Some("Choose your preferred monospace typeface for the editor and terminal. View it in the preview below.".to_string()) }
-            div {
-                style: "display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;",
-                {
-                    let ui = ui_state.read();
-                    let current_font = ui.font_family.clone();
-                    let theme_colors = get_theme(ui.theme.name());
-                    let theme_accent = theme_colors.accent.clone();
-                    let theme_bg_tertiary = theme_colors.bg_tertiary.clone();
-                    drop(ui);
-                    rsx! {
-                        for font in AVAILABLE_FONTS {
-                            {
-                                let is_selected = *font == current_font;
-                                let bg = if is_selected { &theme_accent } else { &theme_bg_tertiary };
-                                let fg = if is_selected { "var(--bg)" } else { "var(--textMuted)" };
-                                // Selection is conveyed by fill + text (solid gold
-                                // background with dark text), not a border or halo.
-                                // No outline, no box-shadow — constant border.
-                                let font_str = font.to_string();
-                                rsx! {
-                                    button {
-                                        key: "{font}",
-                                        class: "font-option-btn lit-sweep",
-                                        style: "background: {bg}; color: {fg}; font-family: '{font}', monospace;",
-                                        onclick: move |_| {
-                                            let font_clone = font_str.clone();
-                                            ui_state.write().font_family = font_clone;
-                                            let size = ui_state.read().font_size;
-                                            crate::themes::apply_font_to_dom(&font_str, size);
-                                            let f = font_str.clone();
-                                            wasm_bindgen_futures::spawn_local(async move {
-                                                let _ = crate::tauri_bridge::store_set("font_family", &f).await;
-                                            });
-                                        },
-                                        "{font}"
-                                    }
-                                }
-                            }
-                        }
-                    }
+        LabeledField {
+            label: "Font Family",
+            description: Some("Choose your monospace typeface for the editor and terminal."),
+            FontDropdown {
+                current: ui_state.read().font_family.clone(),
+                on_select: move |family: String| {
+                    let size = ui_state.read().font_size;
+                    ui_state.write().font_family = family.clone();
+                    crate::themes::apply_font_to_dom(&family, size);
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = crate::tauri_bridge::store_set("font_family", &family).await;
+                    });
                 }
             }
+        }
 
-            /* ── Font Size ── */
-            SettingsSection { label: "Font Size", description: Some("Adjust the base font size used throughout the interface and terminal.".to_string()) }
+        LabeledField {
+            label: "Font Size",
+            description: Some("Adjust the base font size used throughout the interface and terminal."),
+            SizeStepper {
+                value: ui_state.read().font_size,
+                on_change: move |val: u8| {
+                    let fam = ui_state.read().font_family.clone();
+                    ui_state.write().font_size = val;
+                    crate::themes::apply_font_to_dom(&fam, val);
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = crate::tauri_bridge::store_set("font_size", &val.to_string()).await;
+                    });
+                }
+            }
+        }
+
+        /* ── Live preview ── */
+        div { class: "settings-preview",
+            div { class: "settings-preview-tabs",
+                span { class: "settings-preview-dot", style: "background: var(--error);" }
+                span { class: "settings-preview-dot", style: "background: #d2973c;" }
+                span { class: "settings-preview-dot", style: "background: var(--success);" }
+                span { class: "settings-preview-tag", "Preview" }
+            }
             div {
-                style: "display: flex; align-items: center; gap: 16px; margin-top: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bgSecondary);",
-                input {
-                    r#type: "range",
-                    min: "10",
-                    max: "24",
-                    value: "{ui_state.read().font_size}",
-                    style: "flex: 1; accent-color: var(--accent); height: 6px;",
-                    oninput: move |e| {
-                        if let Ok(val) = e.value().parse::<u8>() {
-                            let fam = ui_state.read().font_family.clone();
-                            ui_state.write().font_size = val;
-                            crate::themes::apply_font_to_dom(&fam, val);
-                            wasm_bindgen_futures::spawn_local(async move {
-                                let _ = crate::tauri_bridge::store_set("font_size", &val.to_string()).await;
-                            });
-                        }
-                    },
+                class: "settings-preview-code",
+                style: "font-family: '{ui_state.read().font_family}', monospace; font-size: {ui_state.read().font_size}px;",
+                r#"fn main() {{
+    println!("Hello, world!");
+}}"#
+            }
+        }
+
+        GroupLabel { label: "Pane Titles" }
+
+        /* ── Smart pane titles label + toggle row ── */
+        div {
+            style: "display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); margin-bottom: 8px;",
+            div {
+                style: "display: flex; flex-direction: column; gap: 4px; min-width: 0;",
+                span {
+                    style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--accent);",
+                    "Smart pane titles"
                 }
                 span {
-                    style: "font-family: var(--fontFamily); font-size: var(--text-sm); font-weight: 600; color: var(--accent); min-width: 40px; text-align: center; background: var(--bgTertiary); padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);",
-                    "{ui_state.read().font_size}px"
+                    style: "font-size: 11px; color: var(--textDim);",
+                    "Auto-generate names for idle shells and summarize agent titles via LLM."
                 }
             }
-
-            /* ── Preview ── */
-            div {
-                class: "settings-preview",
-                style: "margin-top: 16px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bgSecondary); position: relative; overflow: hidden;",
-                div {
-                    style: "display: flex; align-items: center; gap: 6px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border);",
-                    div {
-                        style: "width: 10px; height: 10px; border-radius: 50%; background: var(--error);",
-                    }
-                    div {
-                        style: "width: 10px; height: 10px; border-radius: 50%; background: var(--warning);",
-                    }
-                    div {
-                        style: "width: 10px; height: 10px; border-radius: 50%; background: var(--success);",
-                    }
-                    div {
-                        style: "font-size: var(--text-2xs); color: var(--textDim); margin-left: auto; font-weight: 500; font-family: var(--font-display); letter-spacing: 0.04em; text-transform: uppercase;",
-                        "Preview"
-                    }
-                }
-                div {
-                    style: "font-family: '{ui_state.read().font_family}', monospace; font-size: {ui_state.read().font_size}px; color: var(--text); line-height: 1.75;",
-                    "fn main() {{"
-                    br {}
-                    "    println!(\"Hello, world!\");"
-                    br {}
-                    "}}"
-                }
-            }
-
-            SectionHeader { title: "Pane Titles", desc: "Auto-generated labels above each pane" }
-            /* ── Smart pane titles toggle ── */
-            div {
-                style: "display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bgSecondary); margin-top: 12px;",
-                div {
-                    style: "display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-right: 8px;",
-                    div {
-                        style: "display: flex; align-items: center; gap: 6px;",
-                        div {
-                            style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
-                            "Smart pane titles"
-                        }
-                    }
-                    div {
-                        style: "font-size: var(--text-xs); color: var(--textMuted); line-height: 1.5; padding-left: 14px;",
-                        "Auto-generate names for idle shells and summarize agent titles via LLM."
-                    }
-                }
-                {
-                    let enabled = ui_state.read().smart_pane_titles;
-                    let bg = if enabled { "var(--accent)" } else { "var(--bgTertiary)" };
-                    let knob = if enabled { "translateX(22px)" } else { "translateX(2px)" };
-                    let knob_bg = if enabled { "var(--bg)" } else { "var(--textDim)" };
-                    rsx! {
-                        button {
-                            style: "position: relative; width: 48px; height: 26px; border-radius: 999px; border: 1px solid var(--border); background: {bg}; cursor: pointer; padding: 0; flex-shrink: 0; transition: background 0.2s ease;",
-                            onclick: move |_| {
-                                let next = !ui_state.read().smart_pane_titles;
-                                ui_state.write().smart_pane_titles = next;
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    let _ = crate::tauri_bridge::store_set(
-                                        "smart_pane_titles",
-                                        if next { "true" } else { "false" },
-                                    )
-                                    .await;
-                                });
-                            },
-                            div {
-                                style: "position: absolute; top: 2px; left: 0px; width: 20px; height: 20px; border-radius: 50%; background: {knob_bg}; transform: {knob}; transition: transform 0.2s ease, background 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.2);",
-                            }
-                        }
-                    }
+            Toggle {
+                active: ui_state.read().smart_pane_titles,
+                on_toggle: move |_| {
+                    let next = !ui_state.read().smart_pane_titles;
+                    ui_state.write().smart_pane_titles = next;
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = crate::tauri_bridge::store_set(
+                            "smart_pane_titles",
+                            if next { "true" } else { "false" },
+                        )
+                        .await;
+                    });
                 }
             }
         }
@@ -941,39 +938,6 @@ fn SettingsSection(props: SettingsSectionProps) -> Element {
                     style: "font-size: var(--text-xs); color: var(--textDim); line-height: 1.5; padding-left: 14px;",
                     "{desc}"
                 }
-            }
-        }
-    }
-}
-
-// Custom toggle switch for consistent, modern UI
-#[derive(Props, Clone, PartialEq)]
-struct CustomToggleProps {
-    active: bool,
-}
-
-#[component]
-fn CustomToggle(props: CustomToggleProps) -> Element {
-    let bg = if props.active {
-        "var(--accent)"
-    } else {
-        "var(--bgTertiary)"
-    };
-    let knob = if props.active {
-        "translateX(22px)"
-    } else {
-        "translateX(2px)"
-    };
-    let knob_bg = if props.active {
-        "var(--bg)"
-    } else {
-        "var(--textDim)"
-    };
-    rsx! {
-        div {
-            style: "flex-shrink: 0; width: 48px; height: 26px; border-radius: 999px; background: {bg}; border: 1px solid var(--border); position: relative; transition: background 0.18s ease, border-color 0.18s ease; pointer-events: none;",
-            div {
-                style: "position: absolute; top: 2px; left: 0px; width: 20px; height: 20px; border-radius: 50%; background: {knob_bg}; transform: {knob}; box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), background 0.18s ease; will-change: transform;",
             }
         }
     }
