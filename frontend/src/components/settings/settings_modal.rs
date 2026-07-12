@@ -5,6 +5,7 @@ use crate::stores::athena::use_athena_store;
 use crate::stores::ui::use_ui_store;
 use crate::themes::AVAILABLE_FONTS;
 use dioxus::prelude::*;
+use wasm_bindgen::JsCast;
 
 /* =============================================================
 SettingsContent – the codex of settings (six sections + floating index)
@@ -21,6 +22,75 @@ pub fn SettingsContent() -> Element {
     // The binding itself is not mutated here — see the `// mut` note below.
     #[allow(unused_mut)]
     let mut active_idx = use_signal(|| 0u8);
+
+    // ── Scroll listener ───────────────────────────────────────
+    // Installs a one-shot 'scroll' listener on #codex-tome-scroll. For each
+    // section root (s-i..s-vi) the listener reads the DOM rect, picks the
+    // section whose top is closest-above the scroller's own top, and writes
+    // that index into `active_idx`. The Codex-index reads `active_idx` and
+    // renders the matching numeral.
+    //
+    // Implementation constraints (Dioxus 0.7 hooks-at-mount):
+    //   - We never call `use_signal` / `use_effect` inside the scroll closure.
+    //   - The closure captures a `Signal<u8>` clone of `active_idx`, set via
+    //     `.set(best_idx)` only.
+    //   - The `Closure` is held alive via `use_signal(Some(cl))` inside the
+    //     effect body, so the JS callback is not freed mid-mount.
+    use_effect(move || {
+        let mut active_idx = active_idx.clone();
+        let Some(window) = web_sys::window() else { return; };
+        let Some(document) = window.document() else { return; };
+        let Some(scroller) = document.get_element_by_id("codex-tome-scroll") else {
+            return;
+        };
+
+        let cl = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+            let Some(window) = web_sys::window() else { return; };
+            let Some(document) = window.document() else { return; };
+            let Some(scroller) = document.get_element_by_id("codex-tome-scroll") else {
+                return;
+            };
+            let Ok(scroller_el) = scroller.dyn_into::<web_sys::Element>() else {
+                return;
+            };
+            let rect = scroller_el.get_bounding_client_rect();
+            let scroller_top = rect.top();
+
+            // For each section root, pick the one whose top is closest-
+            // above/on the scroller's own top. If the scroller has not
+            // scrolled (everything still above the fold), the first
+            // section wins.
+            let mut best_idx: u8 = 0;
+            let mut best_top: f64 = f64::NEG_INFINITY;
+            let ids = ["s-i", "s-ii", "s-iii", "s-iv", "s-v", "s-vi"];
+            for (i, id) in ids.iter().enumerate() {
+                let Some(el) = document.get_element_by_id(id) else {
+                    continue;
+                };
+                let Ok(el) = el.dyn_into::<web_sys::Element>() else {
+                    continue;
+                };
+                let rect = el.get_bounding_client_rect();
+                let top = rect.top();
+                if top <= scroller_top + 1.0 && top > best_top {
+                    best_top = top;
+                    best_idx = i as u8;
+                }
+            }
+            active_idx.set(best_idx);
+        }) as Box<dyn FnMut()>);
+
+        let _ = scroller.add_event_listener_with_callback(
+            "scroll",
+            cl.as_ref().unchecked_ref(),
+        );
+
+        // Hold the Closure alive for the lifetime of the component. Without
+        // this, the Closure would Drop after `use_effect`, freeing the JS
+        // callback. `use_signal` inside `use_effect` is supported in Dioxus
+        // 0.7 — the closure type cannot be leaked otherwise.
+        let _keep = use_signal(|| Some(cl));
+    });
 
     let section_i = rsx! {
         CodexSection {
