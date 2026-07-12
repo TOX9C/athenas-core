@@ -389,149 +389,130 @@ fn AthenaSettings() -> Element {
     };
 
     rsx! {
-        div {
-            style: "display: flex; flex-direction: column; gap: 24px; max-width: 620px;",
+        /* GroupLabel "Provider" sits first to anchor the first labeled field. */
+        GroupLabel { label: "Provider", first: true }
 
-            SectionHeader { title: "Athena", desc: "Configure your LLM provider. Athena works with any OpenAI-compatible API or Anthropic." }
-
+        LabeledField {
+            label: "API Key",
+            description: Some("Stored in the OS keychain. Paste to replace."),
             div {
-                style: "display: flex; flex-direction: column; gap: 16px;",
-
-                // API Key
-                div {
-                    style: "display: flex; flex-direction: column; gap: 8px;",
-                    SettingsSection { label: "API Key", description: None }
-                    div {
-                        style: "display: flex; align-items: center; gap: 8px; margin-top: 4px;",
-                        div {
-                            style: "font-size: var(--text-xs); color: var(--textMuted); font-family: var(--fontFamily); background: var(--bgTertiary); padding: 4px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border);",
-                            if api_key_set() {
-                                "●●●● Set"
-                            } else {
-                                "Not set"
-                            }
-                        }
-                        button {
-                            class: "btn-secondary btn-sm",
-                            style: "padding: 4px 10px; font-size: var(--text-xs); font-weight: 500;",
-                            title: "Test keyring access",
-                            onclick: move |_| {
-                                let mut toast = toast_store.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    match crate::tauri_bridge::test_llm_api_key().await {
-                                        Ok(json) => {
-                                            let parsed: serde_json::Value = match serde_json::from_str(&json) {
-                                                Ok(v) => v,
-                                                Err(_) => {
-                                                    toast.write().push(
-                                                        crate::components::shared::toast::Toast {
-                                                            id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
-                                                            toast_type: crate::components::shared::toast::ToastType::Warning,
-                                                            title: "Key test error".to_string(),
-                                                            message: "Could not parse key test response".to_string(),
-                                                            duration_ms: 4000,
-                                                        }
-                                                    );
-                                                    return;
-                                                }
-                                            };
-                                            let ok = parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-                                            let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown response");
-                                            toast.write().push(
-                                                crate::components::shared::toast::Toast {
-                                                    id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
-                                                    toast_type: if ok {
-                                                        crate::components::shared::toast::ToastType::Success
-                                                    } else {
-                                                        crate::components::shared::toast::ToastType::Warning
-                                                    },
-                                                    title: if ok { "Key OK".to_string() } else { "Key test failed".to_string() },
-                                                    message: msg.to_string(),
-                                                    duration_ms: 6000,
-                                                }
-                                            );
+                style: "display: flex; align-items: center; gap: 8px; margin-top: 4px;",
+                span {
+                    style: "font-size: 10px; color: var(--textMuted); background: var(--bgTertiary); padding: 4px 9px; border-radius: var(--radius-sm); border: 1px solid var(--border); font-family: var(--font-ui);",
+                    if api_key_set() { "●●●● Set" } else { "Not set" }
+                }
+                button {
+                    class: "btn-secondary btn-sm",
+                    style: "padding: 4px 10px; font-weight: 500;",
+                    title: "Test keyring access",
+                    onclick: move |_| {
+                        let mut toast = toast_store.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match crate::tauri_bridge::test_llm_api_key().await {
+                                Ok(json) => {
+                                    let parsed: serde_json::Value = match serde_json::from_str(&json) {
+                                        Ok(v) => v,
+                                        Err(_) => {
+                                            toast.write().push(crate::components::shared::toast::Toast {
+                                                id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
+                                                toast_type: crate::components::shared::toast::ToastType::Warning,
+                                                title: "Key test error".to_string(),
+                                                message: "Could not parse key test response".to_string(),
+                                                duration_ms: 4000,
+                                            });
+                                            return;
                                         }
-                                        Err(e) => {
-                                            toast.write().push(
-                                                crate::components::shared::toast::Toast {
-                                                    id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
-                                                    toast_type: crate::components::shared::toast::ToastType::Error,
-                                                    title: "Key test failed".to_string(),
-                                                    message: format!("{:?}", e),
-                                                    duration_ms: 5000,
-                                                }
-                                            );
-                                        }
-                                    }
-                                });
-                            },
-                            "Test Key"
-                        }
-                    }
-                    input {
-                        value: "{api_key_input}",
-                        r#type: "password",
-                        class: "field",
-                        style: "width: 100%; box-sizing: border-box; margin-top: 8px;",
-                        placeholder: "Enter new API key…",
-                        oninput: move |e| { api_key_input.set(e.value()); save_status.set(None); },
-                    }
-                }
-
-                // Base URL
-                div {
-                    style: "display: flex; flex-direction: column; gap: 8px;",
-                    SettingsSection { label: "Base URL", description: Some("e.g. https://api.openai.com/v1, https://api.groq.com/openai/v1, http://localhost:1234/v1".to_string()) }
-                    input {
-                        value: "{base_url}",
-                        class: "field",
-                        style: "width: 100%; box-sizing: border-box;",
-                        placeholder: "https://api.openai.com/v1",
-                        oninput: move |e| { base_url.set(e.value()); save_status.set(None); },
-                    }
-                }
-
-                // Model
-                div {
-                    style: "display: flex; flex-direction: column; gap: 8px;",
-                    SettingsSection { label: "Model", description: Some("gpt-4o, claude-sonnet-4-6, llama3.1, ...".to_string()) }
-                    input {
-                        value: "{model}",
-                        class: "field",
-                        style: "width: 100%; box-sizing: border-box;",
-                        placeholder: "gpt-4o, gpt-4, llama3.1, ...",
-                        oninput: move |e| { model.set(e.value()); save_status.set(None); },
-                    }
-                }
-
-                // Save button
-                div {
-                    style: "display: flex; align-items: center; gap: 12px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border);",
-                    button {
-                        class: "btn-primary",
-                        onclick: move |_| {
-                            save_status.set(None);
-                            save_error.set(String::new());
-                            do_save();
-                        },
-                        "Save"
-                    }
-                    match save_status() {
-                        Some(true) => rsx! {
-                            span {
-                                style: "display: flex; align-items: center; gap: 4px; font-size: var(--text-xs); color: var(--success); font-weight: 500;",
-                                "✓ Saved"
+                                    };
+                                    let ok = parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown response");
+                                    toast.write().push(crate::components::shared::toast::Toast {
+                                        id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
+                                        toast_type: if ok {
+                                            crate::components::shared::toast::ToastType::Success
+                                        } else {
+                                            crate::components::shared::toast::ToastType::Warning
+                                        },
+                                        title: if ok { "Key OK".to_string() } else { "Key test failed".to_string() },
+                                        message: msg.to_string(),
+                                        duration_ms: 6000,
+                                    });
+                                }
+                                Err(e) => {
+                                    toast.write().push(crate::components::shared::toast::Toast {
+                                        id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
+                                        toast_type: crate::components::shared::toast::ToastType::Error,
+                                        title: "Key test failed".to_string(),
+                                        message: format!("{:?}", e),
+                                        duration_ms: 5000,
+                                    });
+                                }
                             }
-                        },
-                        Some(false) => rsx! {
-                            span {
-                                style: "display: flex; align-items: center; gap: 4px; font-size: var(--text-xs); color: var(--error); font-weight: 500;",
-                                "✕ Save failed — see notification"
-                            }
-                        },
-                        None => rsx! {},
-                    }
+                        });
+                    },
+                    "Test Key"
                 }
+            }
+            input {
+                value: "{api_key_input}",
+                r#type: "password",
+                class: "field",
+                style: "width: 100%; box-sizing: border-box; margin-top: 8px;",
+                placeholder: "Enter new API key…",
+                oninput: move |e| { api_key_input.set(e.value()); save_status.set(None); },
+            }
+        }
+
+        LabeledField {
+            label: "Base URL",
+            description: Some("e.g. https://api.openai.com/v1, https://api.groq.com/openai/v1, http://localhost:1234/v1"),
+            input {
+                value: "{base_url}",
+                class: "field",
+                style: "width: 100%; box-sizing: border-box;",
+                placeholder: "https://api.openai.com/v1",
+                oninput: move |e| { base_url.set(e.value()); save_status.set(None); },
+            }
+        }
+
+        LabeledField {
+            label: "Model",
+            description: Some("gpt-4o, claude-sonnet-4-6, llama3.1, …"),
+            input {
+                value: "{model}",
+                class: "field",
+                style: "width: 100%; box-sizing: border-box;",
+                placeholder: "gpt-4o, gpt-4, llama3.1, …",
+                oninput: move |e| { model.set(e.value()); save_status.set(None); },
+            }
+        }
+
+        /* Save row */
+        div {
+            style: "display: flex; align-items: center; gap: 12px; margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--border);",
+            button {
+                class: "save-btn",
+                r#type: "button",
+                onclick: move |_| {
+                    save_status.set(None);
+                    save_error.set(String::new());
+                    do_save();
+                },
+                "Save ↵"
+            }
+            match save_status() {
+                Some(true) => rsx! {
+                    span {
+                        style: "display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--success); font-weight: 500;",
+                        "✓ Saved"
+                    }
+                },
+                Some(false) => rsx! {
+                    span {
+                        style: "display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--error); font-weight: 500;",
+                        "✕ Save failed — see notification"
+                    }
+                },
+                None => rsx! {},
             }
         }
     }
