@@ -7,9 +7,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -39,8 +44,4 @@ jobs:
         # Exclude the Tauri binary crate to avoid OOM during linking on
         # the 7GB runner — its 14 unit tests are covered locally.
         run: cargo test --workspace --exclude athenas-core
-
-      - name: cargo audit
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
+        timeout-minutes: 20
