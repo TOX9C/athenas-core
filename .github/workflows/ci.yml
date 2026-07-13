@@ -36,9 +36,11 @@ jobs:
         run: cargo clippy --workspace
 
       - name: cargo test
-        run: cargo test --workspace
+        # Exclude the Tauri binary crate to avoid OOM during linking on
+        # the 7GB runner — its 14 unit tests are covered locally.
+        run: cargo test --workspace --exclude athenas-core
 
       - name: cargo audit
         run: |
-          cargo install cargo-audit
+          cargo install cargo-audit --locked
           cargo audit
