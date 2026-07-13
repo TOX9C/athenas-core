@@ -45,3 +45,5 @@ jobs:
         # the 7GB runner — its 14 unit tests are covered locally.
         run: cargo test --workspace --exclude athenas-core
         timeout-minutes: 20
+      - name: post-test checkpoint
+        run: echo "post-test checkpoint: cargo test completed successfully"
