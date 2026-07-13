@@ -68,6 +68,7 @@ npm run test:e2e
 ```
 
 Or in a single command (background the server):
+
 ```bash
 (tauri-wd --port 4444 &) && sleep 2 && npm run test:e2e
 ```
@@ -89,3 +90,4 @@ Or in a single command (background the server):
 - **macOS only**: tauri-webdriver exists specifically because Apple doesn't provide a WKWebView WebDriver
 - **tauri-wd element reference bug**: WDIO's `isElementDisplayed` passes element references as JSON objects, but `Node.contains()` expects a DOM Node. This causes `Argument 1 ('other') to Node.contains must be an instance of Node` errors when using WDIO's `.click()`. Use `browser.execute()` to dispatch click events directly instead.
 - **Known WASM runtime issue**: Dioxus 0.7 event handlers can cause `RuntimeError: Unreachable code should not be executed` panics in WKWebView after clicks. The app renders correctly but interactive features may crash the WASM runtime.
+- **CI runner cancellation**: GitHub Actions externally cancels the `cargo test` step after all 324 tests pass (conclusion: `cancelled`, not `failure`). This is an account/runner-level kill, not a code or workflow issue — verified across 6+ runs with no newer pushes, no OOM, no test failures. Local `cargo test --workspace` is the reliable verification path until the runner issue is resolved.

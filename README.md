@@ -219,49 +219,41 @@ cargo test --workspace -- --nocapture
 
 ### Crate Structure
 
-| Crate | Purpose |
-|-------|---------|
-| `src-tauri` | Tauri binary, 95 IPC commands, app shell |
-| `athena-frontend` | Dioxus web frontend, 85+ components, 15 stores |
-| `athena-core` | LLM orchestrator, MCP server, agent comms, search |
-| `athena-terminal` | PTY session manager with ANSI/VT100 emulator |
-| `athena-store` | Persistent key-value and session store |
-| `athena-fs` | Filesystem utilities with path traversal protection |
-| `athena-browser` | Browser manager for embedded webviews |
-| `athena-plugins` | Plugin system with manifest validation |
+| Crate             | Purpose                                             |
+| ----------------- | --------------------------------------------------- |
+| `src-tauri`       | Tauri binary, 95 IPC commands, app shell            |
+| `athena-frontend` | Dioxus web frontend, 85+ components, 15 stores      |
+| `athena-core`     | LLM orchestrator, MCP server, agent comms, search   |
+| `athena-terminal` | PTY session manager with ANSI/VT100 emulator        |
+| `athena-store`    | Persistent key-value and session store              |
+| `athena-fs`       | Filesystem utilities with path traversal protection |
+| `athena-browser`  | Browser manager for embedded webviews               |
+| `athena-plugins`  | Plugin system with manifest validation              |
 
 ---
 
 ## Screenshots
 
-> Screenshots of the application in action will be added here in the future.
->
-> The application features:
-> - A macOS-style overlay titlebar with workspace tabs
-> - Collapsible left sidebar with Spaces, Files, Agents, and Plugins
-> - Center panel with terminal grid or Kanban/Swarm views
-> - Resizable right sidebar with Browser, AI Chat, Editor, and Skills panels
-> - Status bar showing workspace info and active theme
-> - 16 built-in color themes with CSS custom property system
->
-> Place your screenshots in `docs/screenshots/` and reference them above.
+![Athena's Core Showcase](docs/athenas-core-ad.gif)
+
+_75-second product showcase: workspace, AI chat, swarm, kanban, editor, and command palette._
 
 ---
 
 ### Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Cmd+K` / `Cmd+P` | Show command palette |
-| `Cmd+J` / `Cmd+\` | Toggle right sidebar |
-| `Cmd+B` | Toggle left sidebar |
-| `Cmd+T` | New workspace |
-| `Cmd+Shift+A` | Add shell pane |
-| `Cmd+Shift+S` | Launch swarm |
-| `Cmd+1` / `Cmd+2` / `Cmd+3` / `Cmd+4` | Switch panels |
-| `Cmd+,` | Open settings |
-| `Cmd+W` | Close active pane |
-| `Escape` | Close modals / dismiss popups |
+| Shortcut                              | Action                        |
+| ------------------------------------- | ----------------------------- |
+| `Cmd+K` / `Cmd+P`                     | Show command palette          |
+| `Cmd+J` / `Cmd+\`                     | Toggle right sidebar          |
+| `Cmd+B`                               | Toggle left sidebar           |
+| `Cmd+T`                               | New workspace                 |
+| `Cmd+Shift+A`                         | Add shell pane                |
+| `Cmd+Shift+S`                         | Launch swarm                  |
+| `Cmd+1` / `Cmd+2` / `Cmd+3` / `Cmd+4` | Switch panels                 |
+| `Cmd+,`                               | Open settings                 |
+| `Cmd+W`                               | Close active pane             |
+| `Escape`                              | Close modals / dismiss popups |
 
 ---
 

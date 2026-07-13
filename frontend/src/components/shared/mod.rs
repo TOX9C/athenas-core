@@ -6,6 +6,5 @@ pub mod icon;
 pub mod illustration;
 pub mod modal;
 pub mod resizable_panel;
-pub mod segmented;
 pub mod toast;
 pub mod tooltip;

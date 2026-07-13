@@ -1,6 +1,6 @@
 use crate::components::shared::icon::IconPlay;
 use crate::components::shared::modal::Modal;
-use crate::components::shared::segmented::Segmented;
+use crate::stores::ui::use_ui_store;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -11,7 +11,7 @@ pub struct SwarmModalProps {
 #[component]
 pub fn SwarmModal(props: SwarmModalProps) -> Element {
     let mut goal = use_signal(String::new);
-    let mut team_size = use_signal(|| 3u8);
+    let mut ui_state = use_ui_store();
 
     rsx! {
         Modal {
@@ -34,16 +34,6 @@ pub fn SwarmModal(props: SwarmModalProps) -> Element {
                     }
                 }
 
-                label {
-                    style: "display: flex; flex-direction: column; gap: 6px; font-size: var(--text-xs); color: var(--textMuted);",
-                    "Team Size: {team_size()}"
-                    Segmented {
-                        options: vec!["2".to_string(), "3".to_string(), "4".to_string(), "5".to_string()],
-                        selected: (team_size() as usize).saturating_sub(2),
-                        on_select: move |i: usize| team_size.set((i as u8) + 2),
-                    }
-                }
-
                 div {
                     style: "display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;",
 
@@ -55,9 +45,13 @@ pub fn SwarmModal(props: SwarmModalProps) -> Element {
                     button {
                         class: "btn-primary",
                         style: "display: inline-flex; align-items: center; gap: 6px;",
+                        disabled: goal().trim().is_empty(),
                         onclick: move |_| {
-                            // TODO: launch swarm via Tauri IPC
-                            props.on_close.call(());
+                            let goal_text = goal();
+                            if goal_text.trim().is_empty() { return; }
+                            ui_state.write().pending_swarm_goal = Some(goal_text);
+                            ui_state.write().show_new_space_modal = true;
+                            ui_state.write().show_swarm_modal = false;
                         },
                         IconPlay { size: Some(14), color: Some("currentColor".to_string()) }
                         "Launch"
