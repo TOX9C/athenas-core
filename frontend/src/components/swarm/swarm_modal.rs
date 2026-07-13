@@ -1,6 +1,7 @@
 use crate::components::shared::icon::IconPlay;
 use crate::components::shared::modal::Modal;
 use crate::components::shared::segmented::Segmented;
+use crate::stores::ui::use_ui_store;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -12,6 +13,7 @@ pub struct SwarmModalProps {
 pub fn SwarmModal(props: SwarmModalProps) -> Element {
     let mut goal = use_signal(String::new);
     let mut team_size = use_signal(|| 3u8);
+    let mut ui_state = use_ui_store();
 
     rsx! {
         Modal {
@@ -56,11 +58,19 @@ pub fn SwarmModal(props: SwarmModalProps) -> Element {
                         class: "btn-primary",
                         style: "display: inline-flex; align-items: center; gap: 6px;",
                         onclick: move |_| {
-                            // TODO: launch swarm via Tauri IPC
-                            props.on_close.call(());
+                            // Close this modal and open the New Space modal
+                            // in swarm mode — the real swarm launch flow lives
+                            // there (builds PaneConfigs, creates a Space with
+                            // agent panes, pushes SwarmAgents to the store).
+                            ui_state.write().show_swarm_modal = false;
+                            let goal_text = goal.read().trim().to_string();
+                            if !goal_text.is_empty() {
+                                ui_state.write().pending_swarm_goal = Some(goal_text);
+                            }
+                            ui_state.write().show_new_space_modal = true;
                         },
                         IconPlay { size: Some(14), color: Some("currentColor".to_string()) }
-                        "Launch"
+                        "Configure Swarm"
                     }
                 }
             }
