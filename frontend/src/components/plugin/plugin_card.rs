@@ -1,30 +1,28 @@
-use super::plugin_event_bus::PluginEntry;
-use crate::tauri_bridge;
+use super::plugin_dashboard::PluginData;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct PluginCardProps {
-    pub plugin: PluginEntry,
+    pub plugin: PluginData,
 }
 
 #[component]
 pub fn PluginCard(props: PluginCardProps) -> Element {
-    let status_label = if props.plugin.enabled {
-        "Active".to_string()
-    } else if props.plugin.error.is_some() {
-        "Error".to_string()
-    } else {
-        "Inactive".to_string()
-    };
-    let status_color = if props.plugin.enabled {
-        "var(--success)"
-    } else if props.plugin.error.is_some() {
-        "var(--error)"
-    } else {
-        "var(--textDim)"
+    let is_running = props.plugin.status == "active";
+    let (status_color, status_label) = match props.plugin.status.as_str() {
+        "active" => ("var(--success)", "Active".to_string()),
+        "error" => ("var(--error)", "Error".to_string()),
+        "installing" | "updating" => ("var(--warning)", props.plugin.status.clone()),
+        _ => ("var(--textDim)", "Inactive".to_string()),
     };
 
-    let title_color = if props.plugin.enabled { "var(--accent)" } else { "var(--text)" };
+    // Active plugin → accent title only (text-shift, no rail/tint — flat-quiet).
+    let is_active = props.plugin.enabled && props.plugin.status == "active";
+    let title_color = if is_active {
+        "var(--accent)"
+    } else {
+        "var(--text)"
+    };
     let opacity = if props.plugin.enabled { "1" } else { "0.6" };
     let toggle_label = if props.plugin.enabled { "ON" } else { "OFF" };
     let toggle_class = if props.plugin.enabled {
@@ -32,7 +30,6 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
     } else {
         "btn-secondary btn-sm"
     };
-
     let initial: String = props
         .plugin
         .name
@@ -41,32 +38,34 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
         .unwrap_or('?')
         .to_uppercase()
         .to_string();
+    let dot_class = if is_running { "pulse-soft" } else { "" };
 
     rsx! {
         div {
-            class: "card",
-            style: "padding: 14px; opacity: {opacity}; display: flex; flex-direction: column; gap: 10px;",
+            class: "card lit-sweep",
+            style: "border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); opacity: {opacity}; display: flex; flex-direction: column; gap: 10px;",
 
-            // Header: avatar + name + version + toggle
+            // Header
             div {
-                style: "display: flex; align-items: center; gap: 10px;",
+                style: "display: flex; align-items: center; justify-content: space-between;",
 
-                // Avatar
                 div {
-                    style: "width: 36px; height: 36px; border-radius: var(--radius-sm); background: var(--accentSubtle); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: var(--text-md); font-weight: 700; color: var(--accent); flex-shrink: 0;",
-                    "{initial}"
-                }
+                    style: "display: flex; align-items: center; gap: 8px;",
 
-                // Name + version
-                div {
-                    style: "flex: 1; min-width: 0;",
                     div {
-                        style: "font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: {title_color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
-                        "{props.plugin.name}"
+                        style: "width: 28px; height: 28px; border-radius: var(--radius-md); background: var(--accentSubtle); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 14px; font-weight: 600; color: var(--accent); flex-shrink: 0; border: 1px solid var(--border);",
+                        "{initial}"
                     }
+
                     div {
-                        style: "font-size: var(--text-xs); color: var(--textMuted);",
-                        "v{props.plugin.version}"
+                        span {
+                            style: "font-size: var(--text-sm); font-weight: 600; color: {title_color}; font-family: var(--font-ui); display: block;",
+                            "{props.plugin.name}"
+                        }
+                        span {
+                            style: "font-size: var(--text-2xs); color: var(--textDim);",
+                            "v{props.plugin.version} \u{00b7} {props.plugin.author}"
+                        }
                     }
                 }
 
@@ -74,46 +73,62 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
                 button {
                     class: "{toggle_class}",
                     onclick: move |_| {
-                        let plugin_id = props.plugin.id.clone();
-                        let currently_enabled = props.plugin.enabled;
-                        spawn(async move {
-                            if currently_enabled {
-                                let _ = tauri_bridge::plugin_disable(&plugin_id).await;
-                            } else {
-                                let _ = tauri_bridge::plugin_enable(&plugin_id).await;
-                            }
-                            // The PluginEventBus will react to the backend's
-                            // enable/disable event and update the store.
-                        });
+                        // TODO: toggle plugin via Tauri IPC
                     },
                     "{toggle_label}"
                 }
             }
 
-            // Status indicator
+            // Description
+            p {
+                style: "font-size: var(--text-xs); color: var(--textMuted); margin: 0; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;",
+                "{props.plugin.description}"
+            }
+
+            // Status + capabilities
             div {
-                style: "display: flex; align-items: center; gap: 6px;",
-                span {
-                    style: "width: 6px; height: 6px; border-radius: 50%; background: {status_color}; flex-shrink: 0;",
+                style: "display: flex; align-items: center; justify-content: space-between;",
+
+                div {
+                    style: "display: flex; align-items: center; gap: 6px;",
+                    // Status dot
+                    div {
+                        class: "{dot_class}",
+                        style: "width: 6px; height: 6px; border-radius: var(--radius-pill); background: {status_color}; flex-shrink: 0;",
+                    }
+                    span {
+                        style: "font-size: var(--text-2xs); padding: 1px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, {status_color} 12%, transparent); border: 1px solid color-mix(in srgb, {status_color} 32%, transparent); color: {status_color}; font-weight: 500;",
+                        "{status_label}"
+                    }
+                    if props.plugin.agent_count > 0 {
+                        span {
+                            style: "font-size: var(--text-2xs); color: var(--textDim);",
+                            "\u{00b7} {props.plugin.agent_count} agents"
+                        }
+                    }
                 }
-                span {
-                    style: "font-size: var(--text-xs); color: var(--textMuted);",
-                    "{status_label}"
+
+                if !props.plugin.capabilities.is_empty() {
+                    div {
+                        style: "display: flex; gap: 4px;",
+                        for cap in props.plugin.capabilities.iter().take(3) {
+                            span {
+                                key: "{cap}",
+                                class: "pill",
+                                style: "font-size: var(--text-2xs);",
+                                "{cap}"
+                            }
+                        }
+                    }
                 }
             }
 
-            // Error message if any
-            if let Some(ref err) = props.plugin.error {
+            // Error display
+            if let Some(err) = &props.plugin.error {
                 div {
-                    style: "font-size: var(--text-xs); color: var(--error); padding: 6px 8px; border-radius: var(--radius-sm); background: rgba(var(--error-rgb), 0.08);",
+                    style: "font-size: var(--text-2xs); padding: 6px 10px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--error) 12%, transparent); color: var(--error); border: 1px solid color-mix(in srgb, var(--error) 32%, transparent);",
                     "{err}"
                 }
-            }
-
-            // Plugin ID
-            div {
-                style: "font-size: var(--text-xs); color: var(--textDim); font-family: var(--font-mono);",
-                "{props.plugin.id}"
             }
         }
     }
