@@ -113,6 +113,10 @@ const COMMANDS: &[&str] = &[
     "plugin_host_remove_plugin",
     "store_api_key",
     "clear_api_key",
+    "kanban_get_tasks",
+    "kanban_create_task",
+    "kanban_update_task",
+    "kanban_delete_task",
 ];
 
 fn main() {
