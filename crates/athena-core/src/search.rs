@@ -222,6 +222,27 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
                     }
                 }
 
+                // Retrospectively populate after-context for the previous match
+                // in this file. Ripgrep streams context lines after the match
+                // they belong to; those lines only arrive once the next match
+                // (or end-of-stream) is seen, so the previous match's
+                // context_after must be filled in here. Lines that also fall
+                // within this new match's before-window are left for the
+                // before-window scan above (matches ripgrep's merged-window
+                // single emission of overlapping context).
+                let before_window_start = line_num.saturating_sub(context_lines_count);
+                if let Some(prev) = matches.iter_mut().rev().find(|m| m.file_path == file_path) {
+                    for (ctx_file, ctx_line, ctx_text) in &pending_context {
+                        if ctx_file == &prev.file_path
+                            && *ctx_line > prev.line_number
+                            && *ctx_line <= prev.line_number + context_lines_count
+                            && *ctx_line < before_window_start
+                        {
+                            prev.context_after.push(ctx_text.clone());
+                        }
+                    }
+                }
+
                 matches.push(SearchMatch {
                     file_path,
                     line_number: line_num,
@@ -452,6 +473,27 @@ pub fn search_code_sync(options: &SearchOptions) -> Result<SearchResult, SearchE
                         && *ctx_line >= line_num.saturating_sub(context_lines_count)
                     {
                         context_before.push(ctx_text.clone());
+                    }
+                }
+
+                // Retrospectively populate after-context for the previous match
+                // in this file. Ripgrep streams context lines after the match
+                // they belong to; those lines only arrive once the next match
+                // (or end-of-stream) is seen, so the previous match's
+                // context_after must be filled in here. Lines that also fall
+                // within this new match's before-window are left for the
+                // before-window scan above (matches ripgrep's merged-window
+                // single emission of overlapping context).
+                let before_window_start = line_num.saturating_sub(context_lines_count);
+                if let Some(prev) = matches.iter_mut().rev().find(|m| m.file_path == file_path) {
+                    for (ctx_file, ctx_line, ctx_text) in &pending_context {
+                        if ctx_file == &prev.file_path
+                            && *ctx_line > prev.line_number
+                            && *ctx_line <= prev.line_number + context_lines_count
+                            && *ctx_line < before_window_start
+                        {
+                            prev.context_after.push(ctx_text.clone());
+                        }
                     }
                 }
 

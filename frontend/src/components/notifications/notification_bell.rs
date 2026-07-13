@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::components::shared::icon::{IconBell, IconClose};
-use crate::components::shared::toast::use_toast_store;
 use crate::stores::notification::{
     add_notification, mark_notification_dismissed, mark_notification_read, set_notifications,
     use_notification_store, NotificationRecord, NotificationType,

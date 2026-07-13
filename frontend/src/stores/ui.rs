@@ -49,6 +49,9 @@ pub struct UIState {
     /// agent titles via LLM. Toggleable from the General settings tab;
     /// persisted under `"smart_pane_titles"`.
     pub smart_pane_titles: bool,
+    /// When the user launches a swarm from SwarmModal, this carries the
+    /// goal text into the NewSpaceModal so it isn't lost on the handoff.
+    pub pending_swarm_goal: Option<String>,
 }
 
 impl Default for UIState {
@@ -69,8 +72,9 @@ impl Default for UIState {
             right_sidebar_tab: String::from("details"),
             font_family: String::from("Monaspace Neon"),
             font_size: 14,
-            custom_agents: Vec::new(),
             smart_pane_titles: true,
+            pending_swarm_goal: None,
+            custom_agents: Vec::new(),
         }
     }
 }

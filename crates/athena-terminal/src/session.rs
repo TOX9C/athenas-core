@@ -240,13 +240,8 @@ impl TerminalSession {
                         // Bounded wait so a dead PTY surfaces a clean error
                         // instead of hanging forever. 30s is far beyond any
                         // realistic paste drain time.
-                        let pr = unsafe {
-                            libc::poll(
-                                &mut pfd as *mut libc::pollfd,
-                                1,
-                                30_000_i32,
-                            )
-                        };
+                        let pr =
+                            unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, 30_000_i32) };
                         if pr < 0 {
                             let perr = io::Error::last_os_error();
                             if perr.raw_os_error() == Some(libc::EINTR) {
@@ -945,7 +940,7 @@ mod tests {
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 match tokio::time::timeout_at(deadline, drain_session.read_bytes(&mut buf)).await {
-                    Err(_) => break, // deadline elapsed
+                    Err(_) => break,     // deadline elapsed
                     Ok(Err(_)) => break, // fd closed
                     Ok(Ok(_)) => continue,
                 }

@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 pub mod components;
 pub mod stores;
 pub mod tauri_bridge;
@@ -100,10 +101,12 @@ pub fn App() -> Element {
     // across long sessions that create and destroy many workspaces.
     let mounted_spaces = use_signal(std::collections::HashSet::<String>::new);
     let mut platform = use_signal(|| {
-        crate::utils::platform_utils::is_mac()
-            .then_some("MacIntel")
-            .unwrap_or("unknown")
-            .to_string()
+        if crate::utils::platform_utils::is_mac() {
+            "MacIntel"
+        } else {
+            "unknown"
+        }
+        .to_string()
     });
     let mut is_maximized = use_signal(|| false);
 
@@ -167,9 +170,9 @@ pub fn App() -> Element {
 
     // Apply theme and font on mount (load persisted values from store)
     {
-        let ui_state_for_load = ui_state.clone();
+        let ui_state_for_load = ui_state;
         use_effect(move || {
-            let mut ui = ui_state_for_load.clone();
+            let mut ui = ui_state_for_load;
             spawn(async move {
                 // Load theme from persist
                 if let Ok(theme_name) = crate::tauri_bridge::store_get("theme").await {
@@ -225,7 +228,7 @@ pub fn App() -> Element {
 
     // Restore workspaces from persistent store on startup
     {
-        let mut ws = workspace.clone();
+        let mut ws = workspace;
         use_effect(move || {
             spawn(async move {
                 let loaded = WorkspaceState::load().await;
@@ -271,12 +274,12 @@ pub fn App() -> Element {
 
     // Force a final workspace save before the window closes
     {
-        let final_ws = workspace.clone();
+        let final_ws = workspace;
         use_effect(move || {
             let Some(window) = web_sys::window() else {
                 return;
             };
-            let ws_signal = final_ws.clone();
+            let ws_signal = final_ws;
             let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
                 ws_signal.read().save();
             }) as Box<dyn FnMut()>);
@@ -297,8 +300,7 @@ pub fn App() -> Element {
 
     // Sync mounted_spaces inside use_effect so writes happen after render.
     use_effect({
-        let mut mounted_spaces = mounted_spaces.clone();
-        let workspace = workspace.clone();
+        let mut mounted_spaces = mounted_spaces;
         move || {
             let ws = workspace.read();
             let existing_ids: std::collections::HashSet<String> =

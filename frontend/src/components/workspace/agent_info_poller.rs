@@ -43,9 +43,9 @@ pub fn AgentInfoPoller() -> Element {
         use_signal(std::collections::HashSet::new);
 
     use_future(move || {
-        let mut terminal_store = terminal_store.clone();
-        let workspace = workspace.clone();
-        let mut summarized_pairs = summarized_pairs.clone();
+        let mut terminal_store = terminal_store;
+        let workspace = workspace;
+        let mut summarized_pairs = summarized_pairs;
         // Cheap `Rc`-bump clone of the render-top-captured registry.
         let registry = terminal_registry.clone();
         async move {
@@ -71,120 +71,113 @@ pub fn AgentInfoPoller() -> Element {
                 };
 
                 for pane_id in &pane_ids {
-                    match pty_agent_info(pane_id).await {
-                        Ok(info) => {
-                            let fg = if info.foreground_process.is_empty()
-                                || info.foreground_process == "shell"
-                            {
-                                None
-                            } else {
-                                Some(info.foreground_process.clone())
-                            };
+                    if let Ok(info) = pty_agent_info(pane_id).await {
+                        let fg = if info.foreground_process.is_empty()
+                            || info.foreground_process == "shell"
+                        {
+                            None
+                        } else {
+                            Some(info.foreground_process.clone())
+                        };
 
-                            let sid = info.session_id.as_deref().unwrap_or_default();
-                            let feature_enabled = ui_state.read().smart_pane_titles;
-                            let raw = info.raw_prompt.as_deref().unwrap_or_default();
-                            let prompt_ready = !sid.is_empty() && !raw.trim().is_empty();
+                        let sid = info.session_id.as_deref().unwrap_or_default();
+                        let feature_enabled = ui_state.read().smart_pane_titles;
+                        let raw = info.raw_prompt.as_deref().unwrap_or_default();
+                        let prompt_ready = !sid.is_empty() && !raw.trim().is_empty();
 
-                            // Detect session change and reset title state when
-                            // the user starts a new agent run in this pane.
-                            // Phase 2: writes the per-pane inner signal only — no
-                            // whole-store generation bump, so other panes don't
-                            // re-render on this pane's title-state reset.
-                            {
-                                if let Some(mut inner) = registry.write_session(pane_id) {
-                                    let old_sid = inner.session_id.as_deref().unwrap_or_default();
-                                    if old_sid != sid {
-                                        inner.title_state =
-                                            crate::utils::pane_label::TitleState::Idle;
-                                        inner.generation = inner.generation.wrapping_add(1);
-                                    }
+                        // Detect session change and reset title state when
+                        // the user starts a new agent run in this pane.
+                        // Phase 2: writes the per-pane inner signal only — no
+                        // whole-store generation bump, so other panes don't
+                        // re-render on this pane's title-state reset.
+                        {
+                            if let Some(mut inner) = registry.write_session(pane_id) {
+                                let old_sid = inner.session_id.as_deref().unwrap_or_default();
+                                if old_sid != sid {
+                                    inner.title_state = crate::utils::pane_label::TitleState::Idle;
+                                    inner.generation = inner.generation.wrapping_add(1);
                                 }
                             }
-
-                            // Only invoke LLM summarization for actual agent
-                            // panes. Shells must never scrape global state.
-                            let is_shell = matches!(
-                                pane_types.get(pane_id),
-                                Some(crate::types::workspace::AgentType::Shell)
-                            );
-                            if feature_enabled && prompt_ready && !is_shell {
-                                let key = (pane_id.clone(), sid.to_string());
-                                if !summarized_pairs.read().contains(&key) {
-                                    summarized_pairs.write().insert(key);
-                                    let raw_prompt = raw.to_string();
-                                    let pane = pane_id.clone();
-
-                                    // Idle -> Pending. The pill renders empty while waiting.
-                                    // Phase 2: inner-signal only; no whole-store bump.
-                                    {
-                                        if let Some(mut inner) = registry.write_session(&pane) {
-                                            inner.title_state =
-                                                crate::utils::pane_label::TitleState::Pending;
-                                            inner.generation = inner.generation.wrapping_add(1);
-                                        }
-                                    }
-
-                                    // Clone the registry into the fire-and-forget closure so the
-                                    // LLM result writes the inner signal. Phase 2: the sole write
-                                    // path is the registry; the store is not touched here, so we
-                                    // don't need a separate store clone.
-                                    let registry_for_spawn = registry.clone();
-                                    // Fire-and-forget. The backend command retries transient
-                                    // failures internally, so this single await yields a final
-                                    // result (title, "Sensitive prompt", or Err).
-                                    wasm_bindgen_futures::spawn_local(async move {
-                                        let result = summarize_agent_title(&raw_prompt).await;
-                                        // Write the LLM result into the per-pane inner signal.
-                                        // If the pane was already closed (no signal), drop the
-                                        // result — there's nothing left to title.
-                                        let Some(mut inner) =
-                                            registry_for_spawn.write_session(&pane)
-                                        else {
-                                            return;
-                                        };
-                                        match result {
-                                            Ok(summary) => {
-                                                let cleaned = summary.trim().to_string();
-                                                web_sys::console::log_1(
-                                                    &format!(
-                                                        "[AgentInfoPoller] title for pane={}: {}",
-                                                        pane, cleaned
-                                                    )
-                                                    .into(),
-                                                );
-                                                inner.title_state =
-                                                    crate::utils::pane_label::TitleState::Done(
-                                                        cleaned,
-                                                    );
-                                            }
-                                            Err(e) => {
-                                                web_sys::console::warn_1(
-                                                    &format!(
-                                                        "[AgentInfoPoller] title failed for pane={}: {:?}",
-                                                        pane, e
-                                                    )
-                                                    .into(),
-                                                );
-                                                // Failed is terminal: the pill stays empty.
-                                                inner.title_state =
-                                                    crate::utils::pane_label::TitleState::Failed;
-                                            }
-                                        }
-                                        inner.generation = inner.generation.wrapping_add(1);
-                                    });
-                                }
-                            }
-                            terminal_store.write().update_agent_info(
-                                &registry,
-                                pane_id,
-                                fg,
-                                info.task_title.clone(),
-                                info.session_id.clone(),
-                                info.raw_prompt.clone(),
-                            );
                         }
-                        Err(_) => {}
+
+                        // Only invoke LLM summarization for actual agent
+                        // panes. Shells must never scrape global state.
+                        let is_shell = matches!(
+                            pane_types.get(pane_id),
+                            Some(crate::types::workspace::AgentType::Shell)
+                        );
+                        if feature_enabled && prompt_ready && !is_shell {
+                            let key = (pane_id.clone(), sid.to_string());
+                            if !summarized_pairs.read().contains(&key) {
+                                summarized_pairs.write().insert(key);
+                                let raw_prompt = raw.to_string();
+                                let pane = pane_id.clone();
+
+                                // Idle -> Pending. The pill renders empty while waiting.
+                                // Phase 2: inner-signal only; no whole-store bump.
+                                {
+                                    if let Some(mut inner) = registry.write_session(&pane) {
+                                        inner.title_state =
+                                            crate::utils::pane_label::TitleState::Pending;
+                                        inner.generation = inner.generation.wrapping_add(1);
+                                    }
+                                }
+
+                                // Clone the registry into the fire-and-forget closure so the
+                                // LLM result writes the inner signal. Phase 2: the sole write
+                                // path is the registry; the store is not touched here, so we
+                                // don't need a separate store clone.
+                                let registry_for_spawn = registry.clone();
+                                // Fire-and-forget. The backend command retries transient
+                                // failures internally, so this single await yields a final
+                                // result (title, "Sensitive prompt", or Err).
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let result = summarize_agent_title(&raw_prompt).await;
+                                    // Write the LLM result into the per-pane inner signal.
+                                    // If the pane was already closed (no signal), drop the
+                                    // result — there's nothing left to title.
+                                    let Some(mut inner) = registry_for_spawn.write_session(&pane)
+                                    else {
+                                        return;
+                                    };
+                                    match result {
+                                        Ok(summary) => {
+                                            let cleaned = summary.trim().to_string();
+                                            web_sys::console::log_1(
+                                                &format!(
+                                                    "[AgentInfoPoller] title for pane={}: {}",
+                                                    pane, cleaned
+                                                )
+                                                .into(),
+                                            );
+                                            inner.title_state =
+                                                crate::utils::pane_label::TitleState::Done(cleaned);
+                                        }
+                                        Err(e) => {
+                                            web_sys::console::warn_1(
+                                                &format!(
+                                                    "[AgentInfoPoller] title failed for pane={}: {:?}",
+                                                    pane, e
+                                                )
+                                                .into(),
+                                            );
+                                            // Failed is terminal: the pill stays empty.
+                                            inner.title_state =
+                                                crate::utils::pane_label::TitleState::Failed;
+                                        }
+                                    }
+                                    inner.generation = inner.generation.wrapping_add(1);
+                                });
+                            }
+                        }
+                        terminal_store.write().update_agent_info(
+                            &registry,
+                            pane_id,
+                            fg,
+                            info.task_title.clone(),
+                            info.session_id.clone(),
+                            info.raw_prompt.clone(),
+                        );
                     }
                 }
 

@@ -92,21 +92,20 @@ pub fn OutputEventBus() -> Element {
 
     // Dispatcher coroutine: receives parsed events from the Tauri listen
     // callbacks and performs all signal writes inside the reactive runtime.
-    let dispatcher = use_coroutine(
-        move |mut rx: UnboundedReceiver<OutputBusEvent>| {
-            // Clone the non-`Copy` registry capture in the OUTER closure
-            // scope (before `async move`), so the async block owns a fresh
-            // clone and the `FnMut` outer closure never moves the render-top
-            // capture out twice. `Signal`s are `Copy`, so the store/status
-            // captures below don't need this treatment.
-            let terminal_registry = terminal_registry.clone();
-            async move {
-                let mut agent_status = agent_status;
-                let mut agent_output = agent_output;
-                let mut notifications = notifications;
-                let mut terminal_store = terminal_store.clone();
-                while let Ok(event) = rx.recv().await {
-                    match event {
+    let dispatcher = use_coroutine(move |mut rx: UnboundedReceiver<OutputBusEvent>| {
+        // Clone the non-`Copy` registry capture in the OUTER closure
+        // scope (before `async move`), so the async block owns a fresh
+        // clone and the `FnMut` outer closure never moves the render-top
+        // capture out twice. `Signal`s are `Copy`, so the store/status
+        // captures below don't need this treatment.
+        let terminal_registry = terminal_registry.clone();
+        async move {
+            let mut agent_status = agent_status;
+            let mut agent_output = agent_output;
+            let mut notifications = notifications;
+            let mut terminal_store = terminal_store;
+            while let Ok(event) = rx.recv().await {
+                match event {
                     OutputBusEvent::AgentStatus {
                         pane_id,
                         status,
@@ -198,9 +197,8 @@ pub fn OutputEventBus() -> Element {
                     }
                 }
             }
-            }
-        },
-    );
+        }
+    });
 
     // One-time mount effect: register global Tauri event listeners.
     let unlistens_effect = unlistens.clone();
@@ -211,7 +209,7 @@ pub fn OutputEventBus() -> Element {
         mounted.set(true);
 
         // Listener for agent:status
-        let dispatcher = dispatcher.clone();
+
         let status_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agent:status", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -270,7 +268,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for terminal:exit
-        let dispatcher = dispatcher.clone();
+
         let exit_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("terminal:exit", move |payload: String| {
             let pane_id = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -291,7 +289,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for terminal:data
-        let dispatcher = dispatcher.clone();
+
         let terminal_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("terminal:data", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -312,7 +310,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for agents:connected
-        let dispatcher = dispatcher.clone();
+
         let connect_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agents:connected", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -331,7 +329,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for agents:disconnected
-        let dispatcher = dispatcher.clone();
+
         let disconnect_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agents:disconnected", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -350,7 +348,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for agents:statusUpdate
-        let dispatcher = dispatcher.clone();
+
         let update_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agents:statusUpdate", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -390,7 +388,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for agents:inputRequested
-        let dispatcher = dispatcher.clone();
+
         let input_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("agents:inputRequested", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -418,7 +416,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for output-capture:batch (replaces per-line emission)
-        let dispatcher = dispatcher.clone();
+
         let batch_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("output-capture:batch", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -462,7 +460,7 @@ pub fn OutputEventBus() -> Element {
         }
 
         // Listener for output-capture:paneRegistered
-        let dispatcher = dispatcher.clone();
+
         let register_unlistens = unlistens_effect.clone();
         if let Ok(u) =
             tauri_bridge::listen("output-capture:paneRegistered", move |payload: String| {

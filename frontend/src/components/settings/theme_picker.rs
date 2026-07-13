@@ -98,7 +98,11 @@ fn ThemeSwatch(props: ThemeSwatchProps) -> Element {
     // Selection is conveyed by fill + text (footer accentSubtle tint + the
     // ACTIVE badge), not a border or halo ring. No outline, no box-shadow,
     // so the border is constant regardless of selection.
-    let footer_bg = if props.is_selected { "var(--accentSubtle)" } else { "var(--bgTertiary)" };
+    let footer_bg = if props.is_selected {
+        "var(--accentSubtle)"
+    } else {
+        "var(--bgTertiary)"
+    };
 
     rsx! {
         button {

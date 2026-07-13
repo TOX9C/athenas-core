@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-kanban-create-task"
+description = "Enables the kanban_create_task command without any pre-configured scope."
+commands.allow = ["kanban_create_task"]
+
+[[permission]]
+identifier = "deny-kanban-create-task"
+description = "Denies the kanban_create_task command without any pre-configured scope."
+commands.deny = ["kanban_create_task"]

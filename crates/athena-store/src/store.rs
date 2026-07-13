@@ -313,10 +313,7 @@ impl Drop for KeyValueStore {
             Some(p) => p.clone(),
             None => return,
         };
-        let json = match {
-            let map = self.data.lock();
-            serde_json::to_string_pretty(&*map)
-        } {
+        let json = match serde_json::to_string_pretty(&*self.data.lock()) {
             Ok(j) => j,
             Err(e) => {
                 eprintln!("KeyValueStore drop: failed to serialize: {e}");

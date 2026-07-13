@@ -112,11 +112,7 @@ async fn load_session(
 /// Format a Unix timestamp (milliseconds) into a relative "time ago" string.
 fn format_time_ago(timestamp_ms: u64) -> String {
     let now = (js_sys::Date::now() / 1000.0) as u64;
-    let diff = if now > timestamp_ms {
-        now - timestamp_ms
-    } else {
-        0
-    };
+    let diff = now.saturating_sub(timestamp_ms);
     let minutes = diff / 60;
     let hours = diff / 3600;
     let days = diff / 86400;

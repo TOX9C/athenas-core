@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 /// for the maximum sizes we'll accept from the frontend. Without these caps
 /// an attacker (or runaway client) can exhaust memory, fill disk, or pollute
 /// the SQLite-backed key store via unbounded string payloads.
-
+///
 /// Maximum bytes accepted by `fs_write_file` (10 MB).
 pub const MAX_FS_WRITE_BYTES: usize = 10 * 1024 * 1024;
 

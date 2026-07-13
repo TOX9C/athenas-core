@@ -366,6 +366,15 @@ pub async fn agent_comms_send(agent_id: &str, method: &str, params: &str) -> Tau
     .await
 }
 
+/// Respond to an agent comms input request.
+pub async fn agent_respond_input(request_id: &str, response: &str) -> TauriResult<JsValue> {
+    invoke(
+        "agent_respond_input",
+        &serde_json::json!({ "request_id": request_id, "response": response }).to_string(),
+    )
+    .await
+}
+
 /// Search operation
 pub async fn search_code(pattern: &str, path: &str) -> TauriResult<String> {
     invoke(
@@ -463,6 +472,58 @@ pub async fn shell_integration_strip(data: &str) -> TauriResult<String> {
     invoke(
         "shell_integration_strip",
         &serde_json::json!({ "data": data }).to_string(),
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Kanban operations
+// ---------------------------------------------------------------------------
+
+/// Get all kanban tasks for the active workspace.
+pub async fn kanban_get_tasks() -> TauriResult<String> {
+    invoke("kanban_get_tasks", "{}").await
+}
+
+/// Create a new kanban task in the active workspace.
+pub async fn kanban_create_task(title: &str, description: Option<&str>) -> TauriResult<String> {
+    invoke(
+        "kanban_create_task",
+        &serde_json::json!({
+            "title": title,
+            "description": description
+        })
+        .to_string(),
+    )
+    .await
+}
+
+/// Update an existing kanban task. Only the supplied fields are modified;
+/// passing `None` leaves that field untouched on the backend.
+pub async fn kanban_update_task(
+    task_id: &str,
+    title: Option<&str>,
+    description: Option<&str>,
+    status: Option<&str>,
+) -> TauriResult<String> {
+    invoke(
+        "kanban_update_task",
+        &serde_json::json!({
+            "task_id": task_id,
+            "title": title,
+            "description": description,
+            "status": status
+        })
+        .to_string(),
+    )
+    .await
+}
+
+/// Delete a kanban task by ID.
+pub async fn kanban_delete_task(task_id: &str) -> TauriResult<JsValue> {
+    invoke(
+        "kanban_delete_task",
+        &serde_json::json!({ "task_id": task_id }).to_string(),
     )
     .await
 }

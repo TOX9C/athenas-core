@@ -249,7 +249,7 @@ pub fn FileTree() -> Element {
                             key: "{node.path}",
                             node: node.clone(),
                             depth: 0,
-                            on_file_open: on_file_open.clone(),
+                            on_file_open: on_file_open,
                         }
                     }
                 }

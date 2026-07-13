@@ -101,7 +101,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
         };
     }
 
-    let actual_row_count = (pane_count + cols - 1) / cols;
+    let actual_row_count = pane_count.div_ceil(cols);
 
     // Per-row column flex-grow values. Each row keeps its own width state, so
     // resizing the top row does not force the bottom row to match it.
@@ -243,7 +243,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 is_shell: matches!(pane.agent_type, AgentType::Shell | AgentType::Custom),
                                                 resume_id: pane.resume_id.clone(),
                                                 resume_cmd: pane.resume_cmd.clone(),
-                                                resume_dismissed: pane.resume_dismissed.clone(),
+                                                resume_dismissed: pane.resume_dismissed,
                                                 custom_cmd: pane.custom_cmd.clone(),
                                                 custom_agent_id: pane.custom_agent_id.clone(),
                                                 label: pane.label.clone(),
@@ -360,7 +360,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
 
     // Editable title state
     let mut editing_title = use_signal(|| false);
-    let mut temp_title = use_signal(|| String::new());
+    let mut temp_title = use_signal(String::new);
 
     // Read current foreground process and title state for THIS pane from its
     // per-session inner signal (Item 3 decomposition). Subscribing to the inner
@@ -529,7 +529,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
         &props.agent_type,
         fg_process.as_deref(),
         ui_state.read().smart_pane_titles,
-        &agent_label,
+        agent_label,
         &props.pane_id,
     );
 
@@ -1052,7 +1052,7 @@ fn ColDivider(props: ColDividerProps) -> Element {
         drag.set(Some(DragInfo {
             kind: DragKind::Col,
             scope_index: Some(row_index),
-            index: index,
+            index,
             start_x: coords.x,
             start_y: coords.y,
             initial_left,
@@ -1112,7 +1112,7 @@ fn RowDivider(props: RowDividerProps) -> Element {
         drag.set(Some(DragInfo {
             kind: DragKind::Row,
             scope_index: None,
-            index: index,
+            index,
             start_x: coords.x,
             start_y: coords.y,
             initial_left,

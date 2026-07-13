@@ -79,7 +79,7 @@ fn schedule_push_bounds() {
     let Some(window) = web_sys::window() else {
         return;
     };
-    let cb = Closure::once_into_js(move || push_bounds_now());
+    let cb = Closure::once_into_js(push_bounds_now);
     let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
 }
 
@@ -270,14 +270,16 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     let outside = match node {
                         Some(node) => match window_for_cb.document() {
                             Some(document) => {
-                                let in_popover = match document.get_element_by_id("browser-quick-menu") {
-                                    Some(popover) => popover.contains(Some(&node)),
-                                    None => false,
-                                };
-                                let in_trigger = match document.get_element_by_id("quick-links-trigger") {
-                                    Some(trigger) => trigger.contains(Some(&node)),
-                                    None => false,
-                                };
+                                let in_popover =
+                                    match document.get_element_by_id("browser-quick-menu") {
+                                        Some(popover) => popover.contains(Some(&node)),
+                                        None => false,
+                                    };
+                                let in_trigger =
+                                    match document.get_element_by_id("quick-links-trigger") {
+                                        Some(trigger) => trigger.contains(Some(&node)),
+                                        None => false,
+                                    };
                                 !in_popover && !in_trigger
                             }
                             None => true,

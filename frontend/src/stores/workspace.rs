@@ -320,4 +320,3 @@ mod swap_panes_tests {
         assert_eq!(space.grid, grid_before);
     }
 }
-

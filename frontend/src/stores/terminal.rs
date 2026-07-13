@@ -43,8 +43,9 @@ impl TerminalCell {
 }
 
 /// Terminal color (ANSI 256 + true color support).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum TerminalColor {
+    #[default]
     Default,
     Black,
     Red,
@@ -64,12 +65,6 @@ pub enum TerminalColor {
     BrightWhite,
     Indexed(u8),
     Rgb(u8, u8, u8),
-}
-
-impl Default for TerminalColor {
-    fn default() -> Self {
-        TerminalColor::Default
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -762,7 +757,7 @@ pub fn use_session_signal(id: &str) -> Option<Signal<TerminalSession>> {
 /// Initialize the terminal store and per-session registry as context providers.
 pub fn provide_terminal_store() {
     use_context_provider(|| Signal::new(TerminalStore::default()));
-    use_context_provider(|| TerminalRegistry::new());
+    use_context_provider(TerminalRegistry::new);
 }
 
 #[cfg(test)]

@@ -117,9 +117,9 @@ pub fn XtermMount(
         } else {
             cwd.clone()
         };
-        let mut cleanup = cleanup.clone();
-        let mut term_ref = term_ref.clone();
-        let mut fit_ref = fit_ref.clone();
+        let mut cleanup = cleanup;
+        let mut term_ref = term_ref;
+        let mut fit_ref = fit_ref;
         let window = window.clone();
         let container = container.clone();
         // Clone the registry for the spawned task. `TerminalRegistry` is a
@@ -431,7 +431,6 @@ pub fn XtermMount(
                     wasm_bindgen_futures::spawn_local(async move {
                         let _ = pty_write(&pane_id, "\x15").await;
                     });
-                    return;
                 }
             })
                 as Box<dyn FnMut(web_sys::KeyboardEvent)>);
@@ -466,7 +465,7 @@ pub fn XtermMount(
             let wq_sched = wq_scheduled.clone();
 
             let mount_id_for_scan = mount_id.clone();
-            let workspace_for_scan = workspace_store.clone();
+            let workspace_for_scan = workspace_store;
             let mut resume_scanner = ResumeScanner::new();
             let unlisten = match pty_listen_raw(&mount_id, move |bytes: Vec<u8>| {
                 let text = String::from_utf8_lossy(&bytes).to_string();
@@ -518,7 +517,7 @@ pub fn XtermMount(
                         .into(),
                     );
                     let mid = mount_id_for_scan.clone();
-                    let mut ws = workspace_for_scan.clone();
+                    let mut ws = workspace_for_scan;
                     let cmd_for_store = full_cmd.clone();
                     // IMPORTANT: use wasm_bindgen_futures::spawn_local here, not
                     // Dioxus's `spawn`. This closure runs inside a raw
@@ -703,7 +702,7 @@ pub fn XtermMount(
                 let ro_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
                     if let Some(w) = web_sys::window() {
                         if let Some(id) = ro_timer_for_cb.borrow_mut().take() {
-                            let _ = w.clear_timeout_with_handle(id);
+                            w.clear_timeout_with_handle(id);
                         }
                         let fit_for_cb = fit_for_ro.clone();
                         let container_for_cb = container_for_ro.clone();
@@ -851,7 +850,7 @@ pub fn XtermMount(
     // ── Reactive theme update ────────────────────────────────────────────────
     // When the app theme changes, re-read the CSS variables and push them
     // into the already-instantiated xterm.js terminal.
-    let term_ref_for_theme = term_ref.clone();
+    let term_ref_for_theme = term_ref;
     use_effect(move || {
         let _theme = ui_state.read().theme;
         let term_opt = term_ref_for_theme();
@@ -912,8 +911,8 @@ pub fn XtermMount(
     // Read ui_state.* to subscribe to the Signals; read the CSS vars for the
     // actual values (apply_font_to_dom is the writer that keeps them coherent
     // with the persisted store).
-    let term_ref_for_font = term_ref.clone();
-    let fit_ref_for_font = fit_ref.clone();
+    let term_ref_for_font = term_ref;
+    let fit_ref_for_font = fit_ref;
     let mount_id_for_font = pane_id.clone();
     use_effect(move || {
         // Subscribe to the Signals so this effect re-runs on change.

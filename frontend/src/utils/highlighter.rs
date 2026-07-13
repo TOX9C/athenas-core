@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Escape HTML entities in a string.
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")

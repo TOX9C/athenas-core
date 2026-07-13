@@ -1,6 +1,7 @@
+#![allow(clippy::type_complexity)]
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 use thiserror::Error;
 
 /// Represents the state of an agent session.
@@ -164,9 +165,7 @@ impl OutputBuffer {
         pane_id: &str,
         agent_type: &str,
     ) -> Result<(), OutputBufferError> {
-        let mut buffers = self
-            .buffers
-            .write();
+        let mut buffers = self.buffers.write();
         if !buffers.contains_key(pane_id) {
             let now = Self::now();
             buffers.insert(
@@ -336,9 +335,12 @@ impl OutputBuffer {
 
         let mut emitted_lines: Vec<(u32, String)> = Vec::new();
 
-        for raw_line in &raw_lines {
-            // Skip empty lines if there's more than one line
-            if raw_line.is_empty() && raw_lines.len() > 1 {
+        let last_idx = raw_lines.len().saturating_sub(1);
+        for (i, raw_line) in raw_lines.iter().enumerate() {
+            // Only strip the spurious trailing empty string produced by
+            // `split('\n')` when the data ends with '\n' (last element).
+            // Interior empty lines (paragraph breaks) MUST be preserved.
+            if i == last_idx && raw_line.is_empty() && raw_lines.len() > 1 {
                 continue;
             }
 
@@ -535,9 +537,7 @@ impl OutputBuffer {
 
     /// Serialize the exit snapshots to a JSON file.
     pub fn save_to_disk(&self, path: &std::path::Path) -> Result<(), OutputBufferError> {
-        let exit_snapshots = self
-            .exit_snapshots
-            .read();
+        let exit_snapshots = self.exit_snapshots.read();
         let json = serde_json::to_string_pretty(&*exit_snapshots)?;
         drop(exit_snapshots);
         std::fs::write(path, json)?;
@@ -548,9 +548,7 @@ impl OutputBuffer {
     pub fn load_from_disk(&self, path: &std::path::Path) -> Result<(), OutputBufferError> {
         let data = std::fs::read_to_string(path)?;
         let deserialized: HashMap<String, Vec<OutputLine>> = serde_json::from_str(&data)?;
-        let mut exit_snapshots = self
-            .exit_snapshots
-            .write();
+        let mut exit_snapshots = self.exit_snapshots.write();
         *exit_snapshots = deserialized;
         Ok(())
     }

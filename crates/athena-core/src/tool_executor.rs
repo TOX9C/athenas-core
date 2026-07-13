@@ -1175,8 +1175,7 @@ impl ToolExecutor {
         std::env::current_dir()
             .and_then(|p| p.canonicalize())
             .map_err(|e| {
-                ToolExecutorError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                ToolExecutorError::Io(std::io::Error::other(
                     format!("Failed to get workspace root: {}", e),
                 ))
             })
@@ -1260,7 +1259,7 @@ impl ToolExecutor {
             .ok_or_else(|| ToolExecutorError::MissingParam("space_id".to_string()))?;
 
         let status = match args.status.as_deref() {
-            Some(s) => KanbanBackendStatus::from_str(s).unwrap_or(KanbanBackendStatus::Todo),
+            Some(s) => KanbanBackendStatus::parse(s).unwrap_or(KanbanBackendStatus::Todo),
             None => KanbanBackendStatus::Todo,
         };
 
@@ -1306,7 +1305,7 @@ impl ToolExecutor {
         let status = args
             .status
             .as_ref()
-            .and_then(|s| KanbanBackendStatus::from_str(s).ok());
+            .and_then(|s| KanbanBackendStatus::parse(s).ok());
 
         match self.kanban_backend.update_task(
             &workspace_id,
@@ -1548,7 +1547,7 @@ impl ToolExecutor {
                 Err(e) => Ok(ToolCallResult {
                     text: format!("Error parsing workspaces: {}", e),
                     is_error: Some(true),
-                    }),
+                }),
             },
             Ok(None) => Ok(ToolCallResult {
                 text: "[]".to_string(),
@@ -1562,24 +1561,26 @@ impl ToolExecutor {
     }
 
     fn workspace_get_active(&self) -> Result<ToolCallResult, ToolExecutorError> {
-        let active_id = match self.store.get::<String>("workspace.active") {
-            Ok(Some(id)) => id,
-            Ok(None) | Err(_) => {
-                return Ok(ToolCallResult {
-                    text: "No active workspace".to_string(),
-                    is_error: Some(true),
-                })
-            }
-        };
-
+        // `active_space_id` lives INSIDE the `workspaces` JSON blob — the
+        // same place orchestrator.rs / kanban.rs read it from. The orphan
+        // `workspace.active` key is no longer consulted.
         match self.store.get::<String>("workspaces") {
             Ok(Some(json)) => match serde_json::from_str::<serde_json::Value>(&json) {
                 Ok(val) => {
+                    let active_id = match val.get("active_space_id").and_then(|v| v.as_str()) {
+                        Some(id) => id.to_string(),
+                        None => {
+                            return Ok(ToolCallResult {
+                                text: "No active workspace".to_string(),
+                                is_error: Some(true),
+                            });
+                        }
+                    };
                     if let Some(spaces) = val.get("spaces").and_then(|s| s.as_array()) {
                         for s in spaces {
                             if s.get("id") == Some(&serde_json::Value::String(active_id.clone())) {
                                 return Ok(ToolCallResult {
-                                    text: serde_json::to_string(&s).unwrap_or_default(),
+                                    text: serde_json::to_string(s).unwrap_or_default(),
                                     is_error: None,
                                 });
                             }
@@ -1607,11 +1608,71 @@ impl ToolExecutor {
     }
 
     fn workspace_switch(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
-        let space_id = args.space_id.as_deref().ok_or_else(|| {
-            ToolExecutorError::MissingParam("space_id".to_string())
-        })?;
+        let space_id = args
+            .space_id
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("space_id".to_string()))?;
 
-        match self.store.set_sync("workspace.active", &space_id) {
+        // Readers (orchestrator, kanban, frontend) pull `active_space_id`
+        // from INSIDE the `workspaces` JSON blob — not from the orphan
+        // `workspace.active` key. Update the blob so the switch is visible.
+        let json = match self.store.get::<String>("workspaces") {
+            Ok(Some(j)) => j,
+            Ok(None) => {
+                return Ok(ToolCallResult {
+                    text: "No workspaces configured".to_string(),
+                    is_error: Some(true),
+                });
+            }
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Error reading workspaces: {}", e),
+                    is_error: Some(true),
+                });
+            }
+        };
+
+        let mut val: serde_json::Value = match serde_json::from_str(&json) {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Error parsing workspaces: {}", e),
+                    is_error: Some(true),
+                });
+            }
+        };
+
+        // Validate the target space exists before committing the switch.
+        if let Some(spaces) = val.get("spaces").and_then(|s| s.as_array()) {
+            let exists = spaces
+                .iter()
+                .any(|s| s.get("id").and_then(|v| v.as_str()) == Some(space_id));
+            if !exists {
+                return Ok(ToolCallResult {
+                    text: format!("Workspace '{}' not found", space_id),
+                    is_error: Some(true),
+                });
+            }
+        }
+
+        // Mutate `active_space_id` inside the blob, then persist the whole
+        // blob back to the store.
+        let obj = match val.as_object_mut() {
+            Some(map) => map,
+            None => {
+                return Ok(ToolCallResult {
+                    text: "Workspaces blob is not a JSON object".to_string(),
+                    is_error: Some(true),
+                });
+            }
+        };
+        obj.insert(
+            "active_space_id".to_string(),
+            serde_json::Value::String(space_id.to_string()),
+        );
+
+        let new_json = serde_json::to_string(&val).unwrap_or_default();
+        match self.store.set_sync("workspaces", &new_json) {
             Ok(()) => Ok(ToolCallResult {
                 text: format!("Switched to workspace {}", space_id),
                 is_error: None,
@@ -1685,8 +1746,7 @@ mod tests {
         )
         .unwrap();
 
-        let executor = create_executor()
-            .with_workspace_root(temp_dir.path().to_path_buf());
+        let executor = create_executor().with_workspace_root(temp_dir.path().to_path_buf());
 
         // Test absolute path escape
         assert!(
@@ -1732,13 +1792,16 @@ mod tests {
         // Create the workspace marker.
         let marker = tmp.path().join("src-tauri").join("tauri.conf.json");
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-        std::fs::write(&marker, r##"{ "build": { "beforeBuildCommand": "echo" } }"##).unwrap();
+        std::fs::write(
+            &marker,
+            r##"{ "build": { "beforeBuildCommand": "echo" } }"##,
+        )
+        .unwrap();
 
         // Write a file inside the workspace
         std::fs::write(tmp.path().join("target.txt"), "needle in haystack\n").unwrap();
 
-        let executor = create_executor()
-            .with_workspace_root(tmp.path().to_path_buf());
+        let executor = create_executor().with_workspace_root(tmp.path().to_path_buf());
 
         let args = ToolInput {
             pattern: Some("needle".to_string()),
@@ -1781,15 +1844,19 @@ mod tests {
 
         // Seed workspaces key
         let workspaces = serde_json::json!({
+            "active_space_id": "space-1",
             "spaces": [
                 {"id": "space-1", "name": "Backend Refactor"},
                 {"id": "space-2", "name": "Frontend Polish"}
             ]
         });
-        store.set_sync("workspaces", &workspaces.to_string()).unwrap();
-         store.set_sync("workspace.active", &"space-1").unwrap();
+        store
+            .set_sync("workspaces", &workspaces.to_string())
+            .unwrap();
 
-        // Build executor with real store
+        // Build executor with real store (keep a handle for post-switch
+        // blob verification)
+        let store_handle = store.clone();
         let executor = ToolExecutor::new(
             Arc::new(OutputBuffer::new()),
             Arc::new(PlanManager::new()),
@@ -1800,27 +1867,68 @@ mod tests {
         );
 
         // workspace_list
-        let list_result = executor.execute_tool_call("workspace_list", &ToolInput::default()).unwrap();
-        assert!(!list_result.is_error.unwrap_or(false), "workspace_list failed: {}", list_result.text);
+        let list_result = executor
+            .execute_tool_call("workspace_list", &ToolInput::default())
+            .unwrap();
+        assert!(
+            !list_result.is_error.unwrap_or(false),
+            "workspace_list failed: {}",
+            list_result.text
+        );
         let spaces: Vec<serde_json::Value> = serde_json::from_str(&list_result.text).unwrap();
         assert_eq!(spaces.len(), 2);
 
-        // workspace_get_active
-        let active_result = executor.execute_tool_call("workspace_get_active", &ToolInput::default()).unwrap();
-        assert!(!active_result.is_error.unwrap_or(false), "workspace_get_active failed: {}", active_result.text);
-        println!("Active workspace: {}", active_result.text);
+        // workspace_get_active — before switch, should report space-1
+        let active_result = executor
+            .execute_tool_call("workspace_get_active", &ToolInput::default())
+            .unwrap();
+        assert!(
+            !active_result.is_error.unwrap_or(false),
+            "workspace_get_active failed: {}",
+            active_result.text
+        );
+        let active_before: serde_json::Value = serde_json::from_str(&active_result.text).unwrap();
+        assert_eq!(
+            active_before.get("id").and_then(|v| v.as_str()),
+            Some("space-1"),
+            "active should be space-1 before switch"
+        );
 
         // workspace_switch
         let switch_input = ToolInput {
             space_id: Some("space-2".to_string()),
             ..Default::default()
         };
-        let switch_result = executor.execute_tool_call("workspace_switch", &switch_input).unwrap();
-        assert!(!switch_result.is_error.unwrap_or(false), "workspace_switch failed: {}", switch_result.text);
+        let switch_result = executor
+            .execute_tool_call("workspace_switch", &switch_input)
+            .unwrap();
+        assert!(
+            !switch_result.is_error.unwrap_or(false),
+            "workspace_switch failed: {}",
+            switch_result.text
+        );
 
-        // Verify switch stuck
-        let active_after = executor.execute_tool_call("workspace_get_active", &ToolInput::default()).unwrap();
+        // Verify switch stuck via the tool's own reader…
+        let active_after = executor
+            .execute_tool_call("workspace_get_active", &ToolInput::default())
+            .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&active_after.text).unwrap();
         assert_eq!(parsed.get("id").and_then(|v| v.as_str()), Some("space-2"));
+
+        let blob = store_handle
+            .get::<String>("workspaces")
+            .unwrap()
+            .expect("workspaces blob present");
+        let blob_val: serde_json::Value = serde_json::from_str(&blob).unwrap();
+        assert_eq!(
+            blob_val.get("active_space_id").and_then(|v| v.as_str()),
+            Some("space-2"),
+            "active_space_id must be updated inside the workspaces blob"
+        );
+        assert_eq!(
+            store_handle.get::<String>("workspace.active").unwrap(),
+            None,
+            "the orphan workspace.active key must not be written"
+        );
     }
 }

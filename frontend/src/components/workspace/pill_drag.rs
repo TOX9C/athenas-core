@@ -107,9 +107,12 @@ fn find_drop_target(x: f64, y: f64, drag: &PillDrag) -> Option<String> {
                     // Hide the scrim so the next call sees through it.
                     if let Ok(html) = el.clone().dyn_into::<web_sys::HtmlElement>() {
                         let style = html.style();
-                        let prev = style.get_property_value("pointer-events").unwrap_or_default();
+                        let prev = style
+                            .get_property_value("pointer-events")
+                            .unwrap_or_default();
                         let _ = style.set_property("pointer-events", "none");
-                        let result = walk_to_data_pane_id(document.element_from_point(x as f32, y as f32));
+                        let result =
+                            walk_to_data_pane_id(document.element_from_point(x as f32, y as f32));
                         let _ = style.set_property("pointer-events", &prev);
                         return filter_target(result, drag);
                     }
@@ -232,11 +235,7 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
         // Dropping outside any pane, or on self → no-op; drag already cleared.
     };
 
-    let is_grabbing = drag
-        .read()
-        .as_ref()
-        .map(|d| d.moved)
-        .unwrap_or(false);
+    let is_grabbing = drag.read().as_ref().map(|d| d.moved).unwrap_or(false);
     let class = if is_grabbing {
         "dnd-overlay is-grabbing"
     } else {

@@ -194,7 +194,6 @@ pub fn PluginEventBus() -> Element {
         }
         mounted.set(true);
 
-        let dispatcher = dispatcher.clone();
         let registry_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("plugin:registryUpdated", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -232,7 +231,6 @@ pub fn PluginEventBus() -> Element {
             registry_unlistens.borrow_mut().push(u);
         }
 
-        let dispatcher = dispatcher.clone();
         let registered_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("plugin:registered", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -257,7 +255,6 @@ pub fn PluginEventBus() -> Element {
             registered_unlistens.borrow_mut().push(u);
         }
 
-        let dispatcher = dispatcher.clone();
         let enabled_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("plugin:enabled", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -274,7 +271,6 @@ pub fn PluginEventBus() -> Element {
             enabled_unlistens.borrow_mut().push(u);
         }
 
-        let dispatcher = dispatcher.clone();
         let disabled_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("plugin:disabled", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -291,7 +287,6 @@ pub fn PluginEventBus() -> Element {
             disabled_unlistens.borrow_mut().push(u);
         }
 
-        let dispatcher = dispatcher.clone();
         let error_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("plugin:error", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -311,7 +306,6 @@ pub fn PluginEventBus() -> Element {
             error_unlistens.borrow_mut().push(u);
         }
 
-        let dispatcher = dispatcher.clone();
         let event_unlistens = unlistens_effect.clone();
         if let Ok(u) = tauri_bridge::listen("plugin:event", move |payload: String| {
             dispatcher.send(PluginBusEvent::AddEvent(payload));

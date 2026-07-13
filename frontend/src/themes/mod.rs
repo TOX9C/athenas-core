@@ -51,7 +51,9 @@ pub struct ThemeDefinition {
 /// Available theme names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, Display)]
 #[strum(serialize_all = "kebab-case")]
+#[derive(Default)]
 pub enum ThemeName {
+    #[default]
     Nyx,
     Aegis,
     Erebus,
@@ -59,12 +61,6 @@ pub enum ThemeName {
     Olive,
     Sky,
     System,
-}
-
-impl Default for ThemeName {
-    fn default() -> Self {
-        ThemeName::Nyx
-    }
 }
 
 impl ThemeName {

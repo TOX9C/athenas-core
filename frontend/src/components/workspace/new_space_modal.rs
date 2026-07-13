@@ -179,6 +179,17 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     let _init_snapshot = ui_state.read().custom_agents.clone();
     let pane_agents: Signal<Vec<AgentRowState>> = use_signal(|| init_agent_rows(&_init_snapshot));
 
+    // If launched from SwarmModal, pre-set swarm mode and carry over the goal.
+    use_effect(move || {
+        let pending = ui_state.read().pending_swarm_goal.clone();
+        if let Some(goal) = pending {
+            mode.set("swarm".to_string());
+            space_goal.set(goal);
+            step.set(1);
+            ui_state.write().pending_swarm_goal = None;
+        }
+    });
+
     // Swarm mode: agent slots
     let mut slots: Signal<Vec<AgentSlot>> = use_signal(|| {
         vec![
@@ -601,7 +612,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                 onclick: move |e| {
                                     e.stop_propagation();
                                     web_sys::console::log_1(&"[Browse] clicked".into());
-                                    let mut space_dir = space_dir.clone();
+                                    let mut space_dir = space_dir;
                                     spawn(async move {
                                         web_sys::console::log_1(&"[Browse] invoking dialog...".into());
                                         match crate::tauri_bridge::fs_show_open_dialog(Some("Select Workspace Directory"), true, false).await {
@@ -666,11 +677,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                 } else {
                                     "transparent"
                                 };
-                                let row_border = if has_any {
-                                    "1px solid var(--border)"
-                                } else {
-                                    "1px solid var(--border)"
-                                };
+                                let row_border = "1px solid var(--border)";
                                 let dot_bg = if has_any { color } else { "var(--textDim)" };
                                 let text_color = if has_any { "var(--text)" } else { "var(--textMuted)" };
                                 let minus_disabled_class = if count_val == 0 { "btn-disabled" } else { "" };
@@ -701,7 +708,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 "aria-label": "Remove agent",
                                                 onclick: move |_: dioxus::events::MouseEvent| {
                                                     web_sys::console::log_1(&"[NewSpaceModal] - clicked".into());
-                                                    let mut paned = pane_agents.clone();
+                                                    let mut paned = pane_agents;
                                                     let mut agents: Vec<AgentRowState> = paned.read().iter().cloned().collect();
                                                     if let Some(r) = agents.get_mut(idx) {
                                                         if r.count > 0 {
@@ -730,7 +737,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 "aria-label": "Add agent",
                                                 onclick: move |_: dioxus::events::MouseEvent| {
                                                     web_sys::console::log_1(&"[NewSpaceModal] + clicked".into());
-                                                    let mut paned = pane_agents.clone();
+                                                    let mut paned = pane_agents;
                                                     if let Some(win) = web_sys::window() {
                                                         let _ = js_sys::Reflect::set(&win, &"__athenaClickFired".into(), &true.into());
                                                     }
@@ -806,7 +813,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                             for (idx, slot) in slots_snapshot.iter().enumerate() {
                                 {
                                     let slot_role_val = agent_role_str(&slot.role);
-                                    let slot_agent_val = slot_value(&slot);
+                                    let slot_agent_val = slot_value(slot);
                                     let dot_c = role_color(&slot.role);
                                     let cur_slots_len = slots.read().len();
                                     let remove_disabled_class = if cur_slots_len <= 2 { "btn-disabled" } else { "" };

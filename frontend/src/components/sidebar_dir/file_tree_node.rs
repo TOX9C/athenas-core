@@ -34,7 +34,7 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
     };
 
     let node_for_click = props.node.clone();
-    let on_file_open = props.on_file_open.clone();
+    let on_file_open = props.on_file_open;
 
     rsx! {
         div {
@@ -89,7 +89,7 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
                         key: "{child.path}",
                         node: child.clone(),
                         depth: props.depth + 1,
-                        on_file_open: props.on_file_open.clone(),
+                        on_file_open: props.on_file_open,
                     }
                 }
             }

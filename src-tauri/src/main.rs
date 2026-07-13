@@ -161,6 +161,11 @@ fn main() {
             browser_forward,
             browser_reload,
             browser_set_bounds,
+            // Kanban
+            kanban_get_tasks,
+            kanban_create_task,
+            kanban_update_task,
+            kanban_delete_task,
             // Plugins
             plugin_list,
             plugin_get,

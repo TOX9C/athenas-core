@@ -1,5 +1,5 @@
-/// Encode keyboard input into ANSI escape sequences for PTY.
-/// Returns the raw bytes to send to the shell.
+// Encode keyboard input into ANSI escape sequences for PTY.
+// Returns the raw bytes to send to the shell.
 
 /// Encode a regular character with optional modifier keys.
 /// For simple ASCII characters with no modifiers, returns the raw byte.
@@ -7,10 +7,10 @@ pub fn encode_char(c: char, ctrl: bool, alt: bool, _shift: bool) -> Vec<u8> {
     if ctrl && !alt {
         // Ctrl+A = 0x01, Ctrl+B = 0x02, etc.
         let byte = c as u8;
-        if (b'a'..=b'z').contains(&byte) {
+        if byte.is_ascii_lowercase() {
             return vec![byte - b'a' + 1];
         }
-        if (b'A'..=b'Z').contains(&byte) {
+        if byte.is_ascii_uppercase() {
             return vec![byte - b'A' + 1];
         }
         if c == ' ' {

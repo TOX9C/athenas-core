@@ -585,6 +585,30 @@
           "markdownDescription": "Enables the get_pane_history command without any pre-configured scope."
         },
         {
+          "description": "Enables the kanban_create_task command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-kanban-create-task",
+          "markdownDescription": "Enables the kanban_create_task command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the kanban_delete_task command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-kanban-delete-task",
+          "markdownDescription": "Enables the kanban_delete_task command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the kanban_get_tasks command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-kanban-get-tasks",
+          "markdownDescription": "Enables the kanban_get_tasks command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the kanban_update_task command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-kanban-update-task",
+          "markdownDescription": "Enables the kanban_update_task command without any pre-configured scope."
+        },
+        {
           "description": "Enables the mcp_broadcast command without any pre-configured scope.",
           "type": "string",
           "const": "allow-mcp-broadcast",
@@ -1309,6 +1333,30 @@
           "type": "string",
           "const": "deny-get-pane-history",
           "markdownDescription": "Denies the get_pane_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the kanban_create_task command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-kanban-create-task",
+          "markdownDescription": "Denies the kanban_create_task command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the kanban_delete_task command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-kanban-delete-task",
+          "markdownDescription": "Denies the kanban_delete_task command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the kanban_get_tasks command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-kanban-get-tasks",
+          "markdownDescription": "Denies the kanban_get_tasks command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the kanban_update_task command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-kanban-update-task",
+          "markdownDescription": "Denies the kanban_update_task command without any pre-configured scope."
         },
         {
           "description": "Denies the mcp_broadcast command without any pre-configured scope.",

@@ -237,7 +237,7 @@ impl ToolEventSender for TauriEventSender {
         } else {
             log::error!("ask_user called but app_handle is not set");
             self.pending_questions.lock().remove(request_id);
-            return format!("error: app_handle not available");
+            return "error: app_handle not available".to_string();
         }
         drop(handle_guard);
 
@@ -249,7 +249,7 @@ impl ToolEventSender for TauriEventSender {
                     request_id,
                     question
                 );
-                format!("error: user response channel closed")
+                "error: user response channel closed".to_string()
             }
         }
     }
@@ -386,6 +386,10 @@ pub struct AppState {
 
     /// Guard to ensure the MCP stdio background thread is only started once.
     pub mcp_stdio_started: AtomicBool,
+    /// Kanban backend — same `Arc<KanbanBackend>` is shared with the
+    /// ToolExecutor's internally-held instance (the store clone keeps storage
+    /// consistent via the same backing KeyValueStore).
+    pub kanban_backend: Arc<athena_core::kanban::KanbanBackend>,
 }
 
 impl Default for AppState {
@@ -428,6 +432,7 @@ impl AppState {
         let shell_integration_parser = Arc::new(parking_lot::Mutex::new(
             athena_core::shell_integration::Osc633Parser::new(),
         ));
+        let kanban_backend = Arc::new(athena_core::kanban::KanbanBackend::new(Arc::clone(&store)));
 
         // -- Build the event sender ----------------------------------------
 
@@ -517,6 +522,7 @@ impl AppState {
             swarm_coordinator,
             session_manager,
             shell_integration_parser,
+            kanban_backend,
             pending_questions,
             tool_executor,
             rate_limiter: crate::commands::caps::global_rate_limiter(),
@@ -594,8 +600,8 @@ impl AppState {
             }
         };
         let name = name.to_string();
-        setter(Box::new(move |channel: &str, data: &serde_json::Value| {
-            match serde_json::to_string(data) {
+        setter(Box::new(
+            move |channel: &str, data: &serde_json::Value| match serde_json::to_string(data) {
                 Ok(data_str) => {
                     if let Err(e) = handle.emit(channel, data_str) {
                         log::warn!("failed to emit {name} event {channel}: {e}");
@@ -604,8 +610,8 @@ impl AppState {
                 Err(e) => {
                     log::error!("failed to serialize data for {name} event {channel}: {e}");
                 }
-            }
-        }));
+            },
+        ));
     }
 
     /// Wire notification service events to Tauri event emissions.

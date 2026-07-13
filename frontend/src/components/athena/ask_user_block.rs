@@ -1,5 +1,6 @@
 use crate::components::shared::icon::{IconCheck, IconSend};
-use crate::stores::athena::AskUserBlock;
+use crate::stores::athena::{use_athena_store, AskUserBlock};
+use crate::tauri_bridge;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -10,7 +11,9 @@ pub struct AskUserBlockViewProps {
 #[component]
 pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
     let mut custom_text = use_signal(String::new);
+    let athena = use_athena_store();
     let ask = &props.ask;
+    let request_id = ask.request_id.clone();
 
     rsx! {
         div {
@@ -31,8 +34,18 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
                             key: "{option.label}",
                             class: "btn-secondary btn-sm",
                             style: "text-align: left; justify-content: flex-start;",
-                            onclick: move |_| {
-                                // TODO: respond via Tauri IPC
+                            onclick: {
+                                let request_id = request_id.clone();
+                                let label = option.label.clone();
+                                move |_| {
+                                    let req_id = request_id.clone();
+                                    let resp = label.clone();
+                                    let mut ath = athena;
+                                    spawn(async move {
+                                        let _ = tauri_bridge::agent_respond_input(&req_id, &resp).await;
+                                        ath.write().mark_ask_user_answered(&req_id, &resp);
+                                    });
+                                }
                             },
                             "{option.label}"
                         }
@@ -53,8 +66,19 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
                 button {
                     class: "btn-primary btn-sm",
                     style: "display: inline-flex; align-items: center; gap: 6px;",
-                    onclick: move |_| {
-                        // TODO: respond via Tauri IPC
+                    onclick: {
+                        let request_id = request_id.clone();
+                        move |_| {
+                            let text = custom_text.read().clone();
+                            if text.is_empty() { return; }
+                            let req_id = request_id.clone();
+                            let mut ath = athena;
+                            spawn(async move {
+                                let _ = tauri_bridge::agent_respond_input(&req_id, &text).await;
+                                ath.write().mark_ask_user_answered(&req_id, &text);
+                            });
+                            custom_text.set(String::new());
+                        }
                     },
                     IconSend { size: Some(14), color: Some("currentColor".to_string()) }
                     "Send"

@@ -210,7 +210,7 @@ impl SwarmCoordinator {
         // The entire locked read-modify-write runs in spawn_blocking because
         // flock + std::fs are blocking. Holding the flock guard across the
         // blocking fs calls is exactly what serializes the writers.
-        let result = tokio::task::spawn_blocking(move || -> Result<(), SwarmError> {
+        tokio::task::spawn_blocking(move || -> Result<(), SwarmError> {
             std::fs::create_dir_all(&mailbox_dir)?;
             // Open or create the lock file, then acquire an exclusive flock.
             // LOCK_EX blocks until the lock is acquired — no retry loop, no
@@ -233,7 +233,37 @@ impl SwarmCoordinator {
             let result = (|| -> Result<(), SwarmError> {
                 let mut messages: Vec<MailboxMessage> = match std::fs::read_to_string(&mailbox_path)
                 {
-                    Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+                    Ok(content) => match serde_json::from_str(&content) {
+                        Ok(msgs) => msgs,
+                        Err(parse_err) => {
+                            // The mailbox file is corrupt (e.g. a crash
+                            // truncated the write). Preserving the corrupt
+                            // file for forensic recovery, then starting
+                            // fresh — losing the unread history is better
+                            // than poisoning the mailbox forever. We do
+                            // NOT return the error: the rename is best
+                            // effort, and even if it fails we still proceed
+                            // with an empty Vec so the new message lands.
+                            let corrupt_sidecar = format!("{}.corrupt", mailbox_path.display());
+                            log::warn!(
+                                "mailbox {} is corrupt ({parse_err}); \
+                                     quarantining to {} and starting fresh",
+                                mailbox_path.display(),
+                                corrupt_sidecar,
+                            );
+                            if let Err(rename_err) =
+                                std::fs::rename(&mailbox_path, &corrupt_sidecar)
+                            {
+                                log::warn!(
+                                    "failed to quarantine corrupt mailbox \
+                                         {} -> {} ({rename_err}); starting fresh anyway",
+                                    mailbox_path.display(),
+                                    corrupt_sidecar,
+                                );
+                            }
+                            Vec::new()
+                        }
+                    },
                     Err(_) => Vec::new(),
                 };
 
@@ -260,9 +290,9 @@ impl SwarmCoordinator {
             result
         })
         .await
-        .map_err(|e| SwarmError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
+        .map_err(|e| SwarmError::Io(std::io::Error::other(e)))??;
 
-        Ok(result)
+        Ok(())
     }
 
     /// Read the mailbox for a given agent.
@@ -277,8 +307,42 @@ impl SwarmCoordinator {
             .join(format!("{}.json", agent_id));
 
         match fs::read_to_string(&mailbox_path).await {
-            Ok(content) => Ok(serde_json::from_str(&content).unwrap_or_default()),
-            Err(_) => Ok(Vec::new()),
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(msgs) => Ok(msgs),
+                Err(parse_err) => {
+                    // Corrupt mailbox: quarantine the file to a `.corrupt`
+                    // sidecar for forensic recovery, then return empty rather
+                    // than failing the read (callers expect a Vec).
+                    let corrupt_sidecar = format!("{}.corrupt", mailbox_path.display());
+                    log::warn!(
+                        "mailbox {} is corrupt ({parse_err}); \
+                         quarantining to {} and returning empty",
+                        mailbox_path.display(),
+                        corrupt_sidecar,
+                    );
+                    // Best-effort quarantine; if the rename fails we still
+                    // return an empty Vec.
+                    if let Err(rename_err) = std::fs::rename(&mailbox_path, &corrupt_sidecar) {
+                        log::warn!(
+                            "failed to quarantine corrupt mailbox \
+                             {} -> {} ({rename_err}); returning empty anyway",
+                            mailbox_path.display(),
+                            corrupt_sidecar,
+                        );
+                    }
+                    Ok(Vec::new())
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => {
+                // Non-NotFound IO error (e.g. permission denied): warn but
+                // keep the existing fallback of returning an empty Vec.
+                log::warn!(
+                    "failed to read mailbox {}: {e}; returning empty",
+                    mailbox_path.display(),
+                );
+                Ok(Vec::new())
+            }
         }
     }
 

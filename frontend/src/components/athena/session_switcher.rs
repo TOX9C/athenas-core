@@ -124,11 +124,7 @@ async fn do_load_session(
 
 fn format_time_ago(timestamp_ms: u64) -> String {
     let now = js_sys::Date::now() as u64; // milliseconds
-    let diff = if now > timestamp_ms {
-        now - timestamp_ms
-    } else {
-        0
-    };
+    let diff = now.saturating_sub(timestamp_ms);
     let seconds = diff / 1000;
     let minutes = seconds / 60;
     let hours = minutes / 60;

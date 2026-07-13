@@ -36,16 +36,16 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
             .find(|(id, _)| id == &pane.id)
             .map(|(_, s)| &s.status)
         {
-            match status {
+            if matches!(
+                status,
                 AgentRunStatus::Error
-                | AgentRunStatus::Working
-                | AgentRunStatus::Thinking
-                | AgentRunStatus::WaitingForInput => {
-                    running_count += 1;
-                }
-                _ => {
-                    idle_count += 1;
-                }
+                    | AgentRunStatus::Working
+                    | AgentRunStatus::Thinking
+                    | AgentRunStatus::WaitingForInput
+            ) {
+                running_count += 1;
+            } else {
+                idle_count += 1;
             }
         } else {
             idle_count += 1;

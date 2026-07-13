@@ -51,16 +51,18 @@ pub fn SettingsContent() -> Element {
                 wasm_bindgen::closure::Closure<dyn FnMut()>,
             )>,
         >,
-    > = use_hook(|| {
-        ::std::rc::Rc::new(::std::cell::RefCell::new(None))
-    });
+    > = use_hook(|| ::std::rc::Rc::new(::std::cell::RefCell::new(None)));
 
     use_effect({
         let scroll_listener = ::std::rc::Rc::clone(&scroll_listener);
         move || {
-            let mut active_idx = active_idx.clone();
-            let Some(window) = web_sys::window() else { return; };
-            let Some(document) = window.document() else { return; };
+            let mut active_idx = active_idx;
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let Some(document) = window.document() else {
+                return;
+            };
             let Some(scroller) = document.get_element_by_id("codex-tome-scroll") else {
                 return;
             };
@@ -69,18 +71,18 @@ pub fn SettingsContent() -> Element {
             };
 
             // Defensive: if a prior listener exists (rebind path), remove it.
-            if let Some((old_scroller, old_cl)) =
-                scroll_listener.borrow_mut().take()
-            {
-                let _ = old_scroller.remove_event_listener_with_callback(
-                    "scroll",
-                    old_cl.as_ref().unchecked_ref(),
-                );
+            if let Some((old_scroller, old_cl)) = scroll_listener.borrow_mut().take() {
+                let _ = old_scroller
+                    .remove_event_listener_with_callback("scroll", old_cl.as_ref().unchecked_ref());
             }
 
             let cl = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                let Some(window) = web_sys::window() else { return; };
-                let Some(document) = window.document() else { return; };
+                let Some(window) = web_sys::window() else {
+                    return;
+                };
+                let Some(document) = window.document() else {
+                    return;
+                };
                 let Some(scroller) = document.get_element_by_id("codex-tome-scroll") else {
                     return;
                 };
@@ -114,10 +116,8 @@ pub fn SettingsContent() -> Element {
                 active_idx.set(best_idx);
             }) as Box<dyn FnMut()>);
 
-            let _ = scroller_el.add_event_listener_with_callback(
-                "scroll",
-                cl.as_ref().unchecked_ref(),
-            );
+            let _ =
+                scroller_el.add_event_listener_with_callback("scroll", cl.as_ref().unchecked_ref());
 
             // Stash for the unmount-cleanup hook to consume later.
             *scroll_listener.borrow_mut() = Some((scroller_el, cl));
@@ -130,12 +130,9 @@ pub fn SettingsContent() -> Element {
     use_drop({
         let scroll_listener = ::std::rc::Rc::clone(&scroll_listener);
         move || {
-            if let Some((scroller_el, cl)) = scroll_listener.borrow_mut().take()
-            {
-                let _ = scroller_el.remove_event_listener_with_callback(
-                    "scroll",
-                    cl.as_ref().unchecked_ref(),
-                );
+            if let Some((scroller_el, cl)) = scroll_listener.borrow_mut().take() {
+                let _ = scroller_el
+                    .remove_event_listener_with_callback("scroll", cl.as_ref().unchecked_ref());
             }
         }
     });
@@ -201,7 +198,14 @@ pub fn SettingsContent() -> Element {
         }
     };
 
-    let sections = [section_i, section_ii, section_iii, section_iv, section_v, section_vi];
+    let sections = [
+        section_i,
+        section_ii,
+        section_iii,
+        section_iv,
+        section_v,
+        section_vi,
+    ];
     let numerals: [&'static str; 6] = ["I", "II", "III", "IV", "V", "VI"];
     let glyphs: [&'static str; 6] = [
         "\u{2699}", "\u{03A6}", "\u{232C}", "\u{25D1}", "\u{2318}", "\u{0398}",
@@ -244,7 +248,7 @@ pub fn SettingsContent() -> Element {
                             let active = active_idx() == idx_u8;
                             let cls = if active { "codex-index-item is-active" } else { "codex-index-item" };
                             // `mut` is required: Signal::set takes &mut.
-                            let mut onidx = active_idx.clone();
+                            let mut onidx = active_idx;
                             let section_id = match idx_u8 {
                                 0 => "s-i",
                                 1 => "s-ii",
@@ -265,7 +269,7 @@ pub fn SettingsContent() -> Element {
                                         if let Some(window) = web_sys::window() {
                                             if let Some(doc) = window.document() {
                                                 if let Some(el) = doc.get_element_by_id(&section_id_for_click) {
-                                                    let _ = el.scroll_into_view();
+                                                    el.scroll_into_view();
                                                 }
                                             }
                                         }
@@ -524,7 +528,7 @@ fn AthenaSettings() -> Element {
                     style: "padding: 4px 10px; font-weight: 500;",
                     title: "Test keyring access",
                     onclick: move |_| {
-                        let mut toast = toast_store.clone();
+                        let mut toast = toast_store;
                         wasm_bindgen_futures::spawn_local(async move {
                             match crate::tauri_bridge::test_llm_api_key().await {
                                 Ok(json) => {
@@ -781,7 +785,7 @@ fn AgentsSettings() -> Element {
                                     let priority = new_priority();
                                     let new_agent = crate::types::workspace::CustomAgent {
                                         id: format!("custom-{}", js_sys::Date::now() as u64),
-                                        alias: alias,
+                                        alias,
                                         command: cmd,
                                         is_claude,
                                         priority,
@@ -1053,7 +1057,11 @@ pub struct GroupLabelProps {
 
 #[component]
 pub fn GroupLabel(props: GroupLabelProps) -> Element {
-    let cls = if props.first { "group-label label-first" } else { "group-label" };
+    let cls = if props.first {
+        "group-label label-first"
+    } else {
+        "group-label"
+    };
     rsx! {
         div { class: "{cls}",
             span { "{props.label}" }
@@ -1096,7 +1104,11 @@ struct ToggleProps {
 
 #[component]
 fn Toggle(props: ToggleProps) -> Element {
-    let cls = if props.active { "toggle is-active" } else { "toggle" };
+    let cls = if props.active {
+        "toggle is-active"
+    } else {
+        "toggle"
+    };
     rsx! {
         button {
             class: "{cls}",

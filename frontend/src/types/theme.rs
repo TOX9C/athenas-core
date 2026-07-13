@@ -1,4 +1,3 @@
-
 /// Mythology-themed palettes. Dark: Nyx (obsidian+gold), Aegis (Aegean blue+bronze),
 /// Erebus (true black+gold-leaf). Light: Pentelic (marble), Olive (parchment), Sky (cool marble).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -69,4 +68,3 @@ impl UITheme {
         ]
     }
 }
-

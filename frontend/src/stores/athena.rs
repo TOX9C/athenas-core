@@ -409,7 +409,7 @@ impl AthenaState {
         let last_is_athena = self
             .messages
             .back()
-            .map_or(false, |m| m.role == MessageRole::Athena);
+            .is_some_and(|m| m.role == MessageRole::Athena);
         if last_is_athena {
             if let Some(msg) = self.messages.back_mut() {
                 msg.blocks.push(ask_block);
@@ -428,6 +428,20 @@ impl AthenaState {
             blocks: vec![ask_block],
         };
         self.add_message(msg);
+    }
+
+    /// Mark an AskUser block as answered with the selected response.
+    pub fn mark_ask_user_answered(&mut self, request_id: &str, answer: &str) {
+        for msg in self.messages.iter_mut() {
+            for block in msg.blocks.iter_mut() {
+                if let ContentBlock::AskUser(ask) = block {
+                    if ask.request_id == request_id {
+                        ask.answered = true;
+                        ask.selected_answer = Some(answer.to_string());
+                    }
+                }
+            }
+        }
     }
 
     /// Handle athena:planUpdate event — update or create a plan block.
@@ -449,7 +463,7 @@ impl AthenaState {
         let last_is_athena = self
             .messages
             .back()
-            .map_or(false, |m| m.role == MessageRole::Athena);
+            .is_some_and(|m| m.role == MessageRole::Athena);
         if last_is_athena {
             if let Some(msg) = self.messages.back_mut() {
                 // Replace existing plan block or add new one
@@ -508,7 +522,7 @@ impl AthenaState {
         let last_is_athena = self
             .messages
             .back()
-            .map_or(false, |m| m.role == MessageRole::Athena);
+            .is_some_and(|m| m.role == MessageRole::Athena);
         if last_is_athena {
             if let Some(msg) = self.messages.back_mut() {
                 msg.blocks.push(eval_block);

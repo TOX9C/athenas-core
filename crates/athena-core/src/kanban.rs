@@ -52,7 +52,7 @@ pub struct KanbanBackendTask {
 
 impl KanbanBackendStatus {
     /// Parse a status string into a `KanbanBackendStatus`.
-    pub fn from_str(s: &str) -> Result<Self, KanbanError> {
+    pub fn parse(s: &str) -> Result<Self, KanbanError> {
         match s.to_lowercase().as_str() {
             "todo" | "to do" => Ok(Self::Todo),
             "in_progress" | "in progress" | "inprogress" => Ok(Self::InProgress),

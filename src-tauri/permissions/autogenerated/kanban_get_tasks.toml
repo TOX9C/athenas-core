@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-kanban-get-tasks"
+description = "Enables the kanban_get_tasks command without any pre-configured scope."
+commands.allow = ["kanban_get_tasks"]
+
+[[permission]]
+identifier = "deny-kanban-get-tasks"
+description = "Denies the kanban_get_tasks command without any pre-configured scope."
+commands.deny = ["kanban_get_tasks"]

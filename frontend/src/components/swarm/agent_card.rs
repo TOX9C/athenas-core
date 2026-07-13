@@ -19,7 +19,7 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
         _ => "var(--textDim)",
     };
 
-    let is_active = matches!(
+    let _is_active = matches!(
         props.agent.status,
         crate::stores::swarm::SwarmAgentStatus::Thinking
             | crate::stores::swarm::SwarmAgentStatus::Writing

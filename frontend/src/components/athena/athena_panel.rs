@@ -381,7 +381,6 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         None => ("var(--textDim)", "Checking configuration…"),
     };
 
-
     let wrapper_style = match mode {
         AthenaPanelMode::Overlay => "position: absolute; bottom: 0; left: 0; right: 0; height: 35vh; display: flex; flex-direction: row; background: var(--bg); color: var(--text); border-top: 1px solid var(--border); z-index: 100;",
         AthenaPanelMode::Compact => "flex: 1; display: flex; flex-direction: row; min-width: 0; min-height: 0; background: var(--bg); color: var(--text); overflow: hidden;",

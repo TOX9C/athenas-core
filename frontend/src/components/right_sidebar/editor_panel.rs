@@ -22,7 +22,7 @@ pub fn RightEditorPanel() -> Element {
             let surface_border = if is_active { "border-bottom: 1px solid var(--border);" } else { "border-bottom: 1px solid transparent;" };
             TabEntry {
                 path: file.path.clone(),
-                filename: file.path.split('/').last().unwrap_or(&file.path).to_string(),
+                filename: file.path.split('/').next_back().unwrap_or(&file.path).to_string(),
                 style: format!(
                     "display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:{border};{surface_border}background:{bg};color:{color};font-size:11px;cursor:pointer;white-space:nowrap;letter-spacing:0.04em;transition:background 0.15s ease, color 0.15s ease;",
                 ),

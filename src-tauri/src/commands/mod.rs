@@ -25,10 +25,10 @@ pub mod caps;
 /// launch-context-dependent:
 ///   - `cargo tauri dev` runs the backend with cwd = `src-tauri/`.
 ///   - A bundled release `.app` launched from Finder has cwd = `/`.
-/// Using `current_dir()` directly made the sandbox root `src-tauri/` in dev
-/// (so the real project root one level up was wrongly rejected) and `/` in
-/// release (so the sandbox silently allowed every path — a latent hole, not a
-/// correct config).
+///     Using `current_dir()` directly made the sandbox root `src-tauri/` in dev
+///     (so the real project root one level up was wrongly rejected) and `/` in
+///     release (so the sandbox silently allowed every path — a latent hole, not a
+///     correct config).
 ///
 /// Resolution: look for the project-root marker (`src-tauri/tauri.conf.json`)
 /// by walking up from both `current_dir()` *and* the executable's directory.
@@ -332,7 +332,7 @@ fn validate_cwd(
     }
     let validated = validate_path_exists(store, std::path::Path::new(cwd))?;
     if !validated.is_dir() {
-        return Err(CommandError::Internal(format!("cwd is not a directory")));
+        return Err(CommandError::Internal("cwd is not a directory".to_string()));
     }
     Ok(validated)
 }
@@ -450,9 +450,15 @@ fn build_provider_config_from_store(
         if let Ok(Some(value)) = state.store.get::<String>("llm.api_key") {
             if !value.is_empty() && value != "not_set" && value != "set" {
                 if let Ok(entry) = keyring::Entry::new("athena", "api_key") {
-                    let _ = entry.set_password(&value);
+                    // Only delete the legacy plaintext key after the keyring
+                    // write is confirmed. If set_password fails we recurse
+                    // without deleting — the plaintext key stays in the store
+                    // so the recursive call can find it again instead of
+                    // returning MissingApiKey and losing the key entirely.
+                    if entry.set_password(&value).is_ok() {
+                        let _ = state.store.delete_sync("llm.api_key");
+                    }
                 }
-                let _ = state.store.delete_sync("llm.api_key");
                 // Recurse once to pick up the freshly-migrated key without
                 // duplicating the config-assembly logic below.
                 return build_provider_config_from_store(state);
@@ -645,10 +651,7 @@ pub async fn workspace_remove_trusted_root(
         tokio::task::spawn_blocking(move || std::path::Path::new(&dir_for_task).canonicalize())
             .await
             .map_err(|e| format!("canonicalize task failed: {e}"))?;
-    let canonical = match canonical {
-        Ok(c) => Some(c),
-        Err(_) => None, // directory gone — best-effort literal remove below
-    };
+    let canonical = canonical.ok(); // directory gone — best-effort literal remove below
 
     let mut roots = load_trusted_roots(&state.store);
     let before = roots.len();
@@ -1399,12 +1402,13 @@ pub(crate) async fn pty_read_loop(
     // Reusable JSON event string. Same rationale — avoids a per-flush String
     // + serde_json::Value tree allocation. Cleared (not freed) between flushes.
     let mut raw_event_buf: String = String::with_capacity(64 * 1024);
-    // Hard cap on coalescing buffer (1 MB).  If the buffer ever exceeds
-    // this size we emit immediately to avoid unbounded memory growth.
-    const MAX_COALESCE_SIZE: usize = 1024 * 1024; // 1 MB
+    // Coalesce-flush threshold (32 KB). Above this size we emit immediately to
+    // avoid unbounded memory growth; below it we keep coalescing for the next
+    // rate-limited flush. (The former separate 1 MB cap was removed: the two
+    // thresholds triggered the identical flush call, so the lower one governed.)
 
     // Backstop cap while `raw_paused` is true. All threshold flushes (incl.
-    // the 1 MB `MAX_COALESCE_SIZE` emergency flush) are skipped while paused,
+    // the 32 KB coalesce-flush above) are skipped while paused,
     // so without this cap a chatty shell (`yes`, `find /`) during a slow or
     // stalled remount would grow `coalesce_buf` without bound. 4 MB is ~40k
     // lines — far beyond any real swap window (<300 ms, typically <2 KB). If
@@ -1662,10 +1666,14 @@ pub(crate) async fn pty_read_loop(
                     &session_id,
                 );
             }
-            if coalesce_buf.len() >= MAX_COALESCE_SIZE {
-                flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
-            } else if coalesce_buf.len() >= 32 * 1024 {
-                flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
+            if coalesce_buf.len() >= 32 * 1024 {
+                flush_pty_raw(
+                    &mut coalesce_buf,
+                    &mut encode_buf,
+                    &mut raw_event_buf,
+                    &app_handle,
+                    &session_id,
+                );
             }
         }
         was_paused = now_paused;
@@ -1680,7 +1688,13 @@ pub(crate) async fn pty_read_loop(
     // Flush any remaining coalesced data before signaling exit so the
     // frontend doesn't miss the tail of the session's output.
     if !coalesce_buf.is_empty() {
-        flush_pty_raw(&mut coalesce_buf, &mut encode_buf, &mut raw_event_buf, &app_handle, &session_id);
+        flush_pty_raw(
+            &mut coalesce_buf,
+            &mut encode_buf,
+            &mut raw_event_buf,
+            &app_handle,
+            &session_id,
+        );
     }
 
     if let Err(e) = app_handle.emit("terminal:exit", session_id) {
@@ -1987,7 +2001,7 @@ pub async fn pty_agent_info(state: State<'_, AppState>, id: String) -> Result<St
     // Get the full command line for each process in the PTY's process group.
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new("ps")
-            .args(&["-o", "command=", "-g", &pgid.to_string()])
+            .args(["-o", "command=", "-g", &pgid.to_string()])
             .output()
     })
     .await
@@ -2116,7 +2130,7 @@ pub async fn pty_foreground_process(
 
         let output = tokio::task::spawn_blocking(move || {
             std::process::Command::new("ps")
-                .args(&["-o", "command=", "-g", &pgid.to_string()])
+                .args(["-o", "command=", "-g", &pgid.to_string()])
                 .output()
         })
         .await
@@ -2339,10 +2353,7 @@ pub async fn pty_set_raw_paused(
 /// where a pane is dropped without remount and later re-shown. If the session
 /// was never paused, this is a no-op store(false) the loop already observed.
 #[tauri::command]
-pub async fn pty_attach_listener(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+pub async fn pty_attach_listener(state: State<'_, AppState>, id: String) -> Result<(), String> {
     validate_session_id(&id)?;
     let sm = state.session_manager.lock().await;
     if let Some(session) = sm.get_session(&id).await {
@@ -2458,8 +2469,7 @@ fn prompt_is_sensitive(raw_prompt: &str) -> bool {
         .replace('@', "a")
         .replace('0', "o")
         .replace('3', "e")
-        .replace('1', "i")
-        .replace('!', "i")
+        .replace(['1', '!'], "i")
         .replace('$', "s");
     let normalized_keywords = [
         "password",
@@ -3425,6 +3435,102 @@ pub fn browser_set_bounds(
 
     Ok(())
 }
+// ── Kanban commands ──────────────────────────────────────────────────────────
+
+/// Get all kanban tasks for the active workspace, returned as a JSON array.
+#[tauri::command]
+pub async fn kanban_get_tasks(state: State<'_, AppState>) -> Result<String, String> {
+    let workspace_id = state
+        .kanban_backend
+        .get_active_workspace_id()
+        .map_err(|e| e.to_string())?;
+    let tasks = state
+        .kanban_backend
+        .get_tasks(&workspace_id)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&tasks).map_err(|e| e.to_string())
+}
+
+/// Create a new kanban task in the active workspace. The task gets a generated
+/// UUID, the current timestamp, and the default `Todo` status.
+#[tauri::command]
+pub async fn kanban_create_task(
+    state: State<'_, AppState>,
+    title: String,
+    description: Option<String>,
+) -> Result<String, String> {
+    let workspace_id = state
+        .kanban_backend
+        .get_active_workspace_id()
+        .map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let task = athena_core::kanban::KanbanBackendTask {
+        id: format!("task-{}", uuid::Uuid::new_v4()),
+        space_id: workspace_id.clone(),
+        title,
+        description,
+        assigned_agent: None,
+        status: athena_core::kanban::KanbanBackendStatus::Todo,
+        order: 0,
+        created_at: now,
+    };
+    let created = state
+        .kanban_backend
+        .create_task(&workspace_id, task)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&created).map_err(|e| e.to_string())
+}
+
+/// Update an existing kanban task in the active workspace. Only the supplied
+/// fields are modified; `None` leaves them untouched.
+#[tauri::command]
+pub async fn kanban_update_task(
+    state: State<'_, AppState>,
+    task_id: String,
+    title: Option<String>,
+    description: Option<String>,
+    status: Option<String>,
+) -> Result<String, String> {
+    let workspace_id = state
+        .kanban_backend
+        .get_active_workspace_id()
+        .map_err(|e| e.to_string())?;
+
+    // Convert the status string from the frontend into KanbanBackendStatus.
+    // Accept the canonical enum strings ("todo", "in_progress", "in_review",
+    // "complete") via parse; an unknown value propagates InvalidStatus.
+    let status_enum = match status {
+        Some(s) => Some(
+            athena_core::kanban::KanbanBackendStatus::parse(&s)
+                .map_err(|e: athena_core::kanban::KanbanError| e.to_string())?,
+        ),
+        None => None,
+    };
+
+    let updated = state
+        .kanban_backend
+        .update_task(&workspace_id, &task_id, title, description, status_enum)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&updated).map_err(|e| e.to_string())
+}
+
+/// Delete a kanban task by ID from the active workspace.
+#[tauri::command]
+pub async fn kanban_delete_task(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let workspace_id = state
+        .kanban_backend
+        .get_active_workspace_id()
+        .map_err(|e| e.to_string())?;
+    state
+        .kanban_backend
+        .delete_task(&workspace_id, &task_id)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── Plugin commands ──────────────────────────────────────────────────────────
 
 /// List all registered plugins.
@@ -4146,8 +4252,7 @@ mod scraper_tests {
 
     #[test]
     fn parse_codex_history_line_extracts_session_and_prompt() {
-        let line =
-            r#"{"session_id":"019e0ec8-7793-77a3-b52c-c153ed517b64","ts":1778364486,"text":"yo what is up"}"#;
+        let line = r#"{"session_id":"019e0ec8-7793-77a3-b52c-c153ed517b64","ts":1778364486,"text":"yo what is up"}"#;
         let entry = parse_codex_history_line(line).expect("should parse");
         assert_eq!(entry.display, "yo what is up");
         assert_eq!(entry.session_id, "019e0ec8-7793-77a3-b52c-c153ed517b64");
@@ -4174,7 +4279,7 @@ mod scraper_tests {
     fn valid_prompt_filters_meta_commands() {
         assert!(!is_valid_prompt("/exit"));
         assert!(!is_valid_prompt("/model"));
-        assert!(!is_valid_prompt("纠结"));  // less than 5 chars
+        assert!(!is_valid_prompt("纠结")); // less than 5 chars
         assert!(!is_valid_prompt("[Pasted text #1 +5 lines]"));
         assert!(!is_valid_prompt("[Image #2] what do you see"));
         assert!(is_valid_prompt("analyze the codebase"));
