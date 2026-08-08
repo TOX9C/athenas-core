@@ -11,8 +11,14 @@ module.exports = tseslint.config(
     ignores: [
       'out/**',
       'dist/**',
+      'frontend/dist/**',
+      'frontend/public/**',
+      'frontend/vendor/**',
+      'e2e-tests/**',
       'dist-electron/**',
       'node_modules/**',
+      'target/**',
+      'patches/**',
       'packages/mcp-server/dist/**',
       'packages/mcp-server/node_modules/**',
       '*.rej',
@@ -42,7 +48,7 @@ module.exports = tseslint.config(
       '@typescript-eslint': tseslint.plugin,
       react: reactPlugin,
       'react-hooks': reactHooksPlugin,
-      'react-refresh': reactRefreshPlugin,
+      'react-refresh': reactRefreshPlugin.reactRefresh.plugin,
       prettier: prettierPlugin,
     },
     languageOptions: {

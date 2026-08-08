@@ -8,6 +8,7 @@ members = [
   "crates/athena-browser",
   "crates/athena-plugins",
   "crates/athena-terminal",
+  "crates/athena-resume-scanner",
 ]
 resolver = "2"
 
