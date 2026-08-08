@@ -2,48 +2,8 @@ use crate::components::shared::icon::{IconPlus, IconRefresh};
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::athena::{use_athena_store, AthenaMessage, MessageRole};
 use crate::tauri_bridge;
+use crate::utils::session::{fetch_sessions, format_time_ago, SessionListItem};
 use dioxus::prelude::*;
-
-/// A single chat session as returned by the backend list endpoint.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionListItem {
-    pub id: String,
-    pub title: String,
-    pub created_at: u64,
-    pub updated_at: u64,
-    pub message_count: usize,
-    pub last_message_preview: String,
-}
-
-/// Load the session list from the backend.
-async fn fetch_sessions() -> Vec<SessionListItem> {
-    match tauri_bridge::session_list().await {
-        Ok(json) => {
-            let parsed: Vec<serde_json::Value> = match serde_json::from_str(&json) {
-                Ok(v) => v,
-                Err(_) => return Vec::new(),
-            };
-            parsed
-                .iter()
-                .filter_map(|v| {
-                    Some(SessionListItem {
-                        id: v.get("id")?.as_str()?.to_string(),
-                        title: v.get("title")?.as_str()?.to_string(),
-                        created_at: v.get("createdAt")?.as_u64()?,
-                        updated_at: v.get("updatedAt")?.as_u64()?,
-                        message_count: v.get("messageCount")?.as_u64()? as usize,
-                        last_message_preview: v
-                            .get("lastMessagePreview")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                    })
-                })
-                .collect()
-        }
-        Err(_) => Vec::new(),
-    }
-}
 
 /// Load a specific session into the athena store.
 async fn load_session(
@@ -109,25 +69,6 @@ async fn load_session(
     }
 }
 
-/// Format a Unix timestamp (milliseconds) into a relative "time ago" string.
-fn format_time_ago(timestamp_ms: u64) -> String {
-    let now = (js_sys::Date::now() / 1000.0) as u64;
-    let diff = now.saturating_sub(timestamp_ms);
-    let minutes = diff / 60;
-    let hours = diff / 3600;
-    let days = diff / 86400;
-
-    if days > 0 {
-        format!("{}d ago", days)
-    } else if hours > 0 {
-        format!("{}h ago", hours)
-    } else if minutes > 0 {
-        format!("{}m ago", minutes)
-    } else {
-        "just now".to_string()
-    }
-}
-
 #[component]
 pub fn SessionList() -> Element {
     let mut sessions = use_signal(Vec::<SessionListItem>::new);
@@ -138,8 +79,10 @@ pub fn SessionList() -> Element {
     use_effect(move || {
         loading.set(true);
         spawn(async move {
-            let items = fetch_sessions().await;
-            sessions.set(items);
+            match fetch_sessions().await {
+                Ok(items) => sessions.set(items),
+                Err(error) => web_sys::console::error_1(&format!("[SessionList] {error}").into()),
+            }
             loading.set(false);
         });
     });
@@ -182,9 +125,13 @@ pub fn SessionList() -> Element {
                     onclick: move |_| {
                         loading.set(true);
                         spawn(async move {
-                            let items = fetch_sessions().await;
-                            sessions.set(items);
-                            loading.set(false);
+                            match fetch_sessions().await {
+                            Ok(items) => sessions.set(items),
+                            Err(error) => {
+                                web_sys::console::error_1(&format!("[SessionList] {error}").into())
+                            }
+                        }
+                        loading.set(false);
                         });
                     },
                     IconRefresh { size: Some(15), color: Some("currentColor".to_string()) }

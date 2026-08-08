@@ -25,18 +25,16 @@ pub fn KanbanBoard() -> Element {
         let mut task_state = task_state;
         spawn(async move {
             match tauri_bridge::kanban_get_tasks().await {
-                Ok(json) => {
-                    match tasks_from_backend_json(&json) {
-                        Ok(tasks) => {
-                            task_state.write().set_tasks(tasks);
-                        }
-                        Err(e) => {
-                            web_sys::console::error_1(
-                                &format!("[KanbanBoard] failed to parse tasks: {e}").into(),
-                            );
-                        }
+                Ok(json) => match tasks_from_backend_json(&json) {
+                    Ok(tasks) => {
+                        task_state.write().set_tasks(tasks);
                     }
-                }
+                    Err(e) => {
+                        web_sys::console::error_1(
+                            &format!("[KanbanBoard] failed to parse tasks: {e}").into(),
+                        );
+                    }
+                },
                 Err(e) => {
                     web_sys::console::error_1(
                         &format!("[KanbanBoard] kanban_get_tasks failed: {:?}", e).into(),
@@ -45,7 +43,6 @@ pub fn KanbanBoard() -> Element {
             }
         });
     });
-
 
     let is_empty = task_state.read().tasks.is_empty();
 

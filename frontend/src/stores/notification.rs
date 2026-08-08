@@ -1,64 +1,11 @@
 use chrono::Utc;
 use dioxus::prelude::*;
 
-/// Maximum number of notifications kept in memory.
-const MAX_NOTIFICATIONS: usize = 50;
+#[path = "notification_model.rs"]
+mod notification_model;
 
-/// Time window (in milliseconds) within which a duplicate notification
-/// (matching title + message) is merged into the existing one and its
-/// `count` is incremented instead of pushing a new entry.
-const DEDUP_WINDOW_MS: i64 = 1000;
-
-/// Type of notification.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum NotificationType {
-    #[default]
-    Info,
-    Warning,
-    Error,
-    Success,
-    NeedsInput,
-    TaskComplete,
-    TaskError,
-}
-
-/// A single notification record.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NotificationRecord {
-    pub id: String,
-    pub r#type: NotificationType,
-    pub title: String,
-    pub message: String,
-    pub source: String,
-    pub read: bool,
-    /// Unix epoch milliseconds. Stored as millis so the dedup window can
-    /// compare in sub-second resolution.
-    pub timestamp: i64,
-    /// Number of times this notification has been observed. Incremented
-    /// when a matching notification arrives within `DEDUP_WINDOW_MS`.
-    pub count: u32,
-}
-
-impl NotificationRecord {
-    pub fn new(title: &str, message: &str, r#type: NotificationType) -> Self {
-        Self {
-            id: format!("notif-{}", Utc::now().timestamp_millis()),
-            r#type,
-            title: title.to_string(),
-            message: message.to_string(),
-            source: "frontend".to_string(),
-            read: false,
-            timestamp: Utc::now().timestamp_millis(),
-            count: 1,
-        }
-    }
-}
-
-impl Default for NotificationRecord {
-    fn default() -> Self {
-        Self::new("", "", NotificationType::Info)
-    }
-}
+pub use notification_model::{NotificationRecord, NotificationType};
+use notification_model::{DEDUP_WINDOW_MS, MAX_NOTIFICATIONS};
 
 /// Global notification store.
 pub fn use_notification_store() -> Signal<Vec<NotificationRecord>> {
@@ -95,7 +42,12 @@ pub fn add_notification(
         if existing.id == record.id {
             return;
         }
-        if existing.title == record.title && existing.message == record.message {
+        if existing.title == record.title
+            && existing.message == record.message
+            && existing.source == record.source
+            && existing.agent_id == record.agent_id
+            && existing.request_id == record.request_id
+        {
             existing.count = existing.count.saturating_add(1);
             existing.timestamp = now;
             return;
@@ -128,4 +80,34 @@ pub fn set_notifications(
     records: Vec<NotificationRecord>,
 ) {
     *notifications.write() = records;
+}
+
+/// Merge persisted history into the live store without dropping events that
+/// arrived while the asynchronous history request was in flight.
+pub fn merge_notifications(
+    notifications: &mut Signal<Vec<NotificationRecord>>,
+    records: Vec<NotificationRecord>,
+) {
+    let mut guard = notifications.write();
+    let mut by_id = std::collections::HashMap::new();
+    for (index, record) in guard.iter().enumerate() {
+        by_id.insert(record.id.clone(), index);
+    }
+    for record in records {
+        if let Some(index) = by_id.get(&record.id).copied() {
+            // Keep the live copy: it may have been marked read or have a
+            // newer count since hydration began.
+            if record.timestamp > guard[index].timestamp {
+                guard[index] = record;
+            }
+        } else {
+            by_id.insert(record.id.clone(), guard.len());
+            guard.push(record);
+        }
+    }
+    guard.sort_by_key(|record| record.timestamp);
+    if guard.len() > MAX_NOTIFICATIONS {
+        let remove_count = guard.len() - MAX_NOTIFICATIONS;
+        guard.drain(0..remove_count);
+    }
 }

@@ -1,82 +1,17 @@
+use crate::utils::time::now_ms;
 use dioxus::prelude::*;
 use std::collections::HashMap;
 
-fn now_ms() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Date::now() as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use std::time::SystemTime;
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
-    }
-}
+#[path = "agent_output_model.rs"]
+mod agent_output_model;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/// A single line of agent output.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct OutputLine {
-    pub pane_id: String,
-    pub line_num: usize,
-    pub timestamp: i64,
-    pub text: String,
-    /// Precomputed stderr heuristic. Set once at line arrival; never
-    /// re-evaluated during render. See [`is_stderr_like`].
-    pub is_stderr: bool,
-}
-
-/// Heuristic: text containing error/warn/fail/exception keywords looks like
-/// stderr output. Called once per line at construction time (in the IPC
-/// listener), never per render.
-///
-/// Returns the same answer as the legacy render-time heuristic. Allocates a
-/// single lowercased copy of `text` per call — at most once per incoming line.
-pub fn is_stderr_like(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    lower.contains("error")
-        || lower.contains("warn")
-        || lower.contains("fail")
-        || lower.contains("exception")
-}
-
-/// Metadata about an agent's output stream.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct AgentOutputInfo {
-    pub pane_id: String,
-    pub agent_type: String,
-    pub line_count: usize,
-    pub created_at: i64,
-    pub last_activity_at: i64,
-}
-
-/// State of a subscription to a pane's output.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct SubscriptionState {
-    pub subscription_id: Option<String>,
-    pub pane_id: Option<String>,
-    pub active: bool,
-}
-
-/// Maximum lines retained per output buffer.
-const MAX_LINES_PER_BUFFER: usize = 5000;
-/// Maximum characters retained per output line (prevents DoS from huge single lines).
-const MAX_TEXT_LENGTH: usize = 10000;
-/// Maximum number of tracked output panes.
-const MAX_PANE_COUNT: usize = 100;
-/// Target pane count after garbage collection.
-const PANE_GC_TARGET: usize = 80;
-/// Threshold for idle-pane GC (milliseconds). A pane whose buffer has not been
-/// touched for this duration is eligible for eviction.
-const PANE_GC_IDLE_THRESHOLD_MS: u64 = 30 * 60 * 1000;
-/// Recommended sweep interval for periodic GC (milliseconds).
-pub const PANE_GC_INTERVAL_MS: u64 = 5 * 60 * 1000;
+pub use agent_output_model::{
+    is_stderr_like, AgentOutputInfo, OutputLine, SubscriptionState, PANE_GC_INTERVAL_MS,
+};
+use agent_output_model::{
+    MAX_LINES_PER_BUFFER, MAX_PANE_COUNT, MAX_TEXT_LENGTH, PANE_GC_IDLE_THRESHOLD_MS,
+    PANE_GC_TARGET,
+};
 
 // ---------------------------------------------------------------------------
 // State

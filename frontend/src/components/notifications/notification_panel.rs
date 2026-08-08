@@ -1,7 +1,7 @@
 use crate::components::shared::icon::IconClose;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::notification::{
-    mark_notification_dismissed, use_notification_store, NotificationType,
+    mark_notification_dismissed, mark_notification_read, use_notification_store, NotificationType,
 };
 use crate::tauri_bridge;
 use dioxus::prelude::*;
@@ -119,6 +119,14 @@ pub fn NotificationPanel() -> Element {
                                     key: "{n_id}",
                                     class: "lit-sweep",
                                     style: "padding: 10px 12px; border-bottom: var(--border); opacity: {opacity}; display: flex; align-items: flex-start; gap: 8px; {unread_rule}",
+                                    onclick: {
+                                        let id = n_id.clone();
+                                        move |_| {
+                                            mark_notification_read(&mut notifications, &id);
+                                            let id = id.clone();
+                                            spawn(async move { let _ = tauri_bridge::notification_mark_read(&id).await; });
+                                        }
+                                    },
 
                                     // Type dot
                                     div {

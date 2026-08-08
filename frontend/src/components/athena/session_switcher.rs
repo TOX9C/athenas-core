@@ -1,62 +1,8 @@
 use crate::components::shared::icon::{IconChevronDown, IconChevronUp, IconPlus, IconTrash};
 use crate::stores::athena::{use_athena_store, AthenaMessage, MessageRole};
 use crate::tauri_bridge;
+use crate::utils::session::{fetch_sessions, format_time_ago, SessionListItem};
 use dioxus::prelude::*;
-
-// ---------------------------------------------------------------------------
-// Data types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq)]
-struct SessionListItem {
-    id: String,
-    title: String,
-    updated_at: u64,
-    message_count: usize,
-    last_message_preview: String,
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async fn do_fetch_sessions() -> Vec<SessionListItem> {
-    match tauri_bridge::session_list().await {
-        Ok(json) => {
-            let parsed: Vec<serde_json::Value> = match serde_json::from_str(&json) {
-                Ok(v) => v,
-                Err(e) => {
-                    web_sys::console::error_1(
-                        &format!("[SessionSwitcher] JSON parse error: {:?}", e).into(),
-                    );
-                    return Vec::new();
-                }
-            };
-            parsed
-                .iter()
-                .filter_map(|v| {
-                    Some(SessionListItem {
-                        id: v.get("id")?.as_str()?.to_string(),
-                        title: v.get("title")?.as_str()?.to_string(),
-                        updated_at: v.get("updatedAt")?.as_u64()?,
-                        message_count: v.get("messageCount")?.as_u64()? as usize,
-                        last_message_preview: v
-                            .get("lastMessagePreview")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                    })
-                })
-                .collect()
-        }
-        Err(e) => {
-            web_sys::console::error_1(
-                &format!("[SessionSwitcher] Failed to fetch sessions: {:?}", e).into(),
-            );
-            Vec::new()
-        }
-    }
-}
 
 async fn do_load_session(
     session_id: &str,
@@ -122,25 +68,6 @@ async fn do_load_session(
     }
 }
 
-fn format_time_ago(timestamp_ms: u64) -> String {
-    let now = js_sys::Date::now() as u64; // milliseconds
-    let diff = now.saturating_sub(timestamp_ms);
-    let seconds = diff / 1000;
-    let minutes = seconds / 60;
-    let hours = minutes / 60;
-    let days = hours / 24;
-
-    if days > 0 {
-        format!("{}d ago", days)
-    } else if hours > 0 {
-        format!("{}h ago", hours)
-    } else if minutes > 0 {
-        format!("{}m ago", minutes)
-    } else {
-        "just now".to_string()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -156,8 +83,12 @@ pub fn SessionSwitcher() -> Element {
     use_effect(move || {
         spawn(async move {
             is_loading.set(true);
-            let items = do_fetch_sessions().await;
-            sessions.set(items);
+            match fetch_sessions().await {
+                Ok(items) => sessions.set(items),
+                Err(error) => {
+                    web_sys::console::error_1(&format!("[SessionSwitcher] {error}").into())
+                }
+            }
             is_loading.set(false);
         });
     });
@@ -226,8 +157,12 @@ pub fn SessionSwitcher() -> Element {
                                         }
                                     }
                                     // Refresh list after create
-                                    let items = do_fetch_sessions().await;
-                                    sessions.set(items);
+                                    match fetch_sessions().await {
+                                        Ok(items) => sessions.set(items),
+                                        Err(error) => web_sys::console::error_1(
+                                            &format!("[SessionSwitcher] {error}").into(),
+                                        ),
+                                    }
                                 });
                                 is_open.set(false);
                             },
@@ -329,8 +264,12 @@ pub fn SessionSwitcher() -> Element {
                                                             athena.write().set_session_title(String::new());
                                                         }
                                                         // Refresh list after delete
-                                                        let items = do_fetch_sessions().await;
-                                                        sessions.set(items);
+                                                        match fetch_sessions().await {
+                                                            Ok(items) => sessions.set(items),
+                                                            Err(error) => web_sys::console::error_1(
+                                                                &format!("[SessionSwitcher] {error}").into(),
+                                                            ),
+                                                        }
                                                     });
                                                 },
                                                 title: "Delete session",

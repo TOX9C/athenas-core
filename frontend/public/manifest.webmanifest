@@ -1,0 +1,19 @@
+{
+  "name": "Athena's Core Companion",
+  "short_name": "Athena",
+  "description": "Connect to and control your Athena's Core desktop workspace over a trusted local network.",
+  "start_url": "/mobile.html?mobile=1",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0b0c",
+  "theme_color": "#0b0b0c",
+  "icons": [
+    {
+      "src": "./icons/athena.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

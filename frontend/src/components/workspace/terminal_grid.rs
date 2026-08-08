@@ -5,9 +5,8 @@ use crate::components::shared::icon::{
     IconCheck, IconClose, IconCopy, IconFullscreen, IconMinimize,
 };
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
-use crate::stores::terminal::{
-    use_terminal_registry, use_terminal_store, TerminalCell, TerminalColor,
-};
+use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
+use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType, Space};
 use crate::tauri_bridge::{pty_agent_info, pty_kill, pty_write};
@@ -16,6 +15,14 @@ use crate::utils::agent_commands::{
     agent_process_name, claude_resume_variants, custom_agent_process_name, get_agent_color,
     get_agent_label, get_agent_resume_command,
 };
+
+#[path = "terminal_cells.rs"]
+mod terminal_cells;
+use terminal_cells::TerminalPaneBody;
+
+#[path = "terminal_resize.rs"]
+mod terminal_resize;
+use terminal_resize::{ColDivider, DragInfo, DragOverlay, RowDivider};
 
 #[cfg(feature = "xterm")]
 use crate::components::workspace::xterm_mount::XtermMount;
@@ -45,28 +52,6 @@ fn render_shell_pane(pane_id: String, _cwd: String) -> Element {
 pub struct WorkspaceGridProps {
     pub active_space: Option<Space>,
     pub active_space_id: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// DragInfo & DragKind
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Copy, Debug)]
-struct DragInfo {
-    kind: DragKind,
-    scope_index: Option<usize>,
-    index: usize,
-    start_x: f64,
-    start_y: f64,
-    initial_left: f64,
-    initial_right: f64,
-    dimension_pixels: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DragKind {
-    Col,
-    Row,
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +530,34 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let title_text = tooltip.unwrap_or_else(|| display_label.clone());
     // Show the detected foreground process as a subtle badge when it's meaningful
     let right_badge = fg_process.filter(|p| p != "shell" && p != &left_label && !p.is_empty());
+
+    // Per-pane agent-status dot — mirrors the space-level badges: gold while
+    // the agent is working, amber + pulse when it finished / waits / errored.
+    let agent_status = use_agent_status_store();
+    let pane_status = agent_status
+        .read()
+        .statuses
+        .iter()
+        .find(|(id, _)| id == &props.pane_id)
+        .map(|(_, s)| s.status.clone());
+    let pane_dot_class = match pane_status.as_ref() {
+        Some(AgentRunStatus::Working) => "status-dot is-working",
+        // Thinking renders as a pulsing dot — distinct from the solid
+        // working dot so a freshly-woken agent reads as "warming up".
+        Some(AgentRunStatus::Thinking) => "status-dot is-thinking",
+        Some(AgentRunStatus::WaitingForInput)
+        | Some(AgentRunStatus::Error)
+        | Some(AgentRunStatus::Completed) => "status-dot is-attention",
+        _ => "status-dot is-idle",
+    };
+    let pane_dot_title = match pane_status.as_ref() {
+        Some(AgentRunStatus::Working) => "Agent working".to_string(),
+        Some(AgentRunStatus::Thinking) => "Agent thinking".to_string(),
+        Some(AgentRunStatus::WaitingForInput) => "Agent waiting for input".to_string(),
+        Some(AgentRunStatus::Error) => "Agent errored".to_string(),
+        Some(AgentRunStatus::Completed) => "Agent finished".to_string(),
+        _ => "No agent activity".to_string(),
+    };
     let pane_id_for_rename = props.pane_id.clone();
     let space_id_for_rename = props.space_id.clone();
 
@@ -618,6 +631,14 @@ fn PaneItem(props: PaneItemProps) -> Element {
                         }));
                     },
                     style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 999px; cursor: grab; flex-shrink: 0;",
+
+                    // Left: agent-status dot (working / attention / idle)
+                    span {
+                        class: pane_dot_class,
+                        style: "flex-shrink: 0;",
+                        title: pane_dot_title.clone(),
+                        "aria-label": "{pane_dot_title}",
+                    }
 
                     // Left: editable title
                     {
@@ -932,9 +953,15 @@ fn PaneItem(props: PaneItemProps) -> Element {
                 }
             }
 
-            // Shell body — flat, no padding, fills edge-to-edge below the pill header
+            // Shell body — uniform 4px inset so terminal content never touches
+            // the pane-wrap border (right/bottom) or the pill header (top). The
+            // padding lives on THIS wrapper, not on .xterm-mount: FitAddon reads
+            // .xterm-mount's computed width/height (which already reflect this
+            // inset because .xterm-mount is width:100%/height:100% of the
+            // padded content box) and subtracts only the child .xterm element's
+            // own padding, so cols/rows stay correct with no clipping.
             div {
-                style: "flex: 1; min-width: 0; min-height: 0; padding: 0; background: var(--bg); overflow: hidden;",
+                style: "flex: 1; min-width: 0; min-height: 0; padding: 4px; background: var(--bg); overflow: hidden;",
                 if props.is_shell {
                     { render_shell_pane(props.pane_id.clone(), props.cwd.clone(), props.agent_type.clone(), props.resume_id.clone(), props.custom_cmd.clone()) }
                 } else {
@@ -942,424 +969,5 @@ fn PaneItem(props: PaneItemProps) -> Element {
                 }
             }
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// TerminalPaneBody
-// ---------------------------------------------------------------------------
-
-#[component]
-fn TerminalPaneBody(pane_id: String) -> Element {
-    // Subscribe to THIS pane's inner signal for grid snapshots (Item 3). A
-    // cell delta in pane A re-clones only pane A's grid here; pane B's memo
-    // doesn't re-evaluate. `use_memo` caches the clone until the signal moves.
-    //
-    // `use_terminal_registry()` is a hook — captured once, synchronously, at
-    // render top; `registry.session_signal(...)` is a plain method safe to
-    // call inside the `use_memo` closure. Calling `use_session_signal(...)`
-    // here would re-enter the hook list (it warps `use_context`) and panic
-    // Dioxus at mount with "hook list already borrowed".
-    let terminal_registry = use_terminal_registry();
-    let Bud = use_memo(move || {
-        terminal_registry
-            .session_signal(&pane_id)
-            .and_then(|s| s.try_read().ok().map(|r| r.grid.clone()))
-            .unwrap_or_default()
-    })();
-
-    rsx! {
-        div {
-            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); overflow: hidden; padding-left: 3px; padding-bottom: 4px;",
-            div {
-                style: "font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 11px; line-height: 1.4; color: var(--text); white-space: pre-wrap; overflow-wrap: break-word;",
-                if Bud.is_empty() {
-                    "Waiting for output..."
-                } else {
-                    for (row_idx, row) in Bud.iter().enumerate() {
-                        div {
-                            key: "row-{row_idx}",
-                            style: "display: flex;",
-                            for cell in row.iter() {
-                                TerminalCellItem { cell: cell.clone() }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// TerminalCellItem
-// ---------------------------------------------------------------------------
-
-#[derive(Props, Clone, PartialEq)]
-struct TerminalCellItemProps {
-    cell: TerminalCell,
-}
-
-#[component]
-fn TerminalCellItem(props: TerminalCellItemProps) -> Element {
-    let cell = &props.cell;
-    let fg = color_to_css(&cell.fg);
-    let bg = color_to_css(&cell.bg);
-    let bold = if cell.bold { "font-weight: bold;" } else { "" };
-    let style = format!("color: {}; background-color: {}; {}", fg, bg, bold);
-
-    rsx! {
-        span {
-            style: "{style}",
-            "{cell.text}"
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ColDivider
-// ---------------------------------------------------------------------------
-
-#[derive(Props, Clone, PartialEq)]
-struct ColDividerProps {
-    space_id: String,
-    row_index: usize,
-    index: usize,
-    col_widths: Signal<Vec<Vec<f64>>>,
-    drag: Signal<Option<DragInfo>>,
-}
-
-#[component]
-fn ColDivider(props: ColDividerProps) -> Element {
-    let mut drag = props.drag;
-    let col_widths = props.col_widths;
-    let row_index = props.row_index;
-    let index = props.index;
-
-    let space_id_for_col_resize = props.space_id.clone();
-
-    let onmousedown = move |e: MouseEvent| {
-        let coords = e.data.client_coordinates();
-        let (initial_left, initial_right) = {
-            let widths = col_widths.read();
-            let row = widths.get(row_index);
-            let left = row.and_then(|r| r.get(index)).copied().unwrap_or(1.0);
-            let right = row.and_then(|r| r.get(index + 1)).copied().unwrap_or(1.0);
-            (left, right)
-        };
-        let dimension_pixels =
-            workspace_grid_dimension(DragKind::Col, &space_id_for_col_resize).unwrap_or(0.0);
-        drag.set(Some(DragInfo {
-            kind: DragKind::Col,
-            scope_index: Some(row_index),
-            index,
-            start_x: coords.x,
-            start_y: coords.y,
-            initial_left,
-            initial_right,
-            dimension_pixels,
-        }));
-    };
-
-    let is_dragging = matches!(
-        &*drag.read(),
-        Some(d) if d.kind == DragKind::Col && d.scope_index == Some(row_index) && d.index == index
-    );
-
-    rsx! {
-        div {
-            style: "position: relative; width: 0; min-width: 0; flex-shrink: 0; overflow: visible; z-index: 2;",
-            div {
-                class: if is_dragging { "pane-divider-col is-dragging" } else { "pane-divider-col" },
-                onmousedown: onmousedown,
-                title: "Resize panes",
-                style: "position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize;",
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// RowDivider
-// ---------------------------------------------------------------------------
-
-#[derive(Props, Clone, PartialEq)]
-struct RowDividerProps {
-    space_id: String,
-    index: usize,
-    row_heights: Signal<Vec<f64>>,
-    drag: Signal<Option<DragInfo>>,
-}
-
-#[component]
-fn RowDivider(props: RowDividerProps) -> Element {
-    let mut drag = props.drag;
-    let row_heights = props.row_heights;
-    let index = props.index;
-
-    let space_id_for_row_resize = props.space_id.clone();
-
-    let onmousedown = move |e: MouseEvent| {
-        let coords = e.data.client_coordinates();
-        let (initial_left, initial_right) = {
-            let heights = row_heights.read();
-            let left = heights.get(index).copied().unwrap_or(1.0);
-            let right = heights.get(index + 1).copied().unwrap_or(1.0);
-            (left, right)
-        };
-        let dimension_pixels =
-            workspace_grid_dimension(DragKind::Row, &space_id_for_row_resize).unwrap_or(0.0);
-        drag.set(Some(DragInfo {
-            kind: DragKind::Row,
-            scope_index: None,
-            index,
-            start_x: coords.x,
-            start_y: coords.y,
-            initial_left,
-            initial_right,
-            dimension_pixels,
-        }));
-    };
-
-    let is_dragging = matches!(
-        &*drag.read(),
-        Some(d) if d.kind == DragKind::Row && d.index == index
-    );
-
-    rsx! {
-        div {
-            style: "position: relative; height: 0; min-height: 0; flex-shrink: 0; overflow: visible; z-index: 2;",
-            div {
-                class: if is_dragging { "pane-divider-row is-dragging" } else { "pane-divider-row" },
-                onmousedown: onmousedown,
-                title: "Resize panes",
-                style: "position: absolute; top: -4px; left: 0; right: 0; height: 8px; cursor: row-resize;",
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DragOverlay
-// ---------------------------------------------------------------------------
-
-#[derive(Props, Clone, PartialEq)]
-struct DragOverlayProps {
-    drag: Signal<Option<DragInfo>>,
-    col_widths: Signal<Vec<Vec<f64>>>,
-    row_heights: Signal<Vec<f64>>,
-}
-
-#[component]
-fn DragOverlay(props: DragOverlayProps) -> Element {
-    let mut drag = props.drag;
-    let mut col_widths = props.col_widths;
-    let mut row_heights = props.row_heights;
-
-    let onmousemove = move |e: MouseEvent| {
-        if let Some(drag_info) = *drag.read() {
-            let coords = e.data.client_coordinates();
-            let total = drag_info.initial_left + drag_info.initial_right;
-            let dimension = drag_info.dimension_pixels;
-            if dimension <= 0.0 {
-                return;
-            }
-
-            match drag_info.kind {
-                DragKind::Col => {
-                    if let Some(row_idx) = drag_info.scope_index {
-                        let delta = coords.x - drag_info.start_x;
-                        let mut cw = col_widths.write();
-                        if let Some(row) = cw.get_mut(row_idx) {
-                            if let Some((left, right)) = resize_pair_from_drag(
-                                drag_info.initial_left,
-                                total,
-                                delta,
-                                dimension,
-                            ) {
-                                row[drag_info.index] = left;
-                                row[drag_info.index + 1] = right;
-                            }
-                        }
-                    }
-                }
-                DragKind::Row => {
-                    let delta = coords.y - drag_info.start_y;
-                    let mut rh = row_heights.write();
-                    let len = rh.len();
-                    if len > 1 && drag_info.index < len - 1 {
-                        if let Some((left, right)) =
-                            resize_pair_from_drag(drag_info.initial_left, total, delta, dimension)
-                        {
-                            rh[drag_info.index] = left;
-                            rh[drag_info.index + 1] = right;
-                        }
-                    }
-                }
-            }
-        }
-    };
-
-    let onmouseup = move |_e: MouseEvent| {
-        drag.set(None);
-    };
-
-    let cursor = match *drag.read() {
-        Some(DragInfo {
-            kind: DragKind::Col,
-            ..
-        }) => "col-resize",
-        Some(DragInfo {
-            kind: DragKind::Row,
-            ..
-        }) => "row-resize",
-        None => "default",
-    };
-
-    rsx! {
-        div {
-            style: "position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; cursor: {cursor}; background: transparent;",
-            onmousemove: onmousemove,
-            onmouseup: onmouseup,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helper Functions
-// ---------------------------------------------------------------------------
-
-/// Resize a pair of columns/rows preserving total weight using the drag
-/// start state and the current cursor delta relative to the grid dimension.
-fn resize_pair_from_drag(
-    initial_left: f64,
-    total: f64,
-    delta_pixels: f64,
-    total_pixels: f64,
-) -> Option<(f64, f64)> {
-    if total_pixels <= 0.0 || total <= 0.0 {
-        return None;
-    }
-    let delta_ratio = delta_pixels / total_pixels;
-    let new_left = (initial_left + delta_ratio * total)
-        .max(0.1)
-        .min(total - 0.1);
-    let new_right = total - new_left;
-    Some((new_left, new_right))
-}
-
-fn workspace_grid_dimension(kind: DragKind, space_id: &str) -> Option<f64> {
-    let window = web_sys::window()?;
-    let document = window.document()?;
-    let selector = format!(".workspace-grid-root[data-space-id=\"{}\"]", space_id);
-    let element = document.query_selector(&selector).ok()??;
-    let html_el = element.dyn_into::<web_sys::HtmlElement>().ok()?;
-    let rect = html_el.get_bounding_client_rect();
-    match kind {
-        DragKind::Col => Some(rect.width()),
-        DragKind::Row => Some(rect.height()),
-    }
-}
-
-/// Calculate the number of horizontal row dividers between rendered rows.
-#[cfg(test)]
-fn row_divider_count(pane_count: usize, cols: usize, _rows: usize) -> usize {
-    let actual_rows = if cols == 0 {
-        0
-    } else {
-        (pane_count + cols - 1) / cols
-    };
-    actual_rows.saturating_sub(1)
-}
-
-/// Convert a TerminalColor to a CSS color string.
-fn color_to_css(color: &TerminalColor) -> String {
-    match color {
-        TerminalColor::Default => "inherit".to_string(),
-        TerminalColor::Black => "#000000".to_string(),
-        TerminalColor::Red => "#ef4444".to_string(),
-        TerminalColor::Green => "#22c55e".to_string(),
-        TerminalColor::Yellow => "#eab308".to_string(),
-        TerminalColor::Blue => "#3b82f6".to_string(),
-        TerminalColor::Magenta => "#a855f7".to_string(),
-        TerminalColor::Cyan => "#06b6d4".to_string(),
-        TerminalColor::White => "#ffffff".to_string(),
-        TerminalColor::BrightBlack => "#374151".to_string(),
-        TerminalColor::BrightRed => "#f87171".to_string(),
-        TerminalColor::BrightGreen => "#4ade80".to_string(),
-        TerminalColor::BrightYellow => "#facc15".to_string(),
-        TerminalColor::BrightBlue => "#60a5fa".to_string(),
-        TerminalColor::BrightMagenta => "#c084fc".to_string(),
-        TerminalColor::BrightCyan => "#22d3ee".to_string(),
-        TerminalColor::BrightWhite => "#f9fafb".to_string(),
-        TerminalColor::Indexed(idx) => ansi256_to_rgb(*idx),
-        TerminalColor::Rgb(r, g, b) => format!("#{:02x}{:02x}{:02x}", r, g, b),
-    }
-}
-
-/// Convert an ANSI 256 color index to an RGB hex string.
-fn ansi256_to_rgb(idx: u8) -> String {
-    // Standard 16 colors
-    if idx < 16 {
-        let colors = [
-            "#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0",
-            "#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff",
-        ];
-        return colors[idx as usize].to_string();
-    }
-    // 216 color cube (16-231)
-    if idx < 232 {
-        let cube_idx = (idx as usize) - 16;
-        let r = (cube_idx / 36) * 51;
-        let g = ((cube_idx % 36) / 6) * 51;
-        let b = (cube_idx % 6) * 51;
-        return format!("#{:02x}{:02x}{:02x}", r, g, b);
-    }
-    // Grayscale (232-255)
-    let gray = 8 + ((idx as usize) - 232) * 10;
-    format!("#{:02x}{:02x}{:02x}", gray, gray, gray)
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_resize_pair_from_drag() {
-        let result = resize_pair_from_drag(1.0, 2.0, 50.0, 200.0);
-        assert!(result.is_some());
-        let (left, right) = result.unwrap();
-        assert!(left > 1.0);
-        assert!(right < 1.0);
-        assert!((left + right - 2.0).abs() < f64::EPSILON);
-
-        let result = resize_pair_from_drag(1.0, 2.0, -1000.0, 200.0).unwrap();
-        assert_eq!(result, (0.1, 1.9));
-    }
-
-    #[test]
-    fn test_row_divider_count() {
-        assert_eq!(row_divider_count(0, 2, 2), 0);
-        assert_eq!(row_divider_count(1, 2, 2), 0);
-        assert_eq!(row_divider_count(2, 2, 2), 0);
-        assert_eq!(row_divider_count(3, 2, 2), 1);
-        assert_eq!(row_divider_count(4, 2, 2), 1);
-    }
-
-    #[test]
-    fn test_color_to_css_default() {
-        assert_eq!(color_to_css(&TerminalColor::Default), "inherit");
-    }
-
-    #[test]
-    fn test_ansi256_to_rgb() {
-        assert_eq!(ansi256_to_rgb(0), "#000000");
-        assert_eq!(ansi256_to_rgb(1), "#800000");
-        assert_eq!(ansi256_to_rgb(16), "#000000");
-        assert_eq!(ansi256_to_rgb(232), "#080808");
-        assert_eq!(ansi256_to_rgb(255), "#eeeeee");
     }
 }

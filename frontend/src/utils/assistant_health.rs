@@ -61,9 +61,7 @@ struct Inner {
     listeners: Vec<HealthChangeListener>,
 }
 
-fn now_ms() -> u64 {
-    js_sys::Date::now() as u64
-}
+use crate::utils::time::now_ms;
 
 fn compute_overall(checks: &[HealthCheckResult]) -> HealthStatus {
     if checks.is_empty() {

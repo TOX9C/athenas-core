@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+use crate::utils::time::now_ms;
+
 // ---------------------------------------------------------------------------
 // WASM-safe time helpers
 // ---------------------------------------------------------------------------
@@ -17,11 +19,6 @@ use std::sync::Arc;
 /// WASM; `std::time::Instant` panics at runtime in wasm32.
 fn now_timestamp_ms() -> u128 {
     js_sys::Date::now() as u128
-}
-
-/// Returns the current wall-clock time as milliseconds since the Unix epoch.
-fn now_ms() -> u64 {
-    js_sys::Date::now() as u64
 }
 
 // ---------------------------------------------------------------------------

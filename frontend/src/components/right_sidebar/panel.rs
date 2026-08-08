@@ -124,7 +124,30 @@ pub fn RightSidebar() -> Element {
                         rsx! { RightBrowserPanel {} }
                     },
                     RightPanel::Assistant => rsx! { AthenaPanel { mode: AthenaPanelMode::Compact } },
-                    RightPanel::Editor => rsx! { RightEditorPanel {} },
+                    // The editor has one shared surface. When the main
+                    // content area owns it (`Panel::Editor`), avoid mounting
+                    // a second editor against the same store in the sidebar.
+                    RightPanel::Editor => if ui_state.read().panel == Panel::Editor {
+                        rsx! {
+                            div {
+                                style: "flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; color: var(--textMuted);",
+                                span {
+                                    style: "color: var(--textMuted); font-family: var(--font-ui); font-size: var(--text-xs); letter-spacing: 0.04em;",
+                                    "Editor Relocated"
+                                }
+                                div {
+                                    style: "font-family: var(--font-display); font-size: 14px; font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
+                                    "Editor is in the main area"
+                                }
+                                div {
+                                    style: "font-size: 11px; max-width: 220px; color: var(--textMuted);",
+                                    "Use the panel shortcut or navigation to bring it back here."
+                                }
+                            }
+                        }
+                    } else {
+                        rsx! { RightEditorPanel {} }
+                    },
                     RightPanel::Skills => rsx! { SkillsPanel {} },
                     RightPanel::None => rsx! {},
                 }

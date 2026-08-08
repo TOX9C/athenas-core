@@ -1,105 +1,12 @@
 use dioxus::prelude::*;
 
-use super::workspace::AgentType;
+#[path = "swarm_model.rs"]
+mod swarm_model;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/// Role a swarm agent plays.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum AgentRole {
-    #[default]
-    Coordinator,
-    Builder,
-    Scout,
-    Reviewer,
-}
-
-/// Status of a swarm task.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum SwarmTaskStatus {
-    #[default]
-    Queued,
-    Building,
-    Review,
-    Done,
-    Blocked,
-    Stalled,
-}
-
-/// Status of a swarm agent.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum SwarmAgentStatus {
-    #[default]
-    Idle,
-    Thinking,
-    Writing,
-    Waiting,
-    Done,
-    Blocked,
-    Stalled,
-}
-
-/// Overall status of a swarm.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum SwarmOverallStatus {
-    #[default]
-    Active,
-    Paused,
-    Completed,
-}
-
-/// A task within a swarm.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct SwarmTask {
-    pub id: String,
-    pub title: String,
-    pub description: String,
-    pub assigned_agent_id: String,
-    pub owned_files: Vec<String>,
-    pub status: SwarmTaskStatus,
-    pub depends_on: Vec<String>,
-    pub created_at: i64,
-    pub completed_at: Option<i64>,
-    pub last_updated_at: i64,
-}
-
-/// An agent participating in a swarm.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct SwarmAgent {
-    pub id: String,
-    pub role: AgentRole,
-    pub agent_type: AgentType,
-    pub pane_id: String,
-    pub status: SwarmAgentStatus,
-    pub current_task: Option<String>,
-    pub last_action: String,
-    pub last_action_at: i64,
-}
-
-/// A message in the swarm mailbox.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct MailboxMessage {
-    pub id: String,
-    pub from: String,
-    pub to: String,
-    pub content: String,
-    pub timestamp: i64,
-    pub read: bool,
-}
-
-/// The full state of an active swarm.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct SwarmData {
-    pub id: String,
-    pub goal: String,
-    pub agents: Vec<SwarmAgent>,
-    pub tasks: Vec<SwarmTask>,
-    pub messages: Vec<MailboxMessage>,
-    pub status: SwarmOverallStatus,
-    pub started_at: i64,
-}
+pub use swarm_model::{
+    AgentRole, MailboxMessage, SwarmAgent, SwarmAgentStatus, SwarmData, SwarmOverallStatus,
+    SwarmTask, SwarmTaskStatus,
+};
 
 // ---------------------------------------------------------------------------
 // State

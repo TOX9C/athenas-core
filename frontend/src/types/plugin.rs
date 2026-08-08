@@ -364,6 +364,31 @@ pub fn default_capabilities() -> HashMap<AgentType, Vec<PluginCapability>> {
         ],
     );
     map.insert(
+        AgentType::Qwen,
+        vec![
+            PluginCapability::Notifications,
+            PluginCapability::Status,
+            PluginCapability::Tasks,
+            PluginCapability::UserInput,
+        ],
+    );
+    map.insert(
+        AgentType::Aider,
+        vec![PluginCapability::Notifications, PluginCapability::Status],
+    );
+    map.insert(
+        AgentType::Cursor,
+        vec![PluginCapability::Notifications, PluginCapability::Status],
+    );
+    map.insert(
+        AgentType::Freebuff,
+        vec![PluginCapability::Notifications, PluginCapability::Status],
+    );
+    map.insert(
+        AgentType::Omp,
+        vec![PluginCapability::Notifications, PluginCapability::Status],
+    );
+    map.insert(
         AgentType::Custom,
         vec![PluginCapability::Notifications, PluginCapability::Status],
     );

@@ -66,6 +66,13 @@ if [ -d "$VENDOR_DIR" ]; then
   echo "Vendored assets copied: $VENDOR_FILES files in dist/vendor/"
 fi
 
+# Copy mobile PWA shell assets into dist alongside the Dioxus bundle.
+cp -f "$SCRIPT_DIR/public/mobile.css" "$DIST_DIR/mobile.css"
+cp -f "$SCRIPT_DIR/public/manifest.webmanifest" "$DIST_DIR/manifest.webmanifest"
+cp -f "$SCRIPT_DIR/public/sw.js" "$DIST_DIR/sw.js"
+rm -rf "$DIST_DIR/icons"
+cp -r "$SCRIPT_DIR/public/icons" "$DIST_DIR/icons"
+
 # Create stable-name aliases for hashed filenames BEFORE checking entry path.
 # Dioxus release builds output to assets/ with hashes; debug builds to wasm/ without.
 # Use hard copies (not symlinks) so Tauri's asset embedder picks them up for release bundles.
@@ -82,9 +89,14 @@ for js in "$DIST_DIR"/wasm/athena-frontend-dx*.js; do
   [ -f "$js" ] && cp -f "$js" "$DIST_DIR/wasm/athena-frontend.js"
 done
 
-# Replace Dioxus-generated index.html with our custom one (has WASM fixes + console capture)
+# Replace Dioxus-generated entry documents with our custom ones.
+# index.html keeps the desktop diagnostics; mobile.html mounts the same WASM
+# bundle in companion mode for the installable PWA.
 if [ -f "$CUSTOM_HTML" ]; then
   cp "$CUSTOM_HTML" "$DIST_DIR/index.html"
+  if [ -f "$SCRIPT_DIR/public/mobile.html" ]; then
+    cp "$SCRIPT_DIR/public/mobile.html" "$DIST_DIR/mobile.html"
+  fi
 
   # Detect whether Dioxus output uses wasm/ or assets/ directory and set the entry path
   if [ -d "$DIST_DIR/wasm" ] && [ -f "$DIST_DIR/wasm/athena-frontend.js" ]; then
@@ -97,7 +109,10 @@ if [ -f "$CUSTOM_HTML" ]; then
   fi
   echo "Frontend entry point: $ENTRY_PATH"
   sed -i '' "s|__FRONTEND_ENTRY__|$ENTRY_PATH|g" "$DIST_DIR/index.html"
-  echo "Replaced index.html with custom version (WASM fixes + console capture)"
+  if [ -f "$DIST_DIR/mobile.html" ]; then
+    sed -i '' "s|__FRONTEND_ENTRY__|$ENTRY_PATH|g" "$DIST_DIR/mobile.html"
+  fi
+  echo "Replaced entry documents with custom desktop + mobile versions"
 fi
 
 # Fix /./ paths that Dioxus generates — Tauri's custom protocol can't resolve

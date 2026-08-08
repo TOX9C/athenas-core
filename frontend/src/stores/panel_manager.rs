@@ -1,67 +1,11 @@
 use dioxus::prelude::*;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+#[path = "panel_manager_model.rs"]
+mod panel_manager_model;
 
-/// The exclusive panel that is currently frontmost in the LEFT content area.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum ExclusivePanel {
-    #[default]
-    None,
-    Athena,
-    Browser,
-    Editor,
-}
-
-/// The panel that is currently shown in the RIGHT sidebar.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum RightPanel {
-    #[default]
-    None,
-    Browser,
-    Assistant,
-    Editor,
-    Skills,
-}
-
-// ---------------------------------------------------------------------------
-// Panel activation logic
-// ---------------------------------------------------------------------------
-
-/// Result of applying an exclusive panel activation.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct PanelActivation {
-    pub browser_open: bool,
-    pub editor_open: bool,
-    pub athena_open: bool,
-}
-
-/// Compute the open/closed state for each exclusive panel given an activation.
-pub fn apply_activation(panel: &ExclusivePanel) -> PanelActivation {
-    PanelActivation {
-        browser_open: matches!(panel, ExclusivePanel::Browser),
-        editor_open: matches!(panel, ExclusivePanel::Editor),
-        athena_open: matches!(panel, ExclusivePanel::Athena),
-    }
-}
-
-/// Determine the toggle outcome: if the requested panel is already open,
-/// deactivate it; otherwise, activate it.
-pub fn toggle_panel(panel: &ExclusivePanel, current: &PanelActivation) -> ExclusivePanel {
-    let is_currently_open = match panel {
-        ExclusivePanel::Browser => current.browser_open,
-        ExclusivePanel::Editor => current.editor_open,
-        ExclusivePanel::Athena => current.athena_open,
-        ExclusivePanel::None => false,
-    };
-
-    if is_currently_open {
-        ExclusivePanel::None
-    } else {
-        panel.clone()
-    }
-}
+pub use panel_manager_model::{
+    apply_activation, toggle_panel, ExclusivePanel, PanelActivation, RightPanel,
+};
 
 // ---------------------------------------------------------------------------
 // State

@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::tauri_bridge;
 
+#[path = "terminal_colors.rs"]
+mod terminal_colors;
+
+pub use terminal_colors::{
+    backend_color_raw_to_terminal, backend_named_color_to_terminal, BackendColorIndexed,
+    BackendColorNamed, BackendColorRaw, BackendColorRgb, BackendNamedColor, TerminalColor,
+};
+
 // ---------------------------------------------------------------------------
 // Terminal cell model (mirrors athena-terminal crate)
 // ---------------------------------------------------------------------------
@@ -42,181 +50,13 @@ impl TerminalCell {
     }
 }
 
-/// Terminal color (ANSI 256 + true color support).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub enum TerminalColor {
-    #[default]
-    Default,
-    Black,
-    Red,
-    Green,
-    Yellow,
-    Blue,
-    Magenta,
-    Cyan,
-    White,
-    BrightBlack,
-    BrightRed,
-    BrightGreen,
-    BrightYellow,
-    BrightBlue,
-    BrightMagenta,
-    BrightCyan,
-    BrightWhite,
-    Indexed(u8),
-    Rgb(u8, u8, u8),
-}
+#[path = "terminal_events.rs"]
+mod terminal_events;
 
-// ---------------------------------------------------------------------------
-// Backend NamedColor enum (mirrors athena-terminal NamedColor)
-// ---------------------------------------------------------------------------
-
-/// Mirrors the backend's NamedColor enum.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum BackendNamedColor {
-    Black,
-    Red,
-    Green,
-    Yellow,
-    Blue,
-    Magenta,
-    Cyan,
-    White,
-    BrightBlack,
-    BrightRed,
-    BrightGreen,
-    BrightYellow,
-    BrightBlue,
-    BrightMagenta,
-    BrightCyan,
-    BrightWhite,
-    Foreground,
-    Background,
-}
-
-/// Convert a BackendNamedColor into the frontend's TerminalColor.
-pub fn backend_named_color_to_terminal(nc: &BackendNamedColor) -> TerminalColor {
-    match nc {
-        BackendNamedColor::Black => TerminalColor::Black,
-        BackendNamedColor::Red => TerminalColor::Red,
-        BackendNamedColor::Green => TerminalColor::Green,
-        BackendNamedColor::Yellow => TerminalColor::Yellow,
-        BackendNamedColor::Blue => TerminalColor::Blue,
-        BackendNamedColor::Magenta => TerminalColor::Magenta,
-        BackendNamedColor::Cyan => TerminalColor::Cyan,
-        BackendNamedColor::White => TerminalColor::White,
-        BackendNamedColor::BrightBlack => TerminalColor::BrightBlack,
-        BackendNamedColor::BrightRed => TerminalColor::BrightRed,
-        BackendNamedColor::BrightGreen => TerminalColor::BrightGreen,
-        BackendNamedColor::BrightYellow => TerminalColor::BrightYellow,
-        BackendNamedColor::BrightBlue => TerminalColor::BrightBlue,
-        BackendNamedColor::BrightMagenta => TerminalColor::BrightMagenta,
-        BackendNamedColor::BrightCyan => TerminalColor::BrightCyan,
-        BackendNamedColor::BrightWhite => TerminalColor::BrightWhite,
-        BackendNamedColor::Foreground => TerminalColor::Default,
-        BackendNamedColor::Background => TerminalColor::Default,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Backend event types for `terminal:data`
-// ---------------------------------------------------------------------------
-
-/// Parsed payload of a `terminal:data` event from the Tauri backend.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-pub struct TerminalDataEvent {
-    pub sessionId: String,
-    pub deltas: Vec<CellDeltaEvent>,
-    pub cursorRow: usize,
-    pub cursorCol: usize,
-    pub rows: usize,
-    pub cols: usize,
-    pub cursorVisible: Option<bool>,
-}
-
-/// A single cell delta from the backend (mirrors `CellDelta`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CellDeltaEvent {
-    pub row: usize,
-    pub col: usize,
-    pub c: String,
-    pub fg: BackendColorRaw,
-    pub bg: BackendColorRaw,
-    pub flags: u16,
-}
-
-/// Raw representation of the backend `Color` enum as it arrives in JSON.
-///
-/// The backend uses externally-tagged serde (the default), so:
-/// - `"Default"`                   → `BackendColorRaw::Default`
-/// - `{"Named": "Red"}`           → `BackendColorRaw::Named("Red")`
-/// - `{"Indexed": 128}`           → `BackendColorRaw::Indexed(128)`
-/// - `{"Rgb": [255, 128, 0]}`     → `BackendColorRaw::Rgb([255, 128, 0])`
-///
-/// We use an untagged enum to handle both the bare-string and object variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum BackendColorRaw {
-    /// `"Default"` — the only variant serialized as a bare string.
-    DefaultString(String),
-    /// `{"Named": "Red"}` etc.
-    Named(BackendColorNamed),
-    /// `{"Indexed": 128}`
-    Indexed(BackendColorIndexed),
-    /// `{"Rgb": [255, 128, 0]}`
-    Rgb(BackendColorRgb),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-pub struct BackendColorNamed {
-    pub Named: BackendNamedColor,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-pub struct BackendColorIndexed {
-    pub Indexed: u8,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-pub struct BackendColorRgb {
-    pub Rgb: [u8; 3],
-}
-
-/// Convert a `BackendColorRaw` (parsed from JSON) into the frontend's
-/// `TerminalColor`.
-pub fn backend_color_raw_to_terminal(raw: &BackendColorRaw) -> TerminalColor {
-    match raw {
-        BackendColorRaw::DefaultString(s) if s == "Default" => TerminalColor::Default,
-        BackendColorRaw::DefaultString(s) => {
-            web_sys::console::warn_1(&format!("unknown bare color string: {}", s).into());
-            TerminalColor::Default
-        }
-        BackendColorRaw::Named(n) => backend_named_color_to_terminal(&n.Named),
-        BackendColorRaw::Indexed(i) => TerminalColor::Indexed(i.Indexed),
-        BackendColorRaw::Rgb(rgb) => TerminalColor::Rgb(rgb.Rgb[0], rgb.Rgb[1], rgb.Rgb[2]),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CellFlags bit constants (mirrors athena-terminal CellFlags)
-// ---------------------------------------------------------------------------
-
-/// Bit 0: INVERSE
-pub const FLAGS_INVERSE: u16 = 0b0000_0000_0000_0001;
-/// Bit 1: BOLD
-pub const FLAGS_BOLD: u16 = 0b0000_0000_0000_0010;
-/// Bit 2: ITALIC
-pub const FLAGS_ITALIC: u16 = 0b0000_0000_0000_0100;
-/// Bit 3: UNDERLINE
-pub const FLAGS_UNDERLINE: u16 = 0b0000_0000_0000_1000;
-/// Bit 7: STRIKEOUT
-pub const FLAGS_STRIKEOUT: u16 = 0b0000_0000_1000_0000;
-/// Bit 8: BLINK
-pub const FLAGS_BLINK: u16 = 0b0000_0001_0000_0000;
+pub use terminal_events::{
+    CellDeltaEvent, TerminalDataEvent, TerminalUpdateDelta, FLAGS_BLINK, FLAGS_BOLD, FLAGS_INVERSE,
+    FLAGS_ITALIC, FLAGS_STRIKEOUT, FLAGS_UNDERLINE,
+};
 
 /// A single terminal row.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -361,14 +201,6 @@ impl TerminalSession {
         self.generation = self.generation.wrapping_add(1);
         self.last_update_ms = js_sys::Date::now();
     }
-}
-
-/// Delta update from the backend (mirrors athena-terminal TerminalUpdate).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct TerminalUpdateDelta {
-    pub start_y: usize,
-    pub rows: Vec<Vec<TerminalCell>>,
-    pub cursor_pos: Option<(usize, usize)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -765,10 +597,10 @@ mod tests {
     use super::*;
     use dioxus::prelude::VirtualDom;
 
-    /// Per-test body stashed in a thread-local so the root component closure —
-    /// which `VirtualDom::new` requires as a non-capturing `fn()`
-    /// pointer — can still access it. The body runs once on rebuild inside the
-    /// live signal runtime, then is cleared for the next test.
+    // Per-test body stashed in a thread-local so the root component closure —
+    // which `VirtualDom::new` requires as a non-capturing `fn()`
+    // pointer — can still access it. The body runs once on rebuild inside the
+    // live signal runtime, then is cleared for the next test.
     thread_local! {
         static PENDING_BODY:
             std::cell::RefCell<

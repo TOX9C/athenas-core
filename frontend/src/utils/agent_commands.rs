@@ -25,6 +25,11 @@ pub fn get_agent_command(
         AgentType::Codex => Some("codex".to_string()),
         AgentType::Opencode => Some("opencode".to_string()),
         AgentType::Gemini => Some("gemini".to_string()),
+        AgentType::Qwen => Some("qwen-code".to_string()),
+        AgentType::Aider => Some("aider".to_string()),
+        AgentType::Cursor => Some("cursor-agent".to_string()),
+        AgentType::Freebuff => Some("freebuff".to_string()),
+        AgentType::Omp => Some("omp".to_string()),
         AgentType::Custom => custom_cmd.map(|s| s.to_string()),
         AgentType::Shell => None,
     }
@@ -32,16 +37,23 @@ pub fn get_agent_command(
 
 /// Build the resume command for an agent that supports session resumption.
 ///
-/// Returns `None` for agents that do not support `--resume` (Custom, Shell).
-/// The returned string has NO trailing newline — callers decide whether to
-/// execute it (append `\n`) or merely display it.
+/// Returns `None` for agents that do not support `--resume` (Custom, Shell,
+/// and the v1 detection-driven roster). The returned string has NO trailing
+/// newline — callers decide whether to execute it (append `\n`) or merely
+/// display it.
 pub fn get_agent_resume_command(agent_type: &AgentType, resume_id: &str) -> Option<String> {
     match agent_type {
         AgentType::Claude => Some(format!("claude --resume {}", resume_id)),
         AgentType::Codex => Some(format!("codex --resume {}", resume_id)),
         AgentType::Opencode => Some(format!("opencode --resume {}", resume_id)),
         AgentType::Gemini => Some(format!("gemini --resume {}", resume_id)),
-        AgentType::Custom | AgentType::Shell => None,
+        AgentType::Qwen
+        | AgentType::Aider
+        | AgentType::Cursor
+        | AgentType::Freebuff
+        | AgentType::Omp
+        | AgentType::Custom
+        | AgentType::Shell => None,
     }
 }
 
@@ -54,6 +66,11 @@ pub fn agent_process_name(agent_type: &AgentType) -> Option<&'static str> {
         AgentType::Codex => Some("codex"),
         AgentType::Opencode => Some("opencode"),
         AgentType::Gemini => Some("gemini"),
+        AgentType::Qwen => Some("qwen"),
+        AgentType::Aider => Some("aider"),
+        AgentType::Cursor => Some("cursor-agent"),
+        AgentType::Freebuff => Some("freebuff"),
+        AgentType::Omp => Some("omp"),
         AgentType::Custom | AgentType::Shell => None,
     }
 }
@@ -116,6 +133,11 @@ pub fn get_agent_label(agent_type: &AgentType) -> &'static str {
         AgentType::Codex => "Codex",
         AgentType::Opencode => "OpenCode",
         AgentType::Gemini => "Gemini CLI",
+        AgentType::Qwen => "Qwen Code",
+        AgentType::Aider => "Aider",
+        AgentType::Cursor => "Cursor",
+        AgentType::Freebuff => "Freebuff",
+        AgentType::Omp => "OMP",
         AgentType::Custom => "Custom",
         AgentType::Shell => "Shell",
     }
@@ -128,6 +150,11 @@ pub fn get_agent_color(agent_type: &AgentType) -> &'static str {
         AgentType::Codex => "#10b981",
         AgentType::Opencode => "#3b82f6",
         AgentType::Gemini => "#0891b2",
+        AgentType::Qwen => "#6366f1",
+        AgentType::Aider => "#eab308",
+        AgentType::Cursor => "#22d3ee",
+        AgentType::Freebuff => "#e11d48",
+        AgentType::Omp => "#84cc16",
         AgentType::Custom => "#6b7280",
         AgentType::Shell => "#64748b",
     }

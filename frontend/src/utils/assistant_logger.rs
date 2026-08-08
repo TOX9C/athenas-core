@@ -315,9 +315,7 @@ impl LogEntry {
     }
 }
 
-fn now_ms() -> u64 {
-    js_sys::Date::now() as u64
-}
+use crate::utils::time::now_ms;
 
 /// Options for a single log call.
 #[derive(Debug, Clone, Default)]

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0b0c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./mobile.css" />
+  <link rel="stylesheet" href="./vendor/xterm/xterm.css" />
+  <meta name="description" content="Private LAN companion for Athena's Core" />
+  <title>Athena Companion</title>
+</head>
+<body>
+  <div id="main">
+    <div class="mobile-boot">Opening Athena Companion…</div>
+  </div>
+  <script>
+    // Remove the static boot node when Dioxus mounts. This is a fallback for
+    // browsers that do not support :has(), and prevents the boot screen from
+    // covering the live companion.
+    (function () {
+      function hideBoot() {
+        var app = document.querySelector('.mobile-app-shell');
+        var boot = document.querySelector('.mobile-boot');
+        if (app && boot) {
+          boot.remove();
+          observer.disconnect();
+        }
+      }
+      var observer = new MutationObserver(hideBoot);
+      observer.observe(document.getElementById('main'), { childList: true, subtree: true });
+      hideBoot();
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('./sw.js').catch(function () {});
+      }
+    })();
+  </script>
+  <script src="./vendor/xterm/xterm.js"></script>
+  <script src="./vendor/xterm/addon-fit.js"></script>
+  <script src="./vendor/xterm/addon-unicode11.js"></script>
+  <script type="module" async src="__FRONTEND_ENTRY__"></script>
+</body>
+</html>

@@ -1,6 +1,8 @@
+use crate::components::shared::context_menu::{ContextMenu, MenuItem};
 use crate::components::shared::icon::IconClose;
-use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
+use crate::stores::agent_status::use_agent_status_store;
 use crate::stores::workspace::Space;
+use crate::utils::space_counts::{count_space_agents, SpaceCounts};
 use dioxus::prelude::*;
 use std::rc::Rc;
 
@@ -10,6 +12,14 @@ pub struct WorkspaceTabProps {
     pub is_active: bool,
     pub on_select: EventHandler<()>,
     pub on_close: EventHandler<()>,
+}
+
+/// Small status dot inside a count badge. `is_attention` pulses via the shared
+/// `pulse-soft` keyframe so a finished / waiting agent is visible out of the
+/// corner of the eye.
+#[component]
+fn StatusDot(class: String) -> Element {
+    rsx! { span { class: "status-dot {class}" } }
 }
 
 #[component]
@@ -25,72 +35,73 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
     };
     let weight = if props.is_active { "600" } else { "400" };
 
-    // Compute aggregate agent status for this space's panes.
-    let mut idle_count = 0usize;
-    let mut running_count = 0usize;
-    for pane in props.space.panes.iter() {
-        if let Some(status) = agent_status
-            .read()
-            .statuses
-            .iter()
-            .find(|(id, _)| id == &pane.id)
-            .map(|(_, s)| &s.status)
-        {
-            if matches!(
-                status,
-                AgentRunStatus::Error
-                    | AgentRunStatus::Working
-                    | AgentRunStatus::Thinking
-                    | AgentRunStatus::WaitingForInput
-            ) {
-                running_count += 1;
-            } else {
-                idle_count += 1;
-            }
-        } else {
-            idle_count += 1;
-        }
-    }
+    // Live agent counts for this space's panes: [working][total][attention].
+    // `working` deliberately renders LEFT of `total` (the user's ask), with
+    // `attention` as the rightmost, amber, pulsing badge.
+    let counts: SpaceCounts = count_space_agents(&props.space.panes, &agent_status.read().statuses);
 
     rsx! {
-        div {
-            class: "workspace-tab",
-            style: "display: flex; align-items: center; gap: 6px; height: var(--tb-tab-height); padding: 0 10px; border: none; border-radius: var(--radius-sm); cursor: pointer; background: transparent; flex-shrink: 0; transition: color var(--dur-fast) var(--ease);",
-            onclick: move |_| props.on_select.call(()),
+        ContextMenu {
+            items: vec![MenuItem::danger("Close workspace")],
+            on_select: move |_| props.on_close.call(()),
 
-            span {
-                style: "font-size: var(--tb-tab-font); font-weight: {weight}; color: {text_color}; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0.02em;",
-                "{props.space.name}"
-            }
+            div {
+                class: "workspace-tab",
+                style: "display: flex; align-items: center; gap: 6px; height: var(--tb-tab-height); padding: 0 10px; border: none; border-radius: var(--radius-sm); cursor: pointer; background: transparent; flex-shrink: 0; transition: color var(--dur-fast) var(--ease);",
+                onclick: move |_| props.on_select.call(()),
 
-            // Agent count badges
-            if idle_count > 0 {
                 span {
-                    class: "badge",
-                    style: "min-width: 16px; height: 16px; padding: 0 4px; color: var(--textDim);",
-                    "{idle_count}"
+                    style: "font-size: var(--tb-tab-font); font-weight: {weight}; color: {text_color}; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0.02em;",
+                    "{props.space.name}"
                 }
-            }
 
-            if running_count > 0 {
-                span {
-                    class: "badge",
-                    style: "min-width: 16px; height: 16px; padding: 0 4px; color: var(--warning); border-color: var(--warning);",
-                    "{running_count}"
+                // Working count — LEFT of the total. Gold dot + number.
+                if counts.working > 0 {
+                    span {
+                        class: "badge",
+                        style: "color: var(--accent);",
+                        title: "{counts.working} agent(s) working",
+                        "aria-label": "Agents working",
+                        StatusDot { class: "is-working".to_string() }
+                        "{counts.working}"
+                    }
                 }
-            }
 
-            // Close button
-            button {
-                class: "icon-btn",
-                style: "width: 20px; height: 20px;",
-                title: "Close workspace",
-                "aria-label": "Close workspace",
-                onclick: move |e| {
-                    e.stop_propagation();
-                    props.on_close.call(());
-                },
-                IconClose { size: Some(12), color: Some("currentColor".to_string()) }
+                // Total agent count — the legacy "how many agents" badge.
+                if counts.total > 0 {
+                    span {
+                        class: "badge",
+                        style: "color: var(--textDim);",
+                        title: "{counts.total} agent(s)",
+                        "aria-label": "Agents",
+                        "{counts.total}"
+                    }
+                }
+
+                // Attention count — finished / waiting / errored. Amber + pulse.
+                if counts.attention > 0 {
+                    span {
+                        class: "badge",
+                        style: "color: var(--warning);",
+                        title: "{counts.attention} agent(s) need attention",
+                        "aria-label": "Agents needing attention",
+                        StatusDot { class: "is-attention".to_string() }
+                        "{counts.attention}"
+                    }
+                }
+
+                // Close button
+                button {
+                    class: "icon-btn",
+                    style: "width: 20px; height: 20px;",
+                    title: "Close workspace",
+                    "aria-label": "Close workspace",
+                    onclick: move |e| {
+                        e.stop_propagation();
+                        props.on_close.call(());
+                    },
+                    IconClose { size: Some(12), color: Some("currentColor".to_string()) }
+                }
             }
         }
     }

@@ -10,11 +10,15 @@ use components::agents::agent_inspector::AgentInspector;
 use components::agents::output_event_bus::OutputEventBus;
 use components::command_palette::CommandPalette;
 use components::kanban::kanban_board::KanbanBoard;
-use components::notifications::notification_bell::NotificationBell;
+use components::mobile::{should_render_mobile_app, MobileApp};
+use components::notifications::notification_bell::{
+    provide_notification_overlay_store, NotificationBell, NotificationPopover,
+};
 use components::notifications::notification_panel::NotificationPanel;
 use components::notifications::notification_toast::NotificationToast;
 use components::plugin::input_request_modal::InputRequestModal;
 use components::plugin::plugin_event_bus::{provide_plugin_bus_store, PluginEventBus};
+use components::right_sidebar::editor_panel::RightEditorPanel;
 use components::right_sidebar::panel::RightSidebar;
 use components::right_sidebar::BrowserSurface;
 use components::settings::settings_modal::SettingsModal;
@@ -35,7 +39,7 @@ use dioxus::prelude::*;
 use stores::agent_output::provide_agent_output_store;
 use stores::agent_status::provide_agent_status_store;
 use stores::athena::{provide_athena_store, use_athena_store};
-use stores::command::{provide_command_store, use_command_store, CommandState};
+use stores::command::provide_command_store;
 use stores::editor::provide_editor_store;
 use stores::notification::provide_notification_store;
 use stores::panel_manager::{provide_panel_manager_store, use_panel_manager_store};
@@ -44,38 +48,25 @@ use stores::swarm::provide_swarm_store;
 use stores::task::provide_task_store;
 use stores::terminal::{provide_terminal_store, use_terminal_store};
 use stores::ui::{provide_ui_store, use_ui_store, Panel, SidebarSection};
-use stores::workspace::{
-    provide_workspace_store, use_workspace_store, AgentType, PaneConfig, Space, WorkspaceState,
-};
+use utils::keybindings::{classify, GlobalKeyAction};
+use utils::startup_bootstrap::use_startup_bootstrap;
 
-/// Migrate old separate pane-title settings into the unified `smart_pane_titles` key.
-async fn migrate_smart_pane_titles() -> bool {
-    if let Ok(v) = crate::tauri_bridge::store_get("smart_pane_titles").await {
-        return v == "true";
-    }
-    let auto_gen = crate::tauri_bridge::store_get("auto_generate_titles")
-        .await
-        .map(|v| v == "true")
-        .unwrap_or(true);
-    let summarize = crate::tauri_bridge::store_get("summarize_agent_titles")
-        .await
-        .map(|v| v == "true")
-        .unwrap_or(false);
-    let merged = auto_gen || summarize;
-    let _ =
-        crate::tauri_bridge::store_set("smart_pane_titles", if merged { "true" } else { "false" })
-            .await;
-    merged
-}
+use stores::workspace::{provide_workspace_store, use_workspace_store, Space};
+use utils::pane_config::new_shell_pane;
 
 /// Root application component — faithful port of App.tsx.
 #[component]
 pub fn App() -> Element {
+    if should_render_mobile_app() {
+        return rsx! { MobileApp {} };
+    }
+
     // Provide all 14 stores
     provide_ui_store();
     provide_workspace_store();
     provide_athena_store();
     provide_notification_store();
+    provide_notification_overlay_store();
     provide_editor_store();
     provide_session_store();
     provide_swarm_store();
@@ -100,7 +91,7 @@ pub fn App() -> Element {
     // spaces that no longer exist are dropped, preventing unbounded growth
     // across long sessions that create and destroy many workspaces.
     let mounted_spaces = use_signal(std::collections::HashSet::<String>::new);
-    let mut platform = use_signal(|| {
+    let platform = use_signal(|| {
         if crate::utils::platform_utils::is_mac() {
             "MacIntel"
         } else {
@@ -116,181 +107,7 @@ pub fn App() -> Element {
     let mut rsb_drag_start_w = use_signal(|| 0i32);
     let mut rsb_is_dragging = use_signal(|| false);
 
-    // Override platform with authoritative value from Tauri backend (navigator.userAgent is
-    // unreliable in the release WKWebView — it strips "Mac" from the UA string).
-    use_effect(move || {
-        spawn(async move {
-            if let Ok(os) = crate::tauri_bridge::window_platform().await {
-                if os.contains("macos") || os.contains("mac") || os.contains("darwin") {
-                    platform.set("MacIntel".to_string());
-                } else {
-                    platform.set(os);
-                }
-            }
-        });
-    });
-
-    // Sync is_maximized with actual window state on mount, then keep it
-    // in sync on every resize event (covers OS-level maximize via native
-    // controls and drag-resize). The button click handler also toggles the
-    // signal optimistically; the resize listener reconciles with truth.
-    use_effect(move || {
-        spawn(async move {
-            if let Ok(maximized) = crate::tauri_bridge::window_is_maximized().await {
-                is_maximized.set(maximized);
-            }
-        });
-    });
-
-    use_effect(move || {
-        spawn(async move {
-            // Debounce timer state — last time the backend was called.
-            let last_call = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
-            // Capture unlisten for cleanup. The closure runs for the app
-            // lifetime if unlisten is dropped without being called.
-            // NB: this closure runs from a raw Tauri JS event, *outside* any
-            // Dioxus scope. Using `dioxus_core::spawn` here panics in
-            // `current_scope_id().unwrap()` (RefCell borrow on an empty
-            // scope stack), leaving the runtime poisoned. Use the bare wasm
-            // executor; it does not need a scope.
-            let _unlisten = crate::tauri_bridge::listen("tauri://resize", move |_payload| {
-                let now = js_sys::Date::now();
-                if now - last_call.get() < 150.0 {
-                    return;
-                }
-                last_call.set(now);
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(maximized) = crate::tauri_bridge::window_is_maximized().await {
-                        is_maximized.set(maximized);
-                    }
-                });
-            });
-        });
-    });
-
-    // Apply theme and font on mount (load persisted values from store)
-    {
-        let ui_state_for_load = ui_state;
-        use_effect(move || {
-            let mut ui = ui_state_for_load;
-            spawn(async move {
-                // Load theme from persist
-                if let Ok(theme_name) = crate::tauri_bridge::store_get("theme").await {
-                    if !theme_name.is_empty() {
-                        let theme = crate::stores::ui::UITheme::from_name(&theme_name);
-                        ui.write().theme = theme;
-                        crate::themes::apply_theme_to_dom(&theme_name);
-                    }
-                }
-                // Load font family from persist
-                if let Ok(font_family) = crate::tauri_bridge::store_get("font_family").await {
-                    if !font_family.is_empty() {
-                        ui.write().font_family = font_family.clone();
-                        crate::themes::apply_font_to_dom(&font_family, ui.read().font_size);
-                    }
-                }
-                // Load font size from persist
-                if let Ok(font_size_str) = crate::tauri_bridge::store_get("font_size").await {
-                    if let Ok(size) = font_size_str.parse::<u8>() {
-                        ui.write().font_size = size;
-                        let fam = ui.read().font_family.clone();
-                        crate::themes::apply_font_to_dom(&fam, size);
-                    }
-                }
-                // Load custom agents from persist
-                if let Ok(agents_json) = crate::tauri_bridge::store_get("custom_agents").await {
-                    if !agents_json.is_empty() {
-                        if let Ok(agents) = serde_json::from_str::<
-                            Vec<crate::types::workspace::CustomAgent>,
-                        >(&agents_json)
-                        {
-                            ui.write().custom_agents = agents;
-                        }
-                    }
-                }
-                // Migrate old separate settings to unified smart_pane_titles
-                let smart_pane_titles = migrate_smart_pane_titles().await;
-                ui.write().smart_pane_titles = smart_pane_titles;
-            });
-        });
-    }
-
-    // Also apply current local settings synchronously on mount (in case store fetch is slow)
-    {
-        let theme_name = ui_state.read().theme.name().to_string();
-        let font_family = ui_state.read().font_family.clone();
-        let font_size = ui_state.read().font_size;
-        use_effect(move || {
-            crate::themes::apply_theme_to_dom(&theme_name);
-            crate::themes::apply_font_to_dom(&font_family, font_size);
-        });
-    }
-
-    // Restore workspaces from persistent store on startup
-    {
-        let mut ws = workspace;
-        use_effect(move || {
-            spawn(async move {
-                let loaded = WorkspaceState::load().await;
-                // Re-authorize every persisted Space's directory before
-                // exposing the state, so PTY spawns in pre-existing spaces
-                // (e.g. `football-predictor`) aren't rejected by the sandbox
-                // on the next launch. Trust-on-launch covers spaces created
-                // after this feature shipped; this covers the ones before.
-                // Best-effort and idempotent — safe to run every startup.
-                for space in &loaded.spaces {
-                    let dir = space.dir.trim();
-                    if dir.is_empty() {
-                        continue;
-                    }
-                    if let Err(e) = crate::tauri_bridge::workspace_add_trusted_root(dir).await {
-                        web_sys::console::warn_1(
-                            &format!("[startup] failed to re-trust space dir '{}': {:?}", dir, e)
-                                .into(),
-                        );
-                    }
-                }
-                let mut ws = ws.write();
-                // Only apply loaded state if workspace hasn't been modified since
-                // mount (prevents async load from clobbering user mutations).
-                if ws.spaces.is_empty() && ws.active_space_id.is_none() {
-                    *ws = loaded;
-                }
-            });
-        });
-        // Mark effect as run-once by not capturing any reactive dependencies
-    }
-
-    // Restore recent command ids from persistent store on startup
-    {
-        let mut cmd = use_command_store();
-        use_effect(move || {
-            spawn(async move {
-                let loaded = CommandState::load_recent().await;
-                cmd.write().recent_ids = loaded;
-            });
-        });
-    }
-
-    // Force a final workspace save before the window closes
-    {
-        let final_ws = workspace;
-        use_effect(move || {
-            let Some(window) = web_sys::window() else {
-                return;
-            };
-            let ws_signal = final_ws;
-            let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                ws_signal.read().save();
-            }) as Box<dyn FnMut()>);
-            let _ = js_sys::Reflect::set(
-                &window,
-                &wasm_bindgen::JsValue::from_str("onbeforeunload"),
-                closure.as_ref(),
-            );
-            closure.forget();
-        });
-    }
+    use_startup_bootstrap(ui_state, workspace, platform, is_maximized);
 
     // Read-only access for rendering — all mounted_spaces mutations happen
     // inside use_effect (after render) to avoid the write-during-render
@@ -398,36 +215,44 @@ pub fn App() -> Element {
 
             // Global keybindings
             onkeydown: move |e: KeyboardEvent| {
-                let mods = e.modifiers(); let meta = mods.contains(Modifiers::META) || mods.contains(Modifiers::CONTROL);
-                let shift = mods.contains(Modifiers::SHIFT);
                 let key = e.key();
-                if meta && !shift {
-                    match key {
-                        Key::Character(ref c) if c == "k" => {
-                            let v = ui_state.read().command_palette_open; ui_state.write().command_palette_open = !v;
-                        }
-                        Key::Character(ref c) if c == "j" => {
-                            // Toggle right sidebar: close if open, open to last panel if closed
-                            let v = ui_state.read().right_sidebar_open;
-                            ui_state.write().right_sidebar_open = !v;
-                        }
-                        Key::Character(ref c) if c == "t" => {
-                            ui_state.write().show_new_space_modal = true;
-                        }
-                        Key::Character(ref c) if c == "b" => {
-                            let v = ui_state.read().sidebar_visible; ui_state.write().sidebar_visible = !v;
-                        }
-                        Key::Character(ref c) if c == "1" => { ui_state.write().panel = Panel::Workspace; }
-                        Key::Character(ref c) if c == "2" => { ui_state.write().panel = Panel::Editor; }
-                        Key::Character(ref c) if c == "3" => { ui_state.write().panel = Panel::Kanban; }
-                        Key::Character(ref c) if c == "4" => { ui_state.write().panel = Panel::Swarm; }
-                    Key::Character(ref c) if c == "w" => {
+                let action = classify(&key, e.modifiers());
+                match action {
+                    Some(GlobalKeyAction::ToggleCommandPalette) => {
+                        let v = ui_state.read().command_palette_open;
+                        ui_state.write().command_palette_open = !v;
+                    }
+                    Some(GlobalKeyAction::ToggleRightSidebar) => {
+                        let v = ui_state.read().right_sidebar_open;
+                        ui_state.write().right_sidebar_open = !v;
+                    }
+                    Some(GlobalKeyAction::ShowNewSpace) => {
+                        ui_state.write().show_new_space_modal = true;
+                    }
+                    Some(GlobalKeyAction::ToggleSidebar) => {
+                        let v = ui_state.read().sidebar_visible;
+                        ui_state.write().sidebar_visible = !v;
+                    }
+                    Some(GlobalKeyAction::SetWorkspacePanel) => {
+                        ui_state.write().panel = Panel::Workspace;
+                    }
+                    Some(GlobalKeyAction::SetEditorPanel) => {
+                        ui_state.write().panel = Panel::Editor;
+                    }
+                    Some(GlobalKeyAction::SetKanbanPanel) => {
+                        ui_state.write().panel = Panel::Kanban;
+                    }
+                    Some(GlobalKeyAction::SetSwarmPanel) => {
+                        ui_state.write().panel = Panel::Swarm;
+                    }
+                    Some(GlobalKeyAction::CloseFirstPane) => {
                         if let Some(window) = web_sys::window() {
                             if let Some(doc) = window.document() {
                                 if let Some(active) = doc.active_element() {
                                     let tag = active.tag_name().to_lowercase();
-                                    let is_editable = tag == "input" || tag == "textarea" ||
-                                        active.get_attribute("contenteditable").is_some();
+                                    let is_editable = tag == "input"
+                                        || tag == "textarea"
+                                        || active.get_attribute("contenteditable").is_some();
                                     if is_editable {
                                         return;
                                     }
@@ -438,7 +263,8 @@ pub fn App() -> Element {
                             let ws = workspace.read();
                             let sid = ws.active_space_id.clone();
                             let pane_id = sid.as_ref().and_then(|id| {
-                                ws.spaces.iter()
+                                ws.spaces
+                                    .iter()
                                     .find(|s| s.id == *id)
                                     .and_then(|s| s.panes.first().map(|p| p.id.clone()))
                             });
@@ -449,79 +275,53 @@ pub fn App() -> Element {
                             e.prevent_default();
                         }
                     }
-                        Key::Character(ref c) if c == "p" => {
-                            let v = ui_state.read().command_palette_open; ui_state.write().command_palette_open = !v;
-                        }
-                        Key::Character(ref c) if c == "e" => {
-                            let current = ui_state.read().panel;
-                            ui_state.write().panel = if current == Panel::Editor { Panel::Workspace } else { Panel::Editor };
-                        }
-                        Key::Character(ref c) if c == "," => {
-                            ui_state.write().show_settings_modal = true;
-                        }
-                        Key::Character(ref c) if c == "\\" => {
-                            let v = ui_state.read().right_sidebar_open; ui_state.write().right_sidebar_open = !v;
-                        }
-                        _ => {}
+                    Some(GlobalKeyAction::ToggleEditorPanel) => {
+                        let current = ui_state.read().panel;
+                        ui_state.write().panel =
+                            if current == Panel::Editor { Panel::Workspace } else { Panel::Editor };
                     }
-                }
-                if meta && shift {
-                    match key {
-                        Key::Character(ref c) if c == "S" => { ui_state.write().show_swarm_modal = true; }
-                        Key::Character(ref c) if c == "P" => {
-                            let v = ui_state.read().command_palette_open; ui_state.write().command_palette_open = !v;
-                        }
-                        Key::Character(ref c) if c == "A" => {
-                            let active_id = {
-                                let ws = workspace.read();
-                                ws.active_space_id.clone()
-                            };
-                            if let Some(sid) = active_id {
-                                let ts = js_sys::Date::now() as u64;
-                                let pane = PaneConfig {
-                                    id: format!("{:x}-sh", ts),
-                                    agent_type: AgentType::Shell,
-                                    custom_cmd: None,
-                                    custom_agent_id: None,
-                                    label: None,
-                                    bypass_mode: None,
-                                    project_name: None,
-                                    model_name: None,
-                                    resume_id: None,
-                                    resume_cmd: None,
-                                    resume_dismissed: None,
-                                };
-                                workspace_mut.write().add_pane_to_space(&sid, pane);
-                                e.prevent_default();
-                            }
-                        }
-                        Key::Character(ref c) if c == "R" => {
-                            ui_state.write().sidebar_width = 240.0;
-                            ui_state.write().panel = Panel::Workspace;
-                            ui_state.write().sidebar_section = SidebarSection::Spaces;
-                        }
-                        _ => {}
+                    Some(GlobalKeyAction::ShowSettings) => {
+                        ui_state.write().show_settings_modal = true;
                     }
-                }
-                if key == Key::Escape {
-                    if let Some(window) = web_sys::window() {
-                        if let Some(doc) = window.document() {
-                            if let Some(active) = doc.active_element() {
-                                let tag = active.tag_name().to_lowercase();
-                                let is_editable = tag == "input" || tag == "textarea" || active.get_attribute("contenteditable").is_some();
-                                if is_editable {
-                                    return;
+                    Some(GlobalKeyAction::ShowSwarmModal) => {
+                        ui_state.write().show_swarm_modal = true;
+                    }
+                    Some(GlobalKeyAction::AddShell) => {
+                        let active_id = workspace.read().active_space_id.clone();
+                        if let Some(sid) = active_id {
+                            let pane = new_shell_pane();
+                            workspace_mut.write().add_pane_to_space(&sid, pane);
+                            e.prevent_default();
+                        }
+                    }
+                    Some(GlobalKeyAction::ResetWorkspaceView) => {
+                        ui_state.write().sidebar_width = 240.0;
+                        ui_state.write().panel = Panel::Workspace;
+                        ui_state.write().sidebar_section = SidebarSection::Spaces;
+                    }
+                    Some(GlobalKeyAction::Escape) => {
+                        if let Some(window) = web_sys::window() {
+                            if let Some(doc) = window.document() {
+                                if let Some(active) = doc.active_element() {
+                                    let tag = active.tag_name().to_lowercase();
+                                    let is_editable = tag == "input"
+                                        || tag == "textarea"
+                                        || active.get_attribute("contenteditable").is_some();
+                                    if is_editable {
+                                        return;
+                                    }
                                 }
                             }
                         }
+                        let mut ui = ui_state.write();
+                        ui.command_palette_open = false;
+                        ui.show_new_space_modal = false;
+                        ui.show_swarm_modal = false;
+                        ui.show_settings_modal = false;
+                        athena_state.write().is_open = false;
+                        e.stop_propagation();
                     }
-                    let mut ui = ui_state.write();
-                    ui.command_palette_open = false;
-                    ui.show_new_space_modal = false;
-                    ui.show_swarm_modal = false;
-                    ui.show_settings_modal = false;
-                    athena_state.write().is_open = false; // keep in sync for any legacy listeners
-                    e.stop_propagation();
+                    None => {}
                 }
             },
 
@@ -592,20 +392,7 @@ pub fn App() -> Element {
                                     ws.active_space_id.clone()
                                 };
                                 if let Some(sid) = active_id {
-                                    let ts = js_sys::Date::now() as u64;
-                                    let pane = PaneConfig {
-                                        id: format!("{:x}-sh", ts),
-                                        agent_type: AgentType::Shell,
-                                        custom_cmd: None,
-                                        custom_agent_id: None,
-                                        label: None,
-                                        bypass_mode: None,
-                                        project_name: None,
-                                        model_name: None,
-                                        resume_id: None,
-                                        resume_cmd: None,
-                                        resume_dismissed: None,
-                                    };
+                                    let pane = new_shell_pane();
                                     workspace_mut.write().add_pane_to_space(&sid, pane);
                                 }
                             },
@@ -817,10 +604,7 @@ pub fn App() -> Element {
                                         }
                                     }
                                     if active_panel == Panel::Editor {
-                                        div {
-                                            style: "flex: 1; display: flex; min-width: 0; min-height: 0;",
-                                            div { style: "flex: 1; overflow: hidden;", "Editor panel" }
-                                        }
+                                        RightEditorPanel {}
                                     } else if active_panel == Panel::Kanban {
                                         KanbanBoard {}
                                     } else if active_panel == Panel::Swarm {
@@ -928,12 +712,9 @@ pub fn App() -> Element {
             InputRequestModal {}
             ToastContainer {}
             NotificationToast {}
+            NotificationPopover {}
             PluginEventBus {}
             OutputEventBus {}
-            // Central agent-info poller: writes detected foreground process +
-            // scraped task title into the terminal store so pane pills reflect
-            // what's actually running (Claude/Codex detection, idle Shell names).
-            crate::components::workspace::agent_info_poller::AgentInfoPoller {}
 
             // Terminal sessions are spawned lazily inside the TerminalPaneBody component
 

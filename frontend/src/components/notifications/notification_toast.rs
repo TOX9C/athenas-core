@@ -1,117 +1,216 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::components::shared::toast::{use_toast_store, Toast, ToastItem, ToastType};
+use crate::components::shared::toast::{use_toast_store, Toast, ToastType};
 use crate::stores::notification::{
-    add_notification, use_notification_store, NotificationRecord, NotificationType,
+    add_notification, mark_notification_read, use_notification_store, NotificationRecord,
+    NotificationType,
 };
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 
+fn notification_type(value: Option<&str>) -> NotificationType {
+    match value.unwrap_or("info") {
+        "warning" => NotificationType::Warning,
+        "error" => NotificationType::Error,
+        "success" => NotificationType::Success,
+        "needs_input" | "needsInput" => NotificationType::NeedsInput,
+        "task_complete" | "taskComplete" => NotificationType::TaskComplete,
+        "task_error" | "taskError" => NotificationType::TaskError,
+        _ => NotificationType::Info,
+    }
+}
+
+fn record_from_value(value: &serde_json::Value) -> Option<NotificationRecord> {
+    let id = value.get("id")?.as_str()?.to_string();
+    let title = value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Notification")
+        .to_string();
+    let message = value
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    Some(NotificationRecord {
+        id,
+        r#type: notification_type(value.get("type").and_then(|v| v.as_str())),
+        title,
+        message,
+        source: value
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("backend")
+            .to_string(),
+        agent_id: value
+            .get("agentId")
+            .or_else(|| value.get("agent_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        data: value.get("data").cloned().filter(|v| !v.is_null()),
+        metadata: value.get("metadata").cloned().filter(|v| !v.is_null()),
+        actions: value
+            .get("actions")
+            .and_then(|v| v.as_array())
+            .map(|items| items.to_vec()),
+        request_id: value
+            .get("requestId")
+            .or_else(|| value.get("request_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        dismissed_at: value
+            .get("dismissedAt")
+            .or_else(|| value.get("dismissed_at"))
+            .and_then(|v| v.as_i64()),
+        read: value.get("read").and_then(|v| v.as_bool()).unwrap_or(false),
+        timestamp: value
+            .get("timestamp")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                value
+                    .get("timestamp")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.max(0) as u64)
+            })
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as u64)
+            as i64,
+        count: 1,
+    })
+}
+
+fn toast_type(ntype: &NotificationType) -> ToastType {
+    match ntype {
+        NotificationType::Warning | NotificationType::NeedsInput => ToastType::Warning,
+        NotificationType::Error | NotificationType::TaskError => ToastType::Error,
+        NotificationType::Success => ToastType::Success,
+        NotificationType::TaskComplete => ToastType::TaskComplete,
+        NotificationType::Info => ToastType::Info,
+    }
+}
+
+enum NotificationBusEvent {
+    New(serde_json::Value),
+    MarkRead(String),
+    MarkAllRead,
+    Clear,
+}
+
+/// Single notification event consumer. The bell and panel are render-only;
+/// this prevents duplicate history rows and duplicate toasts for one event.
 #[component]
 pub fn NotificationToast() -> Element {
     let toasts = use_toast_store();
     let notifications = use_notification_store();
     let mut mounted = use_signal(|| false);
-
-    // Store unlisten handle so it can be cleaned up on unmount.
     let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
         use_hook(|| Rc::new(RefCell::new(Vec::new())));
-    let unlisteners_clone = unlisteners.clone();
 
-    // Register Tauri event listeners on mount.
+    let dispatcher = use_coroutine(
+        move |mut rx: UnboundedReceiver<NotificationBusEvent>| async move {
+            let mut toasts = toasts;
+            let mut notifications = notifications;
+            while let Ok(event) = rx.recv().await {
+                match event {
+                    NotificationBusEvent::New(value) => {
+                        let Some(record) = record_from_value(&value) else {
+                            continue;
+                        };
+                        let ntype = record.r#type.clone();
+                        let toast = Toast {
+                            id: record.id.clone(),
+                            toast_type: toast_type(&ntype),
+                            title: record.title.clone(),
+                            message: record.message.clone(),
+                            duration_ms: if matches!(
+                                ntype,
+                                NotificationType::NeedsInput | NotificationType::TaskError
+                            ) {
+                                0
+                            } else {
+                                5000
+                            },
+                        };
+                        let id = record.id.clone();
+                        add_notification(&mut notifications, record);
+                        if !toasts.read().toasts.iter().any(|t| t.id == id) {
+                            toasts.write().push(toast);
+                        }
+                    }
+                    NotificationBusEvent::MarkRead(id) => {
+                        mark_notification_read(&mut notifications, &id);
+                    }
+                    NotificationBusEvent::MarkAllRead => {
+                        for record in notifications.write().iter_mut() {
+                            record.read = true;
+                        }
+                    }
+                    NotificationBusEvent::Clear => {
+                        notifications.write().clear();
+                        toasts.write().toasts.clear();
+                    }
+                }
+            }
+        },
+    );
+
+    let listeners_for_effect = unlisteners.clone();
     use_effect(move || {
         if mounted() {
             return;
         }
         mounted.set(true);
 
-        // notifications:new — Show toast popup.
-        let mut toast_store = toasts;
-        let mut notif_store = notifications;
-        if let Ok(u) = tauri_bridge::listen("notifications:new", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let title = val
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let message = val
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let ntype_str = val.get("type").and_then(|v| v.as_str()).unwrap_or("info");
+        let mut hydrate_store = notifications;
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(raw) = tauri_bridge::notification_history(Some(50)).await {
+                if let Ok(values) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
+                    let records = values.iter().filter_map(record_from_value).collect();
+                    crate::stores::notification::merge_notifications(&mut hydrate_store, records);
+                }
+            }
+        });
 
-                // Map notification type to toast type.
-                let toast_type = match ntype_str {
-                    "warning" => ToastType::Warning,
-                    "error" => ToastType::Error,
-                    "success" => ToastType::Success,
-                    "needsInput" => ToastType::NeedsInput,
-                    "taskComplete" => ToastType::TaskComplete,
-                    "taskError" => ToastType::Error,
-                    _ => ToastType::Info,
-                };
-
-                // Also add to notification store.
-                let notif_type = match ntype_str {
-                    "warning" => NotificationType::Warning,
-                    "error" => NotificationType::Error,
-                    "success" => NotificationType::Success,
-                    "needsInput" => NotificationType::NeedsInput,
-                    "taskComplete" => NotificationType::TaskComplete,
-                    "taskError" => NotificationType::TaskError,
-                    _ => NotificationType::Info,
-                };
-                let record = NotificationRecord {
-                    id: id.clone(),
-                    r#type: notif_type,
-                    title: title.clone(),
-                    message: message.clone(),
-                    source: "backend".to_string(),
-                    read: false,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                    count: 1,
-                };
-                add_notification(&mut notif_store, record);
-
-                // Push toast.
-                let toast = Toast {
-                    id,
-                    toast_type,
-                    title,
-                    message,
-                    duration_ms: 5000,
-                };
-                toast_store.write().push(toast);
+        let new_dispatcher = dispatcher.clone();
+        if let Ok(unlisten) = tauri_bridge::listen("notifications:new", move |payload: String| {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+                new_dispatcher.send(NotificationBusEvent::New(value));
             }
         }) {
-            unlisteners_clone.borrow_mut().push(u);
+            listeners_for_effect.borrow_mut().push(unlisten);
+        }
+
+        let update_dispatcher = dispatcher.clone();
+        if let Ok(unlisten) =
+            tauri_bridge::listen("notifications:updated", move |payload: String| {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+                    if value.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        update_dispatcher.send(NotificationBusEvent::MarkAllRead);
+                    } else if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
+                        update_dispatcher.send(NotificationBusEvent::MarkRead(id.to_string()));
+                    }
+                }
+            })
+        {
+            listeners_for_effect.borrow_mut().push(unlisten);
+        }
+
+        let clear_dispatcher = dispatcher.clone();
+        if let Ok(unlisten) =
+            tauri_bridge::listen("notifications:cleared", move |_payload: String| {
+                clear_dispatcher.send(NotificationBusEvent::Clear);
+            })
+        {
+            listeners_for_effect.borrow_mut().push(unlisten);
         }
     });
 
-    // Cleanup: unlisten all event listeners on component unmount.
-    let unlisteners_drop = unlisteners.clone();
+    let listeners_for_drop = unlisteners.clone();
     use_drop(move || {
-        for unlisten in unlisteners_drop.borrow_mut().drain(..) {
+        for unlisten in listeners_for_drop.borrow_mut().drain(..) {
             unlisten();
         }
     });
 
-    rsx! {
-        div {
-            class: "notification-toast-container",
-            style: "position: fixed; bottom: 18px; right: 18px; z-index: 100; display: flex; flex-direction: column; gap: 12px; pointer-events: none;",
-
-            for toast in toasts.read().toasts.iter() {
-                ToastItem { key: "{toast.id}", toast: toast.clone() }
-            }
-        }
-    }
+    rsx! {}
 }

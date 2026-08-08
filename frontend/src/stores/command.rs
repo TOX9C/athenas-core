@@ -3,6 +3,11 @@ use dioxus::prelude::*;
 use crate::tauri_bridge::store_get as kv_get;
 use crate::tauri_bridge::store_set as kv_set;
 
+#[path = "command_filter.rs"]
+mod command_filter;
+
+pub use command_filter::{filter_commands, CommandGroup};
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -165,164 +170,6 @@ impl CommandState {
                 Vec::new()
             }
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Filtering (ported from selectFilteredCommands)
-// ---------------------------------------------------------------------------
-
-/// A group of commands under a label, as displayed in the palette.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct CommandGroup {
-    pub label: String,
-    pub commands: Vec<Command>,
-}
-
-/// Category display order.
-const CATEGORY_ORDER: &[CommandCategory] = &[
-    CommandCategory::Workspace,
-    CommandCategory::Panel,
-    CommandCategory::Athena,
-    CommandCategory::Terminal,
-    CommandCategory::File,
-    CommandCategory::Navigation,
-    CommandCategory::Settings,
-];
-
-fn category_label(cat: &CommandCategory) -> &str {
-    match cat {
-        CommandCategory::Workspace => "Workspace",
-        CommandCategory::Panel => "Panels",
-        CommandCategory::Athena => "Athena",
-        CommandCategory::Terminal => "Terminal",
-        CommandCategory::File => "File",
-        CommandCategory::Navigation => "Navigation",
-        CommandCategory::Settings => "Settings",
-    }
-}
-
-/// Filter and group commands for display in the palette.
-/// `is_visible` should return `true` for commands whose `when_key` is
-/// satisfied (or whose `when_key` is `None`).
-pub fn filter_commands(
-    commands: &[Command],
-    recent_ids: &[String],
-    query: &str,
-    is_visible: impl Fn(&Command) -> bool,
-) -> Vec<CommandGroup> {
-    let available: Vec<&Command> = commands
-        .iter()
-        .filter(|c| c.when_key.is_none() || is_visible(c))
-        .collect();
-
-    if query.trim().is_empty() {
-        // Show recent, then by category.
-        let recent: Vec<Command> = recent_ids
-            .iter()
-            .filter_map(|rid| available.iter().find(|c| c.id == *rid))
-            .map(|c| (*c).clone())
-            .collect();
-
-        let recent_set: std::collections::HashSet<&str> =
-            recent_ids.iter().map(|s| s.as_str()).collect();
-        let non_recent: Vec<&Command> = available
-            .iter()
-            .filter(|c| !recent_set.contains(c.id.as_str()))
-            .copied()
-            .collect();
-
-        let mut groups = Vec::new();
-        if !recent.is_empty() {
-            groups.push(CommandGroup {
-                label: "Recent".to_string(),
-                commands: recent,
-            });
-        }
-
-        for cat in CATEGORY_ORDER {
-            let cmds: Vec<Command> = non_recent
-                .iter()
-                .filter(|c| c.category == *cat)
-                .map(|c| (*c).clone())
-                .collect();
-            if !cmds.is_empty() {
-                groups.push(CommandGroup {
-                    label: category_label(cat).to_string(),
-                    commands: cmds,
-                });
-            }
-        }
-
-        return groups;
-    }
-
-    // Fuzzy scoring.
-    let lower = query.to_lowercase();
-    let terms: Vec<&str> = lower.split_whitespace().collect();
-
-    let mut scored: Vec<(i32, Command)> = Vec::new();
-
-    for cmd in &available {
-        let label_lower = cmd.label.to_lowercase();
-        let desc_lower = cmd.description.as_deref().unwrap_or("").to_lowercase();
-        let kw_string = cmd.keywords.join(" ").to_lowercase();
-        let mut score: i32 = 0;
-
-        if label_lower.starts_with(&lower) {
-            score = 10;
-        } else if label_lower.contains(&lower) {
-            score = 7;
-        }
-
-        if score == 0 && terms.len() > 1 {
-            let all_match = terms.iter().all(|t| {
-                label_lower.contains(t) || desc_lower.contains(t) || kw_string.contains(t)
-            });
-            if all_match {
-                score = 5;
-            }
-        }
-
-        if score == 0 {
-            // Fuzzy prefix matching on label.
-            let mut qi = 0;
-            for ch in label_lower.chars() {
-                if qi < lower.len() && ch == lower.chars().nth(qi).unwrap() {
-                    qi += 1;
-                }
-            }
-            if qi == lower.len() {
-                score = 3;
-            }
-        }
-
-        if score == 0 && (desc_lower.contains(&lower) || kw_string.contains(&lower)) {
-            score = 2;
-        }
-
-        let recent_boost: i32 = if recent_ids.iter().any(|r| r == &cmd.id) {
-            1
-        } else {
-            0
-        };
-
-        if score + recent_boost > 0 {
-            scored.push((score + recent_boost, (*cmd).clone()));
-        }
-    }
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
-
-    let results: Vec<Command> = scored.into_iter().map(|(_, c)| c).collect();
-
-    if results.is_empty() {
-        Vec::new()
-    } else {
-        vec![CommandGroup {
-            label: "Results".to_string(),
-            commands: results,
-        }]
     }
 }
 

@@ -12,9 +12,9 @@
 //! appended, the *entire* buffer is searched, then the buffer is trimmed
 //! to a bounded size. A match is only reported once per distinct id, so a
 //! long-running session does not re-write the store on every subsequent
-//! PTY chunk.
-const MAX_SCAN_BUFFER: usize = 1024;
-const MAX_ID_LEN: usize = 256;
+//! PTY chunk. Parsing is shared with the backend through the dependency-free
+//! `athena-resume-scanner` crate; this module owns only live-stream state.
+use athena_resume_scanner::{extract_resume_id, AnsiStripper, MAX_SCAN_BUFFER};
 
 /// A stateful scanner for a single pane. Create one, feed it text via
 /// `feed`, and obtain newly detected resume ids. Each distinct id is
@@ -29,6 +29,7 @@ pub struct ResumeScanner {
     /// caller would re-write the store + re-trigger a disk save on every
     /// PTY write for the rest of the session).
     last_matched: Option<String>,
+    ansi: AnsiStripper,
 }
 
 impl Default for ResumeScanner {
@@ -42,6 +43,7 @@ impl ResumeScanner {
         Self {
             buf: String::with_capacity(MAX_SCAN_BUFFER),
             last_matched: None,
+            ansi: AnsiStripper::new(),
         }
     }
 
@@ -54,7 +56,7 @@ impl ResumeScanner {
     /// Incoming text is ANSI-stripped first; color/bold codes interleaved
     /// between the words do not break matching.
     pub fn feed(&mut self, text: &str) -> Option<(String, String)> {
-        let stripped = strip_ansi(text);
+        let stripped = self.ansi.feed(text);
         self.buf.push_str(&stripped);
 
         // Trim oldest bytes to keep the buffer bounded.
@@ -90,103 +92,8 @@ impl ResumeScanner {
     pub fn clear(&mut self) {
         self.buf.clear();
         self.last_matched = None;
+        self.ansi.clear();
     }
-}
-
-/// Remove ANSI escape sequences (CSI SGR/color, OSC, and simple two-byte
-/// escapes) from `input`.
-///
-/// This is byte-level but UTF-8-safe: escape sequences are pure ASCII, and
-/// UTF-8 continuation bytes are all `>= 0x80`, so no escape byte can fall
-/// inside a multibyte codepoint. We therefore only ever cut the string at
-/// ASCII boundaries, leaving every remaining run valid UTF-8.
-fn strip_ansi(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let n = bytes.len();
-    let mut i = 0;
-    while i < n {
-        if bytes[i] == 0x1b && i + 1 < n {
-            match bytes[i + 1] {
-                // CSI: ESC [ <params/intermediates> <final 0x40..=0x7e>
-                b'[' => {
-                    i += 2;
-                    while i < n && !(bytes[i] >= 0x40 && bytes[i] <= 0x7e) {
-                        i += 1;
-                    }
-                    if i < n {
-                        i += 1; // consume the final byte
-                    }
-                }
-                // OSC: ESC ] ... (terminated by BEL 0x07 or ST "ESC \")
-                b']' => {
-                    i += 2;
-                    while i < n {
-                        if bytes[i] == 0x07 {
-                            i += 1;
-                            break;
-                        }
-                        if bytes[i] == 0x1b && i + 1 < n && bytes[i + 1] == b'\\' {
-                            i += 2;
-                            break;
-                        }
-                        i += 1;
-                    }
-                }
-                // Other two-byte escapes: ESC ( B, ESC =, ESC M, ...
-                _ => {
-                    i += 2;
-                }
-            }
-        } else {
-            // Lone trailing ESC (no following byte) is kept as-is.
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    // Safe: only ASCII escape runs were removed.
-    String::from_utf8(out).unwrap_or_else(|_| input.to_string())
-}
-
-/// Scan for every known agent resume prefix and return the last (= newest)
-/// match as `(prefix_without_trailing_space, id)`.
-fn extract_resume_id(text: &str) -> Option<(String, String)> {
-    let lower = text.to_lowercase();
-
-    // Known CLI resume prefixes, in order of preference.
-    const PREFIXES: &[&str] = &[
-        "claude --resume ",
-        "codex --resume ",
-        "opencode --resume ",
-        "gemini --resume ",
-    ];
-
-    let mut last_match: Option<(String, String)> = None;
-
-    for pat in PREFIXES {
-        let pat_lower = pat.to_lowercase();
-        let mut search_from = 0;
-        while let Some(idx) = lower[search_from..].find(&pat_lower) {
-            let match_start = search_from + idx;
-            let id_start = match_start + pat.len();
-            let rest = &text[id_start..];
-            let id: String = rest
-                .chars()
-                .take(MAX_ID_LEN)
-                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            if !id.is_empty() {
-                // prefix without trailing space for convenience
-                last_match = Some((pat[..pat.len() - 1].to_string(), id));
-            }
-            search_from = id_start;
-            if search_from >= lower.len() {
-                break;
-            }
-        }
-    }
-
-    last_match
 }
 
 // ---------------------------------------------------------------------------
@@ -365,7 +272,7 @@ mod tests {
         // Split on char boundaries: the real pty_listen_raw path delivers
         // `String::from_utf8_lossy` output (never mid-codepoint), so the
         // scanner only ever sees well-formed UTF-8 chunks.
-        let chars: Vec<&str> = full.split_inclusive(|c: char| true).collect();
+        let chars: Vec<&str> = full.split_inclusive(|_: char| true).collect();
         let mut captured = None;
         let mut pos = 0;
         for &size in &[7usize, 1, 64, 3, 200, 13, 40, 500] {

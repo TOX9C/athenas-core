@@ -1,30 +1,7 @@
 use crate::components::shared::icon::IconChevronDown;
 use crate::stores::agent_output::use_agent_output_store;
+use crate::utils::agent_display::{get_agent_color_str, get_agent_label_str};
 use dioxus::prelude::*;
-
-/// Get a color for an agent type.
-fn get_agent_color(agent_type: &str) -> &'static str {
-    match agent_type {
-        "claude" => "#f97316",
-        "codex" => "#10b981",
-        "opencode" => "#8b5cf6",
-        "gemini" => "#3b82f6",
-        "shell" => "#6b7280",
-        _ => "var(--accent)",
-    }
-}
-
-/// Get a label for an agent type.
-fn get_agent_label(agent_type: &str) -> &'static str {
-    match agent_type {
-        "claude" => "Claude",
-        "codex" => "Codex",
-        "opencode" => "OpenCode",
-        "gemini" => "Gemini",
-        "shell" => "Shell",
-        _ => "Agent",
-    }
-}
 
 #[derive(Props, Clone, PartialEq)]
 pub struct AgentSelectorProps {
@@ -63,7 +40,7 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
         .unwrap_or_else(|| "Select agent…".to_string());
     let selected_color: String = selected
         .as_ref()
-        .map(|a| get_agent_color(&a.agent_type).to_string())
+        .map(|a| get_agent_color_str(&a.agent_type).to_string())
         .unwrap_or_else(|| "var(--textDim)".to_string());
 
     let _chevron_rotation: i32 = if open() { 180 } else { 0 };
@@ -96,8 +73,8 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                         {
                             let pane_id_for_event = agent.pane_id.clone();
                             let is_selected = Some(agent.pane_id.as_str()) == selected_id.as_deref();
-                            let color = get_agent_color(&agent.agent_type).to_string();
-                            let label = get_agent_label(&agent.agent_type).to_string();
+                            let color = get_agent_color_str(&agent.agent_type).to_string();
+                            let label = get_agent_label_str(&agent.agent_type).to_string();
                             let display_id: String = agent.pane_id.chars().take(12).collect();
                             let lc = agent.line_count;
                             let item_bg = "transparent";

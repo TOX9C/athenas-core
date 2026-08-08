@@ -4,59 +4,18 @@ use crate::stores::notification::{
     add_notification, use_notification_store, NotificationRecord, NotificationType,
 };
 use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
+use crate::stores::ui::use_ui_store;
+use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
+use crate::types::workspace::AgentType;
 use dioxus::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
-/// Events that the output bus can receive from the Tauri backend.
-///
-/// Signal writes are deferred to the coroutine so they happen inside the
-/// reactive runtime, avoiding panics when a write lands while a read lock
-/// is still held.
-#[derive(Debug)]
-enum OutputBusEvent {
-    AgentStatus {
-        pane_id: String,
-        status: AgentRunStatus,
-        message: Option<String>,
-        progress: Option<crate::stores::agent_status::AgentProgress>,
-        now: i64,
-    },
-    TerminalExit {
-        pane_id: String,
-        now: i64,
-    },
-    TerminalData {
-        session_id: String,
-        payload: String,
-    },
-    AgentConnected {
-        pane_id: String,
-        now: i64,
-    },
-    AgentDisconnected {
-        pane_id: String,
-        now: i64,
-    },
-    AgentStatusUpdate {
-        pane_id: String,
-        status: AgentRunStatus,
-        message: Option<String>,
-        now: i64,
-    },
-    InputRequested {
-        pane_id: String,
-        message: String,
-        now: i64,
-    },
-    OutputLine(crate::stores::agent_output::OutputLine),
-    PaneRegistered {
-        pane_id: String,
-        agent_type: String,
-        now: i64,
-    },
-}
+#[path = "output_bus_event.rs"]
+mod output_bus_event;
+use output_bus_event::OutputBusEvent;
 
 /// Output event bus component - renders nothing, handles IPC events.
 ///
@@ -85,6 +44,12 @@ pub fn OutputEventBus() -> Element {
     // move cheap clones into the coroutine below.
     let terminal_store = use_terminal_store();
     let terminal_registry = use_terminal_registry();
+    // Consumed by the LLM title-summarization trigger folded in from the
+    // removed `AgentInfoPoller`: `smart_pane_titles` gates the feature and
+    // the workspace store tells us which panes are real agent panes (shells
+    // must never summarize).
+    let ui_state = use_ui_store();
+    let workspace = use_workspace_store();
     let mut mounted = use_signal(|| false);
 
     let unlistens: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
@@ -104,6 +69,10 @@ pub fn OutputEventBus() -> Element {
             let mut agent_output = agent_output;
             let mut notifications = notifications;
             let mut terminal_store = terminal_store;
+            // (pane_id, session_id) pairs already LLM-summarized — moved here
+            // from the removed `AgentInfoPoller` so a session change triggers
+            // exactly one title call per pane per session.
+            let mut summarized_pairs: HashSet<(String, String)> = HashSet::new();
             while let Ok(event) = rx.recv().await {
                 match event {
                     OutputBusEvent::AgentStatus {
@@ -112,9 +81,13 @@ pub fn OutputEventBus() -> Element {
                         message,
                         progress,
                         now,
+                        fg_process,
+                        task_title,
+                        session_id,
+                        raw_prompt,
                     } => {
                         agent_status.write().update_status(
-                            pane_id,
+                            &pane_id,
                             AgentStatusUpdate {
                                 status: Some(status),
                                 message,
@@ -122,6 +95,102 @@ pub fn OutputEventBus() -> Element {
                             },
                             now,
                         );
+
+                        // Session change → reset the stale title even when
+                        // summarization is disabled (an old Done title must
+                        // never leak into the new session). Mirrors the
+                        // `AgentInfoPoller` behavior. Must run BEFORE
+                        // `update_agent_info` below, which writes the new
+                        // session id into the registry.
+                        let sid = session_id.clone().unwrap_or_default();
+                        {
+                            let old_sid = terminal_registry
+                                .peek_session(&pane_id)
+                                .and_then(|s| s.session_id);
+                            if old_sid.as_deref() != Some(sid.as_str()) && !sid.is_empty() {
+                                if let Some(mut inner) = terminal_registry.write_session(&pane_id) {
+                                    inner.title_state = crate::utils::pane_label::TitleState::Idle;
+                                    inner.generation = inner.generation.wrapping_add(1);
+                                }
+                            }
+                        }
+
+                        // Write the enriched fields into the per-pane terminal
+                        // store so pane pills stay in sync WITHOUT the frontend
+                        // polling `ps` itself (single-poller consolidation:
+                        // the backend tracker is now the only process poller).
+                        terminal_store.write().update_agent_info(
+                            &terminal_registry,
+                            &pane_id,
+                            fg_process,
+                            task_title,
+                            session_id.clone(),
+                            raw_prompt.clone(),
+                        );
+
+                        // LLM title summarization on session change (moved
+                        // from `AgentInfoPoller`). Only real agent panes get
+                        // summarized; shells must never scrape global state.
+                        let raw = raw_prompt.unwrap_or_default();
+                        let feature_enabled = ui_state.read().smart_pane_titles;
+                        let prompt_ready = !sid.is_empty() && !raw.trim().is_empty();
+                        let is_shell = workspace.read().spaces.iter().any(|s| {
+                            s.panes.iter().any(|p| {
+                                p.id == pane_id && matches!(p.agent_type, AgentType::Shell)
+                            })
+                        });
+                        if feature_enabled && prompt_ready && !is_shell {
+                            let key = (pane_id.clone(), sid.clone());
+                            if !summarized_pairs.contains(&key) {
+                                summarized_pairs.insert(key);
+                                // Mark the title as pending in a single write
+                                // (the pill shows Pending while the LLM call
+                                // is in flight, then Done/Failed).
+                                if let Some(mut inner) = terminal_registry.write_session(&pane_id) {
+                                    inner.title_state =
+                                        crate::utils::pane_label::TitleState::Pending;
+                                    inner.generation = inner.generation.wrapping_add(1);
+                                }
+                                let registry_for_spawn = terminal_registry.clone();
+                                let raw_prompt = raw.clone();
+                                let pane = pane_id.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let result =
+                                        crate::tauri_bridge::summarize_agent_title(&raw_prompt)
+                                            .await;
+                                    let Some(mut inner) = registry_for_spawn.write_session(&pane)
+                                    else {
+                                        return;
+                                    };
+                                    match result {
+                                        Ok(summary) => {
+                                            let cleaned = summary.trim().to_string();
+                                            web_sys::console::log_1(
+                                                &format!(
+                                                    "[OutputEventBus] title for pane={}: {}",
+                                                    pane, cleaned
+                                                )
+                                                .into(),
+                                            );
+                                            inner.title_state =
+                                                crate::utils::pane_label::TitleState::Done(cleaned);
+                                        }
+                                        Err(e) => {
+                                            web_sys::console::warn_1(
+                                                &format!(
+                                                    "[OutputEventBus] title failed for pane={}: {:?}",
+                                                    pane, e
+                                                )
+                                                .into(),
+                                            );
+                                            inner.title_state =
+                                                crate::utils::pane_label::TitleState::Failed;
+                                        }
+                                    }
+                                    inner.generation = inner.generation.wrapping_add(1);
+                                });
+                            }
+                        }
                     }
                     OutputBusEvent::TerminalExit { pane_id, now } => {
                         agent_status.write().update_status(
@@ -171,7 +240,7 @@ pub fn OutputEventBus() -> Element {
                     } => {
                         agent_status
                             .write()
-                            .request_input(pane_id, message.clone(), now);
+                            .request_input(pane_id.clone(), message.clone(), now);
 
                         let notif = NotificationRecord {
                             id: format!("input-{}", chrono::Utc::now().timestamp_millis()),
@@ -179,6 +248,12 @@ pub fn OutputEventBus() -> Element {
                             title: "Agent Input Requested".to_string(),
                             message,
                             source: "agent".to_string(),
+                            agent_id: Some(pane_id.clone()),
+                            data: Some(serde_json::json!({ "paneId": pane_id })),
+                            metadata: None,
+                            actions: None,
+                            request_id: None,
+                            dismissed_at: None,
                             read: false,
                             timestamp: chrono::Utc::now().timestamp_millis(),
                             count: 1,
@@ -226,7 +301,7 @@ pub fn OutputEventBus() -> Element {
                 let status_enum = match status {
                     "thinking" => AgentRunStatus::Thinking,
                     "working" => AgentRunStatus::Working,
-                    "waiting_for_input" => AgentRunStatus::WaitingForInput,
+                    "waiting_for_input" | "waiting_input" => AgentRunStatus::WaitingForInput,
                     "completed" => AgentRunStatus::Completed,
                     "error" => AgentRunStatus::Error,
                     "cancelled" => AgentRunStatus::Cancelled,
@@ -254,6 +329,30 @@ pub fn OutputEventBus() -> Element {
                     })
                 });
 
+                // Enriched fields (single-poller consolidation): the backend
+                // tracker's heartbeat carries the raw foreground label + the
+                // scraped session metadata so the frontend never polls `ps`.
+                let fg_process = val
+                    .get("fgProcess")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let task_title = val
+                    .get("taskTitle")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let session_id = val
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let raw_prompt = val
+                    .get("rawPrompt")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
                 let now = js_sys::Date::now() as i64;
                 dispatcher.send(OutputBusEvent::AgentStatus {
                     pane_id,
@@ -261,6 +360,10 @@ pub fn OutputEventBus() -> Element {
                     message,
                     progress,
                     now,
+                    fg_process,
+                    task_title,
+                    session_id,
+                    raw_prompt,
                 });
             }
         }) {
@@ -364,7 +467,7 @@ pub fn OutputEventBus() -> Element {
                 let status_enum = match status {
                     "thinking" => AgentRunStatus::Thinking,
                     "working" => AgentRunStatus::Working,
-                    "waiting_for_input" => AgentRunStatus::WaitingForInput,
+                    "waiting_for_input" | "waiting_input" => AgentRunStatus::WaitingForInput,
                     "completed" => AgentRunStatus::Completed,
                     "error" => AgentRunStatus::Error,
                     "cancelled" => AgentRunStatus::Cancelled,
@@ -399,6 +502,7 @@ pub fn OutputEventBus() -> Element {
                     .to_string();
                 let message = val
                     .get("message")
+                    .or_else(|| val.get("prompt"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("Agent is requesting input")
                     .to_string();

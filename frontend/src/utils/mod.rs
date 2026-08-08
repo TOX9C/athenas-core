@@ -1,8 +1,15 @@
 pub mod agent_commands;
+pub mod agent_display;
 pub mod fuzzy_search;
-pub mod highlighter;
+pub mod keybindings;
 pub mod notification_sound;
+pub mod pane_config;
 pub mod pane_label;
 pub mod pane_names;
 pub mod platform_utils;
 pub mod resume_scanner;
+pub mod session;
+pub mod settings_migration;
+pub mod space_counts;
+pub mod startup_bootstrap;
+pub mod time;

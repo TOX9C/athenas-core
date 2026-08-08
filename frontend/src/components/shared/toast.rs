@@ -65,7 +65,7 @@ pub fn ToastContainer() -> Element {
     rsx! {
         div {
             class: "toast-container",
-            style: "position: fixed; bottom: 16px; right: 16px; z-index: 100; display: flex; flex-direction: column; gap: 10px; pointer-events: none;",
+            style: "position: fixed; bottom: 16px; right: 16px; z-index: 10040; display: flex; flex-direction: column; gap: 10px; pointer-events: none;",
 
             for toast in toast_state.read().toasts.iter().cloned() {
                 ToastItem { toast }

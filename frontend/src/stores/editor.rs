@@ -1,25 +1,9 @@
 use dioxus::prelude::*;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+#[path = "editor_model.rs"]
+mod editor_model;
 
-/// Cursor position within an editor file.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct CursorPosition {
-    pub line: usize,
-    pub column: usize,
-}
-
-/// An open file in the editor.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct EditorFile {
-    pub path: String,
-    pub content: String,
-    pub language: String,
-    pub is_dirty: bool,
-    pub cursor_position: CursorPosition,
-}
+pub use editor_model::{CursorPosition, EditorFile};
 
 // ---------------------------------------------------------------------------
 // State

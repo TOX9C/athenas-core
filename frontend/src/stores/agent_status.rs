@@ -1,48 +1,9 @@
 use dioxus::prelude::*;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+#[path = "agent_status_model.rs"]
+mod agent_status_model;
 
-/// Status of an individual agent.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum AgentRunStatus {
-    #[default]
-    Idle,
-    Thinking,
-    Working,
-    WaitingForInput,
-    Completed,
-    Error,
-    Cancelled,
-    Disconnected,
-}
-
-/// Progress information for an agent.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct AgentProgress {
-    pub current: usize,
-    pub total: usize,
-    pub label: String,
-}
-
-/// Status record for a single agent (keyed by pane id).
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct AgentStatus {
-    pub pane_id: String,
-    pub status: AgentRunStatus,
-    pub message: Option<String>,
-    pub progress: Option<AgentProgress>,
-    pub last_updated_at: i64,
-}
-
-/// Partial update descriptor for an agent status entry.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct AgentStatusUpdate {
-    pub status: Option<AgentRunStatus>,
-    pub message: Option<String>,
-    pub progress: Option<AgentProgress>,
-}
+pub use agent_status_model::{AgentProgress, AgentRunStatus, AgentStatus, AgentStatusUpdate};
 
 // ---------------------------------------------------------------------------
 // State

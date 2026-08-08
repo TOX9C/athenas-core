@@ -1,7 +1,8 @@
 use crate::components::shared::icon::IconClose;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
-use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
+use crate::stores::agent_status::use_agent_status_store;
 use crate::stores::workspace::use_workspace_store;
+use crate::utils::space_counts::{count_space_agents, SpaceCounts};
 use dioxus::prelude::*;
 
 #[component]
@@ -36,23 +37,9 @@ pub fn WorkspaceList() -> Element {
                         let space_id = space.id.clone();
                         let space_id_close = space.id.clone();
                         let space_name = space.name.clone();
-                        // Count agent statuses for this space's panes
-                        let mut idle_count = 0usize;
-                        let mut running_count = 0usize;
-                        for pane in space.panes.iter() {
-                            if let Some(status) = agent_status.read().statuses.iter()
-                                .find(|(id, _)| id == &pane.id)
-                                .map(|(_, s)| &s.status)
-                            {
-                                match status {
-                                    AgentRunStatus::Working | AgentRunStatus::Thinking => running_count += 1,
-                                    AgentRunStatus::Idle | AgentRunStatus::Completed => idle_count += 1,
-                                    _ => {}
-                                }
-                            } else {
-                                idle_count += 1;
-                            }
-                        }
+                        // Live agent counts: [working][total][attention].
+                        let counts: SpaceCounts =
+                            count_space_agents(&space.panes, &agent_status.read().statuses);
 
                         rsx! {
                             div {
@@ -78,20 +65,34 @@ pub fn WorkspaceList() -> Element {
                                     "{space_name}"
                                 }
 
-                                // Agent count badges
-                                if idle_count > 0 {
+                                // Agent count badges — working LEFT of total,
+                                // attention rightmost (amber, pulsing).
+                                if counts.working > 0 {
                                     span {
                                         class: "badge",
-                                        style: "color: var(--textDim);",
-                                        "{idle_count}"
+                                        style: "color: var(--accent);",
+                                        title: "{counts.working} agent(s) working",
+                                        span { class: "status-dot is-working" }
+                                        "{counts.working}"
                                     }
                                 }
 
-                                if running_count > 0 {
+                                if counts.total > 0 {
                                     span {
                                         class: "badge",
-                                        style: "color: var(--warning); border-color: var(--warning);",
-                                        "{running_count}"
+                                        style: "color: var(--textDim);",
+                                        title: "{counts.total} agent(s)",
+                                        "{counts.total}"
+                                    }
+                                }
+
+                                if counts.attention > 0 {
+                                    span {
+                                        class: "badge",
+                                        style: "color: var(--warning);",
+                                        title: "{counts.attention} agent(s) need attention",
+                                        span { class: "status-dot is-attention" }
+                                        "{counts.attention}"
                                     }
                                 }
 

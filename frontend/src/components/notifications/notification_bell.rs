@@ -1,166 +1,54 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use crate::components::shared::icon::{IconBell, IconClose};
 use crate::stores::notification::{
-    add_notification, mark_notification_dismissed, mark_notification_read, set_notifications,
-    use_notification_store, NotificationRecord, NotificationType,
+    mark_notification_dismissed, mark_notification_read, use_notification_store,
+    NotificationRecord, NotificationType,
 };
 use crate::tauri_bridge;
-// TODO: wire up notification sound when UX design is finalized
 use dioxus::prelude::*;
 
-/// Notification data.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct NotificationItem {
-    pub id: String,
-    pub ntype: String,
-    pub title: String,
-    pub message: String,
-    pub timestamp: i64,
-    pub read: bool,
-    pub dismissed: bool,
+/// Shared open state for the root-level notification popover.
+pub fn provide_notification_overlay_store() {
+    use_context_provider(|| Signal::new(false));
 }
 
+fn use_notification_overlay_store() -> Signal<bool> {
+    use_context::<Signal<bool>>()
+}
+
+/// Notification bell for the title bar. The popover itself is rendered by
+/// [`NotificationPopover`] at the app root, outside title-bar stacking and
+/// clipping contexts.
 #[component]
 pub fn NotificationBell() -> Element {
-    let mut dropdown_open = use_signal(|| false);
+    let mut dropdown_open = use_notification_overlay_store();
+    let notifications = use_notification_store();
+    let unread_count = notifications.read().iter().filter(|n| !n.read).count();
+
+    rsx! {
+        button {
+            class: "icon-btn",
+            style: "position: relative;",
+            "aria-label": "Notifications",
+            "aria-expanded": "{dropdown_open()}",
+            onclick: move |_| dropdown_open.set(!dropdown_open()),
+            IconBell { size: Some(16), color: Some("currentColor".to_string()) }
+            if unread_count > 0 {
+                span {
+                    style: "position: absolute; top: -4px; right: -4px; background: var(--accent); color: var(--bg); font-size: var(--text-2xs); font-weight: 700; padding: 1px 4px; border-radius: var(--radius-pill); min-width: 14px; text-align: center; line-height: 1.3; border: 1px solid var(--bgSecondary);",
+                    "{unread_count}"
+                }
+            }
+        }
+    }
+}
+
+/// Root-level notification popover. Keeping this as a sibling of the title
+/// bar guarantees `position: fixed` and the high z-index are not trapped in
+/// an animated/drag-region stacking context.
+#[component]
+pub fn NotificationPopover() -> Element {
+    let mut dropdown_open = use_notification_overlay_store();
     let mut notifications = use_notification_store();
-    let mut mounted = use_signal(|| false);
-
-    // Store unlisten handles so they can be cleaned up on unmount.
-    let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
-        use_hook(|| Rc::new(RefCell::new(Vec::new())));
-    let unlisteners_clone = unlisteners.clone();
-
-    // Register Tauri event listeners on mount.
-    use_effect(move || {
-        if mounted() {
-            return;
-        }
-        mounted.set(true);
-
-        // notifications:new — Increment unread count, show badge, push toast.
-        let mut new_store = notifications;
-        if let Ok(u) = tauri_bridge::listen("notifications:new", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let title = val
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let message = val
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let ntype_str = val.get("type").and_then(|v| v.as_str()).unwrap_or("info");
-                let ntype = match ntype_str {
-                    "warning" => NotificationType::Warning,
-                    "error" => NotificationType::Error,
-                    "success" => NotificationType::Success,
-                    "needsInput" => NotificationType::NeedsInput,
-                    "taskComplete" => NotificationType::TaskComplete,
-                    "taskError" => NotificationType::TaskError,
-                    _ => NotificationType::Info,
-                };
-                let record = NotificationRecord {
-                    id,
-                    r#type: ntype,
-                    title,
-                    message,
-                    source: "backend".to_string(),
-                    read: false,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                    count: 1,
-                };
-                add_notification(&mut new_store, record);
-            }
-        }) {
-            unlisteners_clone.borrow_mut().push(u);
-        }
-
-        // notifications:updated — Refresh notification list.
-        let mut update_store = notifications;
-        if let Ok(u) = tauri_bridge::listen("notifications:updated", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                // Single-object update: { "id": "notif-xxx", "read": true }
-                if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
-                    mark_notification_read(&mut update_store, id);
-                } else if let Some(notifs_arr) = val.as_array() {
-                    let records: Vec<NotificationRecord> = notifs_arr
-                        .iter()
-                        .filter_map(|n| {
-                            let id = n.get("id").and_then(|v| v.as_str())?.to_string();
-                            let title = n.get("title").and_then(|v| v.as_str())?.to_string();
-                            let message = n.get("message").and_then(|v| v.as_str())?.to_string();
-                            let read = n.get("read").and_then(|v| v.as_bool()).unwrap_or(false);
-                            let timestamp =
-                                n.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-                            let ntype_str =
-                                n.get("type").and_then(|v| v.as_str()).unwrap_or("info");
-                            let ntype = match ntype_str {
-                                "warning" => NotificationType::Warning,
-                                "error" => NotificationType::Error,
-                                "success" => NotificationType::Success,
-                                "needsInput" => NotificationType::NeedsInput,
-                                "taskComplete" => NotificationType::TaskComplete,
-                                "taskError" => NotificationType::TaskError,
-                                _ => NotificationType::Info,
-                            };
-                            Some(NotificationRecord {
-                                id,
-                                r#type: ntype,
-                                title,
-                                message,
-                                source: "backend".to_string(),
-                                read,
-                                timestamp,
-                                count: 1,
-                            })
-                        })
-                        .collect();
-                    set_notifications(&mut update_store, records);
-                }
-            }
-        }) {
-            unlisteners_clone.borrow_mut().push(u);
-        }
-
-        // notifications:dismissed — Update badge count.
-        let mut dismiss_store = notifications;
-        if let Ok(u) = tauri_bridge::listen("notifications:dismissed", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                if !id.is_empty() {
-                    mark_notification_dismissed(&mut dismiss_store, id);
-                }
-            }
-        }) {
-            unlisteners_clone.borrow_mut().push(u);
-        }
-    });
-
-    // Cleanup: unlisten all event listeners on component unmount.
-    let unlisteners_drop = unlisteners.clone();
-    use_drop(move || {
-        for unlisten in unlisteners_drop.borrow_mut().drain(..) {
-            unlisten();
-        }
-    });
-
-    let unread_count: u32 = notifications.read().iter().filter(|n| !n.read).count() as u32;
-
-    // Snapshot the visible notifications into an owned Vec BEFORE the rsx! tree.
-    // Holding `notifications.read()` alive across child components (IconClose /
-    // button) inside the `for` body re-borrows Dioxus's hook list during render
-    // → mount panic "The hook list is already borrowed" (BorrowMutError). Cloning
-    // ≤10 records drops the RefCell borrow before any child mounts.
     let visible: Vec<NotificationRecord> = notifications
         .read()
         .iter()
@@ -168,114 +56,107 @@ pub fn NotificationBell() -> Element {
         .take(10)
         .cloned()
         .collect();
+    let unread_count = notifications.read().iter().filter(|n| !n.read).count();
+
+    if !dropdown_open() {
+        return rsx! {};
+    }
 
     rsx! {
         div {
-            class: "notification-bell",
-            style: "position: relative;",
+            class: "notification-popover pane-astrolabe-mark",
+            role: "dialog",
+            "aria-label": "Notifications",
+            style: "position: fixed; top: calc(var(--tb-height) + 6px); right: 14px; width: min(360px, calc(100vw - 28px)); max-height: min(480px, calc(100vh - var(--tb-height) - 24px)); overflow-y: auto; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); z-index: 10050; box-shadow: var(--shadow-lg);",
 
-            button {
-                class: "icon-btn",
-                style: "position: relative;",
-                "aria-label": "Notifications",
-                onclick: move |_| dropdown_open.set(!dropdown_open()),
-
-                IconBell { size: Some(16), color: Some("currentColor".to_string()) }
-
+            div {
+                style: "position: sticky; top: 0; z-index: 1; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em; background: var(--bgSecondary); display: flex; align-items: center; justify-content: space-between; gap: 6px;",
+                "Notifications"
                 if unread_count > 0 {
-                    span {
-                        style: "position: absolute; top: -4px; right: -4px; background: var(--accent); color: var(--bg); font-size: var(--text-2xs); font-weight: 700; padding: 1px 4px; border-radius: var(--radius-pill); min-width: 14px; text-align: center; line-height: 1.3; border: var(--border);",
-                        "{unread_count}"
-                    }
+                    span { class: "badge", style: "background: var(--accentSubtle); color: var(--accent);", "{unread_count}" }
                 }
             }
 
-            if dropdown_open() {
+            if visible.is_empty() {
                 div {
-                    class: "pane-astrolabe-mark",
-                    style: "position: absolute; top: 100%; right: 0; width: 300px; max-height: 400px; overflow-y: auto; background: var(--bgSecondary); border: var(--border); border-radius: var(--radius-md); z-index: 50; margin-top: 6px; box-shadow: var(--shadow-md);",
-
-                    div {
-                        style: "padding: 10px 14px; border-bottom: var(--border); font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em; background: var(--bgSecondary); display: flex; align-items: center; justify-content: space-between; gap: 6px;",
-                        "Notifications"
-                        if unread_count > 0 {
-                            span {
-                                class: "badge",
-                                style: "background: var(--accentSubtle); color: var(--accent);",
-                                "{unread_count}"
-                            }
-                        }
-                    }
-
-                    div {
-                        if visible.is_empty() {
+                    style: "padding: 26px 22px; text-align: center; color: var(--textDim); font-size: var(--text-xs);",
+                    "No notifications"
+                }
+            } else {
+                for n in visible.iter() {
+                    {
+                        let id = n.id.clone();
+                        let title = n.title.clone();
+                        let message = n.message.clone();
+                        let is_read = n.read;
+                        let count = n.count;
+                        let display_title = if count > 1 { format!("{} (×{})", title, count) } else { title };
+                        let weight = if is_read { "400" } else { "600" };
+                        let title_color = if is_read { "var(--text)" } else { "var(--accent)" };
+                        let type_color = match &n.r#type {
+                            NotificationType::Error | NotificationType::TaskError => "var(--error)",
+                            NotificationType::Warning | NotificationType::NeedsInput => "var(--warning)",
+                            NotificationType::Success | NotificationType::TaskComplete => "var(--success)",
+                            _ => "var(--accentTeal)",
+                        };
+                        rsx! {
                             div {
-                                style: "padding: 22px; text-align: center; color: var(--textDim); font-size: var(--text-xs);",
-                                "No notifications"
-                            }
-                        } else {
-                            for n in visible.iter() {
-                                {
-                                    let id = n.id.clone();
-                                    let title = n.title.clone();
-                                    let message = n.message.clone();
-                                    let is_read = n.read;
-                                    let count = n.count;
-                                    let display_title = if count > 1 {
-                                        format!("{} (\u{00d7}{})", title, count)
-                                    } else {
-                                        title.clone()
-                                    };
-                                    let weight = if is_read { "400" } else { "600" };
-                                    let type_color = match &n.r#type {
-                                        NotificationType::Error | NotificationType::TaskError => "var(--error)",
-                                        NotificationType::Warning => "var(--warning)",
-                                        NotificationType::Success | NotificationType::TaskComplete => "var(--success)",
-                                        _ => "var(--accentTeal)",
-                                    };
-                                    // Unread rows pop via gold title + bold weight only — no rail, no wash (flat-quiet).
-                                    let row_extra = "";
-                                    let title_color = if is_read { "var(--text)" } else { "var(--accent)" };
-                                    rsx! {
-                                        div {
-                                            key: "{id}",
-                                            class: "notif-item lit-sweep",
-                                            style: "padding: 10px 10px 10px 12px; border-bottom: var(--border); cursor: pointer; display: flex; align-items: flex-start; gap: 8px; {row_extra}",
-
-                                            // Type dot
-                                            div {
-                                                style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {type_color}; flex-shrink: 0; margin-top: 4px;",
-                                            }
-
-                                            // Text
-                                            div {
-                                                style: "flex: 1; min-width: 0;",
-                                                div {
-                                                    style: "font-size: var(--text-sm); font-weight: {weight}; color: {title_color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
-                                                    "{display_title}"
-                                                }
-                                                div {
-                                                    style: "font-size: var(--text-2xs); color: var(--textDim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;",
-                                                    "{message}"
-                                                }
-                                            }
-
-                                            // Dismiss button
-                                            button {
-                                                class: "icon-btn",
-                                                style: "flex-shrink: 0;",
-                                                "aria-label": "Dismiss notification",
-                                                onclick: move |_| {
-                                                    mark_notification_dismissed(&mut notifications, &id);
-                                                },
-                                                IconClose { size: Some(13), color: Some("currentColor".to_string()) }
-                                            }
-                                        }
+                                key: "{id}",
+                                class: "notif-item lit-sweep",
+                                style: "padding: 10px 10px 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; align-items: flex-start; gap: 8px;",
+                                onclick: {
+                                    let id = id.clone();
+                                    move |_| {
+                                        mark_notification_read(&mut notifications, &id);
+                                        let id = id.clone();
+                                        spawn(async move { let _ = tauri_bridge::notification_mark_read(&id).await; });
                                     }
+                                },
+                                div { style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {type_color}; flex-shrink: 0; margin-top: 4px;" }
+                                div {
+                                    style: "flex: 1; min-width: 0;",
+                                    div { style: "font-size: var(--text-sm); font-weight: {weight}; color: {title_color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;", "{display_title}" }
+                                    div { style: "font-size: var(--text-2xs); color: var(--textDim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;", "{message}" }
+                                }
+                                button {
+                                    class: "icon-btn",
+                                    style: "flex-shrink: 0;",
+                                    "aria-label": "Dismiss notification",
+                                    onclick: {
+                                        let id = id.clone();
+                                        move |event: Event<MouseData>| {
+                                            event.stop_propagation();
+                                            mark_notification_dismissed(&mut notifications, &id);
+                                            let id = id.clone();
+                                            spawn(async move { let _ = tauri_bridge::notification_dismiss(&id).await; });
+                                        }
+                                    },
+                                    IconClose { size: Some(13), color: Some("currentColor".to_string()) }
                                 }
                             }
                         }
                     }
+                }
+            }
+
+            div {
+                style: "position: sticky; bottom: 0; display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bgSecondary);",
+                button {
+                    class: "btn-ghost btn-sm",
+                    onclick: move |_| {
+                        spawn(async move { let _ = tauri_bridge::notification_mark_all_read().await; });
+                        for n in notifications.write().iter_mut() { n.read = true; }
+                    },
+                    "Mark all read"
+                }
+                button {
+                    class: "btn-ghost btn-sm",
+                    onclick: move |_| {
+                        spawn(async move { let _ = tauri_bridge::notification_clear_all().await; });
+                        notifications.write().clear();
+                        dropdown_open.set(false);
+                    },
+                    "Clear all"
                 }
             }
         }

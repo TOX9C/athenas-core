@@ -1,5 +1,5 @@
 use crate::components::shared::icon::{IconCheck, IconClose, IconEdit, IconTrash};
-use crate::stores::task::{KanbanTask, use_task_store};
+use crate::stores::task::{use_task_store, KanbanTask};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 

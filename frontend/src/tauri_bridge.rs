@@ -306,6 +306,14 @@ pub async fn notification_count() -> TauriResult<String> {
     invoke("notification_count", "{}").await
 }
 
+pub async fn notification_mark_read(id: &str) -> TauriResult<()> {
+    invoke(
+        "notification_mark_read",
+        &serde_json::json!({ "notification_id": id }).to_string(),
+    )
+    .await
+}
+
 pub async fn notification_mark_all_read() -> TauriResult<()> {
     invoke("notification_mark_all_read", "{}").await
 }
@@ -317,7 +325,7 @@ pub async fn notification_clear_all() -> TauriResult<()> {
 pub async fn notification_dismiss(id: &str) -> TauriResult<()> {
     invoke(
         "notification_dismiss",
-        &serde_json::json!({ "id": id }).to_string(),
+        &serde_json::json!({ "notification_id": id }).to_string(),
     )
     .await
 }
@@ -1062,6 +1070,29 @@ pub async fn plugin_host_emit_event(event_type: &str, data: &str) -> TauriResult
 }
 
 // ---------------------------------------------------------------------------
+// Mobile mirror relay operations
+// ---------------------------------------------------------------------------
+
+/// Query the live mobile-mirror relay status. Returns a JSON object
+/// `{ "running": bool, "url": Option<String>, "port": Option<u16> }` — parsed
+/// by the Settings panel (raw string return follows the `session_list` /
+/// `output_buffer_list` convention).
+pub async fn relay_status() -> TauriResult<String> {
+    invoke("relay_status", "{}").await
+}
+
+/// Start the mobile-mirror relay. On success returns the bound socket
+/// address (e.g. `192.168.1.10:8787`) as a string.
+pub async fn relay_start() -> TauriResult<String> {
+    invoke("relay_start", "{}").await
+}
+
+/// Stop the mobile-mirror relay. Idempotent — succeeds even if not running.
+pub async fn relay_stop() -> TauriResult<()> {
+    invoke("relay_stop", "{}").await
+}
+
+// ---------------------------------------------------------------------------
 // Event listener infrastructure
 // ---------------------------------------------------------------------------
 
@@ -1151,27 +1182,48 @@ pub fn listen(
         }
     }) as Box<dyn FnMut(JsValue)>);
 
-    // Tauri's listen() returns an UnlistenFn (a JS function).
-    let unlisten_val = listen_fn
+    // Tauri v2's `event.listen` returns a Promise<UnlistenFn>. Keep the
+    // registration value alive and resolve it during teardown. Supporting a
+    // direct function as well keeps this bridge compatible with older test
+    // shims and avoids leaking a listener when a component remounts before
+    // native registration has completed.
+    let registration = listen_fn
         .call2(&event_mod, &JsValue::from_str(event), closure.as_ref())
         .map_err(|e| TauriBridgeError {
             message: format!("listen({}): failed to register listener: {:?}", event, e),
         })?;
 
-    // Convert the Rust closure to a JS value so it stays rooted in JS GC
-    // as long as the returned unlisten box is alive. Once the unlisten box
-    // is dropped (after calling unlisten), the JS GC can collect both.
+    // Keep the Rust callback rooted until the resolved unlisten function has
+    // run. This is especially important for xterm panes: pane swaps unmount
+    // and remount listeners quickly, so a stale callback must be removed even
+    // when registration is still pending.
     let closure_js = closure.into_js_value();
 
-    // Build the unlisten function. It calls Tauri's unlisten and then
-    // drops the JS references, allowing GC of both the closure and the
-    // unlisten function object.
     let unlisten_fn = Box::new(move || {
-        if let Ok(unlisten) = unlisten_val.dyn_into::<js_sys::Function>() {
+        if let Ok(unlisten) = registration.clone().dyn_into::<js_sys::Function>() {
             let _ = unlisten.call0(&JsValue::NULL);
+            drop(closure_js);
+            return;
         }
-        // closure_js and unlisten_val are dropped here, releasing JS GC roots
-        drop(closure_js);
+
+        let Ok(then_val) = js_sys::Reflect::get(&registration, &JsValue::from_str("then")) else {
+            drop(closure_js);
+            return;
+        };
+        let Ok(then_fn) = then_val.dyn_into::<js_sys::Function>() else {
+            drop(closure_js);
+            return;
+        };
+
+        let cleanup = wasm_bindgen::closure::Closure::once_into_js(Box::new(
+            move |resolved_unlisten: JsValue| {
+                if let Ok(unlisten) = resolved_unlisten.dyn_into::<js_sys::Function>() {
+                    let _ = unlisten.call0(&JsValue::NULL);
+                }
+                drop(closure_js);
+            },
+        ) as Box<dyn FnOnce(JsValue)>);
+        let _ = then_fn.call1(&registration, cleanup.as_ref());
     });
 
     Ok(unlisten_fn)

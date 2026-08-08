@@ -1,21 +1,11 @@
 use dioxus::prelude::*;
 
+#[path = "session_model.rs"]
+mod session_model;
+
+pub use session_model::SessionListItem;
+
 use super::athena::AthenaMessage;
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/// Summary of a session for the session list.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct SessionListItem {
-    pub id: String,
-    pub title: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub message_count: usize,
-    pub last_message_preview: String,
-}
 
 // ---------------------------------------------------------------------------
 // State

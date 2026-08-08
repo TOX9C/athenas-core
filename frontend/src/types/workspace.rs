@@ -12,6 +12,11 @@ pub enum AgentType {
     Codex,
     Opencode,
     Gemini,
+    Qwen,
+    Aider,
+    Cursor,
+    Freebuff,
+    Omp,
     Custom,
     Shell,
 }

@@ -1,5 +1,5 @@
 use crate::components::shared::icon::{IconChevronRight, IconSearch};
-use crate::stores::command::{use_command_store, Command, CommandCategory};
+use crate::stores::command::{filter_commands, use_command_store, Command};
 use dioxus::prelude::*;
 
 /// Format a shortcut string with Unicode symbols.
@@ -16,155 +16,6 @@ fn format_shortcut(shortcut: &str) -> String {
         .replace("Tab", "\u{21e5}")
 }
 
-/// A display group for the palette.
-#[derive(Clone)]
-struct DisplayGroup {
-    label: String,
-    commands: Vec<Command>,
-}
-
-/// Filter and group commands from the store for display.
-fn filter_and_group(commands: &[Command], recent_ids: &[String], query: &str) -> Vec<DisplayGroup> {
-    let available: Vec<&Command> = commands.iter().filter(|c| c.when_key.is_none()).collect();
-
-    if query.trim().is_empty() {
-        // Show recent first, then by category.
-        let recent: Vec<Command> = recent_ids
-            .iter()
-            .filter_map(|rid| available.iter().find(|c| c.id == *rid))
-            .map(|c| (*c).clone())
-            .collect();
-
-        let recent_set: std::collections::HashSet<&str> =
-            recent_ids.iter().map(|s| s.as_str()).collect();
-        let non_recent: Vec<&Command> = available
-            .iter()
-            .filter(|c| !recent_set.contains(c.id.as_str()))
-            .copied()
-            .collect();
-
-        let mut groups = Vec::new();
-        if !recent.is_empty() {
-            groups.push(DisplayGroup {
-                label: "Recent".to_string(),
-                commands: recent,
-            });
-        }
-
-        let cat_order: &[CommandCategory] = &[
-            CommandCategory::Workspace,
-            CommandCategory::Panel,
-            CommandCategory::Athena,
-            CommandCategory::Terminal,
-            CommandCategory::File,
-            CommandCategory::Navigation,
-            CommandCategory::Settings,
-        ];
-        let cat_label = |cat: &CommandCategory| -> &str {
-            match cat {
-                CommandCategory::Workspace => "Workspace",
-                CommandCategory::Panel => "Panels",
-                CommandCategory::Athena => "Athena",
-                CommandCategory::Terminal => "Terminal",
-                CommandCategory::File => "File",
-                CommandCategory::Navigation => "Navigation",
-                CommandCategory::Settings => "Settings",
-            }
-        };
-
-        for cat in cat_order {
-            let cmds: Vec<Command> = non_recent
-                .iter()
-                .filter(|c| c.category == *cat)
-                .map(|c| (*c).clone())
-                .collect();
-            if !cmds.is_empty() {
-                groups.push(DisplayGroup {
-                    label: cat_label(cat).to_string(),
-                    commands: cmds,
-                });
-            }
-        }
-
-        return groups;
-    }
-
-    // Fuzzy prefix matching.
-    let lower = query.to_lowercase();
-    let terms: Vec<&str> = lower.split_whitespace().collect();
-
-    let mut scored: Vec<(i32, Command)> = Vec::new();
-
-    for cmd in &available {
-        let label_lower = cmd.label.to_lowercase();
-        let desc_lower = cmd.description.as_deref().unwrap_or("").to_lowercase();
-        let kw_string = cmd.keywords.join(" ").to_lowercase();
-        let mut score: i32 = 0;
-
-        if label_lower.starts_with(&lower) {
-            score = 10;
-        } else if label_lower.contains(&lower) {
-            score = 7;
-        }
-
-        if score == 0 && terms.len() > 1 {
-            let all_match = terms.iter().all(|t| {
-                label_lower.contains(t) || desc_lower.contains(t) || kw_string.contains(t)
-            });
-            if all_match {
-                score = 5;
-            }
-        }
-
-        if score == 0 {
-            // Subsequence match: every char of the query appears in the label
-            // in order. Iterate the query by chars (not by byte index — the
-            // previous code used `lower.chars().nth(qi).unwrap()` where `qi`
-            // was a byte index, which panics for any multi-byte query).
-            let mut query_chars = lower.chars();
-            let mut next_q = query_chars.next();
-            for ch in label_lower.chars() {
-                if let Some(q) = next_q {
-                    if ch == q {
-                        next_q = query_chars.next();
-                    }
-                }
-            }
-            if next_q.is_none() {
-                // Whole query consumed as a subsequence.
-                score = 3;
-            }
-        }
-
-        if score == 0 && (desc_lower.contains(&lower) || kw_string.contains(&lower)) {
-            score = 2;
-        }
-
-        let recent_boost: i32 = if recent_ids.iter().any(|r| r == &cmd.id) {
-            1
-        } else {
-            0
-        };
-
-        if score + recent_boost > 0 {
-            scored.push((score + recent_boost, (*cmd).clone()));
-        }
-    }
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
-
-    let results: Vec<Command> = scored.into_iter().map(|(_, c)| c).collect();
-
-    if results.is_empty() {
-        Vec::new()
-    } else {
-        vec![DisplayGroup {
-            label: "Results".to_string(),
-            commands: results,
-        }]
-    }
-}
-
 #[component]
 pub fn CommandPalette() -> Element {
     let mut command_state = use_command_store();
@@ -177,7 +28,10 @@ pub fn CommandPalette() -> Element {
     let query = command_state.read().query.clone();
     let commands = command_state.read().commands.clone();
     let recent_ids = command_state.read().recent_ids.clone();
-    let groups = filter_and_group(&commands, &recent_ids, &query);
+    // The palette shows all registered commands (no when-key gating), so the
+    // visibility predicate is always false — matching the historical
+    // `when_key.is_none()` filter.
+    let groups = filter_commands(&commands, &recent_ids, &query, |_| false);
     let flat_count: usize = groups.iter().map(|g| g.commands.len()).sum();
     let total_commands = commands.len();
 
@@ -454,7 +308,7 @@ mod tests {
         for q in ["fïlé", "终端", "😀", "café"] {
             // Must not panic. (Result may be empty — that's fine; the point
             // is that non-ASCII input doesn't abort the renderer.)
-            let _ = filter_and_group(&commands, &[], q);
+            let _ = filter_commands(&commands, &[], q, |_| false);
         }
     }
 
@@ -463,7 +317,7 @@ mod tests {
     fn fuzzy_match_ascii_subsequence_still_works() {
         let commands = vec![cmd("term", "New Terminal"), cmd("save", "Save")];
         // "trm" is a subsequence of "new terminal".
-        let groups = filter_and_group(&commands, &[], "trm");
+        let groups = filter_commands(&commands, &[], "trm", |_| false);
         assert!(groups
             .iter()
             .any(|g| g.commands.iter().any(|c| c.id == "term")));

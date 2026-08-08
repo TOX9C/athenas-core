@@ -1,6 +1,6 @@
 [package]
 name = "athena-frontend"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 
 [lib]
@@ -29,8 +29,8 @@ strum_macros = "0.26"
 gloo = { version = "0.11", features = ["futures", "timers"] }
 uuid = { version = "1", default-features = false, features = ["v4", "js"] }
 parking_lot = "0.12"
+athena-resume-scanner = { path = "../crates/athena-resume-scanner" }
 
 [features]
 default = ["xterm"]
 xterm = []
-legacy-renderer = []

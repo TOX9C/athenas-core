@@ -1,4 +1,3 @@
-use crate::stores::terminal::TerminalSession;
 use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
@@ -9,14 +8,80 @@ use crate::tauri_bridge::{
 use crate::utils::resume_scanner::ResumeScanner;
 use dioxus::prelude::*;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+
+#[path = "xterm_helpers.rs"]
+mod xterm_helpers;
+use xterm_helpers::{
+    force_redraw, read_css_var, restore_term_from_session, schedule_fit, serialize_buffer,
+    try_activate_addon, wait_for_container_size, write_bytes_to_term, write_str_to_term,
+};
 
 /// Default scrollback buffer size for xterm.js sessions.
 /// Previously hardcoded to 2500; raised to 10000 to
 /// accommodate long-running build/logs without truncation.
 const XTERM_SCROLLBACK: f64 = 10000.0;
+/// PTY output already contains the shell's cursor-control and line-ending
+/// bytes. Let xterm.js interpret those bytes exactly as received; converting
+/// EOLs is intended for text streams and corrupts Unix PTY redraw sequences.
+const XTERM_CONVERT_EOL: bool = false;
+
+#[cfg(test)]
+mod tests {
+    use super::XTERM_CONVERT_EOL;
+
+    #[test]
+    fn unix_pty_output_keeps_native_line_endings() {
+        assert!(!XTERM_CONVERT_EOL);
+    }
+}
+
+/// Queue one PTY input payload and drain it in order.
+///
+/// xterm.js emits input synchronously, while Tauri invokes complete
+/// asynchronously. Keeping one drain in flight prevents normal input and
+/// custom shortcut input from overlapping on the same PTY.
+fn enqueue_pty_input(
+    queue: &Rc<RefCell<VecDeque<String>>>,
+    draining: &Rc<RefCell<bool>>,
+    active: &Rc<RefCell<bool>>,
+    pane_id: &str,
+    data: String,
+) {
+    if !*active.borrow() {
+        return;
+    }
+    queue.borrow_mut().push_back(data);
+    if *draining.borrow() {
+        return;
+    }
+    *draining.borrow_mut() = true;
+
+    let queue = queue.clone();
+    let draining = draining.clone();
+    let active = active.clone();
+    let pane_id = pane_id.to_string();
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            if !*active.borrow() {
+                queue.borrow_mut().clear();
+                *draining.borrow_mut() = false;
+                break;
+            }
+            let next = queue.borrow_mut().pop_front();
+            let Some(data) = next else {
+                *draining.borrow_mut() = false;
+                break;
+            };
+            if let Err(e) = pty_write(&pane_id, &data).await {
+                web_sys::console::error_1(&format!("XtermMount: pty_write failed: {:?}", e).into());
+            }
+        }
+    });
+}
 
 /// Holds the resources needed to tear down an xterm.js mount on unmount.
 struct XtermCleanup {
@@ -38,6 +103,9 @@ struct XtermCleanup {
     _ro_closure: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
     /// Rooted keydown handler for custom macOS keyboard shortcuts.
     _keydown_handler: Option<JsValue>,
+    /// Shared input-lifecycle flag; set false before a mount is disposed so
+    /// queued or delayed shortcut input cannot reach a later pane instance.
+    input_active: Option<Rc<RefCell<bool>>>,
     /// IntersectionObserver that detects when the terminal container
     /// becomes visible after being hidden (e.g. display:none toggle).
     _visibility_observer: Option<JsValue>,
@@ -64,6 +132,11 @@ pub fn XtermMount(
 ) -> Element {
     let mount_id = pane_id.clone();
     let mut cleanup: Signal<Option<XtermCleanup>> = use_signal(|| None);
+    // The async mount task can outlive the component by a few turns while
+    // PTY/session setup and xterm loading are in flight. Keep a lifecycle flag
+    // from the first render so a late task cannot install a raw listener after
+    // `use_drop` has already run.
+    let mount_active = use_hook(|| Rc::new(RefCell::new(true)));
     let is_initialized = use_hook(|| Rc::new(RefCell::new(false)));
     let term_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let fit_ref: Signal<Option<JsValue>> = use_signal(|| None);
@@ -74,6 +147,7 @@ pub fn XtermMount(
     let registry_for_drop = terminal_registry.clone();
     let workspace_store = use_workspace_store();
     let ui_state = use_ui_store();
+    let mount_active_for_drop = mount_active.clone();
 
     use_effect(move || {
         let already_init = *is_initialized.borrow();
@@ -120,6 +194,7 @@ pub fn XtermMount(
         let mut cleanup = cleanup;
         let mut term_ref = term_ref;
         let mut fit_ref = fit_ref;
+        let mount_active_for_task = mount_active.clone();
         let window = window.clone();
         let container = container.clone();
         // Clone the registry for the spawned task. `TerminalRegistry` is a
@@ -131,6 +206,9 @@ pub fn XtermMount(
         // the terminal. Everything that touches the xterm instance happens in
         // this async block so we can `await` the backend spawn first.
         spawn(async move {
+            if !*mount_active_for_task.borrow() {
+                return;
+            }
             // `terminal_store` and `terminal_registry` are captured at the
             // top of the component ABOVE (use_terminal_store() /
             // use_terminal_registry()), NOT re-fetched here. Dioxus hooks
@@ -308,7 +386,7 @@ pub fn XtermMount(
             let _ = js_sys::Reflect::set(
                 &options,
                 &JsValue::from_str("convertEol"),
-                &JsValue::from_bool(true),
+                &JsValue::from_bool(XTERM_CONVERT_EOL),
             );
             let _ = js_sys::Reflect::set(&options, &JsValue::from_str("theme"), &theme);
             let _ = js_sys::Reflect::set(
@@ -354,10 +432,16 @@ pub fn XtermMount(
 
             // ── Custom keyboard shortcuts (macOS) ────────────────────────────
             // xterm.js does not send distinct sequences for Shift+Enter or
-            // Cmd+Delete.  We intercept them in capture phase, write the
-            // appropriate escape sequence to the PTY, and prevent xterm.js
-            // from also forwarding its default sequence.
+            // Cmd+Delete. We intercept them in capture phase, enqueue the
+            // appropriate escape sequence, and prevent xterm.js from also
+            // forwarding its default sequence.
+            let input_queue: Rc<RefCell<VecDeque<String>>> = Rc::new(RefCell::new(VecDeque::new()));
+            let input_draining = Rc::new(RefCell::new(false));
             let pane_id_keydown = mount_id.clone();
+            let input_queue_for_keydown = input_queue.clone();
+            let input_draining_for_keydown = input_draining.clone();
+            let input_active = Rc::new(RefCell::new(true));
+            let input_active_for_keydown = input_active.clone();
             let keydown_handler = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
                 let is_mac = web_sys::window()
                     .and_then(|w| w.navigator().platform().ok())
@@ -382,19 +466,14 @@ pub fn XtermMount(
                     event.prevent_default();
                     event.stop_propagation();
                     let pane_id = pane_id_keydown.clone();
+                    let queue = input_queue_for_keydown.clone();
+                    let draining = input_draining_for_keydown.clone();
+                    let active = input_active_for_keydown.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         match read_clipboard_text().await {
                             Ok(text) => {
                                 let bracketed = format!("\x1b[200~{}\x1b[201~", text);
-                                if let Err(e) = pty_write(&pane_id, &bracketed).await {
-                                    web_sys::console::error_1(
-                                        &format!(
-                                            "XtermMount: bracketed paste write failed: {:?}",
-                                            e
-                                        )
-                                        .into(),
-                                    );
-                                }
+                                enqueue_pty_input(&queue, &draining, &active, &pane_id, bracketed);
                             }
                             Err(e) => {
                                 web_sys::console::error_1(
@@ -415,10 +494,13 @@ pub fn XtermMount(
                 if key == "Enter" && shift && !meta && !ctrl && !alt {
                     event.prevent_default();
                     event.stop_propagation();
-                    let pane_id = pane_id_keydown.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        let _ = pty_write(&pane_id, "\n").await;
-                    });
+                    enqueue_pty_input(
+                        &input_queue_for_keydown,
+                        &input_draining_for_keydown,
+                        &input_active_for_keydown,
+                        &pane_id_keydown,
+                        "\n".to_string(),
+                    );
                     return;
                 }
 
@@ -427,10 +509,13 @@ pub fn XtermMount(
                 if key == "Backspace" && meta && !shift && !ctrl && !alt {
                     event.prevent_default();
                     event.stop_propagation();
-                    let pane_id = pane_id_keydown.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        let _ = pty_write(&pane_id, "\x15").await;
-                    });
+                    enqueue_pty_input(
+                        &input_queue_for_keydown,
+                        &input_draining_for_keydown,
+                        &input_active_for_keydown,
+                        &pane_id_keydown,
+                        "\x15".to_string(),
+                    );
                 }
             })
                 as Box<dyn FnMut(web_sys::KeyboardEvent)>);
@@ -467,6 +552,10 @@ pub fn XtermMount(
             let mount_id_for_scan = mount_id.clone();
             let workspace_for_scan = workspace_store;
             let mut resume_scanner = ResumeScanner::new();
+            if !*mount_active_for_task.borrow() {
+                return;
+            }
+
             let unlisten = match pty_listen_raw(&mount_id, move |bytes: Vec<u8>| {
                 let text = String::from_utf8_lossy(&bytes).to_string();
                 wq_queue.borrow_mut().push(bytes);
@@ -561,6 +650,14 @@ pub fn XtermMount(
                 }
             }) {
                 Ok(u) => {
+                    // The component may have been dropped while the native
+                    // listener registration was being prepared. Unregister
+                    // immediately instead of handing a stale listener to a
+                    // cleanup signal that no longer exists.
+                    if !*mount_active_for_task.borrow() {
+                        u();
+                        return;
+                    }
                     // A listener is now attached — tell the backend so it
                     // clears `raw_paused` and the read loop flushes any burst
                     // accumulated while paused. This makes every (re)subscribe
@@ -625,19 +722,23 @@ pub fn XtermMount(
                     let _ = clear_fn.call0(&term_val);
                 }
                 force_redraw(&term_val);
-            }
-
+            } // xterm.js delivers input synchronously, but each Tauri invoke is
+              // asynchronous. Route all input through the same per-pane drain,
+              // including the custom shortcuts above, so IPC completions cannot
+              // overlap or reorder bytes from one terminal.
             let pane_id_for_data = mount_id.clone();
+            let input_queue_for_data = input_queue.clone();
+            let input_draining_for_data = input_draining.clone();
+            let input_active_for_data = input_active.clone();
             let on_data_closure =
                 wasm_bindgen::closure::Closure::wrap(Box::new(move |data: String| {
-                    let pane_id = pane_id_for_data.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        if let Err(e) = pty_write(&pane_id, &data).await {
-                            web_sys::console::error_1(
-                                &format!("XtermMount: pty_write failed: {:?}", e).into(),
-                            );
-                        }
-                    });
+                    enqueue_pty_input(
+                        &input_queue_for_data,
+                        &input_draining_for_data,
+                        &input_active_for_data,
+                        &pane_id_for_data,
+                        data,
+                    );
                 }) as Box<dyn FnMut(String)>);
             let on_data_closure_js = on_data_closure.into_js_value();
             if let Some(on_data_fn) = js_sys::Reflect::get(&term_val, &JsValue::from_str("onData"))
@@ -840,6 +941,7 @@ pub fn XtermMount(
                 _resize_observer: resize_observer_holder,
                 _ro_closure: ro_closure_holder,
                 _keydown_handler: Some(keydown_handler_js),
+                input_active: Some(input_active),
                 _visibility_observer: vis_observer_holder,
                 _vis_callback: vis_callback_holder,
                 _serialize_addon: serialize_addon,
@@ -967,7 +1069,11 @@ pub fn XtermMount(
 
     let mount_id_for_drop = pane_id.clone();
     use_drop(move || {
+        *mount_active_for_drop.borrow_mut() = false;
         if let Some(mut c) = cleanup.take() {
+            if let Some(active) = c.input_active.take() {
+                *active.borrow_mut() = false;
+            }
             // Pause backend raw emission BEFORE unlistening — closes the
             // stream-gap desync window. The backend keeps reading the PTY fd
             // (shell doesn't block) but suppresses pty:raw events so no bytes are
@@ -1025,7 +1131,7 @@ pub fn XtermMount(
         div {
             id: "{pane_id}",
             class: "xterm-mount",
-            style: "width: 100%; height: 100%; min-height: 0; flex: 1; background: var(--bg); position: relative; overflow: hidden; padding-left: 4px; padding-bottom: 4px; box-sizing: border-box;",
+            style: "width: 100%; height: 100%; min-height: 0; flex: 1; background: var(--bg); position: relative; overflow: hidden; padding: 0; box-sizing: border-box;",
             onpointerdown: move |e| {
                 e.stop_propagation();
                 terminal_store.write().set_active(pane_id.clone());
@@ -1043,236 +1149,3 @@ pub fn XtermMount(
         }
     }
 }
-
-fn read_css_var(window: &web_sys::Window, name: &str) -> String {
-    let Some(doc_el) = window.document().and_then(|d| d.document_element()) else {
-        return String::new();
-    };
-    let computed_val = js_sys::Reflect::get(window, &JsValue::from_str("getComputedStyle"))
-        .ok()
-        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
-        .and_then(|f| f.call1(window, &doc_el).ok());
-    let Some(computed_val) = computed_val else {
-        return String::new();
-    };
-    js_sys::Reflect::get(&computed_val, &JsValue::from_str("getPropertyValue"))
-        .ok()
-        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
-        .and_then(|f| f.call1(&computed_val, &JsValue::from_str(name)).ok())
-        .and_then(|v| v.as_string())
-        .unwrap_or_default()
-        .trim()
-        .to_string()
-}
-
-fn try_activate_addon(
-    window: &web_sys::Window,
-    global_name: &str,
-    term_val: &JsValue,
-) -> Option<JsValue> {
-    let global_val = js_sys::Reflect::get(window, &JsValue::from_str(global_name)).ok()?;
-    let ctor_val = if global_val.is_function() {
-        global_val
-    } else {
-        js_sys::Reflect::get(&global_val, &JsValue::from_str(global_name)).ok()?
-    };
-    if !ctor_val.is_function() {
-        return None;
-    }
-    let ctor: js_sys::Function = ctor_val.dyn_into().ok()?;
-    let instance = js_sys::Reflect::construct(&ctor, &js_sys::Array::new()).ok()?;
-    let activate_val = js_sys::Reflect::get(&instance, &JsValue::from_str("activate")).ok()?;
-    let activate_fn: js_sys::Function = activate_val.dyn_into().ok()?;
-    let _ = activate_fn.call1(&instance, term_val);
-    Some(instance)
-}
-
-fn write_bytes_to_term(term_val: &JsValue, bytes: &[u8]) {
-    let Ok(write_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("write")) else {
-        return;
-    };
-    let Ok(write_fn) = write_val.dyn_into::<js_sys::Function>() else {
-        return;
-    };
-    let bytes_arr = js_sys::Uint8Array::from(bytes);
-    let _ = write_fn.call1(term_val, bytes_arr.as_ref());
-}
-
-fn write_str_to_term(term_val: &JsValue, text: &str) {
-    let Ok(write_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("write")) else {
-        return;
-    };
-    let Ok(write_fn) = write_val.dyn_into::<js_sys::Function>() else {
-        return;
-    };
-    let _ = write_fn.call1(term_val, &JsValue::from_str(text));
-}
-
-/// Serialize the live xterm.js buffer to a VT escape string via
-/// `@xterm/addon-serialize`. Returns `None` if the addon isn't loaded or the
-/// call fails. MUST run BEFORE `term.dispose()` — once dispose() runs the
-/// buffer (colors, scrollback, alt-screen, modes, cursor) is gone.
-///
-/// `excludeAltBuffer:false, excludeModes:false` (the defaults) preserve the
-/// alt-screen state and DEC private modes so vim/htop round-trip correctly:
-/// the serialized output begins with the buffer-switch + mode-set sequences
-/// needed to re-enter that state on replay.
-fn serialize_buffer(serialize_addon: &JsValue) -> Option<String> {
-    let serialize_val =
-        js_sys::Reflect::get(serialize_addon, &JsValue::from_str("serialize")).ok()?;
-    let serialize_fn = serialize_val.dyn_into::<js_sys::Function>().ok()?;
-    // { excludeAltBuffer: false, excludeModes: false } — preserve everything.
-    let opts = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &opts,
-        &JsValue::from_str("excludeAltBuffer"),
-        &JsValue::from_bool(false),
-    );
-    let _ = js_sys::Reflect::set(
-        &opts,
-        &JsValue::from_str("excludeModes"),
-        &JsValue::from_bool(false),
-    );
-    let result = serialize_fn.call1(serialize_addon, &opts).ok()?;
-    result.as_string()
-}
-
-fn restore_term_from_session(term_val: &JsValue, session: &TerminalSession) {
-    let mut snapshot = String::from("\u{1b}[2J\u{1b}[H");
-
-    for (row_idx, row) in session.grid.iter().enumerate() {
-        let mut line = String::new();
-        for cell in row.iter() {
-            line.push_str(&cell.text);
-        }
-        while line.ends_with(' ') {
-            line.pop();
-        }
-        snapshot.push_str(&line);
-        if row_idx + 1 < session.grid.len() {
-            snapshot.push_str("\r\n");
-        }
-    }
-
-    let cursor_row = session.cursor_y.saturating_add(1);
-    let cursor_col = session.cursor_x.saturating_add(1);
-    snapshot.push_str(&format!("\u{1b}[{};{}H", cursor_row, cursor_col));
-
-    write_str_to_term(term_val, &snapshot);
-}
-
-// fit() recomputes cols/rows from the container rect, but on a pure geometry
-// change with no new PTY bytes flowing the CanvasAddon does not always emit a
-// full repaint frame — leaving the canvas showing stale glyph geometry (the
-// "blank until resize" symptom after a pane drag-swap, since Dioxus only moves
-// the keyed node and changes its flex weight, no remount, no new data).
-// Forcing refresh(0, rows-1) with rows read *after* fit() in the same rAF tick
-// repaints the whole row range against the fresh cell grid.
-fn call_fit(fit_instance: &JsValue, container: &web_sys::Element, term_val: &JsValue) {
-    let rect = container.get_bounding_client_rect();
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return;
-    }
-    let Ok(fit_val) = js_sys::Reflect::get(fit_instance, &JsValue::from_str("fit")) else {
-        return;
-    };
-    let Ok(fit_fn) = fit_val.dyn_into::<js_sys::Function>() else {
-        return;
-    };
-    let _ = fit_fn.call0(fit_instance);
-
-    // Refresh must follow fit (not precede it) and read rows *after* fit so the
-    // row range matches the new cell grid. Same rAF tick — no deferral.
-    refresh_full(term_val);
-}
-
-fn schedule_fit(
-    window: &web_sys::Window,
-    fit_instance: &JsValue,
-    container: &web_sys::Element,
-    term_val: &JsValue,
-) {
-    let fit_for_raf = fit_instance.clone();
-    let container_for_raf = container.clone();
-    let term_for_raf = term_val.clone();
-    // RAF callbacks fire exactly once, so use once_into_js which auto-frees
-    // the closure after invocation. The previous Closure::wrap + forget()
-    // leaked one closure per call (per resize tick).
-    let raf_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
-        call_fit(&fit_for_raf, &container_for_raf, &term_for_raf);
-    });
-    let _ = window.request_animation_frame(raf_closure.as_ref().unchecked_ref());
-}
-
-// `debounced_fit` was deleted: it was dead code (never called) and leaked a
-// Closure per invocation via forget(). schedule_fit (above) + the
-// ResizeObserver's own 50ms timer in ro_closure handle debouncing.
-
-// ---------------------------------------------------------------------------
-// Force a full xterm.js repaint of the visible row range: refresh(0, rows-1).
-// refresh() just re-runs the renderer over the current buffer (normal *or*
-// alt-screen) — it touches no buffer state, scrollback, modes, or cursor, so
-// it is safe to call after any dimension change. Callers MUST have already
-// run FitAddon.fit() (which recomputes cols/rows) before this, so the row
-// range here matches the new cell grid. This is the post-fit half of the
-// fit-then-refresh invariant used by IntersectionObserver, the font effect,
-// and the post-mount size-gate path.
-// ---------------------------------------------------------------------------
-fn refresh_full(term_val: &JsValue) {
-    let rows = js_sys::Reflect::get(term_val, &JsValue::from_str("rows"))
-        .ok()
-        .and_then(|v| v.as_f64())
-        .map(|v| v as i32)
-        .unwrap_or(24);
-    if rows <= 0 {
-        return;
-    }
-    if let Ok(refresh_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("refresh")) {
-        if let Ok(refresh_fn) = refresh_val.dyn_into::<js_sys::Function>() {
-            let _ = refresh_fn.call2(
-                term_val,
-                &JsValue::from_f64(0.0),
-                &JsValue::from_f64((rows - 1) as f64),
-            );
-        }
-    }
-}
-
-// Kept for the IntersectionObserver visibility-restore path. Now refresh-only
-// (fit is run separately via the FitAddon instance the observer captures),
-// preserving the fit-then-refresh ordering invariant.
-fn force_redraw(term_val: &JsValue) {
-    refresh_full(term_val);
-}
-
-// ---------------------------------------------------------------------------
-// Wait until the container has a non-zero size before opening xterm.
-// On remount after a pane swap, the flex grid may not have laid out yet,
-// so the container rect can be 0×0. Polling with RAF gives the browser a
-// chance to reflow. Capped at ~300ms to avoid hanging indefinitely.
-// ---------------------------------------------------------------------------
-async fn wait_for_container_size(container: &web_sys::Element) {
-    for _ in 0..15 {
-        let rect = container.get_bounding_client_rect();
-        if rect.width() > 0.0 && rect.height() > 0.0 {
-            return;
-        }
-        // Yield to the browser so it can process the layout task queue.
-        let window = match web_sys::window() {
-            Some(w) => w,
-            None => return,
-        };
-        // Use setTimeout to yield control back to the browser; a naive
-        // Promise without resolving would deadlock forever.
-        let promise = js_sys::Promise::new(&mut move |resolve, _reject| {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 20);
-        });
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-    }
-    web_sys::console::warn_1(
-        &"[XtermMount] container still 0-sized after 15 frames; proceeding anyway".into(),
-    );
-}
-
-// scan_for_resume_id has been replaced by ResumeScanner in utils::resume_scanner.
-// Kept out to prevent stale references.

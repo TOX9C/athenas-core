@@ -103,7 +103,9 @@ async fn create_task_in_column(title: &str, col_status: KanbanStatus) -> Result<
     let parsed = crate::stores::task::tasks_from_backend_json(&format!("[{json}]"))?;
     let task_id = parsed.first().map(|t| t.id.clone());
 
-    let Some(task_id) = task_id else { return Ok(()) };
+    let Some(task_id) = task_id else {
+        return Ok(());
+    };
 
     if col_status != KanbanStatus::Todo {
         let status_str = status_to_backend(&col_status).to_string();
