@@ -13,7 +13,9 @@ describe('Athena app launch', () => {
   });
 
   it('renders the New Workspace button on the empty state', async () => {
-    const btn = await $('button=+ New Workspace');
+    // The redesigned empty state renders the plus as an SVG icon (no literal
+    // "+" text), so match the label text only.
+    const btn = await $('button=New Workspace');
     await btn.waitForExist({ timeout: 15000 });
     const text = await btn.getText();
     expect(text).toContain('New Workspace');

@@ -10,6 +10,12 @@ export const config = {
   port: 4444,
   host: '127.0.0.1',
 
+  // Run one app instance at a time: specs launched in parallel workers would
+  // share the persisted `store.json` and clobber each other's workspace
+  // state. Top-level so the local runner honors it (capability-level
+  // maxInstances is not applied by the runner in WDIO 9).
+  maxInstances: 1,
+
   capabilities: [{
     'tauri:options': {
       // Binary is at workspace root target/ (not src-tauri/target/)
