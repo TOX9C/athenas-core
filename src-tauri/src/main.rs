@@ -4,8 +4,8 @@
 )]
 
 mod commands;
+mod relay;
 mod state;
-
 use commands::*;
 use std::sync::Arc;
 use tauri::Manager;
@@ -20,7 +20,8 @@ fn main() {
         )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_clipboard_manager::init());
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init());
 
     // WebDriver automation — debug builds only, and only when explicitly
     // requested via TAURI_WEBVIEW_AUTOMATION (set by the `tauri-wd` e2e runner).
@@ -101,10 +102,6 @@ fn main() {
             output_buffer_get,
             output_buffer_list,
             output_buffer_clear,
-            output_capture_read,
-            output_capture_list_agents,
-            output_capture_get_info,
-            output_capture_clear,
             get_pane_history,
             // Notifications
             notification_push,
@@ -149,10 +146,6 @@ fn main() {
             shell_integration_script,
             shell_integration_compatible,
             shell_integration_strip,
-            // Tools
-            tool_execute,
-            tool_list,
-            tool_openai_schema,
             // Browser
             browser_show,
             browser_hide,
@@ -188,8 +181,25 @@ fn main() {
             // Security
             store_api_key,
             clear_api_key,
+            // Mobile mirror relay
+            relay_start,
+            relay_stop,
+            relay_status,
         ])
-        .setup(|_app| Ok(()))
+        .setup(|app| {
+            // Request macOS notification permission up front so agent
+            // alerts (finished / needs attention / error) can be delivered
+            // natively without a first-use delay. No-op on other platforms.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri_plugin_notification::NotificationExt;
+                if let Err(e) = app.notification().request_permission() {
+                    log::warn!("failed to request notification permission: {e}");
+                }
+            }
+
+            Ok(())
+        })
         .build(tauri::generate_context!("tauri.conf.json"))
         .expect("error while building tauri application");
 
@@ -197,6 +207,39 @@ fn main() {
         let state = app.state::<state::AppState>();
         state.set_app_handle(app.handle().clone());
         state.wire_pty_events();
+
+        // Auto-start only after the AppHandle is installed and all event
+        // emitters are wired. This prevents a phone from connecting during
+        // setup and invoking against partially initialized state.
+        let enabled = state
+            .store
+            .get::<String>(crate::commands::RELAY_ENABLED_KEY)
+            .ok()
+            .flatten()
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        if enabled {
+            let resource = app
+                .path()
+                .resource_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::new());
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+                .unwrap_or_default();
+            let dist_dir = relay::resolve_dist_dir(&resource, &exe_dir);
+            match relay_token() {
+                Ok(token) => {
+                    log::info!("[relay] relay.enabled=true — auto-starting on boot");
+                    if let Err(e) = relay::start(app.handle().clone(), dist_dir, token) {
+                        log::error!("[relay] auto-start failed: {e}");
+                    }
+                }
+                Err(e) => log::error!("[relay] failed to load relay token: {e}"),
+            }
+        } else {
+            log::debug!("[relay] relay.enabled not set — skipping auto-start");
+        }
     }
 
     app.run(|app_handle, event| {
@@ -207,7 +250,21 @@ fn main() {
             tauri::RunEvent::ExitRequested { api: _, .. } => {
                 log::info!("Exit requested -- initiating graceful shutdown");
 
+                // Stop the mobile-mirror relay first so the port is
+                // released before the runtime tears down. Idempotent.
+                relay::stop();
+
                 let state = app_handle.state::<state::AppState>();
+
+                // Stop the dedicated MCP runtime and signal the TCP server
+                // before attempting the synchronous cleanup lock. This keeps
+                // shutdown reliable even if the async MCP mutex is contended.
+                state
+                    .mcp_runtime_stop
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(server) = state.mcp_server.try_lock() {
+                    server.request_shutdown();
+                }
 
                 // Shut down MCP server (synchronous — no tokio runtime on main thread)
                 {
@@ -256,6 +313,17 @@ fn main() {
                 // `<cli> --resume <id>` line and persist it before the process
                 // dies. The PTYs are still alive here (on macOS no
                 // `ExitRequested` ran, so `shutdown_all` has not killed them).
+                relay::stop();
+                let state = app_handle.state::<state::AppState>();
+                state
+                    .mcp_runtime_stop
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(server) = state.mcp_server.try_lock() {
+                    server.request_shutdown();
+                }
+                if let Ok(mut server) = state.mcp_server.try_lock() {
+                    server.shutdown();
+                }
                 capture_resume_on_exit(app_handle);
             }
             _ => {}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pty-attach-listener"
+description = "Enables the pty_attach_listener command without any pre-configured scope."
+commands.allow = ["pty_attach_listener"]
+
+[[permission]]
+identifier = "deny-pty-attach-listener"
+description = "Denies the pty_attach_listener command without any pre-configured scope."
+commands.deny = ["pty_attach_listener"]

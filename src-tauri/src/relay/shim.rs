@@ -1,0 +1,222 @@
+//! The injected shim: a self-contained JS blob that installs `window.__TAURI__`
+//! with the *exact* two members the frontend touches (`core.invoke` and
+//! `event.listen`) and routes them over an authenticated WebSocket to the relay
+//! dispatch.
+//!
+//! The frontend bridge (see `frontend/src/tauri_bridge/mod.rs`) reads only
+//! `.core.invoke(cmd, args)` and `.event.listen(name, cb)`. `invoke` returns a
+//! Promise; `listen`'s callback receives `{event, id, payload}` and the bridge
+//! only reads `.payload`. The shim satisfies both contracts purely over WS.
+
+use axum::extract::State;
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
+
+use super::RelayCtx;
+
+/// Handler for `GET /__athena_discovery__.json` — returns a browser-readable
+/// descriptor. The token is intentionally omitted; authentication still
+/// requires the QR/manual fragment or a native-client pairing flow.
+pub async fn serve_discovery(State(ctx): State<RelayCtx>) -> Response {
+    let body = serde_json::to_string(&super::discovery::info(ctx.addr))
+        .unwrap_or_else(|_| "{}".to_string());
+    (
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        body,
+    )
+        .into_response()
+}
+
+/// Handler for `GET /__relay_shim__.js` — returns the JS blob.
+pub async fn serve_shim() -> Response {
+    let js = shim_js();
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        js,
+    )
+        .into_response()
+}
+
+/// Handler for the desktop entry document.
+pub async fn serve_index(State(ctx): State<RelayCtx>) -> Response {
+    serve_document(ctx, "index.html").await
+}
+
+/// Handler for the installable companion entry document.
+pub async fn serve_mobile(State(ctx): State<RelayCtx>) -> Response {
+    serve_document(ctx, "mobile.html").await
+}
+
+/// Read an entry document, inject the relay shim, and serve it inline.
+async fn serve_document(ctx: RelayCtx, filename: &str) -> Response {
+    let index_path = std::path::Path::new(&ctx.dist_dir).join(filename);
+    match tokio::fs::read(&index_path).await {
+        Ok(bytes) => {
+            let mut html = String::from_utf8_lossy(&bytes).to_string();
+            inject_shim(&mut html);
+            (
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                html,
+            )
+                .into_response()
+        }
+        Err(_) => (axum::http::StatusCode::NOT_FOUND, "index.html not found").into_response(),
+    }
+}
+
+/// Insert `<script src="/__relay_shim__.js"></script>` immediately before the
+/// `<script type="module" async src="...">` tag (the WASM entry). The shim is
+/// a regular blocking script, so it runs synchronously *before* the async
+/// module script evaluates, guaranteeing `window.__TAURI__` exists by the time
+/// any WASM reads it.
+fn inject_shim(html: &mut String) {
+    let marker = "<script type=\"module\" async";
+    let inject = "<script src=\"/__relay_shim__.js\"></script>\n  ";
+    if let Some(idx) = html.find(marker) {
+        html.insert_str(idx, inject);
+    } else if let Some(idx) = html.find("<body>") {
+        html.insert_str(idx + 6, &format!("\n  {inject}"));
+    }
+}
+
+/// The shim JS. Defines `window.__TAURI__ = { core: { invoke }, event: { listen } }`
+/// over a persistent WS connection. Invoke calls are matched by id; listen
+/// registers a callback keyed by event name that the relay pushes to.
+fn shim_js() -> String {
+    r#"
+(function () {
+  'use strict';
+  var ws = null;
+  var pending = {};
+  var seq = 0;
+  var listeners = {};
+  var listenerRegistered = {};
+  var listenerSeq = 0;
+  var readyQ = [];
+
+  function newId() { seq += 1; return 'c' + seq; }
+
+  function ensureOpen(cb) {
+    if (ws && ws.readyState === WebSocket.OPEN) { cb(); return; }
+    readyQ.push(cb);
+    if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.CLOSING)) return;
+    connect();
+  }
+
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var token = new URLSearchParams((location.hash || '').replace(/^#/, '?')).get('token') || '';
+    var protocols = token ? ['athena-relay.' + token] : [];
+    ws = new WebSocket(proto + '//' + location.host + '/ws', protocols);
+    ws.onopen = function () {
+      var q = readyQ; readyQ = [];
+      for (var i = 0; i < q.length; i++) { try { q[i](); } catch (e) {} }
+      Object.keys(listeners).forEach(function (ev) {
+        Object.keys(listeners[ev]).forEach(function (lid) {
+          if (!listenerRegistered[lid]) {
+            sendListener(ev, lid);
+          }
+        });
+      });
+    };
+    ws.onmessage = function (evt) {
+      var msg;
+      try { msg = JSON.parse(evt.data); } catch (e) { return; }
+      if (msg.t === 'resp') {
+        var p = pending[msg.id];
+        if (!p) return;
+        delete pending[msg.id];
+        if (msg.ok) p.resolve(msg.result);
+        else p.reject(msg.error);
+      } else if (msg.t === 'event') {
+        var cbs = listeners[msg.event];
+        if (cbs) {
+          Object.keys(cbs).forEach(function (lid) {
+            try { cbs[lid]({ event: msg.event, id: lid, payload: msg.payload }); } catch (e) {}
+          });
+        }
+      }
+    };
+    ws.onerror = function () {};
+    ws.onclose = function () {
+      ws = null;
+      listenerRegistered = {};
+      // Drop callbacks for the failed connection. Listener registrations are
+      // replayed from `listeners` on the next open; stale invoke callbacks
+      // are rejected below and must never be replayed.
+      readyQ = [];
+      var reason = 'relay socket closed';
+      Object.keys(pending).forEach(function (id) {
+        try { pending[id].reject(reason); } catch (e) {}
+        delete pending[id];
+      });
+      setTimeout(connect, 1500);
+    };
+  }
+
+  function sendRaw(s) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(s);
+  }
+
+  function sendListener(name, lid) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ t: 'listen', event: name, id: lid }));
+      listenerRegistered[lid] = true;
+    }
+  }
+
+  function invoke(cmd, args) {
+    return new Promise(function (resolve, reject) {
+      var id = newId();
+      pending[id] = { resolve: resolve, reject: reject };
+      var payload = {
+        t: 'invoke',
+        id: id,
+        cmd: cmd,
+        args: (args === undefined || args === null) ? {} : args
+      };
+      ensureOpen(function () {
+        try {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(payload));
+          } else {
+            delete pending[id];
+            reject('relay socket not open');
+          }
+        } catch (e) { delete pending[id]; reject(String(e)); }
+      });
+    });
+  }
+
+  function listen(name, cb) {
+    var lid = 'l' + (listenerSeq += 1);
+    if (!listeners[name]) listeners[name] = {};
+    listeners[name][lid] = cb;
+    ensureOpen(function () {
+      sendListener(name, lid);
+    });
+    return function unlisten() {
+      delete listeners[name][lid];
+      delete listenerRegistered[lid];
+      if (Object.keys(listeners[name]).length === 0) delete listeners[name];
+      sendRaw(JSON.stringify({ t: 'unlisten', event: name, id: lid }));
+    };
+  }
+
+  if (!window.__TAURI__) window.__TAURI__ = {};
+  window.__TAURI__.core = { invoke: invoke };
+  if (!window.__TAURI__.event) window.__TAURI__.event = {};
+  window.__TAURI__.event.listen = listen;
+  connect();
+})();
+"#.to_string()
+}

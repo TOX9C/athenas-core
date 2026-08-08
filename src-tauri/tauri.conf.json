@@ -35,7 +35,12 @@
       "../frontend/dist/index.html": "./index.html",
       "../frontend/dist/styles.css": "./styles.css",
       "../frontend/dist/assets/": "./assets/",
-      "../frontend/dist/vendor/": "./vendor/"
+      "../frontend/dist/vendor/": "./vendor/",
+      "../frontend/dist/mobile.html": "./mobile.html",
+      "../frontend/dist/mobile.css": "./mobile.css",
+      "../frontend/dist/manifest.webmanifest": "./manifest.webmanifest",
+      "../frontend/dist/sw.js": "./sw.js",
+      "../frontend/dist/icons/": "./icons/"
     }
   },
   "plugins": {}

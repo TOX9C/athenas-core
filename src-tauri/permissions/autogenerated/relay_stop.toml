@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-relay-stop"
+description = "Enables the relay_stop command without any pre-configured scope."
+commands.allow = ["relay_stop"]
+
+[[permission]]
+identifier = "deny-relay-stop"
+description = "Denies the relay_stop command without any pre-configured scope."
+commands.deny = ["relay_stop"]

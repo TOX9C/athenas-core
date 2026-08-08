@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use athena_core::plan_manager::ExecutionPlan;
 use athena_core::tool_executor::ToolEventSender;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 // ---------------------------------------------------------------------------
 // TauriEventSender — real implementation (wired to SessionManager)
@@ -29,6 +29,7 @@ pub struct TauriEventSender {
     /// sync trait methods (e.g. when called from spawn_blocking).
     runtime_handle: Arc<parking_lot::Mutex<Option<tokio::runtime::Handle>>>,
     output_buffer: Arc<athena_core::output_buffer::OutputBuffer>,
+    agent_activity: Arc<athena_core::agent_activity::AgentActivityTracker>,
 }
 
 impl TauriEventSender {
@@ -39,6 +40,7 @@ impl TauriEventSender {
         >,
         session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
         output_buffer: Arc<athena_core::output_buffer::OutputBuffer>,
+        agent_activity: Arc<athena_core::agent_activity::AgentActivityTracker>,
     ) -> Self {
         Self {
             app_handle,
@@ -47,6 +49,7 @@ impl TauriEventSender {
             active_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             runtime_handle: Arc::new(parking_lot::Mutex::new(None)),
             output_buffer,
+            agent_activity,
         }
     }
 
@@ -74,7 +77,24 @@ impl TauriEventSender {
 }
 
 impl ToolEventSender for TauriEventSender {
-    fn agent_spawned(&self, id: &str, _agent_type: &str, agent_cmd: &str) {
+    fn agent_spawned(&self, id: &str, agent_type: &str, agent_cmd: &str) {
+        // Surface tool-launched agents immediately rather than waiting for the
+        // heartbeat's foreground-process classifier. The tracker deduplicates
+        // this against any later lifecycle signal for the same pane.
+        let agent_key = if athena_core::agent_detection::is_known_agent_key(agent_type) {
+            agent_type
+        } else {
+            agent_cmd
+                .split_whitespace()
+                .find_map(|word| {
+                    let base = word.rsplit('/').next().unwrap_or(word);
+                    athena_core::agent_detection::is_known_agent_key(base).then_some(base)
+                })
+                .unwrap_or("agent")
+        };
+        self.agent_activity
+            .notify_agent_started(id, agent_key, crate::commands::now_ms());
+
         // Track as active so `has_session` can answer synchronously.
         self.active_sessions.lock().insert(id.to_string());
 
@@ -83,6 +103,7 @@ impl ToolEventSender for TauriEventSender {
         let id = id.to_string();
         let agent_cmd = agent_cmd.to_string();
         let output_buffer = Arc::clone(&self.output_buffer);
+        let agent_activity = Arc::clone(&self.agent_activity);
 
         let handle = match self.get_runtime_handle() {
             Some(h) => h,
@@ -112,12 +133,14 @@ impl ToolEventSender for TauriEventSender {
                     if let Some(ref handle) = app_handle {
                         let session_id_for_loop = id.clone();
                         let handle = handle.clone();
+                        let tracker = Arc::clone(&agent_activity);
                         tokio::spawn(async move {
                             crate::commands::pty_read_loop(
                                 handle,
                                 session_id_for_loop,
                                 session,
                                 output_buffer,
+                                Some(tracker),
                             )
                             .await;
                         });
@@ -354,6 +377,10 @@ pub struct AppState {
     /// The same `Arc` is shared with `ToolExecutor`.
     pub agent_comms: Arc<athena_core::agent_comms::AgentComms>,
 
+    /// Backend-owned per-pane agent activity state machine. Emits
+    /// `agent:status` events and pushes notifications on transitions.
+    pub agent_activity: Arc<athena_core::agent_activity::AgentActivityTracker>,
+
     /// Internally synchronized -- no outer `Mutex` needed.
     /// Wired to the tool executor so LLM tool calls are dispatched
     /// through the same service instances and real PTY side-effects.
@@ -379,13 +406,14 @@ pub struct AppState {
     /// Tool executor -- holds shared `Arc<T>` refs to the same service
     /// instances stored above, plus a `TauriEventSender` for real PTY
     /// side-effects.
-    pub tool_executor: Arc<parking_lot::Mutex<athena_core::tool_executor::ToolExecutor>>,
 
     /// Per-command rate limiter to prevent DoS from IPC spam.
     pub rate_limiter: crate::commands::caps::RateLimiter,
 
-    /// Guard to ensure the MCP stdio background thread is only started once.
-    pub mcp_stdio_started: AtomicBool,
+    /// Guard to ensure the MCP background runtime is only started once.
+    pub mcp_stdio_started: Arc<AtomicBool>,
+    /// Signals the dedicated MCP runtime thread to stop during app shutdown.
+    pub mcp_runtime_stop: Arc<AtomicBool>,
     /// Kanban backend — same `Arc<KanbanBackend>` is shared with the
     /// ToolExecutor's internally-held instance (the store clone keeps storage
     /// consistent via the same backing KeyValueStore).
@@ -417,14 +445,22 @@ impl AppState {
 
         let output_buffer = Arc::new(athena_core::output_buffer::OutputBuffer::new());
         let plan_manager = Arc::new(athena_core::plan_manager::PlanManager::new());
-        let notification_service = Arc::new(athena_core::notification::NotificationService::new());
+        let notification_service = Arc::new(
+            athena_core::notification::NotificationService::new_with_store(Arc::clone(&store)),
+        );
         let agent_comms = Arc::new(athena_core::agent_comms::AgentComms::new());
+        let agent_activity = Arc::new(athena_core::agent_activity::AgentActivityTracker::new(
+            Some(Arc::clone(&notification_service)),
+        ));
 
         let session_manager = Arc::new(tokio::sync::Mutex::new(
             athena_terminal::session::SessionManager::new(),
         ));
 
-        let mcp_server = Arc::new(tokio::sync::Mutex::new(athena_core::mcp::McpServer::new()));
+        let mcp_runtime_stop = Arc::new(AtomicBool::new(false));
+        let mcp_server = Arc::new(tokio::sync::Mutex::new(
+            athena_core::mcp::McpServer::new_with_shutdown(Arc::clone(&mcp_runtime_stop)),
+        ));
         // Tool executor reference for MCP server — wire it up after both are created
         let swarm_coordinator = Arc::new(tokio::sync::Mutex::new(
             athena_core::swarm::SwarmCoordinator::new(),
@@ -446,6 +482,7 @@ impl AppState {
             Arc::clone(&pending_questions),
             Arc::clone(&session_manager),
             Arc::clone(&output_buffer),
+            Arc::clone(&agent_activity),
         ));
 
         // -- Build ToolExecutor with the SAME Arc<T> instances ---------
@@ -517,6 +554,7 @@ impl AppState {
             plan_manager,
             notification_service,
             agent_comms,
+            agent_activity,
             orchestrator,
             mcp_server,
             swarm_coordinator,
@@ -524,9 +562,9 @@ impl AppState {
             shell_integration_parser,
             kanban_backend,
             pending_questions,
-            tool_executor,
             rate_limiter: crate::commands::caps::global_rate_limiter(),
-            mcp_stdio_started: AtomicBool::new(false),
+            mcp_stdio_started: Arc::new(AtomicBool::new(false)),
+            mcp_runtime_stop,
         }
     }
 
@@ -546,29 +584,103 @@ impl AppState {
         self.wire_swarm_events();
         self.wire_browser_events();
         self.wire_plugin_events();
+        self.wire_agent_activity_events();
 
-        // Auto-start the MCP server on a background thread (only once)
+        // Start the agent-activity heartbeat poll on its own runtime.
+        self.spawn_agent_activity_heartbeat();
+
+        // One-time dock badge sync so an unread count persisted across
+        // restarts shows immediately (event-driven updates only fire on
+        // notification state changes).
+        #[cfg(target_os = "macos")]
+        if let Some(window) = self
+            .app_handle
+            .lock()
+            .as_ref()
+            .and_then(|h| h.get_webview_window("main"))
+        {
+            let unread = self.notification_service.get_unread_count();
+            if let Err(e) = window.set_badge_count(Some(unread as i64)) {
+                log::warn!("failed to set dock badge at startup: {e}");
+            }
+        }
+
+        self.start_mcp_runtime();
+    }
+
+    /// Start the boot-time MCP TCP and stdio transports on a dedicated runtime.
+    ///
+    /// Startup is retried while the app is alive if runtime creation or the
+    /// canonical TCP bind fails. Keeping the retry loop here makes resetting a
+    /// one-time guard unnecessary: a failed first attempt cannot permanently
+    /// disable MCP for the rest of the process.
+    fn start_mcp_runtime(&self) {
         if self
             .mcp_stdio_started
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            == Ok(false)
+            != Ok(false)
         {
-            let mcp_server = Arc::clone(&self.mcp_server);
-            std::thread::spawn(move || {
-                let rt = match tokio::runtime::Runtime::new() {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        log::error!("Failed to create tokio runtime for MCP server: {}", e);
-                        return;
-                    }
-                };
-                rt.block_on(async {
-                    let server = mcp_server.lock().await;
-                    server.init_stdio();
-                    log::info!("MCP stdio server started");
-                });
-            });
+            return;
         }
+
+        let mcp_server = Arc::clone(&self.mcp_server);
+        let mcp_runtime_stop = Arc::clone(&self.mcp_runtime_stop);
+        let mcp_stdio_started = Arc::clone(&self.mcp_stdio_started);
+        std::thread::spawn(move || {
+            let rt = loop {
+                if mcp_runtime_stop.load(Ordering::Relaxed) {
+                    mcp_stdio_started.store(false, Ordering::SeqCst);
+                    return;
+                }
+                match tokio::runtime::Runtime::new() {
+                    Ok(rt) => break rt,
+                    Err(e) => {
+                        log::error!("Failed to create tokio runtime for MCP server: {e}");
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                }
+            };
+
+            rt.block_on(async {
+                loop {
+                    if mcp_runtime_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    let started = {
+                        let mut server = mcp_server.lock().await;
+                        match server.init(4545) {
+                            Ok(()) => {
+                                server.init_stdio();
+                                true
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "Failed to start MCP TCP server on 127.0.0.1:4545: {e}; retrying"
+                                );
+                                false
+                            }
+                        }
+                    };
+
+                    if started {
+                        log::info!("MCP TCP server started on 127.0.0.1:4545");
+                        log::info!("MCP stdio server started");
+
+                        // `McpServer::init` and `init_stdio` spawn their tasks
+                        // on this runtime. Keep it alive until app shutdown;
+                        // dropping it here would abort both servers.
+                        while !mcp_runtime_stop.load(Ordering::Relaxed) {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                        break;
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            });
+            mcp_stdio_started.store(false, Ordering::SeqCst);
+        });
     }
 
     /// Retrieve a clone of the Tauri `AppHandle`.
@@ -615,11 +727,102 @@ impl AppState {
     }
 
     /// Wire notification service events to Tauri event emissions.
+    ///
+    /// Every `notifications:new` is forwarded to the frontend (existing
+    /// in-app behavior). On top of that, agent-source notifications are
+    /// mirrored to a **native macOS notification with sound** (the app may
+    /// be backgrounded while an agent finishes), and the **dock badge** is
+    /// kept in sync with the unread count. Both are no-ops on non-macOS
+    /// targets (the badge path falls back to a harmless no-op elsewhere).
     fn wire_notification_events(&self) {
         let service = Arc::clone(&self.notification_service);
-        self.wire_emitter("notification", move |emitter| {
-            service.set_event_emitter(emitter);
-        });
+        let service_for_closure = Arc::clone(&service);
+        let handle = match self.app_handle.lock().clone() {
+            Some(h) => h,
+            None => {
+                log::error!("wire_notification_events called before set_app_handle");
+                return;
+            }
+        };
+        service.set_event_emitter(Box::new(
+            move |channel: &str, data: &serde_json::Value| {
+                // 1) Forward to the frontend exactly as before.
+                if let Ok(data_str) = serde_json::to_string(data) {
+                    if let Err(e) = handle.emit(channel, data_str) {
+                        log::warn!("failed to emit notification event {channel}: {e}");
+                    }
+                }
+
+                if channel == "notifications:new" {
+                    // 2) Mirror agent-source notifications to macOS with a
+                    // per-type sound. Only "agent" source (the activity
+                    // tracker) hits the OS — generic backend/tool noise stays
+                    // in-app. The payload's `source`/`agentId` come straight
+                    // from NotificationEvent.
+                    let is_agent = data
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "agent")
+                        .unwrap_or(false);
+                    if is_agent {
+                        let title = data
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Agent")
+                            .to_string();
+                        let body = data
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let ntype = data
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("info")
+                            .to_string();
+                        let sound = match ntype.as_str() {
+                            "needs_input" => "Sosumi",
+                            "task_error" | "error" => "Basso",
+                            _ => "Glass",
+                        };
+                        #[cfg(target_os = "macos")]
+                        {
+                            use tauri_plugin_notification::NotificationExt;
+                            if let Err(e) = handle
+                                .notification()
+                                .builder()
+                                .title(title)
+                                .body(body)
+                                .sound(sound)
+                                .show()
+                            {
+                                log::warn!("failed to show macOS notification: {e}");
+                            }
+                        }
+                    }
+                }
+
+                // 3) Dock badge = unread count (all sources), refreshed on
+                // every notification state change (new / mark-read /
+                // dismiss), so marking a notification read in the UI clears
+                // the badge without a restart.
+                #[cfg(target_os = "macos")]
+                if matches!(
+                    channel,
+                    "notifications:new"
+                        | "notifications:updated"
+                        | "notifications:dismissed"
+                        | "notifications:cleared"
+                ) {
+                    let unread = service_for_closure.get_unread_count();
+                    if let Some(window) = handle.get_webview_window("main") {
+                        if let Err(e) = window.set_badge_count(Some(unread as i64)) {
+                            log::warn!("failed to set dock badge: {e}");
+                        }
+                    }
+                }
+            },
+        ));
     }
 
     /// Wire plan manager events to Tauri event emissions.
@@ -638,11 +841,230 @@ impl AppState {
         });
     }
 
-    /// Wire agent comms events to Tauri event emissions.
+    /// Wire agent comms events to Tauri emissions, enriching `agents:*`
+    /// payloads with the frontend `paneId` (the SINGLE translation owner).
+    ///
+    /// Agent-comms events carry `sessionId`/`agentId` only; the frontend's
+    /// `agents:*` listeners read `paneId` and drop events without it. The
+    /// plugin-host registry is keyed by pane id, so we resolve agentId →
+    /// paneId here (fallback: the plugin may pass its pane id AS the agent id).
     fn wire_agent_comms_events(&self) {
         let service = Arc::clone(&self.agent_comms);
-        self.wire_emitter("agent_comms", move |emitter| {
+        let plugin_manager = self.plugin_manager.clone();
+        let notification_service = Arc::clone(&self.notification_service);
+        let handle = match self.app_handle.lock().clone() {
+            Some(h) => h,
+            None => {
+                log::error!("wire_agent_comms_events called before set_app_handle");
+                return;
+            }
+        };
+        service.set_event_emitter(Box::new(
+            move |channel: &str, data: &serde_json::Value| {
+                let mut data = data.clone();
+                if channel.starts_with("agents:") && data.get("paneId").is_none() {
+                    if let Some(agent_id) = data.get("agentId").and_then(|v| v.as_str()) {
+                        let pane_id = plugin_manager
+                            .get_session_by_agent_id(agent_id)
+                            .and_then(|s| s.pane_id)
+                            .or_else(|| {
+                                agent_id
+                                    .starts_with("pane")
+                                    .then(|| agent_id.to_string())
+                            });
+                        if let Some(pid) = pane_id {
+                            if let Some(obj) = data.as_object_mut() {
+                                obj.insert("paneId".into(), serde_json::Value::String(pid));
+                            }
+                        }
+                    }
+                }
+
+                // Normalize the plugin protocol's `active` / `waiting_input`
+                // vocabulary to the frontend AgentRunStatus contract. Without
+                // this adapter, plugin activity silently falls through to Idle.
+                if channel == "agents:statusUpdate" {
+                    let status = data
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    if let Some(status) = status {
+                        let normalized = match status.as_str() {
+                            "active" | "running" => "working",
+                            "waiting_input" => "waiting_for_input",
+                            "done" | "complete" => "completed",
+                            other => other,
+                        };
+                        if normalized != status {
+                            if let Some(obj) = data.as_object_mut() {
+                                obj.insert(
+                                    "status".into(),
+                                    serde_json::Value::String(normalized.to_string()),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Plugin notifications are high-fidelity equivalents of the
+                // passive tracker notifications. Route them through the
+                // shared service so the existing frontend, macOS sound, and
+                // dock-badge paths all behave consistently.
+                if channel == "agents:notification" {
+                    let level = data
+                        .get("level")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("info");
+                    let notification_type = match level {
+                        "needs_input" | "waiting_input" => {
+                            athena_core::notification::NotificationType::NeedsInput
+                        }
+                        "error" => athena_core::notification::NotificationType::TaskError,
+                        "success" | "completed" | "done" => {
+                            athena_core::notification::NotificationType::Success
+                        }
+                        "warning" => athena_core::notification::NotificationType::Warning,
+                        _ => athena_core::notification::NotificationType::Info,
+                    };
+                    let pane_id = data
+                        .get("paneId")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    notification_service.push_notification(
+                        athena_core::notification::NotificationEvent {
+                            r#type: notification_type,
+                            title: data
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Agent notification")
+                                .to_string(),
+                            message: data
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            source: "agent".to_string(),
+                            agent_id: pane_id.clone(),
+                            data: Some(data.clone()),
+                            timestamp: data
+                                .get("timestamp")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or_else(crate::commands::now_ms),
+                            metadata: None,
+                            actions: None,
+                            request_id: None,
+                        },
+                    );
+                    return;
+                }
+
+                if let Ok(data_str) = serde_json::to_string(&data) {
+                    if let Err(e) = handle.emit(channel, data_str) {
+                        log::warn!("failed to emit agent_comms event {channel}: {e}");
+                    }
+                }
+            },
+        ));
+    }
+
+    /// Wire agent-activity events (`agent:status`) to Tauri emissions.
+    fn wire_agent_activity_events(&self) {
+        let service = Arc::clone(&self.agent_activity);
+        self.wire_emitter("agent_activity", move |emitter| {
             service.set_event_emitter(emitter);
+        });
+    }
+
+    /// Slow heartbeat poll: for every live PTY session, classify the
+    /// foreground process (spawn_blocking `ps`), scrape the agent's session
+    /// file when an agent is present, and feed the activity tracker.
+    fn spawn_agent_activity_heartbeat(&self) {
+        let session_manager = Arc::clone(&self.session_manager);
+        let agent_activity = Arc::clone(&self.agent_activity);
+        let output_buffer = Arc::clone(&self.output_buffer);
+        let plugin_manager = self.plugin_manager.clone();
+        let store = Arc::clone(&self.store);
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("failed to create agent-activity heartbeat runtime: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
+                loop {
+                    interval.tick().await;
+
+                    // Apply the persisted per-type notification config (the
+                    // frontend writes it via the existing `store_set` IPC —
+                    // no new command surface needed). Best-effort: missing /
+                    // malformed JSON keeps the previous config.
+                    if let Ok(Some(json)) = store.get::<String>("agent_notify_config") {
+                        if let Ok(cfg) = serde_json::from_str::<
+                            athena_core::agent_activity::AgentNotifyConfig,
+                        >(&json)
+                        {
+                            agent_activity.set_notify_config(cfg);
+                        }
+                    }
+
+                    let sessions = {
+                        let sm = session_manager.lock().await;
+                        sm.list_sessions().await
+                    };
+                    if sessions.is_empty() {
+                        continue;
+                    }
+                    let plugin_panes: HashSet<String> = plugin_manager
+                        .list_sessions()
+                        .iter()
+                        .filter_map(|s| s.pane_id.clone())
+                        .collect();
+                    for sid in &sessions {
+                        let connected = plugin_panes.contains(sid);
+                        agent_activity.set_plugin_connected(sid, connected);
+                        let session = {
+                            let sm = session_manager.lock().await;
+                            sm.get_session(sid).await
+                        };
+                        let Some(session) = session else { continue };
+                        let fg = crate::commands::session_foreground_label(&session).await;
+                        let fg_opt = if fg == "shell" { None } else { Some(fg) };
+                        // Only scrape history / tail when an agent is present
+                        // (never for plain shell panes).
+                        let history = fg_opt
+                            .as_deref()
+                            .and_then(athena_core::agent_detection::scrape_agent_history);
+                        let tail = if fg_opt.is_some() {
+                            let lines = output_buffer.get_output(sid, None);
+                            Some(
+                                lines
+                                    .iter()
+                                    .rev()
+                                    .take(40)
+                                    .rev()
+                                    .map(|l| l.text.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            )
+                        } else {
+                            None
+                        };
+                        agent_activity.heartbeat(
+                            sid,
+                            fg_opt.as_deref(),
+                            history.as_ref(),
+                            tail.as_deref(),
+                            crate::commands::now_ms(),
+                        );
+                    }
+                }
+            });
         });
     }
 
