@@ -213,4 +213,3 @@ describe('athena_report_completion schema', () => {
     expect(result.success).toBe(true)
   })
 })
-
