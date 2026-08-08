@@ -104,7 +104,19 @@ pub struct TerminalSession {
     /// remount (pane swap): the old mount pauses the backend before unlisten,
     /// and the new mount unpauses after re-subscribe + snapshot replay.
     pub raw_paused: AtomicBool,
+    /// Ensures only one background reader consumes a session's PTY master.
+    /// `SessionManager::spawn` intentionally returns an existing session for
+    /// duplicate IDs, so callers must claim the read loop separately.
+    reader_started: AtomicBool,
     pub pending_writes: Mutex<VecDeque<Vec<u8>>>,
+    /// Serialize writes to the PTY master.
+    ///
+    /// xterm.js emits one `onData` event per key (and interactive TUIs often
+    /// switch the PTY into raw mode). The frontend forwards those events over
+    /// asynchronous IPC, so multiple writes can otherwise reach the PTY at
+    /// the same time and complete out of order. Keeping one writer in flight
+    /// preserves the byte order the user generated.
+    write_lock: Mutex<()>,
     /// Persistent VTE parser state.
     ///
     /// VTE's `Parser` is a state machine that tracks partial escape sequences
@@ -154,7 +166,9 @@ impl TerminalSession {
             status: Mutex::new(PtyStatus::Spawning),
             is_xterm: AtomicBool::new(false),
             raw_paused: AtomicBool::new(false),
+            reader_started: AtomicBool::new(false),
             pending_writes: Mutex::new(VecDeque::new()),
+            write_lock: Mutex::new(()),
             parser: Mutex::new(Parser::new()),
         }
     }
@@ -185,16 +199,19 @@ impl TerminalSession {
     /// Write data to the PTY master fd.
     /// If the session is not yet ready, data is queued for later.
     pub async fn write(&self, data: &[u8]) -> io::Result<usize> {
+        // Hold the writer lock through the pending-write check and the actual
+        // PTY write. This makes the Spawning → Ready transition and all live
+        // key writes one ordered stream rather than concurrent blocking tasks.
+        let _write_guard = self.write_lock.lock().await;
         {
-            let mut pending = self.pending_writes.lock().await;
+            // Keep lock order consistent with `mark_ready` (status, then
+            // pending) so a readiness transition cannot deadlock with input.
             let status = self.status.lock().await;
             if *status == PtyStatus::Spawning {
                 drop(status);
-                pending.push_back(data.to_vec());
+                self.pending_writes.lock().await.push_back(data.to_vec());
                 return Ok(data.len());
             }
-            drop(status);
-            drop(pending);
         }
         self.do_write(data).await
     }
@@ -270,8 +287,27 @@ impl TerminalSession {
         .map_err(io::Error::other)?
     }
 
+    /// Claim ownership of the session's background PTY reader.
+    ///
+    /// Multiple callers can receive the same `Arc<TerminalSession>` when a
+    /// pane is remounted or a duplicate spawn request arrives. Only the first
+    /// caller may start `pty_read_loop`; two readers on one PTY would split or
+    /// duplicate the shell's echoed bytes.
+    pub fn try_claim_read_loop(&self) -> bool {
+        !self.reader_started.swap(true, Ordering::AcqRel)
+    }
+
+    /// Release a read-loop claim when startup could not actually launch a
+    /// reader (for example, before the Tauri app handle is available).
+    pub fn release_read_loop(&self) {
+        self.reader_started.store(false, Ordering::Release);
+    }
+
     /// Mark the session as ready and flush any pending writes.
     pub async fn mark_ready(&self) {
+        // Match `write`: pending startup bytes must be flushed before any
+        // later interactive input can overtake them.
+        let _write_guard = self.write_lock.lock().await;
         let mut status = self.status.lock().await;
         *status = PtyStatus::Ready;
         drop(status);
@@ -280,6 +316,14 @@ impl TerminalSession {
         while let Some(data) = pending.pop_front() {
             let _ = self.do_write(&data).await;
         }
+    }
+
+    /// Mark the session terminal after its PTY reader observes process exit.
+    /// The session remains addressable long enough for the frontend to receive
+    /// the exit event, while a later spawn can atomically replace it.
+    pub async fn mark_exited(&self) {
+        let mut status = self.status.lock().await;
+        *status = PtyStatus::Exited;
     }
 }
 
@@ -332,8 +376,20 @@ impl SessionManager {
         // child pre-exec error), so it does not stall the runtime worker.
         let mut sessions = self.sessions.write().await;
         if let Some(existing) = sessions.get(&id).cloned() {
-            info!("PTY session {} already exists, returning existing", id);
-            return Ok(existing);
+            let is_exited = {
+                let status = existing.status.lock().await;
+                *status == PtyStatus::Exited
+            };
+            if is_exited {
+                // A natural PTY exit leaves the old Arc alive until its reader
+                // task finishes. Remove only the map entry here; the old task
+                // retains ownership of its fd/process cleanup, and this new
+                // spawn gets a fresh reader claim and PTY.
+                sessions.remove(&id);
+            } else {
+                info!("PTY session {} already exists, returning existing", id);
+                return Ok(existing);
+            }
         }
 
         // Create a pipe for the child to report pre-exec errors.
@@ -755,6 +811,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_replaces_an_exited_session() {
+        let manager = SessionManager::new();
+        let first = manager
+            .spawn("respawn_id".to_string(), "/bin/sh", "/", 80, 24)
+            .await
+            .expect("first spawn should succeed");
+        first.mark_exited().await;
+
+        let replacement = manager
+            .spawn("respawn_id".to_string(), "/bin/sh", "/", 80, 24)
+            .await
+            .expect("respawn should replace exited session");
+
+        assert!(!Arc::ptr_eq(&first, &replacement));
+        assert_eq!(
+            manager.list_sessions().await,
+            vec!["respawn_id".to_string()]
+        );
+        let _ = manager.kill("respawn_id").await;
+    }
+
+    #[tokio::test]
     async fn spawn_concurrent_same_id_races_to_single_session() {
         let manager = SessionManager::new();
 
@@ -852,8 +930,29 @@ mod tests {
         assert!(!manager.has_session("fail_id").await);
     }
 
+    /// Only one caller may claim a session's background PTY reader.
+    #[test]
+    fn read_loop_claim_is_single_use() {
+        let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
+        let raw_fd = read_end.into_raw_fd();
+        let foreign_pgid = nix::unistd::Pid::from_raw(1);
+        let session = TerminalSession::new(
+            "reader-claim".to_string(),
+            raw_fd,
+            foreign_pgid,
+            foreign_pgid,
+            "/bin/sh".to_string(),
+            "/".to_string(),
+            80,
+            24,
+        );
+
+        assert!(session.try_claim_read_loop());
+        assert!(!session.try_claim_read_loop());
+        session.close_fd();
+    }
+
     /// close_fd is idempotent and atomically swaps the fd to -1.
-    /// Uses a real pipe fd (no PTY needed) to exercise the libc::close path.
     #[test]
     fn close_fd_is_idempotent_and_swaps_to_sentinel() {
         // Create a real fd via pipe() so libc::close has something valid to

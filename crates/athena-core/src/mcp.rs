@@ -3,335 +3,28 @@
 //! Implements a TCP-based JSON-RPC 2.0 server on port 4545 that exposes
 //! Athena's tool interface to external agents and plugins.
 
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use thiserror::Error;
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::time::{timeout, Duration};
 
 use crate::tool_executor::ToolExecutor;
 
-/// How long a connected MCP client may sit idle between requests before
-/// the server disconnects it. Guards against half-open connections and
-/// buggy clients that never send a newline.
-const MCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+#[path = "mcp_protocol.rs"]
+mod mcp_protocol;
+pub use mcp_protocol::{
+    get_tools, AgentCommsHandler, JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpError,
+    OutputHandler, SpawnHandler, TaskHandler, ToolDefinition, ToolSchema,
+};
 
-/// Maximum size in bytes of a single MCP JSON-RPC request line. Caps memory
-/// usage when a client streams a huge line without a newline (a cheap local
-/// DoS). 1 MiB is generous for these payloads; the request-body cap in the
-/// Tauri command layer (`MAX_REQUEST_BYTES`) is the same.
-const MAX_MCP_LINE_BYTES: usize = 1024 * 1024;
+#[path = "mcp_dispatch.rs"]
+mod mcp_dispatch;
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/// Error type for MCP server operations.
-#[derive(Debug, Error)]
-pub enum McpError {
-    /// A low-level I/O error occurred.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    /// JSON serialization or deserialization failed.
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    /// The client provided an invalid or missing authentication token.
-    #[error("Invalid or missing auth token")]
-    InvalidToken,
-    /// The requested JSON-RPC method is not recognized.
-    #[error("Method not found: {0}")]
-    MethodNotFound(String),
-    /// The requested MCP tool does not exist.
-    #[error("Tool not found: {0}")]
-    ToolNotFound(String),
-    /// A mutex lock was poisoned (typically indicates a panic in a holding thread).
-    #[error("Lock poisoned")]
-    LockPoisoned,
-    /// A generic error with a human-readable message.
-    #[error("{0}")]
-    Generic(String),
-}
-
-// ---------------------------------------------------------------------------
-// JSON-RPC types
-// ---------------------------------------------------------------------------
-
-/// A JSON-RPC 2.0 request received from a connected client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcRequest {
-    /// Protocol version, always `"2.0"`.
-    pub jsonrpc: String,
-    /// Request ID. `None` for notifications (which expect no response).
-    pub id: Option<serde_json::Value>,
-    /// The method name being invoked (e.g., `"initialize"`, `"tools/call"`).
-    pub method: String,
-    /// Method-specific parameters.
-    #[serde(default)]
-    pub params: serde_json::Value,
-}
-
-/// A JSON-RPC 2.0 response sent back to a client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcResponse {
-    /// Protocol version, always `"2.0"`.
-    pub jsonrpc: String,
-    /// Echoes the request ID. Absent for notifications.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<serde_json::Value>,
-    /// The result of a successful request. Mutually exclusive with `error`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<serde_json::Value>,
-    /// Error details if the request failed. Mutually exclusive with `result`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonRpcError>,
-}
-
-/// A JSON-RPC 2.0 error object.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcError {
-    /// Error code. `-32600` for invalid request, `-32601` for method not found.
-    pub code: i32,
-    /// Human-readable error message.
-    pub message: String,
-    /// Optional additional error data.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
-}
-
-// ---------------------------------------------------------------------------
-// Tool definitions
-// ---------------------------------------------------------------------------
-
-/// JSON Schema describing the input parameters for an MCP tool.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSchema {
-    /// Schema type, always `"object"`.
-    #[serde(rename = "type")]
-    pub type_: String,
-    /// Property definitions for the input object.
-    pub properties: serde_json::Value,
-    /// Names of properties that are required.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required: Option<Vec<String>>,
-}
-
-/// Definition of a single tool exposed via the MCP server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    /// The tool name, used by clients to invoke it (e.g., `"create_tasks"`).
-    pub name: String,
-    /// Human-readable description of what the tool does.
-    pub description: String,
-    /// JSON Schema describing the tool's input parameters.
-    #[serde(rename = "inputSchema")]
-    pub input_schema: ToolSchema,
-}
-
-/// Build the standard set of MCP tools exposed by the Athena orchestrator.
-pub fn get_tools() -> Vec<ToolDefinition> {
-    vec![
-        ToolDefinition {
-            name: "create_tasks".into(),
-            description: "Add new tasks to the Kanban board.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "spaceId": { "type": "string" },
-                    "tasks": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title": { "type": "string" },
-                                "description": { "type": "string" }
-                            },
-                            "required": ["title"]
-                        }
-                    }
-                }),
-                required: Some(vec!["spaceId".into(), "tasks".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "get_next_task".into(),
-            description: "Pull the next available To Do task from the board.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({}),
-                required: None,
-            },
-        },
-        ToolDefinition {
-            name: "update_task_status".into(),
-            description: "Update the status of a specific task.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "taskId": { "type": "string" },
-                    "status": { "type": "string", "enum": ["todo", "in_progress", "in_review", "complete"] }
-                }),
-                required: Some(vec!["taskId".into(), "status".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "spawn_agents".into(),
-            description: "Spawn new terminal worker agents.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "count": { "type": "number" },
-                    "cwd": { "type": "string" },
-                    "instruction": { "type": "string" }
-                }),
-                required: Some(vec!["count".into(), "cwd".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "notify".into(),
-            description: "Send a notification to Athena. Use this to surface important information, warnings, or completion messages to the user.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "level": { "type": "string", "enum": ["info", "warning", "error", "success"], "description": "Notification severity" },
-                    "title": { "type": "string", "description": "Short title for the notification" },
-                    "message": { "type": "string", "description": "Detailed message body" },
-                    "metadata": { "type": "object", "description": "Optional structured metadata" }
-                }),
-                required: Some(vec!["message".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "status_update".into(),
-            description: "Update your current working status in Athena. Use this to indicate what you are doing, report progress, or signal that you need input.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "status": { "type": "string", "enum": ["idle", "thinking", "working", "waiting_for_input", "completed", "error", "cancelled"], "description": "Current agent status" },
-                    "message": { "type": "string", "description": "Human-readable status description" },
-                    "progress": { "type": "object", "properties": { "current": { "type": "number" }, "total": { "type": "number" }, "label": { "type": "string" } }, "description": "Progress indicator" }
-                }),
-                required: Some(vec!["status".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "get_output".into(),
-            description: "Read captured terminal output from an agent pane. Returns line-numbered, timestamped output entries.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "paneId": { "type": "string", "description": "The pane ID to read output from." },
-                    "limit": { "type": "number", "description": "Maximum number of lines to return. Defaults to 100." },
-                    "sinceLine": { "type": "number", "description": "Only return lines with lineNum greater than this value." },
-                    "sinceTime": { "type": "number", "description": "Only return lines with timestamp greater than this Unix ms value." }
-                }),
-                required: Some(vec!["paneId".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "list_agent_panes".into(),
-            description: "List all agent panes with captured output available.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({}),
-                required: None,
-            },
-        },
-        ToolDefinition {
-            name: "athena_forward_output".into(),
-            description: "Forward agent stdout/stderr output to Athena. Used by plugins to stream terminal output back to the Athena UI.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "entries": { "type": "array", "items": { "type": "object", "properties": { "channel": { "type": "string", "enum": ["stdout", "stderr"] }, "text": { "type": "string" }, "timestamp": { "type": "number" } }, "required": ["channel", "text"] } },
-                    "sessionId": { "type": "string" }
-                }),
-                required: Some(vec!["entries".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "send_message_to_agent".into(),
-            description: "Send a message to another agent via the agent communications channel.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "target_agent_id": { "type": "string" },
-                    "message": { "type": "string" },
-                    "message_type": { "type": "string", "enum": ["instruction", "query", "result", "notification"] }
-                }),
-                required: Some(vec!["target_agent_id".into(), "message".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "read_agent_messages".into(),
-            description: "List all connected agent sessions.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "agent_id": { "type": "string" }
-                }),
-                required: None,
-            },
-        },
-        ToolDefinition {
-            name: "request_input".into(),
-            description: "Request input from the user. Use this when an agent needs clarification or a decision to proceed.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "prompt": { "type": "string", "description": "The question or prompt to present to the user" },
-                    "title": { "type": "string", "description": "Optional title for the input request" }
-                }),
-                required: Some(vec!["prompt".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "code_search".into(),
-            description: "Search the codebase for a pattern using ripgrep.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "pattern": { "type": "string" },
-                    "path": { "type": "string" },
-                    "glob": { "type": "string" },
-                    "case_sensitive": { "type": "boolean" },
-                    "max_results": { "type": "number" },
-                    "context_lines": { "type": "number" }
-                }),
-                required: Some(vec!["pattern".into(), "path".into()]),
-            },
-        },
-        ToolDefinition {
-            name: "search_files".into(),
-            description: "Search the codebase for a pattern using ripgrep with enhanced edge-case handling.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "pattern": { "type": "string" },
-                    "path": { "type": "string" },
-                    "glob": { "type": "string" },
-                    "case_sensitive": { "type": "boolean" },
-                    "max_results": { "type": "number" },
-                    "context_lines": { "type": "number" }
-                }),
-                required: Some(vec!["pattern".into(), "path".into()]),
-            },
-        },
-    ]
-}
-
-// ---------------------------------------------------------------------------
-// Handler callback types
-// ---------------------------------------------------------------------------
-
-pub type TaskHandler = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
-pub type SpawnHandler = Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>;
-pub type OutputHandler = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
-pub type AgentCommsHandler =
-    Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
+#[path = "mcp_transport.rs"]
+mod mcp_transport;
 
 // ---------------------------------------------------------------------------
 // MCP Server
@@ -351,8 +44,10 @@ pub type AgentCommsHandler =
 pub struct McpServer {
     token: String,
     active_clients: Arc<Mutex<HashMap<String, TcpStream>>>,
-    listener: Option<TcpListener>,
     port: Option<u16>,
+    app_shutdown: Arc<AtomicBool>,
+    tcp_shutdown: Option<Arc<AtomicBool>>,
+    tcp_stopped: Option<Arc<AtomicBool>>,
     pub task_handler: Option<TaskHandler>,
     pub spawn_handler: Option<SpawnHandler>,
     pub output_handler: Option<OutputHandler>,
@@ -378,11 +73,21 @@ impl Default for McpServer {
 
 impl McpServer {
     pub fn new() -> Self {
+        Self::new_with_shutdown(Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Construct a server using an externally owned TCP shutdown signal.
+    ///
+    /// Tauri keeps this signal in `AppState` so synchronous exit callbacks can
+    /// cancel MCP even when the async server mutex is contended.
+    pub fn new_with_shutdown(app_shutdown: Arc<AtomicBool>) -> Self {
         Self {
             token: uuid::Uuid::new_v4().to_string(),
             active_clients: Arc::new(Mutex::new(HashMap::new())),
-            listener: None,
             port: None,
+            app_shutdown,
+            tcp_shutdown: None,
+            tcp_stopped: None,
             task_handler: None,
             spawn_handler: None,
             output_handler: None,
@@ -400,7 +105,19 @@ impl McpServer {
 
     /// Returns the port the server is currently listening on, if initialized.
     pub fn port(&self) -> Option<u16> {
-        self.port
+        let stopped = self
+            .tcp_stopped
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire));
+        let stopping = self
+            .tcp_shutdown
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire));
+        if stopped || stopping {
+            None
+        } else {
+            self.port
+        }
     }
 
     /// Initialize the MCP TCP server on the given port.
@@ -409,20 +126,54 @@ impl McpServer {
     /// connections and dispatches each to its own handler thread.
     ///
     /// Returns `Ok(())` immediately. The server runs in the background.
-    /// Calling `init` on an already-initialized server is a no-op.
+    /// Calling `init` on the active port is idempotent. A different active
+    /// port is rejected rather than silently ignored.
     pub fn init(&mut self, port: u16) -> Result<(), McpError> {
-        if let Some(port) = self.port {
-            log::warn!("MCP server already initialized on port {}", port);
-            return Ok(());
+        if self
+            .tcp_stopped
+            .as_ref()
+            .is_some_and(|stopped| stopped.load(Ordering::Acquire))
+        {
+            self.port = None;
+            self.tcp_shutdown = None;
+            self.tcp_stopped = None;
         }
 
+        if let Some(active_port) = self.port() {
+            if active_port == port {
+                log::debug!("MCP server already initialized on port {}", active_port);
+                return Ok(());
+            }
+            return Err(McpError::Generic(format!(
+                "MCP server is already listening on port {active_port}; requested {port}"
+            )));
+        }
+
+        // Each bind gets a fresh generation signal. Never reset an old
+        // generation's flag, otherwise a delayed old task could be revived by
+        // a later reinitialization.
+        if let Some(stopped) = self.tcp_stopped.as_ref() {
+            if !stopped.load(Ordering::Acquire) {
+                return Err(McpError::Generic(
+                    "MCP server is still shutting down".to_string(),
+                ));
+            }
+        }
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let listener = TcpListener::bind(addr)?;
+        let listener = std::net::TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
         let actual_port = listener.local_addr()?.port();
+        let listener = tokio::net::TcpListener::from_std(listener)
+            .map_err(|e| McpError::Generic(format!("failed to initialize MCP listener: {e}")))?;
+        let tcp_shutdown = Arc::new(AtomicBool::new(false));
+        let tcp_stopped = Arc::new(AtomicBool::new(false));
+        self.tcp_shutdown = Some(Arc::clone(&tcp_shutdown));
+        self.tcp_stopped = Some(Arc::clone(&tcp_stopped));
         self.port = Some(actual_port);
         log::info!("MCP server listening on 127.0.0.1:{}", actual_port);
 
         let token = self.token.clone();
+        let app_shutdown = Arc::clone(&self.app_shutdown);
         let active_clients = Arc::clone(&self.active_clients);
         let task_handler = self.task_handler.clone();
         let spawn_handler = self.spawn_handler.clone();
@@ -430,8 +181,11 @@ impl McpServer {
         let agent_comms_handler = self.agent_comms_handler.clone();
 
         tokio::spawn(async move {
-            accept_loop(
+            mcp_transport::accept_loop(
                 listener,
+                tcp_shutdown,
+                tcp_stopped,
+                app_shutdown,
                 token,
                 active_clients,
                 task_handler,
@@ -443,6 +197,32 @@ impl McpServer {
         });
 
         Ok(())
+    }
+
+    /// Request TCP shutdown without requiring mutable access to the server.
+    ///
+    /// Tauri exit callbacks are synchronous and may observe the async mutex
+    /// as temporarily contended. Signaling here ensures the accept loop and
+    /// active connection readers still stop even if the follow-up mutex lock
+    /// is unavailable during that callback.
+    pub fn request_shutdown(&self) {
+        if let Some(stop) = self.tcp_shutdown.as_ref() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Wait until the current TCP listener generation has fully exited.
+    pub async fn wait_for_tcp_shutdown(&self) -> bool {
+        let Some(stopped) = self.tcp_stopped.as_ref().cloned() else {
+            return true;
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !stopped.load(Ordering::Acquire) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
     }
 
     /// Initialize the MCP server in stdio mode (reads from stdin, writes to stdout).
@@ -481,7 +261,7 @@ impl McpServer {
                             Ok(r) => r,
                             Err(e) => {
                                 log::warn!("MCP stdio: parse error: {}", e);
-                                let err = make_parse_error_response(trimmed);
+                                let err = mcp_dispatch::make_parse_error_response(trimmed);
                                 let mut w = writer.lock().await;
                                 let _ = w.write_all((err + "\n").as_bytes()).await;
                                 continue;
@@ -490,7 +270,7 @@ impl McpServer {
 
                         // For stdio mode, skip authentication since the
                         // process is spawned by the client itself.
-                        let response = handle_request_impl(
+                        let response = mcp_dispatch::handle_request_impl(
                             &token,
                             &req,
                             &task_handler,
@@ -519,10 +299,10 @@ impl McpServer {
 
     /// Shutdown the MCP server.
     ///
-    /// Drops the TCP listener and clears all active client connections.
-    /// The accept loop will terminate on the next iteration.
+    /// Signals the TCP accept loop to drop its listener and clears all active
+    /// client connections. The accept loop exits asynchronously.
     pub fn shutdown(&mut self) {
-        self.listener = None;
+        self.request_shutdown();
         if let Ok(mut clients) = self.active_clients.lock() {
             clients.clear();
         }
@@ -546,10 +326,10 @@ impl McpServer {
                 let args = req.params.get("arguments").cloned().unwrap_or_default();
 
                 // Map MCP tool name to ToolExecutor tool name
-                let executor_name = map_mcp_to_executor_name(name);
+                let executor_name = mcp_dispatch::map_mcp_to_executor_name(name);
 
                 // Convert args to ToolInput
-                if let Some(tool_input) = args_to_tool_input(&args) {
+                if let Some(tool_input) = mcp_dispatch::args_to_tool_input(&args) {
                     let tool_exec = tool_exec_arc.lock();
                     {
                         match tool_exec.execute_tool_call(executor_name, &tool_input) {
@@ -585,7 +365,7 @@ impl McpServer {
         }
 
         // Fall through to the existing handler implementation
-        handle_request_impl(
+        mcp_dispatch::handle_request_impl(
             &self.token,
             req,
             &self.task_handler,
@@ -656,939 +436,6 @@ impl McpServer {
 // the per-connection handler thread).
 // ---------------------------------------------------------------------------
 
-async fn handle_request_impl(
-    token: &str,
-    req: &JsonRpcRequest,
-    task_handler: &Option<TaskHandler>,
-    spawn_handler: &Option<SpawnHandler>,
-    output_handler: &Option<OutputHandler>,
-    agent_comms_handler: &Option<AgentCommsHandler>,
-) -> JsonRpcResponse {
-    match req.method.as_str() {
-        "initialize" => {
-            let params = &req.params;
-            if params.get("token").and_then(|t| t.as_str()) != Some(token) {
-                return JsonRpcResponse {
-                    jsonrpc: "2.0".into(),
-                    id: req.id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32600,
-                        message: "Invalid or missing auth token".into(),
-                        data: None,
-                    }),
-                };
-            }
-            JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id: req.id.clone(),
-                result: Some(serde_json::json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "athena-orchestrator", "version": "1.0.0" }
-                })),
-                error: None,
-            }
-        }
-        "notifications/initialized" => JsonRpcResponse {
-            jsonrpc: "2.0".into(),
-            id: req.id.clone(),
-            result: Some(serde_json::Value::Null),
-            error: None,
-        },
-        "tools/list" => JsonRpcResponse {
-            jsonrpc: "2.0".into(),
-            id: req.id.clone(),
-            result: Some(serde_json::json!({ "tools": get_tools() })),
-            error: None,
-        },
-        "tools/call" => {
-            let name = req
-                .params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let arguments = req
-                .params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(serde_json::Value::Object(Default::default()));
-            let result = handle_tool_call_impl(
-                name,
-                arguments,
-                task_handler,
-                spawn_handler,
-                output_handler,
-                agent_comms_handler,
-            )
-            .await;
-            JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id: req.id.clone(),
-                result: Some(result),
-                error: None,
-            }
-        }
-        _ => JsonRpcResponse {
-            jsonrpc: "2.0".into(),
-            id: req.id.clone(),
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32601,
-                message: format!("Method not found: {}", req.method),
-                data: None,
-            }),
-        },
-    }
-}
-
-async fn handle_tool_call_impl(
-    name: &str,
-    args: serde_json::Value,
-    task_handler: &Option<TaskHandler>,
-    spawn_handler: &Option<SpawnHandler>,
-    output_handler: &Option<OutputHandler>,
-    agent_comms_handler: &Option<AgentCommsHandler>,
-) -> serde_json::Value {
-    match name {
-        "notify" => {
-            let level = args.get("level").and_then(|v| v.as_str()).unwrap_or("info");
-            let title = args
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Agent Notification");
-            let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            log::info!(
-                "[MCP notify] level={}, title={}, msg={}",
-                level,
-                title,
-                message
-            );
-            serde_json::json!({ "content": [{ "type": "text", "text": "Notification delivered." }] })
-        }
-        "status_update" => {
-            let status = args
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("idle");
-            let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            log::info!("[MCP status_update] status={}, msg={}", status, message);
-            serde_json::json!({ "content": [{ "type": "text", "text": format!("Status updated to: {}", status) }] })
-        }
-        "request_input" => {
-            let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-            let title = args
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Input Request");
-            log::info!("[MCP request_input] title={}, prompt={}", title, prompt);
-            serde_json::json!({ "content": [{ "type": "text", "text": "Input request received. (Blocking input not yet available — use environment variables or config files for now.)" }] })
-        }
-        "create_tasks" => {
-            if let Some(handler) = task_handler {
-                handler("create_tasks", &args)
-            } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'create_tasks' not yet implemented" }] })
-            }
-        }
-        "get_next_task" => {
-            if let Some(handler) = task_handler {
-                handler("get_next_task", &args)
-            } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'get_next_task' not yet implemented" }] })
-            }
-        }
-        "update_task_status" => {
-            if let Some(handler) = task_handler {
-                handler("update_task_status", &args)
-            } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'update_task_status' not yet implemented" }] })
-            }
-        }
-        "spawn_agents" => {
-            if let Some(handler) = spawn_handler {
-                handler(&args)
-            } else {
-                let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                serde_json::json!({ "content": [{ "type": "text", "text": format!("Spawn request received for {} agents (placeholder — real implementation requires PTY access)", count) }] })
-            }
-        }
-        "get_output" => {
-            if let Some(handler) = output_handler {
-                handler("get_output", &args)
-            } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'get_output' not yet implemented" }] })
-            }
-        }
-        "list_agent_panes" => {
-            if let Some(handler) = output_handler {
-                handler("list_agent_panes", &args)
-            } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'list_agent_panes' not yet implemented" }] })
-            }
-        }
-        "athena_forward_output" => {
-            let entries = args
-                .get("entries")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            let session_id = args.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
-            log::info!(
-                "[MCP athena_forward_output] entries={}, session={}",
-                entries,
-                session_id
-            );
-            serde_json::json!({ "content": [{ "type": "text", "text": format!("Forwarded {} output entries.", entries) }] })
-        }
-        "send_message_to_agent" => {
-            if let Some(handler) = agent_comms_handler {
-                handler("send_message_to_agent", &args)
-            } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'send_message_to_agent' not yet implemented" }] })
-            }
-        }
-        "read_agent_messages" => {
-            if let Some(handler) = agent_comms_handler {
-                handler("read_agent_messages", &args)
-            } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'read_agent_messages' not yet implemented" }] })
-            }
-        }
-        "code_search" => {
-            let pattern = args
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or(".")
-                .to_string();
-            let glob = args
-                .get("glob")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let case_sensitive = args
-                .get("case_sensitive")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let max_results = args
-                .get("max_results")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize);
-            let context_lines = args
-                .get("context_lines")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize);
-
-            let options = crate::types::SearchOptions {
-                pattern,
-                path,
-                glob,
-                case_sensitive,
-                max_results,
-                context_lines,
-            };
-
-            let search_result = crate::search::search_code(&options).await;
-
-            match search_result {
-                Ok(result) => {
-                    if result.matches.is_empty() {
-                        serde_json::json!({ "content": [{ "type": "text", "text": format!("No matches found for pattern \"{}\" in {}.", options.pattern, options.path) }] })
-                    } else {
-                        let formatted = result
-                            .matches
-                            .iter()
-                            .map(|m| {
-                                let mut output = format!(
-                                    "{}:{}:{}: {}",
-                                    m.file_path, m.line_number, m.column, m.line_text
-                                );
-                                if !m.context_before.is_empty() {
-                                    let before = m
-                                        .context_before
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, l)| {
-                                            format!(
-                                                "  {}: {}",
-                                                m.line_number - m.context_before.len() as u32
-                                                    + i as u32,
-                                                l
-                                            )
-                                        })
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
-                                    output = format!("{}\n{}", before, output);
-                                }
-                                if !m.context_after.is_empty() {
-                                    let after = m
-                                        .context_after
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, l)| {
-                                            format!("  {}: {}", m.line_number + 1 + i as u32, l)
-                                        })
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
-                                    output = format!("{}\n{}", output, after);
-                                }
-                                output
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
-
-                        let header = format!(
-                            "Found {} matches in {} files{}:\n\n",
-                            result.stats.total_matches,
-                            result.stats.files_matched,
-                            if result.truncated { " (truncated)" } else { "" }
-                        );
-
-                        serde_json::json!({ "content": [{ "type": "text", "text": format!("{}{}", header, formatted) }] })
-                    }
-                }
-                Err(e) => {
-                    serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": format!("Search error: {}", e) }] })
-                }
-            }
-        }
-        "search_files" => {
-            let pattern = args
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or(".")
-                .to_string();
-            let glob = args
-                .get("glob")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let max_results = args
-                .get("max_results")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize);
-
-            let search_result =
-                crate::search::search_files(&path, &pattern, glob.as_deref(), max_results).await;
-
-            match search_result {
-                Ok(results) => {
-                    if results.is_empty() {
-                        serde_json::json!({ "content": [{ "type": "text", "text": format!("No files found matching pattern \"{}\" in {}.", pattern, path) }] })
-                    } else {
-                        let formatted = results.join("\n");
-                        serde_json::json!({ "content": [{ "type": "text", "text": format!("Found {} files:\n\n{}", results.len(), formatted) }] })
-                    }
-                }
-                Err(e) => {
-                    serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": format!("Search error: {}", e) }] })
-                }
-            }
-        }
-        _ => {
-            serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": format!("Unknown tool: {}", name) }] })
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // TCP accept loop and per-connection handler
 // ---------------------------------------------------------------------------
-
-async fn accept_loop(
-    listener: std::net::TcpListener,
-    token: String,
-    active_clients: Arc<Mutex<HashMap<String, TcpStream>>>,
-    task_handler: Option<TaskHandler>,
-    spawn_handler: Option<SpawnHandler>,
-    output_handler: Option<OutputHandler>,
-    agent_comms_handler: Option<AgentCommsHandler>,
-) {
-    // Convert the std listener to a tokio listener for async accept.
-    listener
-        .set_nonblocking(true)
-        .expect("Failed to set non-blocking");
-    let listener = match tokio::net::TcpListener::from_std(listener) {
-        Ok(l) => l,
-        Err(e) => {
-            log::error!("MCP: failed to convert listener to tokio: {}", e);
-            return;
-        }
-    };
-
-    log::info!("MCP accept loop started");
-    loop {
-        match listener.accept().await {
-            Ok((stream, _addr)) => {
-                let handler = ConnectionHandler {
-                    token: token.clone(),
-                    active_clients: Arc::clone(&active_clients),
-                    task_handler: task_handler.clone(),
-                    spawn_handler: spawn_handler.clone(),
-                    output_handler: output_handler.clone(),
-                    agent_comms_handler: agent_comms_handler.clone(),
-                    authenticated: AtomicBool::new(false),
-                };
-                tokio::spawn(async move {
-                    handler.handle_connection(stream).await;
-                });
-            }
-            Err(e) => {
-                log::error!("MCP: failed to accept connection: {}", e);
-            }
-        }
-    }
-}
-
-struct ConnectionHandler {
-    token: String,
-    active_clients: Arc<Mutex<HashMap<String, TcpStream>>>,
-    task_handler: Option<TaskHandler>,
-    spawn_handler: Option<SpawnHandler>,
-    output_handler: Option<OutputHandler>,
-    agent_comms_handler: Option<AgentCommsHandler>,
-    authenticated: AtomicBool,
-}
-
-impl ConnectionHandler {
-    async fn handle_request(&self, req: &JsonRpcRequest) -> JsonRpcResponse {
-        handle_request_impl(
-            &self.token,
-            req,
-            &self.task_handler,
-            &self.spawn_handler,
-            &self.output_handler,
-            &self.agent_comms_handler,
-        )
-        .await
-    }
-
-    async fn handle_connection(&self, stream: tokio::net::TcpStream) {
-        let peer = stream
-            .peer_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_default();
-        log::info!("MCP: new connection from {}", peer);
-
-        // Convert back to std briefly to get a clone for active_clients.
-        let std_stream = match stream.into_std() {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("failed to convert tokio stream to std: {}", e);
-                return;
-            }
-        };
-        let std_clone = match std_stream.try_clone() {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("failed to clone std stream: {}", e);
-                return;
-            }
-        };
-        // Re-convert to tokio for async I/O.
-        let stream = match tokio::net::TcpStream::from_std(std_stream) {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("failed to convert std stream back to tokio: {}", e);
-                return;
-            }
-        };
-
-        // Split into read/write halves for non-blocking I/O.
-        let (read_half, write_half) = tokio::io::split(stream);
-        let mut reader = BufReader::new(read_half);
-        let write_half = Arc::new(tokio::sync::Mutex::new(write_half));
-
-        // Register the std TcpStream clone for broadcast_notification
-        // (which uses sync I/O). Will be removed on disconnect.
-        if let Ok(mut clients) = self.active_clients.lock() {
-            clients.insert(peer.clone(), std_clone);
-        }
-
-        // Capped line buffer: bound each request at MAX_MCP_LINE_BYTES so a
-        // client streaming a never-terminated line cannot force unbounded
-        // allocation before the JSON is parsed.
-        let mut buf: Vec<u8> = Vec::with_capacity(8192);
-
-        loop {
-            buf.clear();
-            // Read a full line with an idle timeout, aborting if the
-            // accumulated size exceeds the cap.
-            let line: String = {
-                let mut total: usize = 0;
-                let read_result = timeout(MCP_IDLE_TIMEOUT, async {
-                    loop {
-                        let n = match reader.read_until(b'\n', &mut buf).await {
-                            Ok(n) => n,
-                            Err(e) => {
-                                log::warn!("MCP: read error from {}: {}", peer, e);
-                                return Err(());
-                            }
-                        };
-                        if n == 0 {
-                            return Ok(None); // EOF
-                        }
-                        total += n;
-                        if total > MAX_MCP_LINE_BYTES {
-                            log::warn!(
-                                "MCP: disconnecting {} — line exceeded {} bytes",
-                                peer,
-                                MAX_MCP_LINE_BYTES
-                            );
-                            return Err(());
-                        }
-                        if buf.last() == Some(&b'\n') {
-                            return Ok(Some(String::from_utf8_lossy(&buf).to_string()));
-                        }
-                    }
-                })
-                .await;
-                match read_result {
-                    Ok(Ok(Some(l))) => l,
-                    Ok(Ok(None)) => break, // EOF
-                    Ok(Err(())) => break,  // read error or oversize
-                    Err(_) => {
-                        log::info!(
-                            "MCP: client {} idle for >{}s, closing connection",
-                            peer,
-                            MCP_IDLE_TIMEOUT.as_secs()
-                        );
-                        break;
-                    }
-                }
-            };
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            let req: JsonRpcRequest = match serde_json::from_str(trimmed) {
-                Ok(r) => r,
-                Err(e) => {
-                    log::warn!("MCP: parse error from {}: {}", peer, e);
-                    // JSON-RPC 2.0 spec: invalid JSON must yield a Parse error
-                    // response. Silent drop would hang the client waiting for
-                    // its reply. Best-effort recover the `id` from the
-                    // partial payload; fall back to null.
-                    let err = make_parse_error_response(trimmed);
-                    let mut writer = write_half.lock().await;
-                    if writer.write_all((err + "\n").as_bytes()).await.is_err() {
-                        break;
-                    }
-                    continue;
-                }
-            };
-
-            // Per-connection auth gate: every non-initialize method requires
-            // a successful initialize first.
-            let response =
-                if !self.authenticated.load(Ordering::SeqCst) && req.method != "initialize" {
-                    JsonRpcResponse {
-                        jsonrpc: "2.0".into(),
-                        id: req.id.clone(),
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: -32600,
-                            message: "Unauthenticated: initialize required".into(),
-                            data: None,
-                        }),
-                    }
-                } else {
-                    self.handle_request(&req).await
-                };
-
-            // Only send a response for requests (notifications have no id)
-            if response.id.is_some() {
-                let json = McpServer::serialize_response(&response) + "\n";
-                let mut writer = write_half.lock().await;
-                if writer.write_all(json.as_bytes()).await.is_err() {
-                    break;
-                }
-            }
-
-            // On successful initialize, log it and mark connection as authenticated.
-            if req.method == "initialize" && response.error.is_none() {
-                self.authenticated.store(true, Ordering::SeqCst);
-                log::info!("MCP: client {} initialized", peer);
-            }
-
-            // On failed initialize, close the connection
-            if req.method == "initialize" && response.error.is_some() {
-                log::warn!("MCP: rejecting unauthorized client {}", peer);
-                break;
-            }
-        }
-
-        // Remove from active_clients on disconnect
-        if let Ok(mut clients) = self.active_clients.lock() {
-            clients.remove(&peer);
-        }
-        log::info!("MCP: connection closed from {}", peer);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helper functions for tool executor delegation
-// ---------------------------------------------------------------------------
-
-/// Build a JSON-RPC 2.0 Parse error response for a malformed request.
-///
-/// The `id` is best-effort recovered from the raw payload — if the buffer
-/// is not even valid JSON, the id is `null` per the spec. The error code
-/// `-32700` is the standardized JSON-RPC Parse error.
-fn make_parse_error_response(raw: &str) -> String {
-    // Try full parse first. If that fails (truncated/garbled input), fall
-    // back to a tolerant scan for the first `"id": <value>` pair in the
-    // buffer. Spec-compliant: id falls back to null if unrecoverable.
-    let id = serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|v| v.get("id").cloned())
-        .or_else(|| extract_id_from_partial(raw))
-        .unwrap_or(serde_json::Value::Null);
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {
-            "code": -32700,
-            "message": "Parse error"
-        }
-    })
-    .to_string()
-}
-
-/// Tolerant `id` extraction from a (possibly truncated) JSON buffer.
-///
-/// Looks for the first `"id"` key in the buffer and parses the scalar
-/// that follows. Returns `None` if no plausible id can be recovered.
-fn extract_id_from_partial(raw: &str) -> Option<serde_json::Value> {
-    // Search for the literal `"id"` pattern. For each occurrence check
-    // the key is in a valid object position, then read a single scalar
-    // value (number, bool, null, or string — possibly truncated).
-    let bytes = raw.as_bytes();
-    let mut search_start = 0;
-    while let Some(rel) = raw[search_start..].find("\"id\"") {
-        let key_pos = search_start + rel;
-        // The character just before `"id"` should be a key-separator in
-        // valid object syntax: `{`, `,`, or whitespace.
-        let before_ok = key_pos == 0
-            || matches!(
-                bytes[key_pos - 1],
-                b'{' | b',' | b' ' | b'\n' | b'\r' | b'\t'
-            );
-        if !before_ok {
-            search_start = key_pos + 4;
-            continue;
-        }
-        // j is just past the closing quote of "id"; expect `:` or whitespace.
-        let mut j = key_pos + 4;
-        while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') {
-            j += 1;
-        }
-        if j >= bytes.len() || bytes[j] != b':' {
-            search_start = key_pos + 4;
-            continue;
-        }
-        j += 1;
-        while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') {
-            j += 1;
-        }
-        if j >= bytes.len() {
-            return None;
-        }
-        // Read a single scalar value starting at j.
-        return parse_scalar_at(raw, j);
-    }
-    None
-}
-
-/// Read one JSON scalar (number, bool, null, or string — possibly
-/// truncated) starting at byte offset `j` of `raw`. Returns `None` if
-/// no recognizable scalar can be recovered.
-fn parse_scalar_at(raw: &str, j: usize) -> Option<serde_json::Value> {
-    let bytes = raw.as_bytes();
-    if j >= bytes.len() {
-        return None;
-    }
-    let b = bytes[j];
-    // Quoted string
-    if b == b'"' {
-        let mut k = j + 1;
-        loop {
-            if k >= bytes.len() {
-                // Truncated string — return what we have.
-                let s = &raw[j + 1..];
-                return Some(serde_json::Value::String(s.to_string()));
-            }
-            match bytes[k] {
-                b'\\' if k + 1 < bytes.len() => k += 2,
-                b'"' => {
-                    let s = &raw[j + 1..k];
-                    // Wrap the captured body in quotes and re-parse to
-                    // honour JSON escape sequences.
-                    let quoted = format!("\"{}\"", s.replace('"', "\\\""));
-                    return serde_json::from_str(&quoted).ok();
-                }
-                _ => k += 1,
-            }
-        }
-    }
-    // Null / true / false
-    if b == b'n' || b == b't' || b == b'f' {
-        let tail = &raw[j..];
-        for kw in &["null", "true", "false"] {
-            if tail.starts_with(kw) {
-                return serde_json::from_str(kw).ok();
-            }
-        }
-        return None;
-    }
-    // Number: scan digits, sign, dot, exponent.
-    if b == b'-' || b.is_ascii_digit() {
-        let mut k = j;
-        if bytes[k] == b'-' {
-            k += 1;
-        }
-        while k < bytes.len()
-            && (bytes[k].is_ascii_digit()
-                || bytes[k] == b'.'
-                || bytes[k] == b'e'
-                || bytes[k] == b'E'
-                || bytes[k] == b'+'
-                || bytes[k] == b'-')
-        {
-            k += 1;
-        }
-        let n = &raw[j..k];
-        return serde_json::from_str(n).ok();
-    }
-    None
-}
-
-/// Map MCP tool names to ToolExecutor tool names.
-fn map_mcp_to_executor_name(mcp_name: &str) -> &str {
-    match mcp_name {
-        "create_tasks" => "kanban_create_task",
-        "get_next_task" => "kanban_list_tasks",
-        "update_task_status" => "kanban_update_task",
-        "spawn_agents" => "launch_builtin_agent",
-        "get_output" => "read_agent_output",
-        "list_agent_panes" => "list_agents",
-        "code_search" => "fs_search",
-        "search_files" => "fs_search",
-        "run_command_in_terminals" => "run_command_in_terminals",
-        "close_terminals" => "close_terminals",
-        "prompt_agent" => "prompt_agent",
-        "launch_builtin_agent" => "launch_builtin_agent",
-        _ => mcp_name,
-    }
-}
-
-/// Convert JSON-RPC tool call arguments into a `ToolInput` structure,
-/// handling both camelCase and snake_case keys.
-#[allow(clippy::field_reassign_with_default)]
-fn args_to_tool_input(args: &serde_json::Value) -> Option<crate::tool_executor::ToolInput> {
-    let map = args.as_object()?;
-
-    let mut ti = crate::tool_executor::ToolInput::default();
-
-    // Kanban
-    ti.title = map
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    ti.description = map
-        .get("description")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    ti.status = map
-        .get("status")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    if let Some(v) = map.get("taskId").or_else(|| map.get("task_id")) {
-        ti.task_id = v.as_str().map(|s| s.to_string());
-    }
-    if let Some(v) = map.get("spaceId").or_else(|| map.get("space_id")) {
-        ti.space_id = v.as_str().map(|s| s.to_string());
-    }
-
-    // Agent / Pane
-    if let Some(v) = map.get("agentType").or_else(|| map.get("agent_type")) {
-        ti.agent_type = v.as_str().map(|s| s.to_string());
-    }
-    if let Some(n) = map
-        .get("agentCount")
-        .or_else(|| map.get("agent_count"))
-        .and_then(|v| v.as_u64())
-    {
-        ti.agent_count = Some(n as u32);
-    }
-    if let Some(v) = map.get("taskPrompt").or_else(|| map.get("task_prompt")) {
-        ti.task_prompt = v.as_str().map(|s| s.to_string());
-    }
-    if let Some(v) = map.get("command").and_then(|v| v.as_str()) {
-        ti.command = Some(v.to_string());
-    }
-    if let Some(v) = map.get("paneId").or_else(|| map.get("pane_id")) {
-        ti.pane_id = v.as_str().map(|s| s.to_string());
-    }
-    if let Some(v) = map.get("agentId").or_else(|| map.get("agent_id")) {
-        ti.agent_id = v.as_str().map(|s| s.to_string());
-    }
-    if let Some(arr) = map.get("paneIds").or_else(|| map.get("pane_ids")) {
-        if let Some(arr) = arr.as_array() {
-            ti.pane_ids = Some(
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect(),
-            );
-        }
-    }
-
-    // FS / Search
-    if let Some(v) = map.get("path").and_then(|v| v.as_str()) {
-        ti.path = Some(v.to_string());
-    }
-    if let Some(v) = map.get("pattern").and_then(|v| v.as_str()) {
-        ti.pattern = Some(v.to_string());
-    }
-    if let Some(n) = map.get("limit").and_then(|v| v.as_u64()) {
-        ti.limit = Some(n as usize);
-    }
-    if let Some(n) = map
-        .get("sinceLine")
-        .or_else(|| map.get("since_line"))
-        .and_then(|v| v.as_u64())
-    {
-        ti.since_line = Some(n as u32);
-    }
-
-    // Plan
-    if let Some(v) = map.get("goal").and_then(|v| v.as_str()) {
-        ti.goal = Some(v.to_string());
-    }
-    if let Some(v) = map.get("reasoning").and_then(|v| v.as_str()) {
-        ti.reasoning = Some(v.to_string());
-    }
-    if let Some(v) = map.get("stepId").or_else(|| map.get("step_id")) {
-        ti.step_id = v.as_str().map(|s| s.to_string());
-    }
-    if let Some(v) = map.get("planId").or_else(|| map.get("plan_id")) {
-        ti.plan_id = v.as_str().map(|s| s.to_string());
-    }
-    if let Some(v) = map.get("prompt").and_then(|v| v.as_str()) {
-        ti.prompt = Some(v.to_string());
-    }
-    if let Some(v) = map
-        .get("overallStatus")
-        .or_else(|| map.get("overall_status"))
-    {
-        ti.overall_status = v.as_str().map(|s| s.to_string());
-    }
-    if let Some(arr) = map
-        .get("stepEvaluations")
-        .or_else(|| map.get("step_evaluations"))
-    {
-        if let Some(arr) = arr.as_array() {
-            ti.step_evaluations = Some(arr.clone());
-        }
-    }
-    if let Some(v) = map.get("nextAction").or_else(|| map.get("next_action")) {
-        ti.next_action = v.as_str().map(|s| s.to_string());
-    }
-
-    // Misc
-    if let Some(v) = map.get("question").and_then(|v| v.as_str()) {
-        ti.question = Some(v.to_string());
-    }
-    if let Some(arr) = map.get("options") {
-        if let Some(arr) = arr.as_array() {
-            ti.options = Some(arr.clone());
-        }
-    }
-    if let Some(v) = map.get("message").and_then(|v| v.as_str()) {
-        ti.message = Some(v.to_string());
-    }
-    if let Some(v) = map
-        .get("targetAgentId")
-        .or_else(|| map.get("target_agent_id"))
-    {
-        ti.target_agent_id = v.as_str().map(|s| s.to_string());
-    }
-    if let Some(v) = map.get("messageType").or_else(|| map.get("message_type")) {
-        ti.message_type = v.as_str().map(|s| s.to_string());
-    }
-
-    Some(ti)
-}
-
-#[cfg(test)]
-mod tests_parse_error {
-    use super::*;
-
-    #[test]
-    fn parse_error_response_includes_id() {
-        // Truncated JSON with a valid `id` field at the start
-        let raw = r#"{"id":42,"method":"foo"#;
-        let resp = make_parse_error_response(raw);
-        assert!(resp.contains("\"id\":42"), "expected id 42 in: {}", resp);
-        assert!(
-            resp.contains("-32700"),
-            "expected parse error code in: {}",
-            resp
-        );
-        assert!(
-            resp.contains("\"jsonrpc\":\"2.0\""),
-            "expected jsonrpc 2.0 in: {}",
-            resp
-        );
-    }
-
-    #[test]
-    fn parse_error_response_with_no_id() {
-        // Completely unparseable input
-        let raw = "not json at all";
-        let resp = make_parse_error_response(raw);
-        assert!(
-            resp.contains("\"id\":null"),
-            "expected null id in: {}",
-            resp
-        );
-        assert!(
-            resp.contains("-32700"),
-            "expected parse error code in: {}",
-            resp
-        );
-    }
-
-    #[test]
-    fn parse_error_response_is_valid_json() {
-        let raw = r#"{"id":"abc","method":"x"#;
-        let resp = make_parse_error_response(raw);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&resp).expect("response must be valid JSON");
-        assert_eq!(parsed["jsonrpc"], "2.0");
-        assert_eq!(parsed["id"], "abc");
-        assert_eq!(parsed["error"]["code"], -32700);
-        assert_eq!(parsed["error"]["message"], "Parse error");
-    }
-
-    #[test]
-    fn parse_error_response_falls_back_to_null_when_id_missing() {
-        // Valid JSON object but no `id` key
-        let raw = r#"{"method":"foo"}"#;
-        let resp = make_parse_error_response(raw);
-        assert!(
-            resp.contains("\"id\":null"),
-            "expected null id in: {}",
-            resp
-        );
-    }
-}

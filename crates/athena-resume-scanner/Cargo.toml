@@ -1,0 +1,9 @@
+[package]
+name = "athena-resume-scanner"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+
+[lib]
+name = "athena_resume_scanner"
+path = "src/lib.rs"

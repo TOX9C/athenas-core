@@ -20,6 +20,7 @@ parking_lot = { version = "0.12", features = ["send_guard"] }
 libc = "0.2"
 athena-store = { path = "../athena-store" }
 athena-fs = { path = "../athena-fs" }
+athena-resume-scanner = { path = "../athena-resume-scanner" }
 secrecy = { version = "0.8", features = ["serde"] }
 
 [dev-dependencies]

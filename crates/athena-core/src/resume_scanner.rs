@@ -1,7 +1,8 @@
 //! Robust scanner for agent resume IDs in PTY output streams.
 //!
-//! This is the Rust twin of `frontend/src/utils/resume_scanner.rs`. Claude
-//! Code (and similar tools) print a line like `claude --resume <id>` on
+//! The frontend and backend use different scanner lifecycles, but share the
+//! same dependency-free parser so supported prefixes and ANSI handling cannot
+//! drift. Claude Code (and similar tools) print a line like `claude --resume <id>` on
 //! clean exit. The line arrives as raw PTY bytes split into arbitrary
 //! chunks, so a naïve "scan the last N bytes of each individual chunk"
 //! approach misses matches that span chunk boundaries or sit earlier than
@@ -20,17 +21,8 @@
 //! by the backend's app-exit path where there is no per-chunk state to
 //! maintain.
 
-const MAX_SCAN_BUFFER: usize = 1024;
-const MAX_ID_LEN: usize = 256;
+use athena_resume_scanner::{extract_resume_id, scan_text_for_resume_id as scan_snapshot, AnsiStripper, MAX_SCAN_BUFFER};
 
-/// Known CLI resume prefixes, in order of preference. The trailing space
-/// is significant for matching but is stripped from the returned prefix.
-const PREFIXES: &[&str] = &[
-    "claude --resume ",
-    "codex --resume ",
-    "opencode --resume ",
-    "gemini --resume ",
-];
 
 /// A stateful scanner for a single pane. Create one, feed it text via
 /// [`ResumeScanner::feed`], and obtain newly detected resume ids. Each
@@ -45,6 +37,7 @@ pub struct ResumeScanner {
     /// caller would re-write the store + re-trigger a disk save on every
     /// PTY write for the rest of the session).
     last_matched: Option<String>,
+    ansi: AnsiStripper,
 }
 
 impl Default for ResumeScanner {
@@ -58,6 +51,7 @@ impl ResumeScanner {
         Self {
             buf: String::with_capacity(MAX_SCAN_BUFFER),
             last_matched: None,
+            ansi: AnsiStripper::new(),
         }
     }
 
@@ -70,7 +64,7 @@ impl ResumeScanner {
     /// Incoming text is ANSI-stripped first; color/bold codes interleaved
     /// between the words do not break matching.
     pub fn feed(&mut self, text: &str) -> Option<(String, String)> {
-        let stripped = strip_ansi(text);
+        let stripped = self.ansi.feed(text);
         self.buf.push_str(&stripped);
 
         // Trim oldest bytes to keep the buffer bounded.
@@ -101,104 +95,20 @@ impl ResumeScanner {
             None => None,
         }
     }
+
+    /// Reset the scanner state and discard any buffered partial match.
+    pub fn clear(&mut self) {
+        self.buf.clear();
+        self.last_matched = None;
+        self.ansi.clear();
+    }
 }
 
 /// Stateless scan of a single text blob. Returns the last (= newest)
 /// `(prefix_without_trailing_space, id)` match, or `None`. Used by the
 /// backend app-exit path over an accumulated output snapshot.
 pub fn scan_text_for_resume_id(text: &str) -> Option<(String, String)> {
-    extract_resume_id(text)
-}
-
-/// Scan for every known agent resume prefix and return the last (= newest)
-/// match as `(prefix_without_trailing_space, id)`.
-fn extract_resume_id(text: &str) -> Option<(String, String)> {
-    let lower = text.to_lowercase();
-
-    let mut last_match: Option<(String, String)> = None;
-
-    for pat in PREFIXES {
-        let pat_lower = pat.to_lowercase();
-        let mut search_from = 0;
-        while let Some(idx) = lower[search_from..].find(&pat_lower) {
-            let match_start = search_from + idx;
-            let id_start = match_start + pat.len();
-            if id_start > text.len() {
-                break;
-            }
-            let rest = &text[id_start..];
-            let id: String = rest
-                .chars()
-                .take(MAX_ID_LEN)
-                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            if !id.is_empty() {
-                // prefix without trailing space for convenience
-                last_match = Some((pat[..pat.len() - 1].to_string(), id));
-            }
-            search_from = id_start;
-            if search_from >= lower.len() {
-                break;
-            }
-        }
-    }
-
-    last_match
-}
-
-/// Strip ANSI escape sequences (CSI, OSC, charset, and other two-byte
-/// escapes) from `input`. Ported byte-for-byte from the frontend scanner
-/// so both sides agree on what "stripped" means.
-///
-/// UTF-8 continuation bytes are all `>= 0x80`, so no escape byte can fall
-/// inside a multibyte codepoint. We therefore only ever cut the string at
-/// ASCII boundaries, leaving every remaining run valid UTF-8.
-fn strip_ansi(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let n = bytes.len();
-    let mut i = 0;
-    while i < n {
-        if bytes[i] == 0x1b && i + 1 < n {
-            match bytes[i + 1] {
-                // CSI: ESC [ <params/intermediates> <final 0x40..=0x7e>
-                b'[' => {
-                    i += 2;
-                    while i < n && !(bytes[i] >= 0x40 && bytes[i] <= 0x7e) {
-                        i += 1;
-                    }
-                    if i < n {
-                        i += 1; // consume the final byte
-                    }
-                }
-                // OSC: ESC ] ... (terminated by BEL 0x07 or ST "ESC \")
-                b']' => {
-                    i += 2;
-                    while i < n {
-                        if bytes[i] == 0x07 {
-                            i += 1;
-                            break;
-                        }
-                        if bytes[i] == 0x1b && i + 1 < n && bytes[i + 1] == b'\\' {
-                            i += 2;
-                            break;
-                        }
-                        i += 1;
-                    }
-                }
-                // Other two-byte escapes: ESC ( B, ESC =, ESC M, ...
-                _ => {
-                    i += 2;
-                }
-            }
-        } else {
-            // Lone trailing ESC (no following byte) is kept as-is.
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    // Safe: only ASCII escape runs were removed.
-    String::from_utf8(out).unwrap_or_else(|_| input.to_string())
+    scan_snapshot(text)
 }
 
 #[cfg(test)]

@@ -1,18 +1,25 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc::{RecvTimeoutError, SyncSender};
+use std::net::TcpListener;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use thiserror::Error;
 
 use crate::EventEmitter;
+
+#[path = "agent_comms_types.rs"]
+mod agent_comms_types;
+use agent_comms_types::SessionInternal;
+#[path = "agent_comms_connection.rs"]
+mod agent_comms_connection;
+pub use agent_comms_types::{
+    AgentCommsError, AgentMessage, AgentMessageType, AgentSession, InputRequest, SessionStatus,
+};
 
 /// Maximum size in bytes of a single agent-comms line. Prevents an agent
 /// from streaming a giant line and forcing the server to allocate
 /// unbounded memory before it ever sees a newline. Exceeding this cap
 /// disconnects the misbehaving agent.
-const MAX_AGENT_LINE_BYTES: usize = 65_536; // 64 KiB
+pub(super) const MAX_AGENT_LINE_BYTES: usize = 65_536; // 64 KiB
 
 /// How long `handle_request_input` will block waiting for the user to
 /// respond before giving up and returning a timeout error to the agent.
@@ -22,181 +29,24 @@ const MAX_AGENT_LINE_BYTES: usize = 65_536; // 64 KiB
 /// `cfg(test)` override keeps the timeout-path unit test fast while
 /// leaving the production behavior unchanged.
 #[cfg(not(test))]
-const INPUT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const INPUT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const INPUT_REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
+pub(super) const INPUT_REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 
 /// A pending input request, tracked per session so that
 /// `cleanup_connection` can drop the sender (and wake the agent's
 /// `recv_timeout` with `Disconnected`) when the originating connection
 /// goes away, instead of leaking the entry until the 30s timeout.
-struct PendingInput {
-    session_id: String,
-    sender: SyncSender<String>,
+pub(super) struct PendingInput {
+    pub(super) session_id: String,
+    pub(super) sender: SyncSender<String>,
 }
 
-/// Maximum size in bytes of a single agent-comms line. Prevents an agent
-/// from streaming a giant line and forcing the server to allocate
-/// unbounded memory before it ever sees a newline. Exceeding this cap
-/// disconnects the misbehaving agent.
-/// Type of agent message in the agent communications protocol.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentMessageType {
-    /// A general notification from an agent (info, warning, error).
-    Notification,
-    /// A status update (idle, active, waiting_for_input, etc.).
-    StatusUpdate,
-    /// A request for user input that blocks the agent until answered.
-    InputRequest,
-    /// An error reported by an agent.
-    Error,
-    /// A completion signal from an agent.
-    Completion,
-    /// A periodic heartbeat to confirm the agent is still alive.
-    Heartbeat,
-    /// Initial registration message sent when an agent first connects.
-    Register,
-}
-
-/// An agent message in JSON-RPC format, sent over the agent comms TCP channel.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AgentMessage {
-    /// Protocol version, always `"2.0"`.
-    pub jsonrpc: String,
-    /// Optional message ID for request/response pairs.
-    pub id: Option<String>,
-    /// The method name (e.g., `"initialize"`, `"agents/status"`).
-    pub method: String,
-    /// Method-specific parameters.
-    pub params: serde_json::Value,
-}
-
-/// Status of an agent session.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    /// The agent is actively working.
-    Active,
-    /// The agent is idle, waiting for work.
-    Idle,
-    /// The agent is waiting for user input before proceeding.
-    WaitingInput,
-    /// The agent has disconnected.
-    Disconnected,
-}
-
-impl std::fmt::Display for SessionStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SessionStatus::Active => write!(f, "active"),
-            SessionStatus::Idle => write!(f, "idle"),
-            SessionStatus::WaitingInput => write!(f, "waiting_input"),
-            SessionStatus::Disconnected => write!(f, "disconnected"),
-        }
-    }
-}
-
-/// Metadata about an agent session, excluding the socket handle.
-///
-/// Returned by `get_agent_sessions()` and included in status events.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AgentSession {
-    /// Unique session identifier (UUID).
-    pub id: String,
-    /// The plugin that spawned this agent.
-    pub plugin_id: String,
-    /// Human-readable agent identifier.
-    pub agent_id: String,
-    /// Unix timestamp (ms) when the agent connected.
-    pub connected_at: u64,
-    /// Unix timestamp (ms) of the last activity from this agent.
-    pub last_activity_at: u64,
-    /// Current session status.
-    pub status: SessionStatus,
-}
-
-/// Internal session holding both metadata and communication channel.
-struct SessionInternal {
-    session: AgentSession,
-    sender: SyncSender<Vec<u8>>,
-    peer_addr: Option<SocketAddr>,
-}
-
-impl std::fmt::Debug for SessionInternal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionInternal")
-            .field("session", &self.session)
-            .field("peer_addr", &self.peer_addr)
-            .finish()
-    }
-}
-
-impl Clone for SessionInternal {
-    fn clone(&self) -> Self {
-        Self {
-            session: self.session.clone(),
-            sender: self.sender.clone(),
-            peer_addr: self.peer_addr,
-        }
-    }
-}
-
-/// A pending input request from an agent, waiting for user response.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct InputRequest {
-    /// Unique identifier for this input request.
-    pub request_id: String,
-    /// The session that made the request.
-    pub session_id: String,
-    /// The agent that made the request.
-    pub agent_id: String,
-    /// The prompt shown to the user.
-    pub prompt: String,
-    /// Optional title for the input request dialog.
-    pub title: String,
-}
-
-/// Errors for the agent comms service.
-#[derive(Debug, Error)]
-pub enum AgentCommsError {
-    /// A low-level I/O error occurred.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    /// JSON serialization or deserialization failed.
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    /// The requested session ID does not exist.
-    #[error("Session not found: {0}")]
-    SessionNotFound(String),
-    /// The requested agent ID is not connected.
-    #[error("Agent not found: {0}")]
-    AgentNotFound(String),
-    /// The requested input request ID does not exist.
-    #[error("Request not found: {0}")]
-    RequestNotFound(String),
-    /// The input request was cancelled (e.g., the agent disconnected).
-    #[error("Input request cancelled")]
-    Cancelled,
-    /// The client provided an invalid or missing authentication token.
-    #[error("Invalid or missing auth token")]
-    InvalidToken,
-    /// The requested method is not recognized.
-    #[error("Method not found: {0}")]
-    MethodNotFound(String),
-    /// A mutex lock was poisoned.
-    #[error("Lock poisoned")]
-    LockPoisoned,
-    /// A generic error with a human-readable message.
-    #[error("{0}")]
-    Generic(String),
-}
-
-fn generate_uuid() -> String {
+pub(super) fn generate_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn now_ms() -> u64 {
+pub(super) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -516,7 +366,7 @@ impl AgentComms {
                         let token = token.clone();
                         let event_emitter = event_emitter.clone();
                         std::thread::spawn(move || {
-                            handle_connection(
+                            agent_comms_connection::handle_connection(
                                 stream,
                                 sessions,
                                 pending_input,
@@ -537,678 +387,10 @@ impl AgentComms {
     }
 }
 
-fn send_to_socket(stream: &TcpStream, payload: &serde_json::Value) {
-    if let Ok(mut w) = stream.try_clone() {
-        let mut buf = serde_json::to_string(payload).unwrap_or_else(|_| "{}".into());
-        buf.push('\n');
-        let _ = w.write_all(buf.as_bytes());
-    }
-}
-
-fn emit_to_renderer(event_emitter: &EventEmitter, channel: &str, data: &serde_json::Value) {
-    if let Ok(guard) = event_emitter.lock() {
-        if let Some(ref emitter) = *guard {
-            emitter(channel, data);
-            return;
-        }
-    }
-    log::debug!("[agent-comms] {} -> {}", channel, data);
-}
-
-fn handle_connection(
-    stream: TcpStream,
-    sessions: Arc<Mutex<HashMap<String, SessionInternal>>>,
-    pending_input: Arc<Mutex<HashMap<String, PendingInput>>>,
-    token: String,
-    event_emitter: EventEmitter,
-) {
-    let peer = stream
-        .peer_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_default();
-    log::info!("Agent comms: new connection from {}", peer);
-
-    let (tx, _rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
-    let mut reader = match stream.try_clone() {
-        Ok(s) => BufReader::new(s),
-        Err(e) => {
-            log::error!("failed to clone stream: {}", e);
-            return;
-        }
-    };
-
-    // Per-connection auth state. Set to true only after a successful
-    // `initialize` (valid token). Every non-`initialize` method is rejected
-    // with -32600 until authenticated. Mirrors the MCP server's auth gate
-    // (mcp.rs ConnectionHandler::authenticated): without this, any local
-    // process that can reach the port could inject notifications/status
-    // attributed to arbitrary agents.
-    let mut authenticated = false;
-
-    // Capped line reader: bound each line at MAX_AGENT_LINE_BYTES so a
-    // misbehaving agent streaming megabytes without a newline cannot force
-    // unbounded allocation. Using read_into a reusable buffer + read_until
-    // (rather than BufRead::lines()) is what lets us enforce the cap before
-    // the full line is materialized.
-    let mut buf: Vec<u8> = Vec::with_capacity(8192);
-    loop {
-        buf.clear();
-        let mut total: usize = 0;
-        let line_result = loop {
-            match reader.read_until(b'\n', &mut buf) {
-                Ok(0) => break None, // EOF — peer closed.
-                Ok(n) => {
-                    total += n;
-                    if total > MAX_AGENT_LINE_BYTES {
-                        log::warn!(
-                            "Agent comms: disconnecting {} — line exceeded {} bytes",
-                            peer,
-                            MAX_AGENT_LINE_BYTES
-                        );
-                        // Drop the connection; the oversized line is discarded.
-                        return;
-                    }
-                    if buf.last() == Some(&b'\n') {
-                        // Complete line.
-                        let line = String::from_utf8_lossy(&buf).to_string();
-                        break Some(line);
-                    }
-                    // else: partial read, keep accumulating.
-                }
-                Err(_) => break None,
-            }
-        };
-        let line = match line_result {
-            Some(l) => l,
-            None => break,
-        };
-        let trimmed = line.trim().to_string();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let msg: AgentMessage = match serde_json::from_str(&trimmed) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        // Auth gate: reject every non-initialize method when not authenticated.
-        if msg.method != "initialize" && !authenticated {
-            log::warn!(
-                "Agent comms: rejecting unauthenticated '{}' from {}",
-                msg.method,
-                peer
-            );
-            if msg.id.is_some() {
-                send_to_socket(
-                    &stream,
-                    &serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": msg.id,
-                        "error": {
-                            "code": -32600,
-                            "message": "Unauthenticated: initialize required",
-                        }
-                    }),
-                );
-            }
-            continue;
-        }
-
-        // initialize is the only method that may run while unauthenticated.
-        if msg.method == "initialize" {
-            if handle_initialize(&stream, msg, &sessions, &token, &event_emitter, &tx) {
-                authenticated = true;
-                log::info!("Agent comms: client {} authenticated", peer);
-            }
-            continue;
-        }
-
-        handle_incoming_message(&stream, msg, &sessions, &pending_input, &event_emitter);
-    }
-
-    cleanup_connection(&stream, &sessions, &pending_input, &event_emitter);
-    log::info!("Agent comms: connection closed from {}", peer);
-}
-
-fn handle_incoming_message(
-    stream: &TcpStream,
-    msg: AgentMessage,
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    pending_input: &Arc<Mutex<HashMap<String, PendingInput>>>,
-    event_emitter: &EventEmitter,
-) {
-    // NOTE: `initialize` is handled (and auth-gated) in the connection loop
-    // before this function is reached; only post-auth methods dispatch here.
-    match msg.method.as_str() {
-        "notifications/message" => handle_notification(stream, msg, sessions, event_emitter),
-        "agents/status" => handle_status(stream, msg, sessions, event_emitter),
-        "agents/requestInput" => {
-            handle_request_input(stream, msg, sessions, pending_input, event_emitter)
-        }
-        "agents/heartbeat" => handle_heartbeat(stream, msg, sessions),
-        _ => {
-            if msg.id.is_some() {
-                send_to_socket(
-                    stream,
-                    &serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": msg.id,
-                        "error": {
-                            "code": -32601,
-                            "message": format!("Method not found: {}", msg.method),
-                        }
-                    }),
-                );
-            }
-        }
-    }
-}
-
-fn handle_initialize(
-    stream: &TcpStream,
-    msg: AgentMessage,
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    token: &str,
-    event_emitter: &EventEmitter,
-    tx: &SyncSender<Vec<u8>>,
-) -> bool {
-    let incoming_token = msg
-        .params
-        .get("data")
-        .and_then(|d| d.get("token"))
-        .and_then(|t| t.as_str());
-
-    if incoming_token != Some(token) {
-        send_to_socket(
-            stream,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": msg.id,
-                "error": {
-                    "code": -32600,
-                    "message": "Invalid or missing auth token",
-                }
-            }),
-        );
-        return false;
-    }
-
-    let session_id = generate_uuid();
-    let data = msg.params.get("data").cloned().unwrap_or_default();
-    let plugin_id = data
-        .get("pluginId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let agent_id = data
-        .get("agentId")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&format!("agent-{}", &session_id[..8]))
-        .to_string();
-
-    let connected_at = now_ms();
-    let session = AgentSession {
-        id: session_id.clone(),
-        plugin_id: plugin_id.clone(),
-        agent_id: agent_id.clone(),
-        connected_at,
-        last_activity_at: connected_at,
-        status: SessionStatus::Active,
-    };
-
-    let peer_addr = stream.peer_addr().ok();
-    let internal = SessionInternal {
-        session: session.clone(),
-        sender: tx.clone(),
-        peer_addr,
-    };
-
-    if let Ok(mut map) = sessions.lock() {
-        // Evict any existing session from the same peer address to prevent
-        // memory leaks when a client reconnects without proper cleanup.
-        if let Some(addr) = peer_addr {
-            map.retain(|_, existing| existing.peer_addr != Some(addr));
-        }
-        map.insert(session_id.clone(), internal);
-    }
-
-    send_to_socket(
-        stream,
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": msg.id,
-            "result": {
-                "sessionId": session_id,
-                "agentId": agent_id,
-                "protocolVersion": "1.0.0",
-                "capabilities": ["notification", "status_update", "input_request", "error", "completion"],
-            }
-        }),
-    );
-
-    emit_to_renderer(
-        event_emitter,
-        "agents:connected",
-        &serde_json::json!({
-            "sessionId": session_id,
-            "pluginId": plugin_id,
-            "agentId": agent_id,
-            "connectedAt": connected_at,
-        }),
-    );
-
-    log::info!(
-        "Agent connected: session={} plugin={} agent={}",
-        session.id,
-        session.plugin_id,
-        session.agent_id
-    );
-    true
-}
-
-fn handle_notification(
-    stream: &TcpStream,
-    msg: AgentMessage,
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    event_emitter: &EventEmitter,
-) {
-    let agent_id = msg.params.get("agentId").and_then(|v| v.as_str());
-    let session = agent_id.and_then(|aid| find_session_by_agent_id(sessions, aid));
-
-    if let Some(aid) = agent_id {
-        update_activity_by_agent_id(sessions, aid);
-    }
-
-    let level = msg
-        .params
-        .get("level")
-        .and_then(|v| v.as_str())
-        .unwrap_or("info");
-    let status = if level == "needs_input" {
-        SessionStatus::WaitingInput
-    } else {
-        SessionStatus::Active
-    };
-
-    if let Some(ref s) = session {
-        update_session_status(sessions, &s.id, status.clone());
-        emit_to_renderer(
-            event_emitter,
-            "agents:statusUpdate",
-            &serde_json::json!({
-                "sessionId": s.id,
-                "agentId": s.agent_id,
-                "status": status,
-                "data": msg.params.get("data"),
-            }),
-        );
-    }
-
-    let notif = serde_json::json!({
-        "type": level,
-        "title": msg.params.get("title").and_then(|v| v.as_str()).unwrap_or("Agent Notification"),
-        "message": msg.params.get("message").and_then(|v| v.as_str()).unwrap_or(""),
-        "source": session.as_ref().map(|s| &s.plugin_id).unwrap_or(&"unknown".into()),
-        "agentId": session.as_ref().map(|s| &s.agent_id),
-        "data": msg.params.get("data"),
-        "timestamp": now_ms(),
-    });
-
-    log::info!("[agent notification] {}", notif);
-
-    if msg.id.is_some() {
-        send_to_socket(
-            stream,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": msg.id,
-                "result": { "acknowledged": true }
-            }),
-        );
-    }
-}
-
-fn handle_status(
-    stream: &TcpStream,
-    msg: AgentMessage,
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    event_emitter: &EventEmitter,
-) {
-    let session = find_session_by_stream(sessions, stream);
-    if let Some(ref s) = session {
-        update_activity_by_session_id(sessions, &s.id);
-        let new_status = msg
-            .params
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("active");
-
-        let status_enum = match new_status {
-            "waiting_input" => SessionStatus::WaitingInput,
-            "idle" => SessionStatus::Idle,
-            "disconnected" => SessionStatus::Disconnected,
-            _ => SessionStatus::Active,
-        };
-
-        update_session_status(sessions, &s.id, status_enum.clone());
-
-        emit_to_renderer(
-            event_emitter,
-            "agents:statusUpdate",
-            &serde_json::json!({
-                "sessionId": s.id,
-                "agentId": s.agent_id,
-                "status": new_status,
-                "data": msg.params.get("data"),
-            }),
-        );
-
-        if new_status == "waiting_input" {
-            if let Some(prompt) = msg.params.get("prompt").and_then(|v| v.as_str()) {
-                log::info!(
-                    "[agent status] waiting_input for agent={}: {}",
-                    s.agent_id,
-                    prompt
-                );
-            }
-        }
-    }
-
-    if msg.id.is_some() {
-        send_to_socket(
-            stream,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": msg.id,
-                "result": { "acknowledged": true }
-            }),
-        );
-    }
-}
-
-fn handle_request_input(
-    stream: &TcpStream,
-    msg: AgentMessage,
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    pending_input: &Arc<Mutex<HashMap<String, PendingInput>>>,
-    event_emitter: &EventEmitter,
-) {
-    let session = find_session_by_stream(sessions, stream);
-    if session.is_none() {
-        send_to_socket(
-            stream,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": msg.id,
-                "error": {
-                    "code": -32000,
-                    "message": "Not initialized",
-                }
-            }),
-        );
-        return;
-    }
-
-    let session = session.unwrap();
-    update_activity_by_session_id(sessions, &session.id);
-    update_session_status(sessions, &session.id, SessionStatus::WaitingInput);
-
-    let request_id = msg
-        .params
-        .get("requestId")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&generate_uuid())
-        .to_string();
-
-    let prompt = msg
-        .params
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let title = msg
-        .params
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Input Request");
-
-    log::info!(
-        "[agent input_request] requestId={} agent={} title={}",
-        request_id,
-        session.agent_id,
-        title
-    );
-
-    emit_to_renderer(
-        event_emitter,
-        "agents:inputRequested",
-        &serde_json::json!({
-            "sessionId": session.id,
-            "agentId": session.agent_id,
-            "requestId": request_id,
-            "prompt": prompt,
-        }),
-    );
-
-    if msg.id.is_some() {
-        let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<String>(1);
-
-        {
-            let mut map = match pending_input.lock() {
-                Ok(g) => g,
-                Err(_) => {
-                    log::error!("Agent comms: pending_input lock poisoned");
-                    return;
-                }
-            };
-            map.insert(
-                request_id.clone(),
-                PendingInput {
-                    session_id: session.id.clone(),
-                    sender: input_tx,
-                },
-            );
-        }
-
-        match input_rx.recv_timeout(INPUT_REQUEST_TIMEOUT) {
-            Ok(response) => {
-                send_to_socket(
-                    stream,
-                    &serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": msg.id,
-                        "result": { "input": response }
-                    }),
-                );
-                update_session_status(sessions, &session.id, SessionStatus::Active);
-                update_activity_by_session_id(sessions, &session.id);
-                emit_to_renderer(
-                    event_emitter,
-                    "agents:statusUpdate",
-                    &serde_json::json!({
-                        "sessionId": session.id,
-                        "agentId": session.agent_id,
-                        "status": "active",
-                    }),
-                );
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                // Remove the stale request so it does not leak.
-                if let Ok(mut map) = pending_input.lock() {
-                    map.remove(&request_id);
-                }
-                send_to_socket(
-                    stream,
-                    &serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": msg.id,
-                        "error": {
-                            "code": -32000,
-                            "message": "Input request timed out",
-                        }
-                    }),
-                );
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                // Sender was dropped, most likely by cancel_input_request
-                // or by cleanup_connection on agent disconnect.
-                send_to_socket(
-                    stream,
-                    &serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": msg.id,
-                        "error": {
-                            "code": -32000,
-                            "message": "Input request cancelled",
-                        }
-                    }),
-                );
-            }
-        }
-    }
-}
-
-fn handle_heartbeat(
-    stream: &TcpStream,
-    msg: AgentMessage,
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-) {
-    let session = find_session_by_stream(sessions, stream);
-    if let Some(ref s) = session {
-        update_activity_by_session_id(sessions, &s.id);
-    }
-
-    if msg.id.is_some() {
-        send_to_socket(
-            stream,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": msg.id,
-                "result": { "ts": now_ms() }
-            }),
-        );
-    }
-}
-
-fn find_session_by_agent_id(
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    agent_id: &str,
-) -> Option<AgentSession> {
-    let guard = match sessions.lock() {
-        Ok(g) => g,
-        Err(_) => return None,
-    };
-    guard
-        .values()
-        .find(|s| s.session.agent_id == agent_id)
-        .map(|s| s.session.clone())
-}
-
-fn find_session_by_stream(
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    stream: &TcpStream,
-) -> Option<AgentSession> {
-    let peer_addr = match stream.peer_addr() {
-        Ok(addr) => Some(addr),
-        Err(_) => return None,
-    };
-    let guard = match sessions.lock() {
-        Ok(g) => g,
-        Err(_) => return None,
-    };
-    guard
-        .values()
-        .find(|s| s.peer_addr == peer_addr)
-        .map(|s| s.session.clone())
-}
-
-fn update_activity_by_agent_id(
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    agent_id: &str,
-) {
-    if let Ok(mut guard) = sessions.lock() {
-        for internal in guard.values_mut() {
-            if internal.session.agent_id == agent_id {
-                internal.session.last_activity_at = now_ms();
-                break;
-            }
-        }
-    }
-}
-
-fn update_activity_by_session_id(
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    session_id: &str,
-) {
-    if let Ok(mut guard) = sessions.lock() {
-        if let Some(internal) = guard.get_mut(session_id) {
-            internal.session.last_activity_at = now_ms();
-        }
-    }
-}
-
-fn update_session_status(
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    session_id: &str,
-    status: SessionStatus,
-) {
-    if let Ok(mut guard) = sessions.lock() {
-        if let Some(internal) = guard.get_mut(session_id) {
-            internal.session.status = status;
-        }
-    }
-}
-
-fn cleanup_connection(
-    stream: &TcpStream,
-    sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
-    pending_input: &Arc<Mutex<HashMap<String, PendingInput>>>,
-    event_emitter: &EventEmitter,
-) {
-    let peer_addr = match stream.peer_addr() {
-        Ok(addr) => Some(addr),
-        Err(_) => return,
-    };
-    let session = {
-        let guard = match sessions.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        guard
-            .values()
-            .find(|s| s.peer_addr == peer_addr)
-            .map(|s| s.session.clone())
-    };
-
-    if let Some(s) = session {
-        if let Ok(mut guard) = sessions.lock() {
-            guard.retain(|_, internal| internal.session.id != s.id);
-        }
-
-        // Drop any pending input senders that belong to this session.
-        // Removing them wakes the corresponding `recv_timeout` with
-        // `Disconnected`, so the agent's input handler thread can exit
-        // immediately instead of waiting the full 30s for the timeout.
-        if let Ok(mut pending) = pending_input.lock() {
-            pending.retain(|_, entry| entry.session_id != s.id);
-        }
-
-        emit_to_renderer(
-            event_emitter,
-            "agents:disconnected",
-            &serde_json::json!({
-                "sessionId": s.id,
-                "agentId": s.agent_id,
-                "pluginId": s.plugin_id,
-            }),
-        );
-
-        log::info!("Agent disconnected: agent={}", s.agent_id);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::RecvTimeoutError;
 
     #[test]
     fn cancel_input_request_signals_receiver() {
@@ -1288,7 +470,7 @@ mod tests {
                 };
                 sessions.insert("sess-timeout".to_string(), internal);
             }
-            handle_request_input(
+            agent_comms_connection::handle_request_input(
                 &stream,
                 AgentMessage {
                     jsonrpc: "2.0".to_string(),
@@ -1394,7 +576,9 @@ mod tests {
         let token_t = token.clone();
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            handle_connection(stream, sessions_t, pending_t, token_t, emitter_t);
+            agent_comms_connection::handle_connection(
+                stream, sessions_t, pending_t, token_t, emitter_t,
+            );
         });
 
         let mut client = TcpStream::connect(addr).unwrap();
@@ -1465,7 +649,9 @@ mod tests {
         let token_t = token.clone();
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            handle_connection(stream, sessions_t, pending_t, token_t, emitter_t);
+            agent_comms_connection::handle_connection(
+                stream, sessions_t, pending_t, token_t, emitter_t,
+            );
         });
 
         let mut client = TcpStream::connect(addr).unwrap();

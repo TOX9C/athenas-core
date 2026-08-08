@@ -2,6 +2,9 @@
 use std::sync::Arc;
 use thiserror::Error;
 
+const HISTORY_KEY: &str = "notifications.history";
+const LEGACY_HISTORY_KEY: &str = "notifications:history";
+
 /// Type of notification.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -98,6 +101,10 @@ pub struct NotificationService {
     history: Arc<parking_lot::RwLock<Vec<NotificationRecord>>>,
     event_emitter:
         Arc<parking_lot::Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
+    /// Optional persistence through the app's existing KV store. Keeping this
+    /// optional preserves the lightweight in-memory service used by library
+    /// callers and unit tests.
+    store: Option<Arc<athena_store::KeyValueStore>>,
 }
 
 impl std::fmt::Debug for NotificationService {
@@ -105,6 +112,7 @@ impl std::fmt::Debug for NotificationService {
         f.debug_struct("NotificationService")
             .field("history", &"<RwLock<Vec>>")
             .field("event_emitter", &"<Option>")
+            .field("store", &self.store.is_some())
             .finish()
     }
 }
@@ -114,6 +122,7 @@ impl Clone for NotificationService {
         Self {
             history: Arc::clone(&self.history),
             event_emitter: Arc::clone(&self.event_emitter),
+            store: self.store.clone(),
         }
     }
 }
@@ -126,9 +135,49 @@ impl Default for NotificationService {
 
 impl NotificationService {
     pub fn new() -> Self {
+        Self::with_store(None)
+    }
+
+    /// Create a notification service backed by the app's existing KV store.
+    /// Corrupt or incompatible history is ignored rather than preventing the
+    /// app from starting; the next notification replaces it with valid JSON.
+    pub fn new_with_store(store: Arc<athena_store::KeyValueStore>) -> Self {
+        Self::with_store(Some(store))
+    }
+
+    fn with_store(store: Option<Arc<athena_store::KeyValueStore>>) -> Self {
+        let history = store
+            .as_ref()
+            .and_then(|s| {
+                let load = |key: &str| match s.get::<Vec<NotificationRecord>>(key) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        log::warn!("failed to load notification history from {key}: {error}");
+                        None
+                    }
+                };
+                load(HISTORY_KEY).or_else(|| load(LEGACY_HISTORY_KEY))
+            })
+            .unwrap_or_default();
         Self {
-            history: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            history: Arc::new(parking_lot::RwLock::new(history)),
             event_emitter: Arc::new(parking_lot::Mutex::new(None)),
+            store,
+        }
+    }
+
+    fn persist(&self) {
+        let Some(store) = &self.store else { return };
+        let history = self.history.read().clone();
+        if let Err(error) = store.set_sync(HISTORY_KEY, &history) {
+            log::warn!("failed to persist notification history: {error}");
+        } else if store.has(LEGACY_HISTORY_KEY) {
+            // Migrate the old key after a successful canonical write. This
+            // keeps old installs readable without leaving two competing
+            // histories behind.
+            if let Err(error) = store.delete_sync(LEGACY_HISTORY_KEY) {
+                log::warn!("failed to remove legacy notification history: {error}");
+            }
         }
     }
 
@@ -227,9 +276,15 @@ impl NotificationService {
                 "message": record.message,
                 "source": record.source,
                 "agentId": record.agent_id,
+                "data": record.data,
+                "metadata": record.metadata,
+                "actions": record.actions,
+                "requestId": record.request_id,
+                "read": record.read,
                 "timestamp": record.timestamp,
             }),
         );
+        self.persist();
 
         record
     }
@@ -280,6 +335,7 @@ impl NotificationService {
         record.read = true;
         let record_id = notification_id.to_string();
         drop(history);
+        self.persist();
 
         self.emit_event(
             "notifications:updated",
@@ -302,6 +358,14 @@ impl NotificationService {
                 count += 1;
             }
         }
+        drop(history);
+        if count > 0 {
+            self.persist();
+            self.emit_event(
+                "notifications:updated",
+                &serde_json::json!({ "all": true, "read": true }),
+            );
+        }
         count
     }
 
@@ -316,6 +380,7 @@ impl NotificationService {
         history.remove(idx);
         let record_id = notification_id.to_string();
         drop(history);
+        self.persist();
 
         self.emit_event(
             "notifications:dismissed",
@@ -332,6 +397,11 @@ impl NotificationService {
         let mut history = self.history.write();
         let count = history.len();
         history.clear();
+        drop(history);
+        if count > 0 {
+            self.persist();
+            self.emit_event("notifications:cleared", &serde_json::json!({ "all": true }));
+        }
         count
     }
 
