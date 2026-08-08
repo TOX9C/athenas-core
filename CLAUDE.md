@@ -91,3 +91,77 @@ Or in a single command (background the server):
 - **tauri-wd element reference bug**: WDIO's `isElementDisplayed` passes element references as JSON objects, but `Node.contains()` expects a DOM Node. This causes `Argument 1 ('other') to Node.contains must be an instance of Node` errors when using WDIO's `.click()`. Use `browser.execute()` to dispatch click events directly instead.
 - **Known WASM runtime issue**: Dioxus 0.7 event handlers can cause `RuntimeError: Unreachable code should not be executed` panics in WKWebView after clicks. The app renders correctly but interactive features may crash the WASM runtime.
 - **CI runner cancellation**: GitHub Actions externally cancels the `cargo test` step after all 324 tests pass (conclusion: `cancelled`, not `failure`). This is an account/runner-level kill, not a code or workflow issue — verified across 6+ runs with no newer pushes, no OOM, no test failures. Local `cargo test --workspace` is the reliable verification path until the runner issue is resolved.
+
+## Codebase Navigation via Graphify (RAG System)
+
+A knowledge graph of this codebase lives in `graphify-out/`. It contains **5,390 nodes** and **11,956 edges** spanning all Rust crates, frontend code, docs, and images. Use it as a retrieval-augmented system before reading files or searching with grep.
+
+### When to Use Graphify
+
+- **Before reading code:** Query the graph to find exactly which files and symbols are relevant, then read only those.
+- **Understanding relationships:** Find how modules connect, what calls what, or trace data flow between subsystems.
+- **Impact analysis:** Before modifying a function or struct, check what depends on it.
+- **Finding entry points:** Find the shortest path between two concepts (e.g. "how does the frontend reach the terminal backend?").
+
+### Commands
+
+```bash
+# Query the graph with a natural-language question
+graphify query "how does the plugin system work?"            # BFS traversal, finds relevant nodes
+graphify query "how does the plugin system work?" --budget 5000  # raise token budget for larger answers
+graphify query "how does the plugin system work?" --dfs      # depth-first instead of breadth-first
+graphify query "how does the plugin system work?" --context call  # filter to only "call" edges
+
+# Plain-language explanation of a specific node and its neighbors
+graphify explain "AppState"
+graphify explain "invoke()"
+graphify explain "AgentComms"
+
+# Impact analysis: what nodes are affected by changing X?
+graphify affected "AppState"
+graphify affected "BrowserManager"
+
+# Shortest path between two nodes (use --undirected if no directed path exists)
+graphify path "AppState" "SessionManager"
+graphify path "AppState" "invoke()" --undirected
+
+# List architectural hubs (most connected nodes)
+graphify god-nodes
+
+# Update the graph after code changes (no LLM needed — AST-only re-extraction)
+graphify update
+
+# Full re-graph if extraction pipeline or skill changed significantly
+# Re-run: /graphify
+```
+
+### Key Nodes in This Codebase
+
+| Node               | Edges | Role                                                                |
+| ------------------ | ----- | ------------------------------------------------------------------- |
+| `AppState`         | 174   | Central state hub — connects all Tauri commands to backend services |
+| `invoke()`         | 103   | Tauri IPC bridge between WASM frontend and Rust backend             |
+| `OutputBuffer`     | 56    | Terminal output accumulation buffer                                 |
+| `SessionManager`   | —     | Cross-community bridge between terminal and Tauri state             |
+| `AgentComms`       | —     | Agent inter-process communication (athena-core)                     |
+| `BrowserManager`   | —     | Embedded browser view management (athena-browser)                   |
+| `PluginManager`    | —     | Plugin lifecycle: discovery, validation, runtime                    |
+| `McpServer`        | —     | Model Context Protocol server (port 4545)                           |
+| `SwarmCoordinator` | —     | Multi-agent swarm orchestration                                     |
+
+### Workflow
+
+1. **Start with a query:** `graphify query "<your question>"` to find relevant nodes.
+2. **Drill into a node:** `graphify explain "<node name>"` to see all its connections.
+3. **Check impact:** `graphify affected "<node>"` before modifying it.
+4. **Read the actual code:** Use the `src=` and `loc=` fields from the graph output to jump to the right file and line.
+5. **After code changes:** Run `graphify update` to incrementally update the graph (AST-only, no LLM cost).
+
+### Output Files
+
+- `graphify-out/GRAPH_REPORT.md` — full analysis: god nodes, surprising connections, community structure
+- `graphify-out/graph.html` — interactive force-directed visualization (open in browser)
+- `graphify-out/graph.json` — machine-readable graph (for programmatic access)
+- `graphify-out/manifest.json` — file manifest for incremental updates
+- `graphify-out/cost.json` — cumulative token cost tracker
+- `graphify-out/cache/` — semantic extraction cache (avoids re-processing unchanged files)

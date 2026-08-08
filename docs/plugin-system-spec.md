@@ -3,7 +3,9 @@
 > **Version:** 1.1.0-draft
 > **Date:** 2026-04-28
 > **Author:** Agent 1 (Project Architect)
-> **Status:** Ready for implementation
+> **Status:** Historical draft — not the current runtime contract
+>
+> **Current-runtime note (2026-08-06):** This specification describes the earlier Electron/plugin-host design and remains useful as a protocol roadmap. The shipped desktop app uses the Rust `athena-core` MCP server on `127.0.0.1:4545`; external stdio clients use `bin/mcp-proxy.js`. For current transport, startup, authentication, and tool behavior, use [`docs/mcp-api-reference.md`](mcp-api-reference.md) and the plugin examples under `plugins/*/mcp.example.json`.
 
 ---
 

@@ -28,6 +28,15 @@ Athena's Core is a desktop IDE for AI-assisted development. It combines:
 
 ---
 
+## New in This Build: Agent Activity Detection
+
+Athena's Core now **sees which AI agents are running inside each pane** and keeps you in the loop without staring at the terminal:
+
+- **Per-pane status dot** — every pane header shows a live dot: gold = agent working, pulsing gold = thinking/warming up, amber (pulsing) = finished / waiting for input / errored.
+- **Space tab badges** — each space tab shows `[Working] [Total] [Attention]`: how many agents are actively working (left of the total, as requested), how many agents are in the space, and how many need your attention (amber).
+- **Notifications** — when an agent finishes its work, asks a question, or errors, you get an in-app notification **and** a macOS notification with sound (per type), plus a dock badge with the unread count. Toggle each notification type in **Settings → Agents → Agent Notifications**.
+- **Detected agents** — Claude Code, Codex, OpenCode, Gemini CLI, Qwen, Aider, Cursor CLI, Freebuff, and OMP (oh my pi). Task titles are scraped from agent session files where formats exist (Claude/Codex/Qwen/Aider).
+
 ## What to Focus On
 
 Please test these areas and report **anything** that feels broken, confusing, or crashes:

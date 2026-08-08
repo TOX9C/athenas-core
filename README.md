@@ -127,6 +127,19 @@ A rich visual experience with extensive customization.
 - **Font size control**: Fine-tune terminal and editor font sizes
 - **CSS custom properties**: Full control over the color system
 
+### Mobile Companion (LAN PWA)
+
+Athena includes an experimental phone companion that mirrors the desktop over a trusted local network. It is a browser/PWA surface, not a separate iOS or Android binary: the desktop remains the source of truth for workspaces, terminals, files, and Athena chat.
+
+To pair a phone:
+
+1. Build and launch Athena's Core.
+2. Open **Settings → Mobile Mirror** and enable it.
+3. Scan the QR code or copy the private link shown there.
+4. Open the link on a phone connected to the same Wi‑Fi and optionally install it to the home screen.
+
+The link acts like a password and grants access while Mobile Mirror is enabled. Do not share it publicly. The relay currently uses HTTP/WebSocket on the trusted LAN and is not intended for internet exposure or untrusted networks. The companion supports workspace viewing, terminal output/commands, Athena chat, and basic file read/save operations.
+
 ### Workspaces
 
 Organize your work into isolated workspaces.

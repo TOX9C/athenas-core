@@ -69,6 +69,7 @@ The Tauri application binary. Serves as the entry point and IPC bridge.
 **Dependencies:** `tauri`, `tauri-plugin-shell`, `tauri-plugin-dialog`, `tauri-plugin-updater`, `tokio`, all workspace crates.
 
 **Key files:**
+
 - `main.rs` — App builder, command registration, graceful shutdown handler
 - `state.rs` — `AppState` struct holding all shared services behind `Arc<Mutex>` / `Arc<tokio::sync::Mutex>`
 - `commands/mod.rs` — 78 `#[tauri::command]` functions organized by domain
@@ -80,6 +81,7 @@ Dioxus web application compiled to WASM. Renders the entire UI.
 **Dependencies:** `dioxus`, `dioxus-router`, `wasm-bindgen`, `web-sys`, `gloo`, `serde`, `chrono`.
 
 **Key modules:**
+
 - `lib.rs` — Root `App` component with 15 stores, keyboard shortcuts, layout
 - `components/` — 85+ RSX components organized by feature (terminal, athena, kanban, swarm, etc.)
 - `stores/` — 15 signal-based stores matching Electron's Zustand stores
@@ -94,12 +96,12 @@ Core business logic: LLM orchestration, MCP server, agent communications, search
 **Dependencies:** `tokio`, `reqwest`, `serde`, `serde_json`, `thiserror`, `regex`, `uuid`, `chrono`, `log`.
 
 **Modules:**
+
 - `orchestrator.rs` — `AthenaOrchestrator`: dispatches messages to Anthropic/OpenAI-compatible APIs, handles tool call loops
 - `mcp.rs` — `McpServer`: TCP JSON-RPC 2.0 server on port 4545, exposes 14 tools to external agents
 - `agent_comms.rs` — `AgentComms`: TCP server on port 4546 for agent lifecycle (initialize, notify, status, input request, heartbeat)
 - `tool_executor.rs` — Built-in tool implementations (create_tasks, get_next_task, update_task_status, notify, etc.)
 - `output_buffer.rs` — Line-numbered, timestamped output capture per agent pane
-- `output_capture.rs` — Agent output capture with metadata
 - `notification.rs` — Notification service with history, read/unread tracking, counts
 - `plan_manager.rs` — Plan/step tracking for AI-generated execution plans
 - `search.rs` — Code search via ripgrep integration
@@ -115,6 +117,7 @@ PTY session management using `portable-pty`.
 **Dependencies:** `portable-pty`, `thiserror`, `log`.
 
 **Key types:**
+
 - `SessionManager` — Manages multiple PTY sessions by ID
 - `PtyError` — Error enum for PTY operations
 - Callback types: `OnDataCallback`, `OnReadyCallback`, `OnExitCallback`
@@ -126,6 +129,7 @@ Persistent storage layer.
 **Dependencies:** `serde`, `serde_json`, `tokio`, `uuid`, `chrono`.
 
 **Key types:**
+
 - `KeyValueStore` — File-based JSON key-value store (compatible with electron-store)
 - `SessionStore` — Chat session CRUD with message history
 - Image storage with orphan cleanup
@@ -279,6 +283,7 @@ pub fn use_ui_store() -> UseSignal<UiState> {
 ```
 
 15 stores mirror the Electron app's Zustand stores:
+
 - `ui` — Theme, panel, sidebar, modals, font settings
 - `workspace` — Spaces, panes, active space
 - `athena` — Chat messages, status, session context
@@ -327,6 +332,7 @@ pub struct AppState {
 JSON-RPC 2.0 over TCP. Exposes Athena's tool interface to external agents and plugins.
 
 **Protocol:**
+
 1. Client connects to `127.0.0.1:4545`
 2. Sends `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"token":"<uuid>"}}`
 3. Server validates token, returns capabilities
@@ -340,6 +346,7 @@ JSON-RPC 2.0 over TCP. Exposes Athena's tool interface to external agents and pl
 JSON-RPC over TCP for agent lifecycle management.
 
 **Protocol:**
+
 1. Agent connects to `127.0.0.1:4546`
 2. Sends `initialize` with token, pluginId, agentId
 3. Server registers session, returns sessionId + capabilities
@@ -377,6 +384,7 @@ Both MCP and Agent Comms servers require a UUID token for initialization. Connec
 ### Tauri Capabilities
 
 The app uses minimal Tauri capabilities:
+
 - `tauri-plugin-shell` — for external process management
 - `tauri-plugin-dialog` — for file/folder picker dialogs
 - `tauri-plugin-updater` — for auto-update functionality

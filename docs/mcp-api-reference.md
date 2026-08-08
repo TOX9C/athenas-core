@@ -4,17 +4,39 @@ Complete reference for the Model Context Protocol (MCP) tools and resources expo
 
 ## Server Configuration
 
+Athena's canonical desktop integration is the Rust MCP server in `athena-core` over loopback TCP. External stdio clients launch `bin/mcp-proxy.js`, which forwards stdin/stdout to `127.0.0.1:4545`.
+
 ```typescript
 interface ServerConfig {
   name: string // Server name
   version: string // Server version
-  transport: TransportType // 'stdio' | 'websocket'
-  websocketPort?: number // Port for WebSocket transport
-  athenaHost?: string // Athena host for WebSocket
-  athenaPort?: number // Athena port for WebSocket
-  authToken?: string // Authentication token
+  transport: 'tcp' | 'stdio' | 'websocket'
+  host?: string // Rust TCP host; defaults to 127.0.0.1
+  port?: number // Rust TCP port; defaults to 4545
+  websocketPort?: number // Optional Node/WebSocket transport port
+  authToken?: string // Authentication token for TCP/WebSocket clients
 }
 ```
+
+### Canonical external-client configuration
+
+```json
+{
+  "mcpServers": {
+    "athena": {
+      "command": "node",
+      "args": ["/path/to/athenas-core/bin/mcp-proxy.js"],
+      "env": {
+        "ATHENA_MCP_HOST": "127.0.0.1",
+        "ATHENA_MCP_PORT": "4545",
+        "ATHENA_MCP_TOKEN": "<TOKEN_FROM_ATHENA>"
+      }
+    }
+  }
+}
+```
+
+The Tauri app starts the Rust TCP listener on `127.0.0.1:4545` during backend initialization. If that port is temporarily occupied, boot retries the bind until shutdown. Direct stdio mode remains available when the Rust server is launched as a subprocess; the Node SDK server is a separate optional package, not the desktop backend's canonical transport.
 
 ## Tools
 
@@ -284,11 +306,21 @@ interface TaskState {
 
 ## Transport
 
-### Stdio
+### TCP (canonical desktop transport)
 
-The MCP server communicates over stdin/stdout using JSON-RPC 2.0. This is the default transport for external MCP clients.
+The Rust server listens on `127.0.0.1:4545` and speaks line-delimited JSON-RPC 2.0. Authenticate TCP clients with the token issued by Athena. External stdio clients should use `bin/mcp-proxy.js` rather than opening the TCP socket themselves.
 
 ```bash
+ATHENA_MCP_HOST=127.0.0.1 ATHENA_MCP_PORT=4545 \
+  node bin/mcp-proxy.js
+```
+
+### Stdio
+
+The Rust MCP server also communicates over stdin/stdout using JSON-RPC 2.0 when Athena is launched directly as a subprocess. The Tauri `mcp_init(port)` command ensures the Rust TCP listener is active on the requested port: it is idempotent for the active port and returns a conflict error for a different port while another listener is running. TCP shutdown signals the accept loop, interrupts active client reads, and waits for the listener generation to drop before releasing the port for reuse.
+
+```bash
+# Direct subprocess mode, when the Rust MCP server is launched by the client
 athena-mcp-server
 ```
 
