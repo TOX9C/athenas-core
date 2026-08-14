@@ -52,6 +52,11 @@ pub struct UIState {
     /// When the user launches a swarm from SwarmModal, this carries the
     /// goal text into the NewSpaceModal so it isn't lost on the handoff.
     pub pending_swarm_goal: Option<String>,
+    /// A URL requested by a terminal link click. Consumed by the embedded
+    /// browser surface on mount so a cold-open lands directly on the link
+    /// (avoiding a default-page flash). Harmless if left stale: `browser_show`
+    /// ignores it whenever a panel model already exists.
+    pub pending_browser_url: Option<String>,
 }
 
 impl Default for UIState {
@@ -74,6 +79,7 @@ impl Default for UIState {
             font_size: 14,
             smart_pane_titles: true,
             pending_swarm_goal: None,
+            pending_browser_url: None,
             custom_agents: Vec::new(),
         }
     }

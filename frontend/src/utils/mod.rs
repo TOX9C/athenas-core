@@ -5,6 +5,7 @@ pub mod font_size;
 pub mod fuzzy_search;
 pub mod keybindings;
 pub mod notification_sound;
+pub mod open_link;
 pub mod pane_config;
 pub mod pane_label;
 pub mod pane_names;

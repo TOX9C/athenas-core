@@ -1,12 +1,15 @@
+use crate::components::right_sidebar::browser_surface::BROWSER_ID;
+use crate::stores::panel_manager::use_panel_manager_store;
 use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
-    pty_attach_listener, pty_default_shell_cached, pty_detach_listener, pty_has_session,
-    pty_listen_raw, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write,
-    read_clipboard_text,
+    browser_navigate, pty_attach_listener, pty_default_shell_cached, pty_detach_listener,
+    pty_has_session, pty_listen_raw, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent,
+    pty_write, read_clipboard_text,
 };
 use crate::utils::agent_commands::get_agent_command;
+use crate::utils::open_link::open_link_in_browser;
 use crate::utils::resume_scanner::ResumeScanner;
 use dioxus::prelude::*;
 use std::cell::RefCell;
@@ -19,7 +22,8 @@ use wasm_bindgen::JsCast;
 mod xterm_helpers;
 use xterm_helpers::{
     force_redraw, read_css_var, restore_term_from_session, schedule_fit, serialize_buffer,
-    try_activate_addon, wait_for_container_size, write_bytes_to_term, write_str_to_term,
+    try_activate_addon, try_activate_web_links_addon, wait_for_container_size, write_bytes_to_term,
+    write_str_to_term,
 };
 
 /// Default scrollback buffer size for xterm.js sessions.
@@ -264,6 +268,10 @@ struct XtermCleanup {
     /// `term.dispose()` destroys it. Dropping this JsValue after dispose lets
     /// the addon's own disposables (registered against the terminal) run.
     _serialize_addon: Option<JsValue>,
+    /// Rooted `@xterm/addon-web-links` handler closure + addon instance so
+    /// clickable terminal links stay callable until `term.dispose()` runs.
+    _web_links_handler: Option<JsValue>,
+    _web_links_addon: Option<JsValue>,
 }
 
 /// Mount an xterm.js Terminal into a div with id `pane_id`.
@@ -304,6 +312,7 @@ pub fn XtermMount(
     let registry_for_drop = terminal_registry.clone();
     let workspace_store = use_workspace_store();
     let ui_state = use_ui_store();
+    let panel_state = use_panel_manager_store();
     let mount_active_for_drop = mount_active.clone();
 
     use_effect(move || {
@@ -1137,6 +1146,29 @@ pub fn XtermMount(
             // remount (use_drop fires on every swap; see project-swap-remount).
             let serialize_addon = try_activate_addon(&window, "SerializeAddon", &term_val);
 
+            // ── Clickable links → embedded browser panel ────────────────────
+            // The vendored WebLinksAddon's default handler calls window.open()
+            // (a popup / new native window). Replace it with a handler that
+            // opens the shared embedded browser in the right sidebar and
+            // navigates to the link. This closure runs inside xterm's raw
+            // linkifier callback — outside any Dioxus scope — so async work
+            // must use wasm_bindgen_futures::spawn_local, never Dioxus `spawn`.
+            let mut link_ui_state = ui_state;
+            let mut link_panel_state = panel_state;
+            let web_links_handler = Closure::wrap(Box::new(move |_event: JsValue, uri: String| {
+                open_link_in_browser(
+                    &mut link_ui_state.write(),
+                    &mut link_panel_state.write(),
+                    &uri,
+                );
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = browser_navigate(BROWSER_ID, &uri).await;
+                });
+            }) as Box<dyn FnMut(JsValue, String)>);
+            let web_links_handler_js = web_links_handler.into_js_value();
+            let web_links_addon =
+                try_activate_web_links_addon(&window, &term_val, &web_links_handler_js);
+
             let mut resize_observer_holder: Option<JsValue> = None;
             let mut ro_closure_holder: Option<wasm_bindgen::closure::Closure<dyn FnMut()>> = None;
             let mut ro_timer_holder: Option<Rc<RefCell<Option<i32>>>> = None;
@@ -1411,6 +1443,8 @@ pub fn XtermMount(
                 _focus_recovery_window: Some(window.clone()),
                 _focus_recovery_document: window.document(),
                 _serialize_addon: serialize_addon,
+                _web_links_handler: Some(web_links_handler_js),
+                _web_links_addon: web_links_addon,
             }));
         });
     });

@@ -27,6 +27,32 @@ pub(crate) fn read_css_var(window: &web_sys::Window, name: &str) -> String {
         .to_string()
 }
 
+/// Activate the vendored `@xterm/addon-web-links` addon with a custom handler.
+///
+/// The addon's default handler opens `window.open()` (a popup / new native
+/// window), which is not what this app wants. Passing our own `handler`
+/// (a `JsValue` wrapping a Rust `Closure<dyn FnMut(JsValue, String)>`) routes
+/// link clicks into the embedded browser panel instead. The caller must keep
+/// `handler` rooted until `term.dispose()` runs.
+pub(crate) fn try_activate_web_links_addon(
+    window: &web_sys::Window,
+    term_val: &JsValue,
+    handler: &JsValue,
+) -> Option<JsValue> {
+    let ctor_val = js_sys::Reflect::get(window, &JsValue::from_str("WebLinksAddon")).ok()?;
+    let ctor_val = if ctor_val.is_function() {
+        ctor_val
+    } else {
+        js_sys::Reflect::get(&ctor_val, &JsValue::from_str("WebLinksAddon")).ok()?
+    };
+    let ctor: js_sys::Function = ctor_val.dyn_into().ok()?;
+    let instance = js_sys::Reflect::construct(&ctor, &js_sys::Array::of1(handler)).ok()?;
+    let activate_val = js_sys::Reflect::get(&instance, &JsValue::from_str("activate")).ok()?;
+    let activate_fn: js_sys::Function = activate_val.dyn_into().ok()?;
+    let _ = activate_fn.call1(&instance, term_val);
+    Some(instance)
+}
+
 pub(crate) fn try_activate_addon(
     window: &web_sys::Window,
     global_name: &str,

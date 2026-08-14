@@ -1,86 +1,68 @@
 ---
-name: "Athenaeum Gold"
-description: "Premium dark cinematic identity for Athena's Core — Obsidian & Gold, Greek mythology meets modern IDE."  
-
+name: 'One Window — Obsidian'
+description: "Fresh instrument-panel product film for Athena's Core — real app captures on a dark obsidian canvas, bronze accents. No myth, no paper."
 ---
 
-## Overview
+# One Window — Obsidian
 
-The "Athenaeum Gold" visual identity is built on the contrasts of deep obsidian darkness and warm bronze-gold illumination — like firelight in a marble hall. The aesthetic is premium, mythic, and rooted in the Greek mythology identity of Athena. It is not "dark mode" — it is the night sky before a constellation rises.
+A 25-second, single-story promo for **Athena's Core**, driven entirely by real
+screen captures of the app. The story: _one native window replaces the five apps
+it used to take to build._ Precise, editorial — an instrument panel at night,
+matching the app's own dark Nyx theme so the captures sit naturally in the frame.
 
-## Colors
+## Palette
 
-| Token              | Value     | Usage                                              |
-|--------------------|-----------|----------------------------------------------------|
-| Obsidian           | `#0E0C14` | Background, the canvas of the void                 |
-| Obsidian-deep      | `#07050F` | Deep shadow, edge dissolve                         |
-| Obsidian-light     | `#1A1624` | Card surfaces, panels, secondary background        |
-| Gold               | `#C9A24B` | Primary accent, primary CTAs, highlights           |
-| Gold-dim           | `#8B6E2F` | Secondary accent, decorative lines, muted glow     |
-| Gold-bright        | `#E5C566` | Focal accents, the brightest element in a frame      |
-| Parchment          | `#E8E4D5` | Primary text on dark backgrounds                   |
-| Stone              | `#6E6A74` | Secondary text, labels, metadata                   |
-| Ivory              | `#F5F0E1` | Hero text, highest emphasis                        |
+| Token  | Hex                      | Use                                                     |
+| ------ | ------------------------ | ------------------------------------------------------- |
+| bg     | `#0E0C10`                | Canvas background (warm obsidian)                       |
+| panel  | `#16141B`                | Capture card frames, caps                               |
+| border | `#2A2731`                | Hairline rules, card borders                            |
+| text   | `#F2EFE9`                | Headlines (warm off-white)                              |
+| sub    | `#A9A49B`                | Body copy, dimmed text                                  |
+| dim    | `#98938A`                | Top/bottom bars, card captions, metadata                |
+| gold   | `#C9A24B`                | Kickers, index numerals, registration marks, brand mark |
+| ghost  | `rgba(242,239,233,0.05)` | Ghost numerals, decorative marks                        |
+
+The app's own accent is `#C9A24B` — use it for focal elements (kickers, marks,
+indexes) and keep structural elements (rules, borders) quiet.
 
 ## Typography
 
-| Token                  | Font              | Weight | Size (video)   | Usage                          |
-|------------------------|-------------------|--------|----------------|--------------------------------|
-| Display (brand)        | Cormorant         | 700    | 96-160px       | Scene titles, brand moments    |
-| Display Italic         | Cormorant         | 700i   | 48-72px        | Sub-titles, quotes             |
-| UI (body/data)         | Hanken Grotesk    | 400    | 28-42px        | Descriptions, labels           |
-| Data / Code            | Monaspace Neon    | 400    | 16-24px        | Terminal/code snippets         |
-| Mono (accents)         | Monogram          | 400    | 18-24px        | Labels, metadata tags          |
+- **Voice — Hanken Grotesk** (the product's grotesque): headlines 700, body 400.
+  Tight display tracking (-0.03em), 92–122px headlines, 34px sub-copy.
+- **Data — Monaspace Neon** (the product's terminal mono): kickers, captions,
+  timecodes, ghost numerals. Uppercase, 0.16–0.24em tracking on kickers.
+- No serif. The mythic Cormorant stays out of the film.
 
-- Headline tracking: `-0.03em` (tighter than web for video compression)
-- Line-height for display: `0.9`
-- Line-height for body: `1.2`
-- Font license: Cormorant (Google Fonts), Hanken Grotesk (Google Fonts), Monaspace Neon (GitHub Fonts)
+## Corners & Depth
 
-## Elevation
+- Sharp instrument corners: cards 6px, everything else square or 2px.
+- Depth: layered. Cards cast `0 30px 70px rgba(0,0,0,0.55)`, captures sit in
+  dark `panel` frames with 2px `border` hairlines and gold registration marks.
+- Rules draw in with `scaleX`; ghost numerals breathe slowly.
 
-| Level     | Usage                                           |
-|-----------|-------------------------------------------------|
-| Flat      | Backgrounds, no shadow                          |
-| Raised    | Cards, panels — subtle 1px border at `#1A1624`  |
-| Floating  | Hero elements — gold glow only, no shadow       |
+## Motion
 
-## Components
+- Entrances: `expo.out` / `power3.out`, 0.5–0.75s. Transitions are push-slides
+  between scenes with a zoom-through + blur at the climax (T4).
+- The climax (scene 5) must keep moving: fast text reveal, continuous ken burns
+  (1.06 → 1.28), short dwell, blur-crossfade into the close. No static holds.
+- Audio: SFX only (shutter ticks, whooshes, closing chime) — **no music bed**.
 
-- Borders: `1px solid` with 8% opacity of Parchment — near-invisible but structural
-- Buttons: No visible background, gold text, hover state shifts color to `Gold-bright`
-- Cards: Minimal, `1px` border, no border-radius (sharp edges for industrial precision)
+## Do / Don't
 
-## Motion Principles
+**Do:**
 
-- **Energy:** Cinematic. Slow, deliberate entrances. Holds breathe.
-- **Easing:**
-  - Entry: `power3.out` to `expo.out`
-  - Exit: `power4.in`
-  - Transition: `power2.inOut`
-- **Duration:**
-  - Entrance: 0.6-1.2s
-  - Hold: 1.5-3.0s
-  - Transition: 0.8-1.5s
-- **Atmosphere:**
-  - Radial gold glow (breathing)
-  - Grain overlay (filmic texture)
-  - Hairline rules (animated, structural)
-  - Ghost text in background (3% opacity)
-- **Transition:** Cinematic Zoom or Blur Crossfade
+- Lead with the real app. Captures are the heroes; type supports.
+- Keep copy to one story: blank workspace → work loop → scale → one window.
+- Use the gold accent visibly (kickers, rules, marks) — 15–25% atmospheric,
+  full saturation on focal elements.
+- Vary motion per scene: tilt, fan, scroll-reveal, zoom, full-bleed.
 
-## Do's and Don'ts
+**Don't:**
 
-**DO:**
-- Use gold as illumination — a warm glow against the obsidian void
-- Let the dark win — at least 60-70% of any frame should be dark
-- Use typography as decoration — large ghost characters in the background
-- Add grain/noise for filmic texture
-- Anchor text to edges or use asymmetric layouts
-
-**DON'T:**
-- Use purple gradients, cyan neon, or any color not in this palette
-- Center everything — entries should feel directional
-- Use rounded corners on hero elements — this is architecture, not UI
-- Add bright gradients that dilute the premium feel
-- Use small type sizes — everything should read at a glance in the dark
+- No Greek mythology, no owls, no shields, no lamp glow, no ghost "ATHENA"
+  wordmarks.
+- No fake UI mockups — every product shot is a real capture.
+- No feature dump. No lists of features. Three steps, one journey.
+- No gradient text, no left-edge accent stripes, no neon, no light/paper canvas.

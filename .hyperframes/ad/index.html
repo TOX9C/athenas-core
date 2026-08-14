@@ -1,1632 +1,927 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <title>Athena's Core — Product Showcase</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Marcellus&family=Hanken+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
-    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js" crossorigin="anonymous"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=1920, initial-scale=1">
+    <title>One Window — Athena's Core</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
     <style>
-      /* ==========================================================
-         DESIGN TOKENS — pulled directly from styles.css
-         ========================================================== */
-      html, body {
+      /* ---------- fonts ---------- */
+      @font-face {
+        font-family: "Hanken Grotesk";
+        src: url("fonts/HankenGrotesk-400.woff2") format("woff2");
+        font-weight: 400;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Hanken Grotesk";
+        src: url("fonts/HankenGrotesk-500.woff2") format("woff2");
+        font-weight: 500;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Hanken Grotesk";
+        src: url("fonts/HankenGrotesk-600.woff2") format("woff2");
+        font-weight: 600;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Hanken Grotesk";
+        src: url("fonts/HankenGrotesk-700.woff2") format("woff2");
+        font-weight: 700;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Monaspace Neon";
+        src: url("fonts/MonaspaceNeon-400.woff2") format("woff2");
+        font-weight: 400;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Monaspace Neon";
+        src: url("fonts/MonaspaceNeon-500.woff2") format("woff2");
+        font-weight: 500;
+        font-display: swap;
+      }
+
+      /* ---------- base ---------- */
+      html,
+      body {
         margin: 0;
         padding: 0;
-        background: #0E0E11;
-        width: 100%;
-        height: 100%;
+        width: 1920px;
+        height: 1080px;
         overflow: hidden;
-        font-family: 'Hanken Grotesk', -apple-system, sans-serif;
-        color: #ECEAE3;
+        background: #0e0c10;
+      }
+      * {
+        box-sizing: border-box;
         -webkit-font-smoothing: antialiased;
       }
-
-      .grain {
+      .scene {
         position: absolute;
-        inset: 0;
-        pointer-events: none;
-        z-index: 9999;
-        opacity: 0.025;
-        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-        background-size: 256px 256px;
-      }
-
-      .clip { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; }
-      .scene { width: 100%; height: 100%; position: relative; box-sizing: border-box; }
-
-      /* ==========================================================
-         SCENE 1: TITLE / BRAND
-         ========================================================== */
-      .s1-bg {
-        position: absolute; inset: 0;
-        background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(201, 162, 75, 0.10) 0%, transparent 60%), #0E0E11;
-        z-index: 0;
-      }
-      .s1-content {
-        position: absolute; inset: 0;
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
-        z-index: 2;
-      }
-      .s1-logo {
-        width: 120px; height: 120px;
-        border: 1.5px solid #C9A24B;
-        border-radius: 24px;
-        display: flex; align-items: center; justify-content: center;
-        margin-bottom: 32px;
-        background: linear-gradient(135deg, #16161A 0%, #0E0E11 100%);
-        box-shadow: 0 0 40px rgba(201, 162, 75, 0.15);
-      }
-      .s1-logo svg { width: 64px; height: 64px; }
-      .s1-title {
-        font-family: 'Marcellus', Georgia, serif;
-        font-size: 96px;
-        font-weight: 400;
-        color: #ECEAE3;
-        margin: 0;
-        letter-spacing: 0.01em;
-      }
-      .s1-sub {
-        font-family: 'Hanken Grotesk', sans-serif;
-        font-size: 22px;
-        color: #9A968C;
-        margin-top: 16px;
-        font-weight: 300;
-        letter-spacing: 0.05em;
-      }
-      .s1-tag {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 12px;
-        color: #C9A24B;
-        margin-top: 32px;
-        padding: 8px 16px;
-        border: 1px solid rgba(201, 162, 75, 0.3);
-        border-radius: 999px;
-        letter-spacing: 0.15em;
-        text-transform: uppercase;
-      }
-
-      /* ==========================================================
-         SHARED APP CHROME (used in scenes 2-9)
-         ========================================================== */
-      .app-frame {
-        position: absolute;
-        inset: 60px;
-        background: #0E0E11;
-        border: 1px solid #2A2A31;
-        border-radius: 12px;
-        box-shadow: 0 30px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(201, 162, 75, 0.05);
+        top: 0;
+        left: 0;
+        width: 1920px;
+        height: 1080px;
         overflow: hidden;
-        display: flex;
-        flex-direction: column;
+        background: #0e0c10;
       }
-      .app-lamp {
-        position: absolute;
-        top: 0; left: 0; right: 0;
-        height: 200px;
-        background: radial-gradient(ellipse 80% 100% at 50% 0%, rgba(201, 162, 75, 0.08) 0%, transparent 70%);
-        pointer-events: none;
-        z-index: 0;
+      #scene1 {
+        opacity: 1;
       }
-      .titlebar {
-        height: 38px;
-        background: #16161A;
-        border-bottom: 1px solid #2A2A31;
-        display: flex;
-        align-items: center;
-        padding: 0 14px;
-        flex-shrink: 0;
+      #scene2,
+      #scene3,
+      #scene4,
+      #scene5,
+      #scene6 {
+        opacity: 0;
+      }
+      .scene-inner {
         position: relative;
-        z-index: 1;
-      }
-      .traffic-lights { display: flex; gap: 8px; align-items: center; }
-      .traffic-lights .dot { width: 12px; height: 12px; border-radius: 50%; }
-      .tl-red { background: #ff5f57; }
-      .tl-yellow { background: #febc2e; }
-      .tl-green { background: #28c840; }
-      .tb-center { display: flex; gap: 6px; margin-left: 24px; }
-      .tb-tab {
-        padding: 4px 12px;
-        font-size: 11px;
-        color: #9A968C;
-        background: #1E1E23;
-        border: 1px solid #2A2A31;
-        border-radius: 6px;
-        display: flex; align-items: center; gap: 6px;
-      }
-      .tb-tab.active { color: #C9A24B; border-color: rgba(201, 162, 75, 0.3); }
-      .tb-tab .tab-dot { width: 6px; height: 6px; border-radius: 50%; background: #C9A24B; }
-      .tb-right { margin-left: auto; display: flex; gap: 6px; align-items: center; }
-      .tb-btn {
-        width: 28px; height: 28px;
-        border-radius: 6px;
-        display: flex; align-items: center; justify-content: center;
-        color: #9A968C;
-        font-size: 12px;
-      }
-      .tb-btn svg { width: 14px; height: 14px; }
-
-      .statusbar {
-        height: 24px;
-        background: #16161A;
-        border-top: 1px solid #2A2A31;
-        display: flex;
-        align-items: center;
-        padding: 0 14px;
-        font-size: 10px;
-        color: #9A968C;
-        gap: 12px;
-        flex-shrink: 0;
-      }
-      .status-dot { width: 4px; height: 4px; border-radius: 50%; background: #6A675E; }
-      .statusbar .accent { color: #C9A24B; display: flex; align-items: center; gap: 6px; }
-      .statusbar .accent::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: #C9A24B; }
-
-      /* Sidebar (left) */
-      .sidebar {
-        width: 240px;
-        background: #16161A;
-        border-right: 1px solid #2A2A31;
+        width: 100%;
+        height: 100%;
         display: flex;
         flex-direction: column;
-        flex-shrink: 0;
+        padding: 40px 120px 36px;
       }
-      .sb-section {
-        padding: 12px;
-        border-bottom: 1px solid #2A2A31;
+      .row {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 64px;
+        min-height: 0;
       }
-      .sb-section-header {
-        display: flex; align-items: center; gap: 6px;
-        font-size: 10px; color: #9A968C;
-        text-transform: uppercase; letter-spacing: 0.1em;
-        margin-bottom: 8px; font-weight: 600;
-      }
-      .sb-section-header svg { width: 12px; height: 12px; }
-      .sb-workspace {
-        display: flex; align-items: center; gap: 8px;
-        padding: 6px 8px;
-        border-left: 2px solid transparent;
-        font-size: 12px;
-        color: #ECEAE3;
-      }
-      .sb-workspace.active { border-left-color: #C9A24B; background: rgba(201, 162, 75, 0.06); }
-      .sb-workspace-dot { width: 8px; height: 8px; border-radius: 50%; background: #C9A24B; }
-      .sb-workspace.inactive .sb-workspace-dot { background: #6A675E; }
-      .sb-workspace-name { flex: 1; }
-      .sb-workspace-badge { font-size: 9px; color: #9A968C; }
-
-      .file-row {
-        display: flex; align-items: center; gap: 6px;
-        padding: 3px 8px;
-        font-size: 11px;
-        color: #ECEAE3;
-        border-radius: 3px;
-        font-family: 'JetBrains Mono', monospace;
-      }
-      .file-row .chev { width: 10px; height: 10px; color: #6A675E; }
-      .file-row .lang {
-        font-size: 9px; font-weight: 700; padding: 1px 4px;
-        border-radius: 2px; min-width: 18px; text-align: center;
-        font-family: 'Hanken Grotesk', sans-serif;
-      }
-      .lang-rs { background: #dea584; color: #16161A; }
-      .lang-ts { background: #3178c6; color: #ECEAE3; }
-      .lang-js { background: #f7df1e; color: #16161A; }
-      .lang-css { background: #563d7c; color: #ECEAE3; }
-      .file-row.dir { color: #C9A24B; }
-      .file-row.muted { color: #9A968C; }
-      .file-row .icon-folder { color: #C9A24B; width: 12px; height: 12px; }
-
-      /* Terminal pane */
-      .term-pane {
-        background: #0E0E11;
-        display: flex; flex-direction: column;
+      .text-col {
         flex: 1;
         min-width: 0;
-        min-height: 0;
-        position: relative;
-      }
-      .term-header {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        margin: 6px 8px 0 8px;
-        padding: 4px 12px;
-        background: #16161A;
-        border: 1px solid #2A2A31;
-        border-radius: 999px;
-        align-self: flex-start;
-        font-size: 10px;
-        font-weight: 600;
-        color: #ECEAE3;
-      }
-      .term-header .status-icon { color: #C9A24B; }
-      .term-header .status-icon svg { width: 8px; height: 12px; }
-      .term-header .ctrl-btn { color: #6A675E; }
-      .term-header .ctrl-btn svg { width: 12px; height: 12px; }
-      .term-body {
-        flex: 1;
-        padding: 8px 12px;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 12px;
-        line-height: 1.5;
-        color: #ECEAE3;
-        overflow: hidden;
-        white-space: pre;
-      }
-      .term-prompt { color: #C9A24B; }
-      .term-dim { color: #6A675E; }
-      .term-cursor { display: inline-block; width: 7px; height: 14px; background: #C9A24B; vertical-align: text-bottom; margin-left: 2px; }
-      .term-cmd { color: #ECEAE3; }
-      .term-ok { color: #7BAE5A; }
-      .term-err { color: #C5654D; }
-      .term-acc { color: #4FA39E; }
-      .term-warn { color: #D2973C; }
-
-      /* Athena chat panel (right sidebar) */
-      .right-sidebar {
-        width: 360px;
-        background: #16161A;
-        border-left: 1px solid #2A2A31;
         display: flex;
         flex-direction: column;
-        flex-shrink: 0;
+        gap: 26px;
       }
-      .rs-tabs {
-        display: flex;
-        background: #16161A;
-        border-bottom: 1px solid #2A2A31;
-      }
-      .rs-tab {
-        flex: 1;
-        padding: 10px 0;
-        text-align: center;
-        font-size: 11px;
+      .kicker {
+        font-family: "Monaspace Neon", monospace;
         font-weight: 500;
-        color: #6A675E;
-        border-bottom: 2px solid transparent;
-        cursor: pointer;
-      }
-      .rs-tab.active { color: #C9A24B; border-bottom-color: #C9A24B; }
-      .rs-header {
-        padding: 12px 16px;
-        background: #16161A;
-        border-bottom: 1px solid #2A2A31;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .rs-header-title {
-        font-family: 'Marcellus', Georgia, serif;
-        font-size: 17px;
-        color: #ECEAE3;
-        font-weight: 400;
-      }
-      .rs-header-badge {
-        margin-left: auto;
-        font-size: 9px;
-        font-weight: 600;
-        padding: 2px 8px;
-        background: rgba(201, 162, 75, 0.12);
-        color: #C9A24B;
-        border-radius: 4px;
+        font-size: 24px;
+        letter-spacing: 0.22em;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        color: #c9a24b;
       }
-      .chat-messages {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        padding: 14px;
-        overflow: hidden;
-      }
-      .msg {
-        display: flex;
-        gap: 10px;
-        max-width: 90%;
-        align-items: flex-start;
-      }
-      .msg-user { align-self: flex-end; flex-direction: row-reverse; }
-      .msg-avatar {
-        width: 28px; height: 28px;
-        border-radius: 50%;
-        background: #1E1E23;
-        border: 1px solid #2A2A31;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 11px; font-weight: 700;
-        color: #ECEAE3;
-        flex-shrink: 0;
-      }
-      .msg-ai .msg-avatar { background: #16161A; color: #C9A24B; }
-      .msg-body { flex: 1; min-width: 0; }
-      .msg-meta {
-        font-size: 9px;
-        color: #6A675E;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 4px;
-        font-weight: 600;
-      }
-      .msg-text {
-        padding: 10px 14px;
-        background: #1E1E23;
-        border: 1px solid #2A2A31;
-        border-radius: 8px;
-        font-size: 12px;
-        line-height: 1.55;
-        color: #ECEAE3;
-      }
-      .msg-user .msg-text { background: #1E1E23; }
-      .msg-ai .msg-text { background: #16161A; border-color: #2A2A31; }
-      .chat-input {
-        padding: 10px 14px;
-        background: #16161A;
-        border-top: 1px solid #2A2A31;
-        display: flex;
-        gap: 8px;
-        align-items: center;
-      }
-      .chat-input .field {
-        flex: 1;
-        padding: 8px 12px;
-        background: #0E0E11;
-        border: 1px solid #2A2A31;
-        border-radius: 8px;
-        color: #9A968C;
-        font-size: 12px;
-        font-family: 'Hanken Grotesk', sans-serif;
-      }
-      .chat-input .send-btn {
-        padding: 0 14px;
-        height: 32px;
-        background: rgba(201, 162, 75, 0.12);
-        color: #C9A24B;
-        border: 1px solid rgba(201, 162, 75, 0.3);
-        border-radius: 8px;
-        font-size: 11px;
-        font-weight: 600;
-        display: flex; align-items: center; gap: 6px;
-      }
-
-      /* Kanban */
-      .kanban {
-        display: flex;
-        gap: 12px;
-        padding: 16px;
-        flex: 1;
-        overflow: hidden;
-        background: #0E0E11;
-      }
-      .kcol {
-        min-width: 220px;
-        max-width: 240px;
-        flex: 1;
-        background: #16161A;
-        border: 1px solid #2A2A31;
-        border-radius: 8px;
-        display: flex;
-        flex-direction: column;
-      }
-      .kcol-header {
-        padding: 10px 12px;
-        border-bottom: 1px solid #2A2A31;
-        display: flex; align-items: center;
-        font-family: 'Marcellus', serif;
-        font-size: 15px;
-        color: #ECEAE3;
-        font-weight: 400;
-      }
-      .kcol-header::before {
-        content: '';
-        display: inline-block;
-        width: 3px; height: 14px;
-        background: rgba(201, 162, 75, 0.5);
-        margin-right: 8px;
-        border-radius: 1px;
-      }
-      .kcol-count {
-        margin-left: auto;
-        font-size: 10px;
-        background: rgba(201, 162, 75, 0.12);
-        color: #C9A24B;
-        padding: 2px 8px;
-        border-radius: 999px;
-        font-weight: 600;
-        font-family: 'Hanken Grotesk', sans-serif;
-      }
-      .kcol-body {
-        flex: 1;
-        padding: 8px;
-        display: flex; flex-direction: column;
-        gap: 8px;
-        overflow: hidden;
-      }
-      .kcard {
-        padding: 10px 12px;
-        background: #1E1E23;
-        border: 1px solid #2A2A31;
-        border-left: 3px solid #C9A24B;
-        border-radius: 6px;
-        font-size: 12px;
-      }
-      .kcard.unassigned { border-left-color: #6A675E; }
-      .kcard-title { color: #ECEAE3; font-weight: 500; }
-      .kcard-desc { color: #9A968C; font-size: 11px; margin-top: 4px; }
-      .kcard-meta {
-        display: flex; align-items: center; gap: 6px;
-        margin-top: 6px; font-size: 9px; color: #6A675E;
-        text-transform: uppercase; letter-spacing: 0.05em;
-      }
-      .kcard-agent {
-        padding: 2px 6px;
-        background: rgba(201, 162, 75, 0.08);
-        color: #C9A24B;
-        border-radius: 3px;
-        font-weight: 600;
-      }
-
-      /* Swarm */
-      .swarm {
-        flex: 1;
-        display: flex;
-        background: #0E0E11;
-        overflow: hidden;
-      }
-      .swarm-main {
-        flex: 1;
-        padding: 16px;
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 12px;
-        align-content: start;
-        overflow: hidden;
-      }
-      .agent-card {
-        padding: 14px;
-        background: #16161A;
-        border: 1px solid #2A2A31;
-        border-radius: 8px;
-      }
-      .ac-head {
-        display: flex; align-items: center; gap: 8px;
-        margin-bottom: 8px;
-      }
-      .ac-status {
-        width: 8px; height: 8px;
-        border-radius: 50%;
-        background: #C9A24B;
-      }
-      .ac-status.thinking { animation: pulse 1.5s ease-in-out infinite; }
-      .ac-status.done { background: #7BAE5A; }
-      .ac-status.blocked { background: #C5654D; }
-      .ac-status.waiting { background: #D2973C; }
-      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-      .ac-id {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 11px;
-        color: #6A675E;
-      }
-      .ac-pill {
-        margin-left: auto;
-        font-size: 9px;
-        font-weight: 600;
-        padding: 2px 8px;
-        background: rgba(201, 162, 75, 0.14);
-        color: #C9A24B;
-        border-radius: 999px;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-      .ac-pill.done { background: rgba(123, 174, 90, 0.14); color: #7BAE5A; }
-      .ac-pill.blocked { background: rgba(197, 101, 77, 0.14); color: #C5654D; }
-      .ac-msg {
-        font-size: 12px;
-        color: #9A968C;
-        margin-bottom: 8px;
-      }
-      .ac-role {
-        display: inline-flex; align-items: center; gap: 5px;
-        font-size: 10px; color: #ECEAE3;
-        text-transform: uppercase; letter-spacing: 0.05em;
-        font-weight: 600;
-      }
-      .ac-role::before {
-        content: '';
-        width: 5px; height: 5px;
-        border-radius: 50%;
-        background: #0ea5e9;
-      }
-      .ac-role.builder::before { background: #22c55e; }
-      .ac-role.scout::before { background: #f59e0b; }
-      .ac-role.reviewer::before { background: #06b6d4; }
-
-      .swarm-feed {
-        width: 280px;
-        background: #16161A;
-        border-left: 1px solid #2A2A31;
-        padding: 14px;
-        overflow: hidden;
-      }
-      .sf-head {
-        font-family: 'Marcellus', serif;
-        font-size: 15px;
-        color: #ECEAE3;
-        margin-bottom: 12px;
-        font-weight: 400;
-      }
-      .sf-item {
-        display: flex;
-        gap: 8px;
-        padding: 8px 0;
-        border-bottom: 1px solid #2A2A31;
-        font-size: 11px;
-      }
-      .sf-dot { width: 6px; height: 6px; border-radius: 50%; background: #4FA39E; margin-top: 4px; flex-shrink: 0; }
-      .sf-dot.builder { background: #22c55e; }
-      .sf-dot.scout { background: #f59e0b; }
-      .sf-dot.reviewer { background: #06b6d4; }
-      .sf-agent { color: #C9A24B; font-weight: 600; }
-      .sf-msg { color: #9A968C; margin-top: 2px; }
-
-      /* Command palette */
-      .palette-overlay {
-        position: absolute;
-        inset: 0;
-        background: rgba(7, 7, 9, 0.5);
-        display: flex; align-items: flex-start; justify-content: center;
-        padding-top: 120px;
-        z-index: 100;
-      }
-      .palette {
-        width: 600px;
-        background: #16161A;
-        border: 1px solid #2A2A31;
-        border-radius: 12px;
-        box-shadow: 0 30px 80px rgba(0,0,0,0.6);
-        overflow: hidden;
-      }
-      .palette-input {
-        width: 100%;
-        padding: 16px 20px;
-        background: transparent;
-        border: none;
-        border-bottom: 1px solid #2A2A31;
-        color: #ECEAE3;
-        font-size: 16px;
-        font-family: 'Hanken Grotesk', sans-serif;
-        box-sizing: border-box;
-      }
-      .palette-input::placeholder { color: #6A675E; }
-      .palette-list { padding: 8px; }
-      .palette-row {
-        display: flex; align-items: center; gap: 12px;
-        padding: 10px 12px;
-        border-radius: 6px;
-        font-size: 13px;
-        color: #ECEAE3;
-      }
-      .palette-row.active { background: rgba(201, 162, 75, 0.12); color: #C9A24B; }
-      .palette-row .icon { color: #6A675E; width: 14px; height: 14px; }
-      .palette-row .shortcut {
-        margin-left: auto;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 10px;
-        color: #6A675E;
-        padding: 2px 6px;
-        background: #0E0E11;
-        border: 1px solid #2A2A31;
-        border-radius: 3px;
-      }
-
-      /* Browser panel */
-      .browser-bar {
-        padding: 8px;
-        background: #16161A;
-        border-bottom: 1px solid #2A2A31;
-        display: flex; gap: 6px; align-items: center;
-      }
-      .browser-bar .nav-btn {
-        width: 24px; height: 24px;
-        border-radius: 4px;
-        color: #9A968C;
-        display: flex; align-items: center; justify-content: center;
-      }
-      .browser-bar .url {
-        flex: 1;
-        padding: 6px 12px;
-        background: #0E0E11;
-        border: 1px solid #2A2A31;
-        border-radius: 4px;
-        color: #ECEAE3;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 11px;
-      }
-      .browser-content {
-        flex: 1;
-        background: #0E0E11;
-        display: flex; align-items: center; justify-content: center;
-        flex-direction: column;
-        gap: 12px;
-        color: #6A675E;
-        font-size: 12px;
-      }
-      .browser-content svg { color: #6A675E; }
-
-      /* Editor */
-      .editor-tabs {
-        display: flex;
-        background: #16161A;
-        border-bottom: 1px solid #2A2A31;
-        padding: 0 8px;
-      }
-      .editor-tab {
-        padding: 8px 14px;
-        font-size: 11px;
-        color: #9A968C;
-        font-family: 'JetBrains Mono', monospace;
-        border-right: 1px solid #2A2A31;
-        display: flex; align-items: center; gap: 6px;
-      }
-      .editor-tab.active {
-        background: #0E0E11;
-        color: #ECEAE3;
-        border-top: 1px solid #C9A24B;
-      }
-      .editor-tab .close { color: #6A675E; margin-left: 4px; }
-      .editor-body {
-        flex: 1;
-        padding: 14px 18px;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 12px;
-        line-height: 1.6;
-        background: #0E0E11;
-        overflow: hidden;
-        white-space: pre;
-      }
-      .ed-kw { color: #A98BC9; }
-      .ed-fn { color: #C9A24B; }
-      .ed-str { color: #7BAE5A; }
-      .ed-num { color: #D2973C; }
-      .ed-com { color: #6A675E; font-style: italic; }
-      .ed-ty { color: #6FA6C9; }
-      .ed-mac { color: #ECEAE3; }
-
-      /* Section overlays (annotation labels) */
-      .section-label {
-        position: absolute;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 11px;
-        color: #C9A24B;
-        letter-spacing: 0.15em;
-        text-transform: uppercase;
-        background: rgba(14, 14, 17, 0.85);
-        padding: 6px 12px;
-        border: 1px solid rgba(201, 162, 75, 0.3);
-        border-radius: 4px;
-        z-index: 50;
-        backdrop-filter: blur(4px);
-      }
-      .section-label::before {
-        content: '';
-        display: inline-block;
-        width: 6px; height: 6px;
-        border-radius: 50%;
-        background: #C9A24B;
-        margin-right: 8px;
-        vertical-align: middle;
-      }
-
-      /* Scene CTA */
-      .cta-bg {
-        position: absolute; inset: 0;
-        background: #0E0E11;
-        z-index: 0;
-      }
-      .cta-content {
-        position: absolute; inset: 0;
-        display: flex; flex-direction: column;
-        align-items: center; justify-content: center;
-        gap: 32px;
-        z-index: 2;
-      }
-      .cta-logo {
-        width: 80px; height: 80px;
-        border: 1.5px solid #C9A24B;
-        border-radius: 16px;
-        display: flex; align-items: center; justify-content: center;
-        background: linear-gradient(135deg, #16161A 0%, #0E0E11 100%);
-      }
-      .cta-logo svg { width: 40px; height: 40px; }
-      .cta-title {
-        font-family: 'Marcellus', serif;
-        font-size: 72px;
-        color: #ECEAE3;
+      .h1 {
+        font-family: "Hanken Grotesk", sans-serif;
+        font-weight: 700;
+        font-size: 104px;
+        line-height: 1.04;
+        letter-spacing: -0.03em;
+        color: #f2efe9;
         margin: 0;
+      }
+      .h2 {
+        font-family: "Hanken Grotesk", sans-serif;
+        font-weight: 700;
+        font-size: 92px;
+        line-height: 1.06;
+        letter-spacing: -0.03em;
+        color: #f2efe9;
+        margin: 0;
+      }
+      .sub {
+        font-family: "Hanken Grotesk", sans-serif;
         font-weight: 400;
+        font-size: 34px;
+        line-height: 1.35;
+        color: #a9a49b;
+        margin: 0;
+        max-width: 620px;
       }
-      .cta-sub {
-        font-size: 18px;
-        color: #9A968C;
-        font-weight: 300;
+      /* ---------- instrument chrome ---------- */
+      .topbar {
+        height: 44px;
+        transform-origin: left center;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-family: "Monaspace Neon", monospace;
+        font-weight: 400;
+        font-size: 20px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #98938a;
+        border-bottom: 2px solid #2a2731;
       }
-      .cta-btn {
-        padding: 14px 32px;
-        background: #C9A24B;
-        color: #0E0E11;
-        font-family: 'Hanken Grotesk', sans-serif;
-        font-size: 14px;
-        font-weight: 600;
-        border: none;
-        border-radius: 8px;
-        letter-spacing: 0.05em;
+      .topbar .tick {
+        width: 10px;
+        height: 10px;
+        background: #c9a24b;
+        display: inline-block;
+        margin-right: 14px;
       }
-      .cta-url {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 13px;
-        color: #6A675E;
+      .botbar {
+        height: 48px;
+        margin-top: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-family: "Monaspace Neon", monospace;
+        font-weight: 400;
+        font-size: 19px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #98938a;
+      }
+      .botbar .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .brand-mark {
+        width: 26px;
+        height: 26px;
+        display: block;
+      }
+
+      /* ---------- capture cards ---------- */
+      .shot {
+        position: relative;
+        box-shadow: 0 30px 70px rgba(0, 0, 0, 0.55);
+      }
+      .card-frame {
+        background: #16141b;
+        border: 2px solid #2a2731;
+        border-radius: 6px 6px 0 0;
+        overflow: hidden;
+        line-height: 0;
+      }
+      .card-frame img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .card-cap {
+        height: 52px;
+        display: flex;
+        align-items: center;
+        padding: 0 22px;
+        font-family: "Monaspace Neon", monospace;
+        font-weight: 500;
+        font-size: 19px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #98938a;
+        background: #16141b;
+        border: 2px solid #2a2731;
+        border-top: none;
+        border-radius: 0 0 6px 6px;
+      }
+      .card-cap .idx {
+        color: #c9a24b;
+        margin-right: 16px;
+      }
+      /* registration marks */
+      .reg .corner {
+        position: absolute;
+        width: 22px;
+        height: 22px;
+        border: 3px solid #c9a24b;
+        opacity: 0.85;
+      }
+      .reg .tl {
+        top: -11px;
+        left: -11px;
+        border-right: none;
+        border-bottom: none;
+      }
+      .reg .tr {
+        top: -11px;
+        right: -11px;
+        border-left: none;
+        border-bottom: none;
+      }
+      .reg .bl {
+        bottom: -11px;
+        left: -11px;
+        border-right: none;
+        border-top: none;
+      }
+      .reg .br {
+        bottom: -11px;
+        right: -11px;
+        border-left: none;
+        border-top: none;
+      }
+
+      /* ---------- ghost decoratives ---------- */
+      .ghost-num {
+        position: absolute;
+        top: 0;
+        right: 40px;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        font-family: "Monaspace Neon", monospace;
+        font-weight: 500;
+        font-size: 520px;
+        line-height: 1;
+        letter-spacing: -0.04em;
+        color: rgba(242, 239, 233, 0.05);
+        pointer-events: none;
+      }
+      .ghost-mark {
+        position: absolute;
+        bottom: -260px;
+        right: -220px;
+        width: 900px;
+        height: 900px;
+        pointer-events: none;
+      }
+      /* ---------- scene 1 ---------- */
+      .s1-ghost-svg {
+        width: 100%;
+        height: 100%;
+      }
+      .s1-card {
+        width: 760px;
+        flex: none;
+      }
+      .s1-card .card-frame {
+        width: 760px;
+        height: 477px;
+      }
+
+      /* ---------- scene 2 ---------- */
+      .cards-col {
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        gap: 26px;
+      }
+      .s2-card {
+        width: 600px;
+      }
+      .s2-card .card-frame {
+        width: 600px;
+        height: 377px;
+      }
+      .s2-card-b {
+        margin-left: 44px;
+      }
+
+      /* ---------- scene 3 ---------- */
+      .s3-stack {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 40px;
+      }
+      .s3-cards {
+        display: flex;
+        align-items: flex-start;
+        gap: 56px;
+      }
+      .s3-card-a {
+        width: 660px;
+      }
+      .s3-card-a .card-frame {
+        width: 660px;
+        height: 415px;
+      }
+      .s3-card-b {
+        width: 500px;
+        margin-top: 92px;
+      }
+      .s3-card-b .card-frame {
+        width: 500px;
+        height: 314px;
+      }
+
+      /* ---------- scene 4 ---------- */
+      .s4-cards {
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        gap: 60px;
+      }
+      .s4-card {
+        width: 620px;
+      }
+      .s4-card .card-frame {
+        width: 620px;
+        height: 389px;
+      }
+      .s4-card-b {
+        margin-left: 56px;
+      }
+
+      /* ---------- scene 5 (full-bleed) ---------- */
+      #scene5 {
+        background: #14120e;
+      }
+      .s5-bg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 1920px;
+        height: 1080px;
+        object-fit: cover;
+      }
+      .s5-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 1920px;
+        height: 1080px;
+        background: linear-gradient(
+          180deg,
+          rgba(33, 30, 24, 0.34) 0%,
+          rgba(33, 30, 24, 0.62) 78%,
+          rgba(33, 30, 24, 0.78) 100%
+        );
+      }
+      .s5-glow {
+        position: absolute;
+        top: -320px;
+        left: 50%;
+        margin-left: -560px;
+        width: 1120px;
+        height: 720px;
+        background: radial-gradient(
+          ellipse 60% 55% at 50% 50%,
+          rgba(201, 162, 75, 0.2) 0%,
+          rgba(201, 162, 75, 0) 70%
+        );
+        opacity: 0.7;
+      }
+      .s5-inner {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 28px;
+        padding: 60px 120px;
+      }
+      .s5-kicker {
+        font-family: "Monaspace Neon", monospace;
+        font-weight: 500;
+        font-size: 24px;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+        color: #e8cf9a;
+      }
+      .s5-line {
+        font-family: "Hanken Grotesk", sans-serif;
+        font-weight: 700;
+        font-size: 122px;
+        line-height: 1.02;
+        letter-spacing: -0.03em;
+        color: #f6f3ec;
+        margin: 0;
+      }
+      .s5-sub {
+        font-family: "Hanken Grotesk", sans-serif;
+        font-weight: 400;
+        font-size: 34px;
+        color: #e8cf9a;
+        margin: 0;
+      }
+      .s5-meta {
+        position: absolute;
+        bottom: 36px;
+        left: 120px;
+        font-family: "Monaspace Neon", monospace;
+        font-weight: 400;
+        font-size: 19px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: rgba(246, 243, 236, 0.62);
+      }
+      .s5-time {
+        position: absolute;
+        bottom: 36px;
+        right: 120px;
+        font-family: "Monaspace Neon", monospace;
+        font-weight: 400;
+        font-size: 19px;
+        letter-spacing: 0.16em;
+        color: rgba(246, 243, 236, 0.62);
+      }
+
+      /* ---------- scene 6 (close) ---------- */
+      .s6-inner {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 30px;
+      }
+      .s6-mark-wrap {
+        position: relative;
+        width: 220px;
+        height: 220px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .s6-ring {
+        position: absolute;
+        border: 2px solid rgba(201, 162, 75, 0.4);
+        border-radius: 50%;
+      }
+      .s6-ring.r1 {
+        width: 220px;
+        height: 220px;
+      }
+      .s6-ring.r2 {
+        width: 168px;
+        height: 168px;
+        border-color: rgba(201, 162, 75, 0.22);
+      }
+      .s6-mark {
+        width: 108px;
+        height: 108px;
+        display: block;
+      }
+      .s6-word {
+        font-family: "Hanken Grotesk", sans-serif;
+        font-weight: 700;
+        font-size: 96px;
+        letter-spacing: -0.03em;
+        color: #f2efe9;
+        margin: 0;
+      }
+      .s6-sub {
+        font-family: "Hanken Grotesk", sans-serif;
+        font-weight: 400;
+        font-size: 32px;
+        color: #a9a49b;
+        margin: 0;
+      }
+      .s6-mono {
+        font-family: "Monaspace Neon", monospace;
+        font-weight: 500;
+        font-size: 22px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: #c9a24b;
+        margin-top: 6px;
       }
     </style>
   </head>
   <body>
-    <div id="root" data-composition-id="root" data-width="1920" data-height="1080" data-start="0" data-duration="75">
-      <!-- Inline SVG sprite for icons -->
-      <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-      <defs>
-        <symbol id="i-owl" viewBox="0 0 64 64">
-          <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M32 8 L20 4 L20 16 C20 26 24 32 32 32 C40 32 44 26 44 16 L44 4 Z" />
-            <circle cx="26" cy="18" r="2" fill="currentColor" />
-            <circle cx="38" cy="18" r="2" fill="currentColor" />
-            <path d="M28 22 L32 24 L36 22" />
-            <path d="M24 32 L24 44 C24 50 28 54 32 54 C36 54 40 50 40 44 L40 32" />
-          </g>
-        </symbol>
-        <symbol id="i-chev" viewBox="0 0 16 16"><path d="M6 4 L10 8 L6 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-        <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 5 L2 13 L14 13 L14 6 L8 6 L7 5 Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
-        <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3 L8 13 M3 8 L13 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
-        <symbol id="i-bell" viewBox="0 0 16 16"><path d="M4 11 L4 8 C4 5 6 4 8 4 C10 4 12 5 12 8 L12 11 L13 12 L3 12 Z M6.5 13.5 C6.5 14 7 14.5 8 14.5 C9 14.5 9.5 14 9.5 13.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-        <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 2 L8 4 M8 12 L8 14 M2 8 L4 8 M12 8 L14 8 M4 4 L5.5 5.5 M10.5 10.5 L12 12 M12 4 L10.5 5.5 M5.5 10.5 L4 12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></symbol>
-        <symbol id="i-swarm" viewBox="0 0 16 16"><circle cx="5" cy="5" r="1.5" fill="currentColor"/><circle cx="11" cy="5" r="1.5" fill="currentColor"/><circle cx="8" cy="10" r="1.5" fill="currentColor"/><path d="M5 5 L11 5 M5 5 L8 10 M11 5 L8 10" stroke="currentColor" stroke-width="1"/></symbol>
-        <symbol id="i-athena" viewBox="0 0 16 16"><path d="M3 4 L3 12 L13 12 L13 4 Z M5 7 L11 7 M5 9 L9 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></symbol>
-        <symbol id="i-dots" viewBox="0 0 8 12"><circle cx="4" cy="2" r="1" fill="currentColor"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="10" r="1" fill="currentColor"/></symbol>
-        <symbol id="i-full" viewBox="0 0 12 12"><path d="M2 4 L2 2 L4 2 M8 2 L10 2 L10 4 M2 8 L2 10 L4 10 M8 10 L10 10 L10 8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-        <symbol id="i-close" viewBox="0 0 12 12"><path d="M3 3 L9 9 M9 3 L3 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
-        <symbol id="i-send" viewBox="0 0 16 16"><path d="M2 8 L14 3 L9 14 L7 9 Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
-        <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 L5 8 L10 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-        <symbol id="i-fwd" viewBox="0 0 16 16"><path d="M6 3 L11 8 L6 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-        <symbol id="i-reload" viewBox="0 0 16 16"><path d="M3 8 A5 5 0 0 1 12 5 M13 3 L13 5 L11 5 M13 8 A5 5 0 0 1 4 11 M3 13 L3 11 L5 11" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-        <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 12 L21 12 M12 3 C15 6 15 18 12 21 C9 18 9 6 12 3" fill="none" stroke="currentColor" stroke-width="1.5"/></symbol>
-        <symbol id="i-edit" viewBox="0 0 16 16"><path d="M3 13 L3 11 L10 4 L12 6 L5 13 Z M10 4 L11 3 L13 5 L12 6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
-      </defs>
-    </svg>
-
-      <!-- ========================================================
-           SCENE 1: TITLE / BRAND (0-5s)
-           ======================================================== -->
-      <div class="clip" data-start="0" data-duration="5" data-track-index="1">
-        <div class="scene">
-          <div class="s1-bg"></div>
-          <div class="s1-content">
-            <div class="s1-logo" id="s1-logo">
-              <svg style="color:#C9A24B"><use href="#i-owl"/></svg>
+    <div data-hf-id="hf-w9ku" id="root" data-composition-id="main" data-width="1920" data-height="1080" data-start="0" data-duration="24.9">
+      <!-- ============ SCENE 1 — HOOK ============ -->
+      <div data-hf-id="hf-k8ke" id="scene1" class="scene" data-layout-allow-overflow="">
+        <div data-hf-id="hf-97sb" class="scene-inner">
+          <div data-hf-id="hf-mndw" class="topbar">
+            <span data-hf-id="hf-9aq2"><span data-hf-id="hf-pjf6" class="tick" id="s1-tick"></span>Athena's Core — Product Film</span>
+            <span data-hf-id="hf-neuc" id="s1-topr">0:24 · 30 fps</span>
+          </div>
+          <div data-hf-id="hf-thy4" class="row">
+            <div data-hf-id="hf-sa0c" class="text-col">
+              <div data-hf-id="hf-75rs" class="kicker" id="s1-kicker">One App · One Workspace</div>
+              <h1 data-hf-id="hf-nzcj" class="h1" id="s1-h1">ONE WINDOW.</h1>
+              <p data-hf-id="hf-2uyn" class="sub" id="s1-sub">For the work that used to take five apps.</p>
             </div>
-            <h1 class="s1-title" id="s1-title">Athena's Core</h1>
-            <p class="s1-sub" id="s1-sub">A workspace for builders who think in systems.</p>
-            <div class="s1-tag" id="s1-tag">v0.1.0 · macOS · Linux · Windows</div>
+            <div data-hf-id="hf-b8b2" class="shot reg s1-card" id="s1-card">
+              <span data-hf-id="hf-0uou" class="corner tl"></span>
+              <span data-hf-id="hf-hbbc" class="corner tr"></span>
+              <span data-hf-id="hf-2sxo" class="corner bl"></span>
+              <span data-hf-id="hf-c1ii" class="corner br"></span>
+              <div data-hf-id="hf-wj8j" class="card-frame" data-layout-allow-overflow="">
+                <img data-hf-id="hf-b2mo" class="shot-img" src="assets/01-welcome.png" alt="Welcome screen">
+              </div>
+              <div data-hf-id="hf-iwdo" class="card-cap"><span data-hf-id="hf-3mph" class="idx">01</span>THE WELCOME SCREEN</div>
+            </div>
+          </div>
+          <div data-hf-id="hf-jk1y" class="botbar">
+            <span data-hf-id="hf-we34" class="brand">
+              <svg data-hf-id="hf-coqr" class="brand-mark" viewBox="0 0 24 24" fill="none">
+                <path data-hf-id="hf-5pmn" d="M12 3.5 L19.36 7.75 L19.36 16.25 L12 20.5 L4.64 16.25 L4.64 7.75 Z" stroke="#C9A24B" stroke-width="1.05" />
+                <path data-hf-id="hf-szbf" d="M12 6.6 L16.68 9.3 L16.68 14.7 L12 17.4 L7.32 14.7 L7.32 9.3 Z" stroke="#C9A24B" stroke-width="0.5" opacity="0.55" />
+                <path data-hf-id="hf-twvh" d="M12 9.3 L13.75 12 L12 14.7 L10.25 12 Z" fill="#C9A24B" />
+              </svg>
+              <span data-hf-id="hf-ba72" data-layout-allow-overlap="">Athena's Core</span>
+            </span>
+            <span data-hf-id="hf-6prs" class="scene-idx" data-layout-allow-overlap="" id="s1-scene">Scene 01 / 06</span>
+          </div>
+        </div>
+        <div data-hf-id="hf-8az8" class="ghost-mark" id="s1-ghost" data-layout-ignore="">
+          <svg data-hf-id="hf-wpon" class="s1-ghost-svg" viewBox="0 0 24 24" fill="none">
+            <path data-hf-id="hf-jgst" d="M12 3.5 L19.36 7.75 L19.36 16.25 L12 20.5 L4.64 16.25 L4.64 7.75 Z" stroke="rgba(242,239,233,0.07)" stroke-width="0.7" />
+            <path data-hf-id="hf-rvl3" d="M12 6.6 L16.68 9.3 L16.68 14.7 L12 17.4 L7.32 14.7 L7.32 9.3 Z" stroke="rgba(242,239,233,0.05)" stroke-width="0.4" />
+          </svg>
+        </div>
+      </div>
+
+      <!-- ============ SCENE 2 — START ============ -->
+      <div data-hf-id="hf-gagd" id="scene2" class="scene" data-layout-allow-overflow="">
+        <div data-hf-id="hf-1g67" class="ghost-num" id="s2-ghost" data-layout-ignore="">01</div>
+        <div data-hf-id="hf-skgb" class="scene-inner">
+          <div data-hf-id="hf-lt04" class="row">
+            <div data-hf-id="hf-chtw" class="text-col">
+              <div data-hf-id="hf-dujn" class="kicker" id="s2-kicker">Step 01 — The Workspace</div>
+              <h2 data-hf-id="hf-z8kr" class="h2" id="s2-h2">Start with a blank workspace.</h2>
+              <p data-hf-id="hf-fc5t" class="sub" id="s2-sub">Name it. Point it at your code. It becomes whatever you're building.</p>
+            </div>
+            <div data-hf-id="hf-2gs4" class="cards-col">
+              <div data-hf-id="hf-itci" class="shot reg s2-card" id="s2-card-a">
+                <span data-hf-id="hf-rpz6" class="corner tl"></span>
+                <span data-hf-id="hf-0dts" class="corner tr"></span>
+                <span data-hf-id="hf-cvhw" class="corner bl"></span>
+                <span data-hf-id="hf-pdgu" class="corner br"></span>
+                <div data-hf-id="hf-7ihv" class="card-frame" data-layout-allow-overflow="">
+                  <img data-hf-id="hf-9yfg" class="shot-img" src="assets/02-new-space-dialog.png" alt="New workspace dialog">
+                </div>
+                <div data-hf-id="hf-ku28" class="card-cap"><span data-hf-id="hf-4tmk" class="idx">02</span>New Workspace</div>
+              </div>
+              <div data-hf-id="hf-lkb0" class="shot reg s2-card s2-card-b" id="s2-card-b">
+                <span data-hf-id="hf-s4a7" class="corner tl"></span>
+                <span data-hf-id="hf-z6wp" class="corner tr"></span>
+                <span data-hf-id="hf-bokt" class="corner bl"></span>
+                <span data-hf-id="hf-prrv" class="corner br"></span>
+                <div data-hf-id="hf-746u" class="card-frame" data-layout-allow-overflow="">
+                  <img data-hf-id="hf-ubez" class="shot-img" src="assets/03-launch-config.png" alt="Launch configuration">
+                </div>
+                <div data-hf-id="hf-ghqz" class="card-cap"><span data-hf-id="hf-4fbj" class="idx">03</span>Pick Your Stack</div>
+              </div>
+            </div>
+          </div>
+          <div data-hf-id="hf-pi6i" class="botbar">
+            <span data-hf-id="hf-ysyw" class="brand">
+              <svg data-hf-id="hf-sczn" class="brand-mark" viewBox="0 0 24 24" fill="none">
+                <path data-hf-id="hf-djb3" d="M12 3.5 L19.36 7.75 L19.36 16.25 L12 20.5 L4.64 16.25 L4.64 7.75 Z" stroke="#C9A24B" stroke-width="1.05" />
+                <path data-hf-id="hf-17hn" d="M12 6.6 L16.68 9.3 L16.68 14.7 L12 17.4 L7.32 14.7 L7.32 9.3 Z" stroke="#C9A24B" stroke-width="0.5" opacity="0.55" />
+                <path data-hf-id="hf-h2e9" d="M12 9.3 L13.75 12 L12 14.7 L10.25 12 Z" fill="#C9A24B" />
+              </svg>
+              <span data-hf-id="hf-h8hu" data-layout-allow-overlap="">Athena's Core</span>
+            </span>
+            <span data-hf-id="hf-v47u" class="scene-idx" data-layout-allow-overlap="" id="s2-scene">Scene 02 / 06</span>
           </div>
         </div>
       </div>
 
-      <!-- ========================================================
-           SCENE 2: APP OVERVIEW — Titlebar + Sidebar + Terminal grid (5-15s)
-           ======================================================== -->
-      <div class="clip" data-start="5" data-duration="10" data-track-index="2">
-        <div class="scene">
-          <div class="app-frame" id="s2-frame">
-            <div class="app-lamp"></div>
-            <div class="titlebar">
-              <div class="traffic-lights">
-                <div class="dot tl-red"></div>
-                <div class="dot tl-yellow"></div>
-                <div class="dot tl-green"></div>
-              </div>
-              <div class="tb-center">
-                <div class="tb-tab active"><span class="tab-dot"></span> athenas-core</div>
-                <div class="tb-tab">+ new</div>
-              </div>
-              <div class="tb-right">
-                <div class="tb-btn"><svg><use href="#i-plus"/></svg></div>
-                <div class="tb-btn"><svg style="color:#C9A24B"><use href="#i-athena"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-swarm"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-bell"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-gear"/></svg></div>
-              </div>
+      <!-- ============ SCENE 3 — WORK ============ -->
+      <div data-hf-id="hf-db6s" id="scene3" class="scene" data-layout-allow-overflow="">
+        <div data-hf-id="hf-qc5f" class="ghost-num" id="s3-ghost" data-layout-ignore="">02</div>
+        <div data-hf-id="hf-s65a" class="scene-inner">
+          <div data-hf-id="hf-g2yx" class="s3-stack">
+            <div data-hf-id="hf-bawt" class="text-col">
+              <div data-hf-id="hf-8pm7" class="kicker" id="s3-kicker">Step 02 — The Work Loop</div>
+              <h2 data-hf-id="hf-n08i" class="h2" id="s3-h2">Run your stack. Ask your AI.</h2>
+              <p data-hf-id="hf-25if" class="sub" id="s3-sub">Native terminal panes and an AI with full context — side by side. No tab-hopping.</p>
             </div>
-
-            <div class="scene" style="display:flex; flex:1; min-height:0; background:#0E0E11">
-              <!-- Sidebar -->
-              <div class="sidebar" id="s2-sidebar">
-                <div class="sb-section">
-                  <div class="sb-section-header"><svg><use href="#i-folder"/></svg>Workspaces</div>
-                  <div class="sb-workspace active">
-                    <div class="sb-workspace-dot"></div>
-                    <div class="sb-workspace-name">athenas-core</div>
-                    <div class="sb-workspace-badge">3</div>
-                  </div>
-                  <div class="sb-workspace inactive">
-                    <div class="sb-workspace-dot"></div>
-                    <div class="sb-workspace-name">side-projects</div>
-                  </div>
-                  <div class="sb-workspace inactive">
-                    <div class="sb-workspace-dot"></div>
-                    <div class="sb-workspace-name">research</div>
-                  </div>
+            <div data-hf-id="hf-lx14" class="s3-cards">
+              <div data-hf-id="hf-i9yy" class="shot reg s3-card-a" id="s3-card-a">
+                <span data-hf-id="hf-sil8" class="corner tl"></span>
+                <span data-hf-id="hf-zl7q" class="corner tr"></span>
+                <span data-hf-id="hf-c2vu" class="corner bl"></span>
+                <span data-hf-id="hf-q62w" class="corner br"></span>
+                <div data-hf-id="hf-6pvt" class="card-frame" data-layout-allow-overflow="">
+                  <img data-hf-id="hf-wq0u" class="shot-img" src="assets/04-workspace.png" alt="Three-pane terminal workspace">
                 </div>
-                <div class="sb-section" style="flex:1; overflow:hidden">
-                  <div class="sb-section-header"><svg><use href="#i-folder"/></svg>Explorer</div>
-                  <div class="file-row dir"><svg class="chev"><use href="#i-chev"/></svg><svg class="icon-folder"><use href="#i-folder"/></svg>crates</div>
-                  <div class="file-row muted" style="padding-left:24px"><span class="lang lang-rs">rs</span>athena-core</div>
-                  <div class="file-row muted" style="padding-left:24px"><span class="lang lang-rs">rs</span>athena-terminal</div>
-                  <div class="file-row muted" style="padding-left:24px"><span class="lang lang-rs">rs</span>athena-store</div>
-                  <div class="file-row dir"><svg class="chev" style="transform:rotate(90deg)"><use href="#i-chev"/></svg><svg class="icon-folder"><use href="#i-folder"/></svg>src-tauri</div>
-                  <div class="file-row muted" style="padding-left:24px"><span class="lang lang-rs">rs</span>main</div>
-                  <div class="file-row muted" style="padding-left:24px"><span class="lang lang-ts">ts</span>tauri_bridge</div>
-                  <div class="file-row dir"><svg class="chev"><use href="#i-chev"/></svg><svg class="icon-folder"><use href="#i-folder"/></svg>frontend</div>
-                  <div class="file-row muted" style="padding-left:24px"><span class="lang lang-ts">ts</span>lib</div>
-                  <div class="file-row muted" style="padding-left:24px"><span class="lang lang-css">css</span>styles</div>
-                </div>
+                <div data-hf-id="hf-f12j" class="card-cap"><span data-hf-id="hf-5m8m" class="idx">04</span>Terminal — 3 Panes</div>
               </div>
-
-              <!-- Center: terminal grid -->
-              <div style="flex:1; display:grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap:1px; background:#2A2A31; min-width:0; min-height:0">
-                <div class="term-pane">
-                  <div class="term-header">
-                    <span class="status-icon"><svg><use href="#i-dots"/></svg></span>
-                    Shell · zsh
-                    <span class="ctrl-btn" style="margin-left:auto"><svg><use href="#i-full"/></svg></span>
-                    <span class="ctrl-btn"><svg><use href="#i-close"/></svg></span>
-                  </div>
-                  <div class="term-body">
-<span class="term-prompt">~/athenas-core </span><span class="term-dim">on</span> main
-<span class="term-prompt">$</span> cargo test --workspace
-<span class="term-dim">   Compiling</span> athena-core v0.1.0
-<span class="term-dim">   Compiling</span> athena-terminal v0.1.0
-<span class="term-ok">    Finished</span> test [optimized] in 12.4s
-<span class="term-ok">     Running</span> unittests
-<span class="term-acc">test result: ok.</span> 47 passed
-                  </div>
+              <div data-hf-id="hf-6avc" class="shot reg s3-card-b" id="s3-card-b">
+                <span data-hf-id="hf-sww9" class="corner tl"></span>
+                <span data-hf-id="hf-yean" class="corner tr"></span>
+                <span data-hf-id="hf-e2ez" class="corner bl"></span>
+                <span data-hf-id="hf-ndxp" class="corner br"></span>
+                <div data-hf-id="hf-6bks" class="card-frame" data-layout-allow-overflow="">
+                  <img data-hf-id="hf-0z7g" class="shot-img" src="assets/05-athena.png" alt="Athena AI chat panel">
                 </div>
-                <div class="term-pane">
-                  <div class="term-header">
-                    <span class="status-icon"><svg><use href="#i-dots"/></svg></span>
-                    Shell · bash
-                    <span class="ctrl-btn" style="margin-left:auto"><svg><use href="#i-full"/></svg></span>
-                    <span class="ctrl-btn"><svg><use href="#i-close"/></svg></span>
-                  </div>
-                  <div class="term-body">
-<span class="term-prompt">~/athenas-core </span><span class="term-dim">on</span> main
-<span class="term-prompt">$</span> npm run dev
-<span class="term-acc">[vite]</span> ready in 412 ms
-<span class="term-dim">  ➜  Local:</span>   http://localhost:1420/
-<span class="term-dim">  ➜  Network:</span> use --host to expose
-<span class="term-warn">warning</span> deprecation: legacy API
-                  </div>
-                </div>
-                <div class="term-pane">
-                  <div class="term-header">
-                    <span class="status-icon"><svg><use href="#i-dots"/></svg></span>
-                    MCP · :4545
-                    <span class="ctrl-btn" style="margin-left:auto"><svg><use href="#i-full"/></svg></span>
-                    <span class="ctrl-btn"><svg><use href="#i-close"/></svg></span>
-                  </div>
-                  <div class="term-body">
-<span class="term-dim">[mcp]</span> listening on 0.0.0.0:4545
-<span class="term-dim">[mcp]</span> registered 14 tool handlers
-<span class="term-acc">[tool]</span> search_code       (open)
-<span class="term-acc">[tool]</span> read_file        (open)
-<span class="term-acc">[tool]</span> edit_file        (open)
-<span class="term-acc">[tool]</span> run_command      (open)
-<span class="term-warn">[busy]</span> spawn_agent      ...
-                  </div>
-                </div>
-                <div class="term-pane">
-                  <div class="term-header">
-                    <span class="status-icon"><svg><use href="#i-dots"/></svg></span>
-                    Agent · Claude
-                    <span class="ctrl-btn" style="margin-left:auto"><svg><use href="#i-full"/></svg></span>
-                    <span class="ctrl-btn"><svg><use href="#i-close"/></svg></span>
-                  </div>
-                  <div class="term-body">
-<span class="term-acc">▸ reading</span> crates/athena-core/src/orchestrator.rs
-<span class="term-acc">▸ editing</span> 3 files (auth, store, plugins)
-<span class="term-acc">▸ running</span> cargo check --workspace
-<span class="term-ok">✓</span> build successful in 8.2s
-<span class="term-prompt">$</span> <span class="term-cursor"></span>
-                  </div>
-                </div>
+                <div data-hf-id="hf-5h9m" class="card-cap"><span data-hf-id="hf-57xl" class="idx">05</span>Athena — In Context</div>
               </div>
-
-              <!-- Right: Athena chat -->
-              <div class="right-sidebar" id="s2-rs">
-                <div class="rs-tabs">
-                  <div class="rs-tab">Browser</div>
-                  <div class="rs-tab active">Athena</div>
-                  <div class="rs-tab">Editor</div>
-                  <div class="rs-tab">Skills</div>
-                </div>
-                <div class="rs-header">
-                  <span style="color:#C9A24B; display:flex"><svg width="18" height="18"><use href="#i-owl"/></svg></span>
-                  <span class="rs-header-title">Athena</span>
-                  <span class="rs-header-badge">claude</span>
-                </div>
-                <div class="chat-messages">
-                  <div class="msg msg-user">
-                    <div class="msg-avatar">U</div>
-                    <div class="msg-body">
-                      <div class="msg-meta">You · just now</div>
-                      <div class="msg-text">What just changed in the orchestrator?</div>
-                    </div>
-                  </div>
-                  <div class="msg msg-ai">
-                    <div class="msg-avatar"><svg width="16" height="16" style="color:#C9A24B"><use href="#i-owl"/></svg></div>
-                    <div class="msg-body">
-                      <div class="msg-meta">Athena · claude-sonnet-4.5</div>
-                      <div class="msg-text">Refactored the tool dispatch loop to use a registry pattern. 3 files touched, all tests pass.</div>
-                    </div>
-                  </div>
-                </div>
-                <div class="chat-input">
-                  <div class="field">Ask Athena... (Shift+Enter for newline)</div>
-                  <div class="send-btn"><svg width="12" height="12"><use href="#i-send"/></svg> Send</div>
-                </div>
-              </div>
-            </div>
-
-            <div class="statusbar">
-              <span>athenas-core</span>
-              <span class="status-dot"></span>
-              <span>4 panes</span>
-              <span class="status-dot"></span>
-              <span>workspace</span>
-              <span style="flex:1"></span>
-              <span class="accent">Nyx</span>
             </div>
           </div>
-          <div class="section-label" id="s2-label" style="top:24px; left:24px">01 · Full Workspace</div>
-        </div>
-      </div>
-
-      <!-- ========================================================
-           SCENE 3: AI CHAT FOCUS (15-25s)
-           ======================================================== -->
-      <div class="clip" data-start="15" data-duration="10" data-track-index="3">
-        <div class="scene">
-          <div class="app-frame" id="s3-frame">
-            <div class="app-lamp"></div>
-            <div class="titlebar">
-              <div class="traffic-lights">
-                <div class="dot tl-red"></div>
-                <div class="dot tl-yellow"></div>
-                <div class="dot tl-green"></div>
-              </div>
-              <div class="tb-center">
-                <div class="tb-tab active"><span class="tab-dot"></span> athenas-core</div>
-              </div>
-              <div class="tb-right">
-                <div class="tb-btn"><svg><use href="#i-plus"/></svg></div>
-                <div class="tb-btn"><svg style="color:#C9A24B"><use href="#i-athena"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-swarm"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-bell"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-gear"/></svg></div>
-              </div>
-            </div>
-
-            <div class="scene" style="display:flex; flex:1; min-height:0; background:#0E0E11">
-              <div class="sidebar">
-                <div class="sb-section">
-                  <div class="sb-section-header"><svg><use href="#i-folder"/></svg>Workspaces</div>
-                  <div class="sb-workspace active">
-                    <div class="sb-workspace-dot"></div>
-                    <div class="sb-workspace-name">athenas-core</div>
-                  </div>
-                </div>
-              </div>
-
-              <div style="flex:1; display:flex; flex-direction:column; min-width:0; min-height:0">
-                <div class="rs-header" style="border-bottom:1px solid #2A2A31">
-                  <span style="color:#C9A24B; display:flex"><svg width="20" height="20"><use href="#i-owl"/></svg></span>
-                  <span class="rs-header-title" style="font-size:22px">Athena</span>
-                  <span class="rs-header-badge">claude-sonnet-4.5</span>
-                  <span class="rs-header-badge" style="background:rgba(79,163,158,0.14); color:#4FA39E; margin-left:6px">streaming</span>
-                </div>
-                <div class="chat-messages" id="s3-chat" style="padding:24px 32px; gap:18px; max-width:900px; margin:0 auto; width:100%">
-                  <div class="msg msg-user" id="s3-msg-1">
-                    <div class="msg-avatar">U</div>
-                    <div class="msg-body">
-                      <div class="msg-meta">You · 2m ago</div>
-                      <div class="msg-text" style="font-size:14px">Refactor the auth middleware in <span style="font-family:'JetBrains Mono',monospace; color:#C9A24B; font-size:12px; background:rgba(201,162,75,0.08); padding:1px 6px; border-radius:3px">orchestrator.rs</span>. Extract it into a separate module and add tests.</div>
-                    </div>
-                  </div>
-                  <div class="msg msg-ai" id="s3-msg-2">
-                    <div class="msg-avatar"><svg width="18" height="18" style="color:#C9A24B"><use href="#i-owl"/></svg></div>
-                    <div class="msg-body">
-                      <div class="msg-meta">Athena · just now</div>
-                      <div class="msg-text" style="font-size:14px">
-Done. Created <span style="font-family:'JetBrains Mono',monospace; color:#7BAE5A; font-size:12px">crates/athena-core/src/auth/</span> with:
-<ul style="margin:8px 0 0 0; padding-left:20px; color:#9A968C">
-  <li><span style="font-family:'JetBrains Mono',monospace; color:#C9A24B; font-size:12px">middleware.rs</span> — token validation + role checks</li>
-  <li><span style="font-family:'JetBrains Mono',monospace; color:#C9A24B; font-size:12px">tests.rs</span> — 12 cases covering happy + edge paths</li>
-</ul>
-<span style="color:#7BAE5A; font-weight:600">✓</span> All 47 workspace tests pass. <span style="color:#C9A24B">Pushed to <span style="font-family:'JetBrains Mono',monospace; font-size:12px">feat/auth-extract</span></span>.
-                      </div>
-                    </div>
-                  </div>
-                  <div class="msg msg-user" id="s3-msg-3">
-                    <div class="msg-avatar">U</div>
-                    <div class="msg-body">
-                      <div class="msg-meta">You · just now</div>
-                      <div class="msg-text" style="font-size:14px">Add a swarm to verify the changes look right across the app.</div>
-                    </div>
-                  </div>
-                </div>
-                <div class="chat-input">
-                  <div class="field">Ask Athena... (Shift+Enter for newline)</div>
-                  <div class="send-btn"><svg width="12" height="12"><use href="#i-send"/></svg> Send</div>
-                </div>
-              </div>
-            </div>
-
-            <div class="statusbar">
-              <span>athenas-core</span>
-              <span class="status-dot"></span>
-              <span>athena</span>
-              <span style="flex:1"></span>
-              <span class="accent">Nyx</span>
-            </div>
-          </div>
-          <div class="section-label" id="s3-label" style="top:24px; left:24px">02 · Athena · AI Co-Pilot</div>
-        </div>
-      </div>
-
-      <!-- ========================================================
-           SCENE 4: SWARM (25-37s)
-           ======================================================== -->
-      <div class="clip" data-start="25" data-duration="12" data-track-index="4">
-        <div class="scene">
-          <div class="app-frame" id="s4-frame">
-            <div class="app-lamp"></div>
-            <div class="titlebar">
-              <div class="traffic-lights">
-                <div class="dot tl-red"></div>
-                <div class="dot tl-yellow"></div>
-                <div class="dot tl-green"></div>
-              </div>
-              <div class="tb-center">
-                <div class="tb-tab active"><span class="tab-dot"></span> athenas-core</div>
-              </div>
-              <div class="tb-right">
-                <div class="tb-btn"><svg><use href="#i-plus"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-athena"/></svg></div>
-                <div class="tb-btn" style="color:#C9A24B"><svg><use href="#i-swarm"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-bell"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-gear"/></svg></div>
-              </div>
-            </div>
-
-            <div class="scene" style="display:flex; flex:1; min-height:0; background:#0E0E11">
-              <div class="sidebar">
-                <div class="sb-section">
-                  <div class="sb-section-header"><svg><use href="#i-folder"/></svg>Workspaces</div>
-                  <div class="sb-workspace active">
-                    <div class="sb-workspace-dot"></div>
-                    <div class="sb-workspace-name">athenas-core</div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="swarm" id="s4-swarm">
-                <div class="swarm-main">
-                  <div class="agent-card" id="s4-agent-1">
-                    <div class="ac-head">
-                      <span class="ac-status thinking"></span>
-                      <span class="ac-id">agent-coord-01</span>
-                      <span class="ac-pill">Thinking</span>
-                    </div>
-                    <div class="ac-msg">Planning refactor sequence across 4 crates...</div>
-                    <span class="ac-role">Coordinator</span>
-                  </div>
-                  <div class="agent-card" id="s4-agent-2">
-                    <div class="ac-head">
-                      <span class="ac-status thinking"></span>
-                      <span class="ac-id">agent-build-02</span>
-                      <span class="ac-pill">Writing</span>
-                    </div>
-                    <div class="ac-msg">Editing <span style="font-family:'JetBrains Mono',monospace; color:#C9A24B; font-size:11px">orchestrator.rs:142-187</span></div>
-                    <span class="ac-role builder">Builder</span>
-                  </div>
-                  <div class="agent-card" id="s4-agent-3">
-                    <div class="ac-head">
-                      <span class="ac-status done"></span>
-                      <span class="ac-id">agent-scout-03</span>
-                      <span class="ac-pill done">Done</span>
-                    </div>
-                    <div class="ac-msg">Found 3 test files needing updates. Reported to coord.</div>
-                    <span class="ac-role scout">Scout</span>
-                  </div>
-                  <div class="agent-card" id="s4-agent-4">
-                    <div class="ac-head">
-                      <span class="ac-status waiting"></span>
-                      <span class="ac-id">agent-rev-04</span>
-                      <span class="ac-pill">Waiting</span>
-                    </div>
-                    <div class="ac-msg">Queue: review PR #128 once build passes.</div>
-                    <span class="ac-role reviewer">Reviewer</span>
-                  </div>
-                </div>
-                <div class="swarm-feed" id="s4-feed">
-                  <div class="sf-head">Activity</div>
-                  <div class="sf-item">
-                    <div class="sf-dot"></div>
-                    <div>
-                      <div class="sf-agent">Coordinator</div>
-                      <div class="sf-msg">Spawned builder agent for auth refactor</div>
-                    </div>
-                  </div>
-                  <div class="sf-item">
-                    <div class="sf-dot scout"></div>
-                    <div>
-                      <div class="sf-agent" style="color:#f59e0b">Scout</div>
-                      <div class="sf-msg">Indexed 3 test files in auth module</div>
-                    </div>
-                  </div>
-                  <div class="sf-item">
-                    <div class="sf-dot builder"></div>
-                    <div>
-                      <div class="sf-agent" style="color:#22c55e">Builder</div>
-                      <div class="sf-msg">Wrote 47 lines across 2 files</div>
-                    </div>
-                  </div>
-                  <div class="sf-item">
-                    <div class="sf-dot reviewer"></div>
-                    <div>
-                      <div class="sf-agent" style="color:#06b6d4">Reviewer</div>
-                      <div class="sf-msg">Queued for review · est. 30s</div>
-                    </div>
-                  </div>
-                  <div class="sf-item">
-                    <div class="sf-dot"></div>
-                    <div>
-                      <div class="sf-agent">Coordinator</div>
-                      <div class="sf-msg">Running cargo test --workspace</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="statusbar">
-              <span>athenas-core</span>
-              <span class="status-dot"></span>
-              <span>swarm</span>
-              <span class="status-dot"></span>
-              <span style="color:#7BAE5A">4 agents active</span>
-              <span style="flex:1"></span>
-              <span class="accent">Nyx</span>
-            </div>
-          </div>
-          <div class="section-label" id="s4-label" style="top:24px; left:24px">03 · Swarm · Multi-Agent Mind</div>
-        </div>
-      </div>
-
-      <!-- ========================================================
-           SCENE 5: KANBAN (37-47s)
-           ======================================================== -->
-      <div class="clip" data-start="37" data-duration="10" data-track-index="5">
-        <div class="scene">
-          <div class="app-frame" id="s5-frame">
-            <div class="app-lamp"></div>
-            <div class="titlebar">
-              <div class="traffic-lights">
-                <div class="dot tl-red"></div>
-                <div class="dot tl-yellow"></div>
-                <div class="dot tl-green"></div>
-              </div>
-              <div class="tb-center">
-                <div class="tb-tab active"><span class="tab-dot"></span> athenas-core</div>
-              </div>
-              <div class="tb-right">
-                <div class="tb-btn"><svg><use href="#i-plus"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-athena"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-swarm"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-bell"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-gear"/></svg></div>
-              </div>
-            </div>
-
-            <div class="scene" style="display:flex; flex:1; min-height:0; background:#0E0E11">
-              <div class="sidebar">
-                <div class="sb-section">
-                  <div class="sb-section-header"><svg><use href="#i-folder"/></svg>Workspaces</div>
-                  <div class="sb-workspace active">
-                    <div class="sb-workspace-dot"></div>
-                    <div class="sb-workspace-name">athenas-core</div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="kanban" id="s5-kanban">
-                <div class="kcol">
-                  <div class="kcol-header">To Do <span class="kcol-count">5</span></div>
-                  <div class="kcol-body">
-                    <div class="kcard">
-                      <div class="kcard-title">Migrate plugin manifests to TOML</div>
-                      <div class="kcard-desc">Update 4 plugins to new schema</div>
-                      <div class="kcard-meta"><span class="kcard-agent">scout-03</span></div>
-                    </div>
-                    <div class="kcard unassigned">
-                      <div class="kcard-title">Add syntax highlighting to editor</div>
-                      <div class="kcard-desc">Support Rust + TS languages</div>
-                    </div>
-                    <div class="kcard">
-                      <div class="kcard-title">Wire swarm events to notifications</div>
-                      <div class="kcard-desc">All 7 event types</div>
-                      <div class="kcard-meta"><span class="kcard-agent">coord-01</span></div>
-                    </div>
-                  </div>
-                </div>
-                <div class="kcol">
-                  <div class="kcol-header">In Progress <span class="kcol-count">3</span></div>
-                  <div class="kcol-body">
-                    <div class="kcard">
-                      <div class="kcard-title">Extract auth middleware</div>
-                      <div class="kcard-desc">12 test cases · 47 LOC changed</div>
-                      <div class="kcard-meta"><span class="kcard-agent">build-02</span></div>
-                    </div>
-                    <div class="kcard">
-                      <div class="kcard-title">Browser panel — iframe embed</div>
-                      <div class="kcard-desc">Webview2 + wry backend</div>
-                      <div class="kcard-meta"><span class="kcard-agent">build-02</span></div>
-                    </div>
-                  </div>
-                </div>
-                <div class="kcol">
-                  <div class="kcol-header">In Review <span class="kcol-count">2</span></div>
-                  <div class="kcol-body">
-                    <div class="kcard">
-                      <div class="kcard-title">#128 — Refactor orchestrator</div>
-                      <div class="kcard-desc">Registry pattern for tool dispatch</div>
-                      <div class="kcard-meta"><span class="kcard-agent">rev-04</span></div>
-                    </div>
-                    <div class="kcard">
-                      <div class="kcard-title">#131 — Fix terminal focus regression</div>
-                      <div class="kcard-desc">Re-mount guard + session reuse</div>
-                      <div class="kcard-meta"><span class="kcard-agent">rev-04</span></div>
-                    </div>
-                  </div>
-                </div>
-                <div class="kcol">
-                  <div class="kcol-header">Complete <span class="kcol-count">8</span></div>
-                  <div class="kcol-body">
-                    <div class="kcard" style="opacity:0.5">
-                      <div class="kcard-title">#122 — Theme system v2</div>
-                      <div class="kcard-desc">16 themes · light + dark</div>
-                    </div>
-                    <div class="kcard" style="opacity:0.5">
-                      <div class="kcard-title">#119 — File tree auto-refresh</div>
-                      <div class="kcard-desc">FS event listener</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="statusbar">
-              <span>athenas-core</span>
-              <span class="status-dot"></span>
-              <span>kanban</span>
-              <span style="flex:1"></span>
-              <span class="accent">Nyx</span>
-            </div>
-          </div>
-          <div class="section-label" id="s5-label" style="top:24px; left:24px">04 · Kanban · Task Board</div>
-        </div>
-      </div>
-
-      <!-- ========================================================
-           SCENE 6: EDITOR + BROWSER (47-58s)
-           ======================================================== -->
-      <div class="clip" data-start="47" data-duration="11" data-track-index="6">
-        <div class="scene">
-          <div class="app-frame" id="s6-frame">
-            <div class="app-lamp"></div>
-            <div class="titlebar">
-              <div class="traffic-lights">
-                <div class="dot tl-red"></div>
-                <div class="dot tl-yellow"></div>
-                <div class="dot tl-green"></div>
-              </div>
-              <div class="tb-center">
-                <div class="tb-tab active"><span class="tab-dot"></span> athenas-core</div>
-              </div>
-              <div class="tb-right">
-                <div class="tb-btn"><svg><use href="#i-plus"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-athena"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-swarm"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-bell"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-gear"/></svg></div>
-              </div>
-            </div>
-
-            <div class="scene" style="display:flex; flex:1; min-height:0; background:#0E0E11">
-              <div class="sidebar">
-                <div class="sb-section">
-                  <div class="sb-section-header"><svg><use href="#i-folder"/></svg>Workspaces</div>
-                  <div class="sb-workspace active">
-                    <div class="sb-workspace-dot"></div>
-                    <div class="sb-workspace-name">athenas-core</div>
-                  </div>
-                </div>
-              </div>
-
-              <div style="flex:1; display:flex; flex-direction:column; min-width:0; min-height:0">
-                <div class="editor-tabs">
-                  <div class="editor-tab"><span class="lang lang-rs" style="font-size:9px">rs</span>main.rs <span class="close"><svg width="10" height="10"><use href="#i-close"/></svg></span></div>
-                  <div class="editor-tab active"><span class="lang lang-rs" style="font-size:9px">rs</span>auth/middleware.rs <span class="close"><svg width="10" height="10"><use href="#i-close"/></svg></span></div>
-                  <div class="editor-tab"><span class="lang lang-ts" style="font-size:9px">ts</span>athena.ts <span class="close"><svg width="10" height="10"><use href="#i-close"/></svg></span></div>
-                </div>
-                <div class="editor-body"><span class="ed-com">// crates/athena-core/src/auth/middleware.rs</span>
-<span class="ed-kw">use</span> <span class="ed-ty">crate</span>::{<span class="ed-ty">error</span>::{<span class="ed-ty">Result</span>, <span class="ed-ty">Error</span>}, <span class="ed-ty">session</span>::<span class="ed-ty">Session</span>};
-<span class="ed-kw">use</span> <span class="ed-ty">serde</span>::{<span class="ed-ty">Deserialize</span>, <span class="ed-ty">Serialize</span>};
-
-<span class="ed-com">/// Validate an incoming request token and attach session context.</span>
-<span class="ed-kw">pub async fn</span> <span class="ed-fn">validate_token</span>(token: <span class="ed-mac">&str</span>) -&gt; <span class="ed-ty">Result</span>&lt;<span class="ed-ty">Session</span>&gt; {
-    <span class="ed-kw">let</span> parts: <span class="ed-ty">TokenParts</span> = token.<span class="ed-fn">split</span>(<span class="ed-str">'.'</span>).<span class="ed-fn">collect</span>();
-    <span class="ed-kw">if</span> parts.<span class="ed-fn">len</span>() != <span class="ed-num">3</span> {
-        <span class="ed-kw">return</span> <span class="ed-fn">Err</span>(<span class="ed-ty">Error</span>::<span class="ed-fn">InvalidToken</span>);
-    }
-    <span class="ed-com">// verify signature and extract claims</span>
-    <span class="ed-ty">Session</span>::<span class="ed-fn">from_token</span>(token).<span class="ed-fn">await</span>
-}
-
-<span class="ed-com">/// Middleware applied to all commands requiring authentication.</span>
-<span class="ed-kw">pub struct</span> <span class="ed-ty">AuthMiddleware</span> {
-    <span class="ed-mac">pub</span> required_role: <span class="ed-ty">Role</span>,
-}
-</div>
-              </div>
-
-              <div class="right-sidebar">
-                <div class="rs-tabs">
-                  <div class="rs-tab active">Browser</div>
-                  <div class="rs-tab">Athena</div>
-                  <div class="rs-tab">Editor</div>
-                  <div class="rs-tab">Skills</div>
-                </div>
-                <div class="browser-bar">
-                  <div class="nav-btn"><svg width="14" height="14"><use href="#i-back"/></svg></div>
-                  <div class="nav-btn"><svg width="14" height="14"><use href="#i-fwd"/></svg></div>
-                  <div class="nav-btn"><svg width="14" height="14"><use href="#i-reload"/></svg></div>
-                  <div class="url">http://localhost:1420/preview</div>
-                  <div class="nav-btn" style="margin-left:6px; color:#C9A24B; font-size:10px; padding:0 8px; width:auto">Open ↗</div>
-                </div>
-                <div class="browser-content">
-                  <svg width="40" height="40"><use href="#i-globe"/></svg>
-                  <div style="color:#ECEAE3">Native Browser Active</div>
-                  <div>Embedded webview · full navigation</div>
-                </div>
-              </div>
-            </div>
-
-            <div class="statusbar">
-              <span>athenas-core</span>
-              <span class="status-dot"></span>
-              <span>editor</span>
-              <span class="status-dot"></span>
-              <span style="font-family:'JetBrains Mono',monospace; color:#9A968C">auth/middleware.rs · 47 lines</span>
-              <span style="flex:1"></span>
-              <span class="accent">Nyx</span>
-            </div>
-          </div>
-          <div class="section-label" id="s6-label" style="top:24px; left:24px">05 · Editor + Browser</div>
-        </div>
-      </div>
-
-      <!-- ========================================================
-           SCENE 7: COMMAND PALETTE (58-65s)
-           ======================================================== -->
-      <div class="clip" data-start="58" data-duration="7" data-track-index="7">
-        <div class="scene">
-          <div class="app-frame" id="s7-frame">
-            <div class="app-lamp"></div>
-            <div class="titlebar">
-              <div class="traffic-lights">
-                <div class="dot tl-red"></div>
-                <div class="dot tl-yellow"></div>
-                <div class="dot tl-green"></div>
-              </div>
-              <div class="tb-center">
-                <div class="tb-tab active"><span class="tab-dot"></span> athenas-core</div>
-              </div>
-              <div class="tb-right">
-                <div class="tb-btn"><svg><use href="#i-plus"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-athena"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-swarm"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-bell"/></svg></div>
-                <div class="tb-btn"><svg><use href="#i-gear"/></svg></div>
-              </div>
-            </div>
-
-            <div style="flex:1; background:#0E0E11; position:relative; min-height:0">
-              <div class="palette-overlay">
-                <div class="palette" id="s7-palette">
-                  <div class="palette-input">spawn swarm</div>
-                  <div class="palette-list">
-                    <div class="palette-row active">
-                      <svg class="icon" style="color:#C9A24B"><use href="#i-swarm"/></svg>
-                      <span>Spawn Swarm</span>
-                      <span style="margin-left:8px; color:#6A675E; font-size:11px">Coordinate 4 agents on a task</span>
-                      <span class="shortcut">⌘⇧S</span>
-                    </div>
-                    <div class="palette-row">
-                      <svg class="icon"><use href="#i-plus"/></svg>
-                      <span>Spawn Agent: Builder</span>
-                      <span class="shortcut">⌘B</span>
-                    </div>
-                    <div class="palette-row">
-                      <svg class="icon"><use href="#i-plus"/></svg>
-                      <span>Spawn Agent: Scout</span>
-                      <span class="shortcut">⌘⇧B</span>
-                    </div>
-                    <div class="palette-row">
-                      <svg class="icon"><use href="#i-athena"/></svg>
-                      <span>Ask Athena</span>
-                      <span class="shortcut">⌘K</span>
-                    </div>
-                    <div class="palette-row">
-                      <svg class="icon"><use href="#i-gear"/></svg>
-                      <span>Open Settings</span>
-                      <span class="shortcut">⌘,</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="statusbar">
-              <span>athenas-core</span>
-              <span class="status-dot"></span>
-              <span>command palette</span>
-              <span style="flex:1"></span>
-              <span class="accent">Nyx</span>
-            </div>
-          </div>
-          <div class="section-label" id="s7-label" style="top:24px; left:24px">06 · Command Palette</div>
-        </div>
-      </div>
-
-      <!-- ========================================================
-           SCENE 8: CTA (65-75s)
-           ======================================================== -->
-      <div class="clip" data-start="65" data-duration="10" data-track-index="8">
-        <div class="scene">
-          <div class="cta-bg"></div>
-          <div class="cta-content" id="s8-content">
-            <div class="cta-logo" id="s8-logo">
-              <svg style="color:#C9A24B"><use href="#i-owl"/></svg>
-            </div>
-            <h2 class="cta-title" id="s8-title">A workspace for builders.</h2>
-            <p class="cta-sub" id="s8-sub">Terminal · AI · Swarm — one binary, one workflow.</p>
-            <div class="cta-btn" id="s8-btn">Get Athena's Core</div>
-            <div class="cta-url" id="s8-url">github.com/TOX9C/athenas-core</div>
+          <div data-hf-id="hf-pwhj" class="botbar">
+            <span data-hf-id="hf-xm1t" class="brand">
+              <svg data-hf-id="hf-ryom" class="brand-mark" viewBox="0 0 24 24" fill="none">
+                <path data-hf-id="hf-d502" d="M12 3.5 L19.36 7.75 L19.36 16.25 L12 20.5 L4.64 16.25 L4.64 7.75 Z" stroke="#C9A24B" stroke-width="1.05" />
+                <path data-hf-id="hf-0t6m" d="M12 6.6 L16.68 9.3 L16.68 14.7 L12 17.4 L7.32 14.7 L7.32 9.3 Z" stroke="#C9A24B" stroke-width="0.5" opacity="0.55" />
+                <path data-hf-id="hf-i9bc" d="M12 9.3 L13.75 12 L12 14.7 L10.25 12 Z" fill="#C9A24B" />
+              </svg>
+              <span data-hf-id="hf-hmsv" data-layout-allow-overlap="">Athena's Core</span>
+            </span>
+            <span data-hf-id="hf-vxbs" class="scene-idx" data-layout-allow-overlap="" id="s3-scene">Scene 03 / 06</span>
           </div>
         </div>
       </div>
 
+      <!-- ============ SCENE 4 — SCALE ============ -->
+      <div data-hf-id="hf-0sob" id="scene4" class="scene" data-layout-allow-overflow="">
+        <div data-hf-id="hf-kldz" class="ghost-num" id="s4-ghost" data-layout-ignore="">03</div>
+        <div data-hf-id="hf-rru9" class="scene-inner">
+          <div data-hf-id="hf-km31" class="row">
+            <div data-hf-id="hf-bp7u" class="text-col">
+              <div data-hf-id="hf-p434" class="kicker" id="s4-kicker">Step 03 — More Hands</div>
+              <h2 data-hf-id="hf-dcfa" class="h2" id="s4-h2">Scale with a swarm.</h2>
+              <p data-hf-id="hf-vdsv" class="sub" id="s4-sub">Fan out agents across your work. Watch every task land on the board.</p>
+            </div>
+            <div data-hf-id="hf-1rcn" class="s4-cards">
+              <div data-hf-id="hf-u67i" class="shot reg s4-card" id="s4-card-a">
+                <span data-hf-id="hf-tb7a" class="corner tl"></span>
+                <span data-hf-id="hf-yslo" class="corner tr"></span>
+                <span data-hf-id="hf-egq0" class="corner bl"></span>
+                <span data-hf-id="hf-ns8q" class="corner br"></span>
+                <div data-hf-id="hf-5x9r" class="card-frame" data-layout-allow-overflow="">
+                  <img data-hf-id="hf-3ix0" class="shot-img" src="assets/06-swarm.png" alt="Agent swarm">
+                </div>
+                <div data-hf-id="hf-25is" class="card-cap"><span data-hf-id="hf-6euo" class="idx">06</span>Swarm — 3 Agents</div>
+              </div>
+              <div data-hf-id="hf-20a2" class="shot reg s4-card s4-card-b" id="s4-card-b">
+                <span data-hf-id="hf-tpib" class="corner tl"></span>
+                <span data-hf-id="hf-xlol" class="corner tr"></span>
+                <span data-hf-id="hf-d9sx" class="corner bl"></span>
+                <span data-hf-id="hf-o6jr" class="corner br"></span>
+                <div data-hf-id="hf-5iyq" class="card-frame" data-layout-allow-overflow="">
+                  <img data-hf-id="hf-9w9s" class="shot-img" src="assets/07-kanban.png" alt="Kanban board">
+                </div>
+                <div data-hf-id="hf-q6s4" class="card-cap"><span data-hf-id="hf-60jn" class="idx">07</span>Kanban — Live Board</div>
+              </div>
+            </div>
+          </div>
+          <div data-hf-id="hf-qask" class="botbar">
+            <span data-hf-id="hf-y0cu" class="brand">
+              <svg data-hf-id="hf-rkdl" class="brand-mark" viewBox="0 0 24 24" fill="none">
+                <path data-hf-id="hf-cqp1" d="M12 3.5 L19.36 7.75 L19.36 16.25 L12 20.5 L4.64 16.25 L4.64 7.75 Z" stroke="#C9A24B" stroke-width="1.05" />
+                <path data-hf-id="hf-0evl" d="M12 6.6 L16.68 9.3 L16.68 14.7 L12 17.4 L7.32 14.7 L7.32 9.3 Z" stroke="#C9A24B" stroke-width="0.5" opacity="0.55" />
+                <path data-hf-id="hf-hv0b" d="M12 9.3 L13.75 12 L12 14.7 L10.25 12 Z" fill="#C9A24B" />
+              </svg>
+              <span data-hf-id="hf-i13w" data-layout-allow-overlap="">Athena's Core</span>
+            </span>
+            <span data-hf-id="hf-gw86" class="scene-idx" data-layout-allow-overlap="" id="s4-scene">Scene 04 / 06</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ SCENE 5 — RESOLVE ============ -->
+      <div data-hf-id="hf-kl7j" id="scene5" class="scene">
+        <img data-hf-id="hf-mx93" class="s5-bg shot-img" id="s5-bg" data-layout-allow-overflow="" src="assets/workspace-climax.png" alt="The workspace">
+        <div data-hf-id="hf-bwgr" class="s5-overlay"></div>
+        <div data-hf-id="hf-zq41" class="s5-glow" id="s5-glow" data-layout-ignore=""></div>
+        <div data-hf-id="hf-992n" class="s5-inner">
+          <div data-hf-id="hf-iwk2" class="s5-kicker" id="s5-kicker">The Whole Journey — One Window</div>
+          <h1 data-hf-id="hf-zdpq" class="s5-line" id="s5-line1">ALL OF IT.</h1>
+          <h1 data-hf-id="hf-jrwq" class="s5-line" id="s5-line2">ONE WINDOW.</h1>
+          <p data-hf-id="hf-t86r" class="s5-sub" id="s5-sub">A workspace for builders who think in systems.</p>
+        </div>
+        <div data-hf-id="hf-jmk9" class="s5-meta" id="s5-meta">Athena's Core — v0.3.0</div>
+        <div data-hf-id="hf-ano8" class="s5-time" id="s5-time">19.5 / 24.9</div>
+      </div>
+
+      <!-- ============ SCENE 6 — CLOSE ============ -->
+      <div data-hf-id="hf-bxbo" id="scene6" class="scene">
+        <div data-hf-id="hf-rdj8" class="scene-inner">
+          <div data-hf-id="hf-8vni" class="s6-inner" id="s6-wrap">
+            <div data-hf-id="hf-awbp" class="s6-mark-wrap" id="s6-markwrap">
+              <div data-hf-id="hf-rws4" class="s6-ring r1" id="s6-ring1"></div>
+              <div data-hf-id="hf-ad2c" class="s6-ring r2" id="s6-ring2"></div>
+              <svg data-hf-id="hf-s8bc" class="s6-mark" id="s6-mark" viewBox="0 0 24 24" fill="none">
+                <path data-hf-id="hf-fiu8" d="M12 3.5 L19.36 7.75 L19.36 16.25 L12 20.5 L4.64 16.25 L4.64 7.75 Z" stroke="#C9A24B" stroke-width="1.05" />
+                <path data-hf-id="hf-00kk" d="M12 6.6 L16.68 9.3 L16.68 14.7 L12 17.4 L7.32 14.7 L7.32 9.3 Z" stroke="#C9A24B" stroke-width="0.5" opacity="0.55" />
+                <path data-hf-id="hf-fvh6" d="M12 9.3 L13.75 12 L12 14.7 L10.25 12 Z" fill="#C9A24B" />
+              </svg>
+            </div>
+            <h1 data-hf-id="hf-w8rs" class="s6-word" id="s6-word">Athena's Core</h1>
+            <p data-hf-id="hf-lumn" class="s6-sub" id="s6-sub">A workspace for builders who think in systems.</p>
+            <div data-hf-id="hf-63x1" class="s6-mono" id="s6-mono">Free · Native · For macOS · Apple Silicon</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ AUDIO ============ -->
+      <!-- music bed removed per feedback; SFX (ticks, whooshes, chime) remain -->
+      <!-- track 3: tick-dot blip + shutter ticks as each capture lands -->
+      <audio data-hf-id="hf-wj88" id="audio-blip" data-start="0.5" data-duration="0.07" data-track-index="3" src="audio/blip.wav" data-volume="0.8"></audio>
+      <audio data-hf-id="hf-rfik" id="audio-tick1" data-start="1.35" data-duration="0.12" data-track-index="3" src="audio/tick.wav" data-volume="0.7"></audio>
+      <audio data-hf-id="hf-s7ff" id="audio-tick2" data-start="5.95" data-duration="0.12" data-track-index="3" src="audio/tick.wav" data-volume="0.7"></audio>
+      <audio data-hf-id="hf-qo4o" id="audio-tick3" data-start="11.05" data-duration="0.12" data-track-index="3" src="audio/tick.wav" data-volume="0.7"></audio>
+      <audio data-hf-id="hf-9st6" id="audio-tick4" data-start="16.05" data-duration="0.12" data-track-index="3" src="audio/tick.wav" data-volume="0.7"></audio>
+      <audio data-hf-id="hf-kb6k" id="audio-tick5" data-start="20.0" data-duration="0.12" data-track-index="3" src="audio/tick.wav" data-volume="0.75"></audio>
+      <!-- track 4: transition whooshes -->
+      <audio data-hf-id="hf-yj85" id="audio-whoosh1" data-start="4.5" data-duration="0.5" data-track-index="4" src="audio/whoosh.wav" data-volume="0.5"></audio>
+      <audio data-hf-id="hf-dif7" id="audio-whoosh2" data-start="9.5" data-duration="0.5" data-track-index="4" src="audio/whoosh.wav" data-volume="0.5"></audio>
+      <audio data-hf-id="hf-vlbc" id="audio-whoosh3" data-start="14.5" data-duration="0.5" data-track-index="4" src="audio/whoosh.wav" data-volume="0.5"></audio>
+      <audio data-hf-id="hf-x6jn" id="audio-whoosh-big" data-start="19.5" data-duration="0.62" data-track-index="4" src="audio/whoosh-big.wav" data-volume="0.7"></audio>
+      <audio data-hf-id="hf-6cby" id="audio-whoosh5" data-start="22.4" data-duration="0.5" data-track-index="4" src="audio/whoosh.wav" data-volume="0.35"></audio>
+      <!-- track 5: closing chime -->
+      <audio data-hf-id="hf-vckz" id="audio-chime" data-start="23.45" data-duration="1.45" data-track-index="5" src="audio/chime.wav" data-volume="0.7"></audio>
     </div>
-
-    <div class="grain"></div>
 
     <script>
       window.__timelines = window.__timelines || {};
-      const tl = gsap.timeline({ paused: true });
+      var tl = gsap.timeline({ paused: true });
 
-      // ============================================================
-      // SCENE 1: TITLE (0-5s)
-      // ============================================================
-      tl.fromTo("#s1-logo", { y: 30, opacity: 0, scale: 0.9 }, { y: 0, opacity: 1, scale: 1, duration: 0.7, ease: "expo.out" }, 0.3);
-      tl.fromTo("#s1-title", { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.8, ease: "power3.out" }, 0.7);
-      tl.fromTo("#s1-sub", { y: 20, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power2.out" }, 1.2);
-      tl.fromTo("#s1-tag", { y: 20, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power2.out" }, 1.6);
+      /* ================= SCENE 1 — HOOK (0 – 4.5) ================= */
+      // chrome
+      tl.fromTo("#s1-topr", { opacity: 0, y: -14 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.2);
+      tl.fromTo(".topbar", { scaleX: 0 }, { scaleX: 1, duration: 0.7, ease: "expo.out" }, 0.25);
+      tl.fromTo("#s1-tick", { opacity: 0, scale: 0 }, { opacity: 1, scale: 1, duration: 0.4, ease: "back.out(2)" }, 0.5);
+      // copy
+      tl.fromTo("#s1-kicker", { opacity: 0, x: -60 }, { opacity: 1, x: 0, duration: 0.6, ease: "power3.out" }, 0.45);
+      tl.fromTo("#s1-h1", { opacity: 0, y: 70 }, { opacity: 1, y: 0, duration: 0.7, ease: "expo.out" }, 0.6);
+      tl.fromTo("#s1-sub", { opacity: 0, y: 36 }, { opacity: 1, y: 0, duration: 0.55, ease: "power2.out" }, 0.95);
+      // card
+      tl.fromTo(
+        "#s1-card",
+        { opacity: 0, x: 150, rotationY: -12, transformPerspective: 1200 },
+        { opacity: 1, x: 0, rotationY: -5, transformPerspective: 1200, duration: 0.75, ease: "expo.out" },
+        0.7
+      );
+      tl.fromTo(".s1-card .card-cap", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power2.out" }, 1.15);
+      tl.fromTo("#s1-scene", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power2.out" }, 0.8);
+      tl.fromTo("#s1-ghost", { opacity: 0, scale: 0.92 }, { opacity: 1, scale: 1, duration: 1.6, ease: "power2.out" }, 0.3);
+      // ken burns + ambient
+      tl.fromTo(".s1-card .shot-img", { scale: 1 }, { scale: 1.04, duration: 3.9, ease: "none" }, 0.6);
+      tl.to("#s1-ghost", { scale: 1.03, yoyo: true, repeat: 1, duration: 1.2, ease: "sine.inOut" }, 2.0);
 
-      // ============================================================
-      // SCENE 2: APP OVERVIEW (5-15s)
-      // ============================================================
-      tl.fromTo("#s2-frame", { scale: 0.92, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.7, ease: "expo.out" }, 5.0);
-      tl.fromTo("#s2-label", { y: -10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.4, ease: "power2.out" }, 5.6);
-      tl.fromTo("#s2-sidebar", { x: -40, opacity: 0 }, { x: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 5.9);
-      tl.fromTo("#s2-rs", { x: 40, opacity: 0 }, { x: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 6.3);
+      /* ============ T1 — PUSH SLIDE 4.5 ============ */
+      tl.to("#scene1", { x: -1920, duration: 0.5, ease: "power3.inOut" }, 4.5);
+      tl.set("#scene1", { visibility: "hidden" }, 5.0);
+      tl.fromTo("#scene2", { x: 1920, opacity: 1 }, { x: 0, duration: 0.5, ease: "power3.inOut" }, 4.5);
 
-      // Stagger terminal panes
-      tl.fromTo("#s2-frame .term-pane", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.4, stagger: 0.1, ease: "power2.out" }, 6.1);
+      /* ================= SCENE 2 — START (4.5 – 9.5) ================= */
+      tl.fromTo("#s2-ghost", { opacity: 0, x: 80 }, { opacity: 1, x: 0, duration: 0.9, ease: "power2.out" }, 5.1);
+      tl.fromTo("#s2-kicker", { opacity: 0, x: -70 }, { opacity: 1, x: 0, duration: 0.55, ease: "power3.out" }, 5.15);
+      tl.fromTo("#s2-h2", { opacity: 0, y: 64 }, { opacity: 1, y: 0, duration: 0.65, ease: "expo.out" }, 5.3);
+      tl.fromTo("#s2-sub", { opacity: 0, y: 34 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 5.6);
+      tl.fromTo(
+        "#s2-card-a",
+        { opacity: 0, x: 130, rotation: 2 },
+        { opacity: 1, x: 0, rotation: 0, duration: 0.65, ease: "expo.out" },
+        5.35
+      );
+      tl.fromTo(
+        "#s2-card-b",
+        { opacity: 0, y: 110, rotation: -2 },
+        { opacity: 1, y: 0, rotation: 0, duration: 0.7, ease: "power3.out" },
+        5.65
+      );
+      tl.fromTo("#s2-card-a .card-cap", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, 5.9);
+      tl.fromTo("#s2-card-b .card-cap", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, 6.2);
+      tl.fromTo("#s2-scene", { opacity: 0 }, { opacity: 1, duration: 0.45, ease: "power2.out" }, 5.2);
+      // ken burns + ambient
+      tl.fromTo("#s2-card-a .shot-img", { scale: 1 }, { scale: 1.045, duration: 3.95, ease: "none" }, 5.4);
+      tl.fromTo("#s2-card-b .shot-img", { scale: 1 }, { scale: 1.045, duration: 3.7, ease: "none" }, 5.7);
+      tl.to("#s2-ghost", { y: 22, yoyo: true, repeat: 1, duration: 1.7, ease: "sine.inOut" }, 5.9);
 
-      // ============================================================
-      // SCENE 3: AI CHAT (15-25s)
-      // ============================================================
-      tl.fromTo("#s3-frame", { scale: 0.92, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.6, ease: "expo.out" }, 15.0);
-      tl.fromTo("#s3-label", { y: -10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.3, ease: "power2.out" }, 15.4);
-      tl.fromTo("#s3-msg-1", { x: 30, opacity: 0 }, { x: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 15.7);
-      tl.fromTo("#s3-msg-2", { x: -30, opacity: 0 }, { x: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 16.4);
-      tl.fromTo("#s3-msg-3", { x: 30, opacity: 0 }, { x: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 17.3);
+      /* ============ T2 — PUSH SLIDE 9.5 ============ */
+      tl.to("#scene2", { x: -1920, duration: 0.5, ease: "power3.inOut" }, 9.5);
+      tl.set("#scene2", { visibility: "hidden" }, 10.0);
+      tl.fromTo("#scene3", { x: 1920, opacity: 1 }, { x: 0, duration: 0.5, ease: "power3.inOut" }, 9.5);
 
-      // ============================================================
-      // SCENE 4: SWARM (25-37s)
-      // ============================================================
-      tl.fromTo("#s4-frame", { scale: 0.92, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.6, ease: "expo.out" }, 25.0);
-      tl.fromTo("#s4-label", { y: -10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.3, ease: "power2.out" }, 25.4);
-      tl.fromTo("#s4-agent-1", { scale: 0.85, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "back.out(1.4)" }, 25.8);
-      tl.fromTo("#s4-agent-2", { scale: 0.85, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "back.out(1.4)" }, 26.0);
-      tl.fromTo("#s4-agent-3", { scale: 0.85, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "back.out(1.4)" }, 26.2);
-      tl.fromTo("#s4-agent-4", { scale: 0.85, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "back.out(1.4)" }, 26.4);
-      tl.fromTo("#s4-feed", { x: 40, opacity: 0 }, { x: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 26.7);
+      /* ================= SCENE 3 — WORK (9.5 – 14.5) ================= */
+      tl.fromTo("#s3-ghost", { opacity: 0, x: 80 }, { opacity: 1, x: 0, duration: 0.9, ease: "power2.out" }, 10.1);
+      tl.fromTo("#s3-kicker", { opacity: 0, x: -70 }, { opacity: 1, x: 0, duration: 0.55, ease: "power3.out" }, 10.15);
+      tl.fromTo("#s3-h2", { opacity: 0, x: -80 }, { opacity: 1, x: 0, duration: 0.65, ease: "expo.out" }, 10.3);
+      tl.fromTo("#s3-sub", { opacity: 0, y: 34 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 10.6);
+      tl.fromTo(
+        "#s3-card-a",
+        { opacity: 0, x: -130, rotation: -2 },
+        { opacity: 1, x: 0, rotation: 0, duration: 0.7, ease: "expo.out" },
+        10.4
+      );
+      tl.fromTo(
+        "#s3-card-b",
+        { opacity: 0, x: 150, rotation: 3 },
+        { opacity: 1, x: 0, rotation: 0, duration: 0.7, ease: "power3.out" },
+        10.65
+      );
+      tl.fromTo("#s3-card-a .card-cap", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, 11.0);
+      tl.fromTo("#s3-card-b .card-cap", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, 11.25);
+      tl.fromTo("#s3-scene", { opacity: 0 }, { opacity: 1, duration: 0.45, ease: "power2.out" }, 10.2);
+      // ken burns + ambient
+      tl.fromTo("#s3-card-a .shot-img", { scale: 1 }, { scale: 1.05, duration: 4.0, ease: "none" }, 10.45);
+      tl.fromTo("#s3-card-b .shot-img", { scale: 1 }, { scale: 1.05, duration: 3.7, ease: "none" }, 10.7);
+      tl.to("#s3-ghost", { rotation: 3, yoyo: true, repeat: 1, duration: 2.0, ease: "sine.inOut" }, 10.9);
 
-      // Activity feed items stagger
-      tl.fromTo("#s4-feed .sf-item", { x: 20, opacity: 0 }, { x: 0, opacity: 1, duration: 0.3, stagger: 0.12, ease: "power2.out" }, 27.0);
+      /* ============ T3 — VERTICAL PUSH 14.5 ============ */
+      tl.to("#scene3", { y: -1080, duration: 0.5, ease: "power3.inOut" }, 14.5);
+      tl.set("#scene3", { visibility: "hidden" }, 15.0);
+      tl.fromTo("#scene4", { y: 1080, opacity: 1 }, { y: 0, duration: 0.5, ease: "power3.inOut" }, 14.5);
 
-      // Pulse the thinking status dot continuously
-      tl.to("#s4-agent-1 .ac-status", { opacity: 0.3, yoyo: true, repeat: 18, duration: 0.8, ease: "sine.inOut" }, 28.0);
-      tl.to("#s4-agent-2 .ac-status", { opacity: 0.3, yoyo: true, repeat: 18, duration: 0.8, ease: "sine.inOut" }, 28.0);
+      /* ================= SCENE 4 — SCALE (14.5 – 19.5) ================= */
+      tl.fromTo("#s4-ghost", { opacity: 0, x: 80 }, { opacity: 1, x: 0, duration: 0.9, ease: "power2.out" }, 15.1);
+      tl.fromTo("#s4-kicker", { opacity: 0, x: -70 }, { opacity: 1, x: 0, duration: 0.55, ease: "power3.out" }, 15.15);
+      tl.fromTo("#s4-h2", { opacity: 0, y: 64 }, { opacity: 1, y: 0, duration: 0.65, ease: "expo.out" }, 15.3);
+      tl.fromTo("#s4-sub", { opacity: 0, y: 34 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 15.6);
+      tl.fromTo(
+        "#s4-card-a",
+        { opacity: 0, y: 90, rotation: -5 },
+        { opacity: 1, y: 0, rotation: -1, duration: 0.7, ease: "power3.out" },
+        15.4
+      );
+      tl.fromTo(
+        "#s4-card-b",
+        { opacity: 0, y: 120, rotation: 5 },
+        { opacity: 1, y: 0, rotation: 1.5, duration: 0.75, ease: "back.out(1.6)" },
+        15.7
+      );
+      tl.fromTo("#s4-card-a .card-cap", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, 16.05);
+      tl.fromTo("#s4-card-b .card-cap", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, 16.35);
+      tl.fromTo("#s4-scene", { opacity: 0 }, { opacity: 1, duration: 0.45, ease: "power2.out" }, 15.2);
+      // ken burns + ambient
+      tl.fromTo("#s4-card-a .shot-img", { scale: 1 }, { scale: 1.05, duration: 3.95, ease: "none" }, 15.45);
+      tl.fromTo("#s4-card-b .shot-img", { scale: 1 }, { scale: 1.05, duration: 3.65, ease: "none" }, 15.75);
+      tl.to("#s4-ghost", { rotation: 5, yoyo: true, repeat: 1, duration: 1.8, ease: "sine.inOut" }, 15.6);
 
-      // ============================================================
-      // SCENE 5: KANBAN (37-47s)
-      // ============================================================
-      tl.fromTo("#s5-frame", { scale: 0.92, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.6, ease: "expo.out" }, 37.0);
-      tl.fromTo("#s5-label", { y: -10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.3, ease: "power2.out" }, 37.4);
-      tl.fromTo("#s5-kanban .kcol", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.4, stagger: 0.1, ease: "power2.out" }, 37.7);
+      /* ============ T4 — ZOOM THROUGH 19.5 (climax) ============ */
+      tl.to("#scene4", { scale: 2.5, opacity: 0, filter: "blur(8px)", duration: 0.4, ease: "power3.in" }, 19.5);
+      tl.set("#scene4", { visibility: "hidden" }, 19.9);
+      tl.fromTo(
+        "#scene5",
+        { scale: 0.5, opacity: 0, filter: "blur(8px)" },
+        { scale: 1, opacity: 1, filter: "blur(0px)", duration: 0.4, ease: "power3.out" },
+        19.65
+      );
 
-      // Stagger cards within columns
-      tl.fromTo("#s5-kanban .kcard", { y: 15, opacity: 0 }, { y: 0, opacity: 1, duration: 0.3, stagger: 0.04, ease: "power2.out" }, 38.3);
+      /* ================= SCENE 5 — RESOLVE (19.5 – 22.4) ================= */
+      tl.fromTo("#s5-kicker", { opacity: 0, x: -40 }, { opacity: 1, x: 0, duration: 0.55, ease: "power3.out" }, 19.9);
+      tl.fromTo("#s5-line1", { opacity: 0, y: 90, scale: 0.97 }, { opacity: 1, y: 0, scale: 1, duration: 0.5, ease: "expo.out" }, 20.0);
+      tl.fromTo("#s5-line2", { opacity: 0, y: 90, scale: 0.97 }, { opacity: 1, y: 0, scale: 1, duration: 0.5, ease: "expo.out" }, 20.2);
+      tl.fromTo("#s5-sub", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 20.4);
+      tl.fromTo("#s5-meta", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power2.out" }, 20.55);
+      tl.fromTo("#s5-time", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power2.out" }, 20.6);
+      // punch-in ken burns: faster, longer range — the climax keeps moving
+      tl.fromTo("#s5-bg", { scale: 1.06 }, { scale: 1.28, duration: 2.8, ease: "none" }, 19.55);
+      tl.to("#s5-glow", { opacity: 0.6, yoyo: true, repeat: 1, duration: 0.9, ease: "sine.inOut" }, 20.3);
 
-      // ============================================================
-      // SCENE 6: EDITOR + BROWSER (47-58s)
-      // ============================================================
-      tl.fromTo("#s6-frame", { scale: 0.92, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.6, ease: "expo.out" }, 47.0);
-      tl.fromTo("#s6-label", { y: -10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.3, ease: "power2.out" }, 47.4);
+      /* ============ T5 — BLUR CROSSFADE 22.4 (wind-down) ============ */
+      tl.to("#scene5", { filter: "blur(20px)", scale: 1.05, opacity: 0, duration: 0.55, ease: "power1.in" }, 22.4);
+      tl.set("#scene5", { visibility: "hidden" }, 23.0);
+      tl.fromTo(
+        "#scene6",
+        { filter: "blur(20px)", scale: 0.95, opacity: 0 },
+        { filter: "blur(20px)", scale: 0.95, opacity: 1, duration: 0.3, ease: "power1.inOut" },
+        22.8
+      );
+      tl.to("#scene6", { filter: "blur(0px)", scale: 1, duration: 0.55, ease: "power1.out" }, 23.1);
 
-      // Editor tabs appear
-      tl.fromTo("#s6-frame .editor-tab", { y: -10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.25, stagger: 0.08, ease: "power2.out" }, 47.8);
-      // Code body reveals
-      tl.fromTo("#s6-frame .editor-body", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power2.out" }, 48.1);
-      // Browser bar
-      tl.fromTo("#s6-frame .right-sidebar .rs-tabs", { y: -10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.3, ease: "power2.out" }, 48.4);
-      tl.fromTo("#s6-frame .browser-bar", { y: -10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.3, ease: "power2.out" }, 48.6);
-      tl.fromTo("#s6-frame .browser-content", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power2.out" }, 48.9);
+      /* ================= SCENE 6 — CLOSE (22.8 – 24.9) ================= */
+      tl.fromTo(
+        "#s6-markwrap",
+        { opacity: 0, scale: 0.85, rotation: -6 },
+        { opacity: 1, scale: 1, rotation: 0, duration: 0.65, ease: "expo.out" },
+        23.45
+      );
+      tl.fromTo("#s6-word", { opacity: 0, y: 44 }, { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 23.65);
+      tl.fromTo("#s6-sub", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 23.85);
+      tl.fromTo("#s6-mono", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 24.0);
+      // ambient rings
+      tl.to("#s6-ring1", { rotation: 40, yoyo: true, repeat: 1, duration: 0.7, ease: "sine.inOut" }, 23.35);
+      tl.to("#s6-ring2", { rotation: -40, yoyo: true, repeat: 1, duration: 0.7, ease: "sine.inOut" }, 23.35);
+      // final fade — ends just before the video end
+      tl.to("#s6-wrap", { opacity: 0, y: -30, duration: 0.55, ease: "power2.in" }, 24.35);
 
-      // Cursor blink in statusbar
-      tl.to("#s6-frame .statusbar .accent", { opacity: 0.3, yoyo: true, repeat: 18, duration: 0.6, ease: "steps(1)" }, 49.0);
-
-      // ============================================================
-      // SCENE 7: COMMAND PALETTE (58-65s)
-      // ============================================================
-      tl.fromTo("#s7-frame", { scale: 0.94, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "expo.out" }, 58.0);
-      tl.fromTo("#s7-label", { y: -10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.3, ease: "power2.out" }, 58.3);
-      tl.fromTo("#s7-palette", { y: -20, opacity: 0, scale: 0.95 }, { y: 0, opacity: 1, scale: 1, duration: 0.5, ease: "expo.out" }, 58.5);
-      tl.fromTo("#s7-palette .palette-row", { x: -20, opacity: 0 }, { x: 0, opacity: 1, duration: 0.3, stagger: 0.08, ease: "power2.out" }, 58.9);
-
-      // ============================================================
-      // SCENE 8: CTA (65-75s)
-      // ============================================================
-      tl.fromTo("#s8-logo", { y: 30, opacity: 0, scale: 0.9 }, { y: 0, opacity: 1, scale: 1, duration: 0.6, ease: "expo.out" }, 65.3);
-      tl.fromTo("#s8-title", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.7, ease: "power3.out" }, 65.7);
-      tl.fromTo("#s8-sub", { y: 20, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power2.out" }, 66.3);
-      tl.fromTo("#s8-btn", { scale: 0.85, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "back.out(1.3)" }, 66.8);
-      tl.fromTo("#s8-url", { opacity: 0 }, { opacity: 1, duration: 0.3, ease: "power2.out" }, 67.3);
-
-      window.__timelines["root"] = tl;
+      window.__timelines["main"] = tl;
     </script>
   </body>
 </html>

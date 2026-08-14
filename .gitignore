@@ -63,6 +63,17 @@ dist-electron/
 # Old / legacy tool directories
 .omo/
 
+# Local agent / assistant runtime state
+.ade/
+.freebuff/
+.agents/
+.codex/
+
+# HyperFrames ad composition — generated artifacts (keep source assets/fonts/sfx)
+.hyperframes/ad/renders/
+.hyperframes/ad/.thumbnails/
+.hyperframes/ad/audio/music.m4a
+
 
 # Rust compile artifacts (redundant with target/ but explicit)
 *.rlib

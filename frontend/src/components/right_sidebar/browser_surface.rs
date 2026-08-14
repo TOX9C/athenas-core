@@ -311,12 +311,23 @@ pub fn BrowserSurface(expanded: bool) -> Element {
         let load_timeout_for_mount = load_timeout.clone();
         let active_generation_for_mount = active_load_generation.clone();
         let browser_unlisteners_for_mount = browser_unlisteners.clone();
-        let start_url = url();
+        // A terminal link click sets `pending_browser_url`; honor it on first
+        // mount so a cold-open lands directly on the link instead of flashing
+        // the default page. The actual clear happens inside the mount effect.
+        let start_url = ui_state
+            .read()
+            .pending_browser_url
+            .clone()
+            .unwrap_or(url());
+        let mut ui_state_for_mount = ui_state;
         use_effect(move || {
             if *initialized.borrow() {
                 return;
             }
             *initialized.borrow_mut() = true;
+            // Consume the pending terminal-link URL exactly once; a later
+            // cold-open (e.g. after docking) falls back to the current URL.
+            ui_state_for_mount.write().pending_browser_url = None;
 
             // A surface is appearing — acquire a new lease before the
             // predecessor's drop hook can park the shared native WebView.
