@@ -1,7 +1,7 @@
 # Athenas-Core Roadmap
 
 > Comprehensive tracking of bugs, issues, and fixes discovered during deep-dive audit and refactoring sessions.
-> Last updated: 2026-08-06
+> Last updated: 2026-08-10
 
 ---
 
@@ -16,7 +16,7 @@
 | ✅ Fixed in pass 4           | 6       |
 | 🔴 Blocking compile errors   | 0       |
 | 🟡 Medium priority remaining | 0       |
-| 🟢 Low priority remaining    | 5       |
+| 🟢 Low priority remaining    | 1       |
 | **Total items**              | **~40** |
 
 ---
@@ -70,7 +70,7 @@
 - [x] **M8** — Command palette Enter dispatches on wrong element: improved error handling with warnings for missing or multiple trigger elements; documented the hidden trigger pattern
 - [x] **M10** — AgentStatus empty pane_id: set `pane_id: key` directly in constructor; removed the two-step fix-up
 - [x] **M11** — Hardcoded model/provider: replaced with constants (`DEFAULT_MODEL`, `DEFAULT_PROVIDER`, `DEFAULT_BYPASS_MODE`, `DEFAULT_AUTO_LAUNCH`)
-- [x] **M13** — CSP too permissive: tightened CSP in `tauri.conf.json` — removed `unsafe-eval`, `unsafe-inline`, `data:`, `blob:`, and `http://localhost:*`; kept `wasm-unsafe-eval` for WebAssembly support
+- [x] **M13** — CSP baseline hardened: removed `unsafe-eval` and wildcard network sources; inline styles and `data:`/`blob:` assets remain explicitly required by the current bundled UI and are release-reviewed allowances
 - [x] **Notification max count** — Added `MAX_NOTIFICATIONS: 50` constant in `stores/notification.rs`; enforced in `add_notification` to drop oldest when exceeding limit
 - [x] **ARIA accessibility** — Added ARIA labels and roles to: modal (dialog), command palette (searchbox), notification bell, sidebar navigation, and icon-only buttons
 
@@ -84,41 +84,9 @@ All medium priority items are complete. See "All Completed Items" above for deta
 
 - **Status:** ✅ Applied
 - **File:** `src-tauri/tauri.conf.json`
-- **Changes made:**
-  - Removed `'unsafe-eval'` from `script-src`
-  - Removed `'unsafe-inline'` from `style-src`
-  - Removed `data:` and `blob:` from `img-src` and `font-src`
-  - Removed `http://localhost:*` from `connect-src`
-  - Kept `'wasm-unsafe-eval'` (required for WebAssembly)
-- **New CSP:** `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; connect-src 'self'; font-src 'self'; media-src 'self'; frame-src 'self'`
-- **Current CSP:**
-  ```
-  default-src 'self';
-  script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval';
-  style-src 'self' 'unsafe-inline';
-  img-src 'self' data: blob:;
-  connect-src 'self' http://localhost:*;
-  font-src 'self' data:;
-  media-src 'self';
-  frame-src 'self'
-  ```
-- **Issues identified:**
-  - `'unsafe-eval'` in `script-src` — allows dynamic code execution
-  - `'unsafe-inline'` in `style-src` — allows inline styles
-  - `data:` / `blob:` in `img-src` and `font-src`
-  - `http://localhost:*` in `connect-src` — overly permissive
-- **Proposed tightened CSP:**
-  ```
-  default-src 'self';
-  script-src 'self' 'wasm-unsafe-eval';
-  style-src 'self';
-  img-src 'self';
-  connect-src 'self';
-  font-src 'self';
-  media-src 'self';
-  frame-src 'self'
-  ```
-- **Action required:** User must verify app functionality after tightening (especially WASM compilation, local dev server connections, inline styles)
+- **Current policy:** `script-src` is restricted to `'self' 'wasm-unsafe-eval'`; `connect-src` is restricted to `'self' ipc:`; wildcard localhost/network sources and `'unsafe-eval'` are absent.
+- **Intentional allowances:** `style-src`, `style-src-elem`, and `style-src-attr` include `'unsafe-inline'` for the current Dioxus/bundled UI; `img-src` includes `data:`/`blob:` for QR and generated image content; `font-src` includes `data:` for bundled asset compatibility.
+- **Release requirement:** These allowances must remain documented and validated against the exact production WebView. They are not equivalent to a fully nonce-based CSP and should not be described as removed until the UI no longer needs them.
 
 ### M19 — ToastContainer empty / Toast wiring
 
@@ -128,7 +96,7 @@ All medium priority items are complete. See "All Completed Items" above for deta
 
 ---
 
-## 🟢 Low Priority — Deferred Items
+## 🟢 Low Priority — Completed Items
 
 These are nice-to-have improvements, cleanup items, or architectural notes that can be deferred until higher-priority work is complete.
 
@@ -138,11 +106,12 @@ These are nice-to-have improvements, cleanup items, or architectural notes that 
 - [x] Context menu — Wired `ContextMenu` component (already had full CSS) into `WorkspaceTab` for right-click "Close workspace" (2026-08-06)
 - [x] Resizable panel improvements — `ResizablePanel` / `ResizeHandle` shared components exist and the right sidebar uses inline resize; no further action needed
 - [x] `did_attempt` reset logic — No longer applicable; `did_attempt` does not exist in the current codebase (renamed/removed during refactor)
-- [ ] Plugin system hardening (further review of plugin host boundary)
-- [ ] E2E test coverage expansion
-- [ ] Documentation for plugin API
-- [ ] Performance audit of large workspace grids (10+ panes)
-- [ ] macOS-specific polish (window chrome, native menu integration)
+- [x] Plugin system hardening — bounded manifests/config/events, trusted-integration policy, and atomic owner-aware session operations with cross-plugin isolation coverage
+- [x] E2E test coverage expansion — added and passed `pane-swap.e2e.mjs` for two-pane drag/swap plus `pane-scaling-10plus.e2e.mjs` for 12-pane geometry and timing coverage
+- [x] Documentation for plugin API — reconciled current manifest, capability, config, lifecycle, and MCP contracts in `docs/plugin-development.md` and `docs/plugin-system-guide.md`
+- [x] Performance audit of large workspace grids (10+ panes) — deterministic 12-pane mount/relayout stress coverage added
+- [x] macOS release evidence automation — local release-check orchestration plus unsigned DMG `.app` structure and arm64 verification added
+- [ ] Native window chrome/menu polish review — remains a manual macOS UX gate
 
 ---
 
@@ -152,12 +121,8 @@ These are nice-to-have improvements, cleanup items, or architectural notes that 
 2. ✅ **All medium priority items fixed** — Including CSP tightening and M19 toast wiring
 3. ✅ **Dead code cleanup complete** — Removed unused types, components, stores, and dead functions (August 2026 refactor)
 4. ✅ **Context menu wired** — `ContextMenu` component wired into `WorkspaceTab` for right-click "Close workspace" (2026-08-06)
-5. **Remaining low priority items** — Can be deferred indefinitely:
-   - Plugin system hardening
-   - E2E test coverage expansion
-   - Documentation for plugin API
-   - Performance audit of large workspace grids (10+ panes)
-   - macOS-specific polish (window chrome, native menu integration)
+5. ✅ **Local backlog implementation pass complete** — plugin hardening/docs, 12-pane geometry coverage, and macOS release-evidence automation are implemented and locally validated
+6. **Remaining release-owner gates** — clean-machine macOS UX review, signing/notarization, Finder install/launch, packaged stability soak, supply-chain disposition, and named approvals
 
 ---
 

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::time::{timeout, Duration};
@@ -24,7 +25,52 @@ const MCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// DoS). 1 MiB is generous for these payloads; the request-body cap in the
 /// Tauri command layer (`MAX_REQUEST_BYTES`) is the same.
 const MAX_MCP_LINE_BYTES: usize = 1024 * 1024;
+/// Maximum number of simultaneous TCP clients. MCP is loopback-only, but a
+/// local process must not be able to exhaust one Tokio task per connection.
+pub(super) const MCP_MAX_CONNECTIONS: usize = 16;
+/// Request-rate budget per authenticated or unauthenticated connection.
+const MCP_REQUEST_WINDOW: Duration = Duration::from_secs(60);
+const MCP_MAX_REQUESTS_PER_WINDOW: u32 = 240;
+/// Absolute lifetime request budget for one connection. Reconnects are cheap
+/// for legitimate clients, while this prevents a connection that stays alive
+/// forever from accumulating unbounded work.
+const MCP_MAX_REQUESTS_PER_CONNECTION: u32 = 10_000;
 
+#[derive(Debug)]
+struct RequestBudget {
+    window_started: Instant,
+    window_requests: u32,
+    total_requests: u32,
+}
+
+impl RequestBudget {
+    fn new() -> Self {
+        Self {
+            window_started: Instant::now(),
+            window_requests: 0,
+            total_requests: 0,
+        }
+    }
+
+    fn allow(&mut self, now: Instant) -> bool {
+        if now.duration_since(self.window_started) >= MCP_REQUEST_WINDOW {
+            self.window_started = now;
+            self.window_requests = 0;
+        }
+        if self.total_requests >= MCP_MAX_REQUESTS_PER_CONNECTION
+            || self.window_requests >= MCP_MAX_REQUESTS_PER_WINDOW
+        {
+            return false;
+        }
+        self.total_requests += 1;
+        self.window_requests += 1;
+        true
+    }
+}
+
+// Transport dependencies stay explicit so the accept loop can construct each
+// connection handler without hiding its security and lifecycle inputs.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn accept_loop(
     listener: tokio::net::TcpListener,
     shutdown: Arc<AtomicBool>,
@@ -36,9 +82,15 @@ pub(super) async fn accept_loop(
     spawn_handler: Option<SpawnHandler>,
     output_handler: Option<OutputHandler>,
     agent_comms_handler: Option<AgentCommsHandler>,
+    tool_executor: Option<Arc<parking_lot::Mutex<super::ToolExecutor>>>,
 ) {
     let _stopped_guard = StoppedGuard(Arc::clone(&stopped));
-    log::info!("MCP accept loop started");
+    let connection_slots = Arc::new(tokio::sync::Semaphore::new(MCP_MAX_CONNECTIONS));
+    log::info!(
+        "MCP accept loop started (max_connections={}, max_requests_per_window={})",
+        MCP_MAX_CONNECTIONS,
+        MCP_MAX_REQUESTS_PER_WINDOW
+    );
     loop {
         if shutdown.load(Ordering::Relaxed) || app_shutdown.load(Ordering::Relaxed) {
             log::info!("MCP accept loop stopping");
@@ -50,7 +102,16 @@ pub(super) async fn accept_loop(
         // releasing the bound port for a subsequent init.
         match tokio::time::timeout(Duration::from_millis(100), listener.accept()).await {
             Ok(Ok((stream, _addr))) => {
+                let connection_permit = match Arc::clone(&connection_slots).try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        log::warn!("MCP: rejecting connection — connection limit reached");
+                        drop(stream);
+                        continue;
+                    }
+                };
                 let handler = ConnectionHandler {
+                    _connection_permit: connection_permit,
                     token: token.clone(),
                     active_clients: Arc::clone(&active_clients),
                     shutdown: Arc::clone(&shutdown),
@@ -59,6 +120,7 @@ pub(super) async fn accept_loop(
                     spawn_handler: spawn_handler.clone(),
                     output_handler: output_handler.clone(),
                     agent_comms_handler: agent_comms_handler.clone(),
+                    tool_executor: tool_executor.clone(),
                     authenticated: AtomicBool::new(false),
                 };
                 tokio::spawn(async move {
@@ -98,18 +160,23 @@ struct ConnectionHandler {
     spawn_handler: Option<SpawnHandler>,
     output_handler: Option<OutputHandler>,
     agent_comms_handler: Option<AgentCommsHandler>,
+    tool_executor: Option<Arc<parking_lot::Mutex<super::ToolExecutor>>>,
     authenticated: AtomicBool,
+    // Held for the entire connection lifetime; dropping the handler releases
+    // the slot even when setup or I/O fails before authentication.
+    _connection_permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl ConnectionHandler {
     async fn handle_request(&self, req: &JsonRpcRequest) -> JsonRpcResponse {
-        mcp_dispatch::handle_request_impl(
+        super::handle_request_with_executor(
             &self.token,
             req,
             &self.task_handler,
             &self.spawn_handler,
             &self.output_handler,
             &self.agent_comms_handler,
+            self.tool_executor.as_ref(),
         )
         .await
     }
@@ -119,7 +186,8 @@ impl ConnectionHandler {
             .peer_addr()
             .map(|a| a.to_string())
             .unwrap_or_default();
-        log::info!("MCP: new connection from {}", peer);
+        let connection_id = format!("{}#{}", peer, uuid::Uuid::new_v4());
+        log::info!("MCP: new connection {} from {}", connection_id, peer);
 
         // Convert back to std briefly to get a clone for active_clients.
         let std_stream = match stream.into_std() {
@@ -150,16 +218,17 @@ impl ConnectionHandler {
         let mut reader = BufReader::new(read_half);
         let write_half = Arc::new(tokio::sync::Mutex::new(write_half));
 
-        // Register the std TcpStream clone for broadcast_notification
-        // (which uses sync I/O). Will be removed on disconnect.
-        if let Ok(mut clients) = self.active_clients.lock() {
-            clients.insert(peer.clone(), std_clone);
-        }
+        // Keep the clone local until the client authenticates. Registering an
+        // unauthenticated socket in active_clients would allow it to receive
+        // broadcast notifications before completing `initialize`.
+        let mut broadcast_stream = Some(std_clone);
+        let mut broadcast_registered = false;
 
         // Capped line buffer: bound each request at MAX_MCP_LINE_BYTES so a
         // client streaming a never-terminated line cannot force unbounded
         // allocation before the JSON is parsed.
         let mut buf: Vec<u8> = Vec::with_capacity(8192);
+        let mut request_budget = RequestBudget::new();
 
         loop {
             if self.shutdown.load(Ordering::Relaxed) || self.app_shutdown.load(Ordering::Relaxed) {
@@ -223,6 +292,10 @@ impl ConnectionHandler {
             if trimmed.is_empty() {
                 continue;
             }
+            if !request_budget.allow(Instant::now()) {
+                log::warn!("MCP: disconnecting {} — request budget exceeded", peer);
+                break;
+            }
 
             let req: JsonRpcRequest = match serde_json::from_str(trimmed) {
                 Ok(r) => r,
@@ -271,6 +344,12 @@ impl ConnectionHandler {
             // On successful initialize, log it and mark connection as authenticated.
             if req.method == "initialize" && response.error.is_none() {
                 self.authenticated.store(true, Ordering::SeqCst);
+                if let Some(stream) = broadcast_stream.take() {
+                    if let Ok(mut clients) = self.active_clients.lock() {
+                        clients.insert(connection_id.clone(), stream);
+                        broadcast_registered = true;
+                    }
+                }
                 log::info!("MCP: client {} initialized", peer);
             }
 
@@ -282,8 +361,10 @@ impl ConnectionHandler {
         }
 
         // Remove from active_clients on disconnect
-        if let Ok(mut clients) = self.active_clients.lock() {
-            clients.remove(&peer);
+        if broadcast_registered {
+            if let Ok(mut clients) = self.active_clients.lock() {
+                clients.remove(&connection_id);
+            }
         }
         log::info!("MCP: connection closed from {}", peer);
     }
@@ -292,5 +373,49 @@ impl ConnectionHandler {
 async fn wait_for_shutdown(generation_shutdown: &AtomicBool, app_shutdown: &AtomicBool) {
     while !generation_shutdown.load(Ordering::Relaxed) && !app_shutdown.load(Ordering::Relaxed) {
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RequestBudget, MCP_MAX_REQUESTS_PER_WINDOW};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn request_budget_rejects_burst_after_window_limit() {
+        let start = Instant::now();
+        let mut budget = RequestBudget {
+            window_started: start,
+            window_requests: 0,
+            total_requests: 0,
+        };
+        for _ in 0..MCP_MAX_REQUESTS_PER_WINDOW {
+            assert!(budget.allow(start));
+        }
+        assert!(!budget.allow(start));
+    }
+
+    #[test]
+    fn request_budget_resets_window_but_keeps_lifetime_count() {
+        let start = Instant::now();
+        let mut budget = RequestBudget {
+            window_started: start,
+            window_requests: MCP_MAX_REQUESTS_PER_WINDOW,
+            total_requests: MCP_MAX_REQUESTS_PER_WINDOW,
+        };
+        assert!(budget.allow(start + Duration::from_secs(61)));
+        assert_eq!(budget.window_requests, 1);
+        assert_eq!(budget.total_requests, MCP_MAX_REQUESTS_PER_WINDOW + 1);
+    }
+
+    #[test]
+    fn request_budget_rejects_when_lifetime_limit_is_reached() {
+        let start = Instant::now();
+        let mut budget = RequestBudget {
+            window_started: start,
+            window_requests: 0,
+            total_requests: super::MCP_MAX_REQUESTS_PER_CONNECTION,
+        };
+        assert!(!budget.allow(start));
     }
 }

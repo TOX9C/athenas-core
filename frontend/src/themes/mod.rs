@@ -1,4 +1,11 @@
+use gloo::timers::callback::Timeout;
+use std::sync::atomic::{AtomicU32, Ordering};
 use wasm_bindgen::JsCast;
+
+/// Generation counter for the theme cross-fade window. Each apply bumps it and
+/// schedules its own close; only the latest apply is allowed to remove the
+/// `theme-anim` class, so rapid theme switching can't cut a transition short.
+static THEME_ANIM_GEN: AtomicU32 = AtomicU32::new(0);
 
 #[path = "definitions.rs"]
 mod definitions;
@@ -10,7 +17,13 @@ pub use definitions::{
 /// Apply a palette to the document root as CSS custom properties, including the
 /// atmosphere tokens (lamp glow + grain). Unlike the previous engine, this drives
 /// the full token set so light/dark themes carry correct hover/border/atmosphere.
+///
+/// A short `theme-anim` window is opened on `<html>` so the chrome cross-fades
+/// (background/color/border) instead of snapping between palettes.
 pub fn apply_theme_to_dom(theme_name: &str) {
+    let gen = THEME_ANIM_GEN.load(Ordering::Relaxed).wrapping_add(1);
+    THEME_ANIM_GEN.store(gen, Ordering::Relaxed);
+    set_theme_anim(true);
     let c = get_theme(theme_name);
     set_data_theme(theme_name);
 
@@ -48,6 +61,52 @@ pub fn apply_theme_to_dom(theme_name: &str) {
         set_css_property(k, v);
     }
     set_css_property("--themeNoiseOpacity", &format!("{}", c.noise_opacity));
+
+    // Close the cross-fade window after the palette settles — but only if this
+    // apply is still the latest one (a newer apply keeps the class on).
+    // `.forget()` keeps the timer alive past this synchronous apply.
+    Timeout::new(360, move || {
+        if THEME_ANIM_GEN.load(Ordering::Relaxed) == gen {
+            set_theme_anim(false);
+        }
+    })
+    .forget();
+}
+
+/// Toggle the `theme-anim` class on `<html>` — the hook that scopes the
+/// palette cross-fade transition to the brief apply window.
+fn set_theme_anim(on: bool) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(html_el) = document.document_element() else {
+        return;
+    };
+    let Some(html) = html_el.dyn_ref::<web_sys::HtmlElement>() else {
+        return;
+    };
+    // `class_list()` is not bound in this web-sys build; use the always-available
+    // className read/write instead, preserving any other classes on <html>.
+    let mut classes: Vec<String> = html
+        .class_name()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let has = classes.iter().any(|c| c == "theme-anim");
+    match (on, has) {
+        (true, false) => {
+            classes.push("theme-anim".to_string());
+            html.set_class_name(&classes.join(" "));
+        }
+        (false, true) => {
+            classes.retain(|c| c != "theme-anim");
+            html.set_class_name(&classes.join(" "));
+        }
+        _ => {}
+    }
 }
 
 /// Set a CSS custom property on the document root via typed DOM bindings.

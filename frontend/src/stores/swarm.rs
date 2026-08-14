@@ -3,8 +3,9 @@ use dioxus::prelude::*;
 #[path = "swarm_model.rs"]
 mod swarm_model;
 
+pub use crate::types::swarm::AgentRole;
 pub use swarm_model::{
-    AgentRole, MailboxMessage, SwarmAgent, SwarmAgentStatus, SwarmData, SwarmOverallStatus,
+    parse_swarm_data, MailboxMessage, SwarmAgent, SwarmAgentStatus, SwarmData, SwarmOverallStatus,
     SwarmTask, SwarmTaskStatus,
 };
 

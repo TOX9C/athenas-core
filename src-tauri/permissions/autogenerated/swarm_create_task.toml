@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-swarm-create-task"
+description = "Enables the swarm_create_task command without any pre-configured scope."
+commands.allow = ["swarm_create_task"]
+
+[[permission]]
+identifier = "deny-swarm-create-task"
+description = "Denies the swarm_create_task command without any pre-configured scope."
+commands.deny = ["swarm_create_task"]

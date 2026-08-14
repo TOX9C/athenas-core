@@ -87,6 +87,6 @@ mod tests {
             }
         );
         assert_eq!(AgentOutputInfo::default().line_count, 0);
-        assert_eq!(SubscriptionState::default().active, false);
+        assert!(!SubscriptionState::default().active);
     }
 }

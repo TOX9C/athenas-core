@@ -53,4 +53,3 @@ pub fn get_pane_history(state: State<'_, AppState>, pane_id: String) -> Result<S
     let lines = state.output_buffer.get_output(&pane_id, None);
     serde_json::to_string(&lines).map_err(|e| e.to_string())
 }
-

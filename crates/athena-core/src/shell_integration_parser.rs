@@ -10,6 +10,20 @@ const OSC_PREFIX: &str = "\x1b]633;";
 const BEL: char = '\x07';
 const ST: &str = "\x1b\\";
 
+/// Move a byte index back to the nearest valid UTF-8 boundary.
+///
+/// Parser offsets come from `str::find` and are normally safe, but the
+/// bounded-buffer recovery path derives an offset from `len()`. That offset
+/// can land inside a multibyte terminal glyph (for example OMP's box-drawing
+/// UI), and slicing there would panic the PTY reader task.
+fn floor_char_boundary(input: &str, index: usize) -> usize {
+    let mut boundary = index.min(input.len());
+    while boundary > 0 && !input.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
 // ---------------------------------------------------------------------------
 // ShellIntegrationSequence
 // ---------------------------------------------------------------------------
@@ -68,7 +82,10 @@ impl Osc633Parser {
                     // last complete OSC boundary (BEL or ST terminator) so that the
                     // parser state stays valid.
                     if self.buffer.len() > 10_000 {
-                        let mut keep = self.buffer.len().saturating_sub(4096);
+                        let mut keep = floor_char_boundary(
+                            &self.buffer,
+                            self.buffer.len().saturating_sub(4096),
+                        );
                         // Walk backward to find the last BEL or ST before keep
                         let tail = &self.buffer[..keep];
                         let last_bel = tail.rfind(BEL);
@@ -82,8 +99,9 @@ impl Osc633Parser {
                                     ST.len()
                                 };
                         }
-                        // Clamp to prevent slicing past the end of the buffer
-                        keep = keep.min(self.buffer.len());
+                        // Clamp and re-align to prevent slicing past the end of
+                        // the buffer or through a multibyte terminal glyph.
+                        keep = floor_char_boundary(&self.buffer, keep.min(self.buffer.len()));
                         self.buffer = self.buffer[keep..].to_string();
                     }
                     break;
@@ -248,4 +266,23 @@ pub fn strip_osc633(data: &str) -> String {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Osc633Parser, ShellIntegrationSequence};
+
+    #[test]
+    fn bounded_recovery_does_not_split_utf8_terminal_glyphs() {
+        let mut parser = Osc633Parser::new();
+        // OMP emits box-drawing glyphs in its full-screen UI. This forces the
+        // parser's no-OSC bounded-buffer recovery path to compute an offset
+        // inside a three-byte UTF-8 character.
+        parser.feed(&"─".repeat(5_000));
+        let sequences = parser.feed("\x1b]633;A\x07");
+        assert!(matches!(
+            sequences.first().map(|parsed| &parsed.sequence),
+            Some(ShellIntegrationSequence::Prompt { .. })
+        ));
+    }
 }

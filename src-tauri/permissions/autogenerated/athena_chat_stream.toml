@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-athena-chat-stream"
+description = "Enables the athena_chat_stream command without any pre-configured scope."
+commands.allow = ["athena_chat_stream"]
+
+[[permission]]
+identifier = "deny-athena-chat-stream"
+description = "Denies the athena_chat_stream command without any pre-configured scope."
+commands.deny = ["athena_chat_stream"]

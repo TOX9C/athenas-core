@@ -119,23 +119,58 @@ impl AgentOutputState {
         self.touch(&key);
     }
 
-    pub fn append_line(&mut self, mut line: OutputLine) {
+    /// Append one output line while preserving the single-line API used by
+    /// existing callers.
+    pub fn append_line(&mut self, line: OutputLine) {
         let pane_id = line.pane_id.clone();
-        // Truncate overly long lines to prevent memory spikes
-        if line.text.len() > MAX_TEXT_LENGTH {
-            line.text.truncate(MAX_TEXT_LENGTH);
+        self.append_batch(&pane_id, vec![line]);
+    }
+
+    /// Append a backend batch for a known pane in a single store mutation.
+    ///
+    /// The explicit pane id lets the hot path reuse the listener's existing
+    /// `Vec` without collecting it again. Malformed lines for another pane are
+    /// discarded instead of being silently attached to the first pane.
+    pub fn append_batch(&mut self, pane_id: &str, mut lines: Vec<OutputLine>) {
+        lines.retain(|line| line.pane_id == pane_id);
+        if lines.is_empty() {
+            return;
         }
-        if let Some(buf) = self.find_buffer_mut(&pane_id) {
-            buf.push(line);
+
+        // Truncate overly long lines before they enter the retained buffer.
+        for line in &mut lines {
+            if line.text.len() > MAX_TEXT_LENGTH {
+                line.text.truncate(MAX_TEXT_LENGTH);
+            }
+        }
+
+        if let Some(buf) = self.find_buffer_mut(pane_id) {
+            buf.extend(lines);
             Self::trim_lines(buf);
         } else {
-            self.buffers.push((pane_id.clone(), vec![line]));
+            Self::trim_lines(&mut lines);
+            self.buffers.push((pane_id.to_string(), lines));
             self.maybe_gc_panes();
         }
-        // Update last activity for GC sorting
+
+        // Update last activity for GC sorting once for the entire batch.
         let timestamp = chrono::Utc::now().timestamp();
-        self.update_last_activity(&pane_id, timestamp);
-        self.touch(&pane_id);
+        self.update_last_activity(pane_id, timestamp);
+        self.touch(pane_id);
+    }
+
+    /// Generic convenience wrapper for callers that do not already own a
+    /// backend batch. The event bus should prefer `append_batch` to avoid the
+    /// extra collection.
+    pub fn append_lines<I>(&mut self, lines: I)
+    where
+        I: IntoIterator<Item = OutputLine>,
+    {
+        let lines = lines.into_iter().collect::<Vec<_>>();
+        let Some(pane_id) = lines.first().map(|line| line.pane_id.clone()) else {
+            return;
+        };
+        self.append_batch(&pane_id, lines);
     }
 
     pub fn clear_buffer(&mut self, pane_id: &str) {
@@ -325,6 +360,78 @@ mod tests {
             .find(|(id, _)| id == "pane-x")
             .expect("buffer exists");
         assert_eq!(lines[0].text.len(), MAX_TEXT_LENGTH);
+    }
+
+    #[test]
+    fn append_lines_preserves_order_in_one_batch() {
+        let mut state = AgentOutputState::new();
+        state.register_pane("pane-batch".to_string(), "claude".to_string(), 1_000);
+        state.append_batch(
+            "pane-batch",
+            vec![
+                make_line("pane-batch", "first"),
+                make_line("pane-batch", "second"),
+                make_line("pane-batch", "third"),
+            ],
+        );
+
+        let (_, lines) = state
+            .buffers
+            .iter()
+            .find(|(id, _)| id == "pane-batch")
+            .expect("batch buffer exists");
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+    }
+
+    #[test]
+    fn append_lines_trims_once_at_buffer_limit() {
+        let mut state = AgentOutputState::new();
+        state.register_pane("pane-limit".to_string(), "shell".to_string(), 1_000);
+        state.append_batch(
+            "pane-limit",
+            (0..(MAX_LINES_PER_BUFFER + 3))
+                .map(|index| make_line("pane-limit", &format!("line-{index}")))
+                .collect(),
+        );
+
+        let (_, lines) = state
+            .buffers
+            .iter()
+            .find(|(id, _)| id == "pane-limit")
+            .expect("limited buffer exists");
+        assert_eq!(lines.len(), MAX_LINES_PER_BUFFER);
+        assert_eq!(lines.first().map(|line| line.text.as_str()), Some("line-3"));
+        assert_eq!(
+            lines.last().map(|line| line.text.as_str()),
+            Some("line-5002")
+        );
+    }
+
+    #[test]
+    fn append_batch_ignores_empty_and_mixed_pane_lines() {
+        let mut state = AgentOutputState::new();
+        state.append_batch("pane-empty", Vec::new());
+        state.append_batch(
+            "pane-a",
+            vec![
+                make_line("pane-a", "kept"),
+                make_line("pane-b", "discarded"),
+            ],
+        );
+
+        let (_, lines) = state
+            .buffers
+            .iter()
+            .find(|(id, _)| id == "pane-a")
+            .expect("valid batch line should create a buffer");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "kept");
     }
 
     #[test]

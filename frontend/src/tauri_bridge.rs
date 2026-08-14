@@ -10,6 +10,7 @@ pub async fn invoke<T>(command: &str, args: &str) -> TauriResult<T>
 where
     T: JsValueCast,
 {
+    crate::utils::perf_metrics::record_ipc(command);
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("No window"))?;
     let tauri = js_sys::Reflect::get(&window, &JsValue::from_str("__TAURI__"))
         .map_err(|e| JsValue::from(format!("Reflect get error: {:?}", e)))?;
@@ -422,10 +423,99 @@ pub async fn mcp_tools() -> TauriResult<String> {
 }
 
 /// Swarm operations
+pub async fn swarm_create(dir: &str, swarm_state: &str) -> TauriResult<String> {
+    // Tauri v2 expects camelCase JSON keys for command arguments. The backend
+    // param is `swarm_state` (snake_case, a required String), so the wire key
+    // must be `swarmState` — sending `swarm_state` makes the command fail with
+    // "missing required key swarmState" (see CLAUDE.md parameter-naming note
+    // vs. tauri-macros' default `rename_all = "camelCase"`).
+    invoke(
+        "swarm_create",
+        &serde_json::json!({ "dir": dir, "swarmState": swarm_state }).to_string(),
+    )
+    .await
+}
+
 pub async fn swarm_read_state(dir: &str) -> TauriResult<String> {
     invoke(
         "swarm_read_state",
         &serde_json::json!({ "dir": dir }).to_string(),
+    )
+    .await
+}
+
+pub async fn swarm_start_watch(dir: &str) -> TauriResult<()> {
+    invoke(
+        "swarm_start_watch",
+        &serde_json::json!({ "dir": dir }).to_string(),
+    )
+    .await
+}
+
+pub async fn swarm_stop_watch(dir: &str) -> TauriResult<()> {
+    invoke(
+        "swarm_stop_watch",
+        &serde_json::json!({ "dir": dir }).to_string(),
+    )
+    .await
+}
+
+pub async fn swarm_update_agent(
+    dir: &str,
+    agent_id: &str,
+    status: Option<&str>,
+    last_action: Option<&str>,
+    current_task: Option<Option<&str>>,
+) -> TauriResult<String> {
+    // camelCase wire keys (`agentId`, `lastAction`, `currentTask`) — see
+    // swarm_create comment.
+    invoke(
+        "swarm_update_agent",
+        &serde_json::json!({
+            "dir": dir,
+            "agentId": agent_id,
+            "status": status,
+            "lastAction": last_action,
+            "currentTask": current_task,
+        })
+        .to_string(),
+    )
+    .await
+}
+
+pub async fn swarm_set_status(dir: &str, status: &str) -> TauriResult<String> {
+    invoke(
+        "swarm_set_status",
+        &serde_json::json!({ "dir": dir, "status": status }).to_string(),
+    )
+    .await
+}
+
+pub async fn swarm_create_task(
+    dir: &str,
+    title: &str,
+    description: &str,
+    assigned_agent_id: &str,
+) -> TauriResult<String> {
+    // camelCase wire key (`assignedAgentId`) — see swarm_create comment.
+    invoke(
+        "swarm_create_task",
+        &serde_json::json!({
+            "dir": dir,
+            "title": title,
+            "description": description,
+            "assignedAgentId": assigned_agent_id,
+        })
+        .to_string(),
+    )
+    .await
+}
+
+pub async fn swarm_update_task(dir: &str, task_id: &str, status: &str) -> TauriResult<String> {
+    // camelCase wire key (`taskId`) — see swarm_create comment.
+    invoke(
+        "swarm_update_task",
+        &serde_json::json!({ "dir": dir, "taskId": task_id, "status": status }).to_string(),
     )
     .await
 }
@@ -444,9 +534,10 @@ pub async fn swarm_send_message(
 }
 
 pub async fn swarm_read_mailbox(dir: &str, agent_id: &str) -> TauriResult<String> {
+    // camelCase wire key (`agentId`) — see swarm_create comment.
     invoke(
         "swarm_read_mailbox",
-        &serde_json::json!({ "dir": dir, "agent_id": agent_id }).to_string(),
+        &serde_json::json!({ "dir": dir, "agentId": agent_id }).to_string(),
     )
     .await
 }
@@ -514,10 +605,13 @@ pub async fn kanban_update_task(
     description: Option<&str>,
     status: Option<&str>,
 ) -> TauriResult<String> {
+    // camelCase wire key (`taskId`) — Tauri v2 expects camelCase args; the
+    // old snake_case key made the required `task_id` param fail, so cards
+    // could never move between columns.
     invoke(
         "kanban_update_task",
         &serde_json::json!({
-            "task_id": task_id,
+            "taskId": task_id,
             "title": title,
             "description": description,
             "status": status
@@ -529,9 +623,10 @@ pub async fn kanban_update_task(
 
 /// Delete a kanban task by ID.
 pub async fn kanban_delete_task(task_id: &str) -> TauriResult<JsValue> {
+    // camelCase wire key (`taskId`) — see kanban_update_task comment.
     invoke(
         "kanban_delete_task",
-        &serde_json::json!({ "task_id": task_id }).to_string(),
+        &serde_json::json!({ "taskId": task_id }).to_string(),
     )
     .await
 }
@@ -586,11 +681,64 @@ pub async fn pty_agent_info(id: &str) -> TauriResult<AgentInfo> {
 }
 
 /// Spawn a new PTY session with the given shell and dimensions.
-pub async fn pty_spawn(id: &str, cwd: &str, shell: &str, cols: u16, rows: u16) -> TauriResult<()> {
+pub async fn pty_spawn(
+    id: &str,
+    cwd: &str,
+    shell: &str,
+    cols: u16,
+    rows: u16,
+    start_paused: bool,
+    listener_owner: Option<&str>,
+) -> TauriResult<()> {
     invoke(
         "pty_spawn",
-        &serde_json::json!({ "id": id, "cwd": cwd, "shell": shell, "cols": cols, "rows": rows })
-            .to_string(),
+        &serde_json::json!({
+            "id": id,
+            "cwd": cwd,
+            "shell": shell,
+            "cols": cols,
+            "rows": rows,
+            "start_paused": start_paused,
+            "listener_owner": listener_owner,
+        })
+        .to_string(),
+    )
+    .await
+}
+
+/// Spawn a PTY session and execute an agent command after the shell starts.
+///
+/// This wrapper intentionally mirrors the backend command's full argument
+/// list, including the listener lifecycle handshake.
+#[allow(clippy::too_many_arguments)]
+pub async fn pty_spawn_agent(
+    id: &str,
+    cwd: &str,
+    shell: &str,
+    agent_cmd: &str,
+    cols: u16,
+    rows: u16,
+    start_paused: bool,
+    listener_owner: Option<&str>,
+) -> TauriResult<()> {
+    invoke(
+        "pty_spawn_agent",
+        // Tauri 2 command arguments use camelCase on the wire. The backend
+        // parameter is `agent_cmd`, but sending `agent_cmd` here causes the
+        // required `agentCmd` argument to be reported missing. OMP is the
+        // only built-in path through this command, so the bug is agent-specific
+        // while ordinary shell panes continue to spawn successfully.
+        &serde_json::json!({
+            "id": id,
+            "cwd": cwd,
+            "shell": shell,
+            "agentCmd": agent_cmd,
+            "cols": cols,
+            "rows": rows,
+            "startPaused": start_paused,
+            "listenerOwner": listener_owner,
+        })
+        .to_string(),
     )
     .await
 }
@@ -669,14 +817,6 @@ pub async fn pty_set_xterm(id: &str, is_xterm: bool) -> TauriResult<()> {
 /// Accumulated bytes are flushed as a single burst when unpaused. Used by
 /// the xterm.js remount path to close the stream-gap desync during pane swaps:
 /// pause before unlisten on unmount, unpause after replay on remount.
-pub async fn pty_set_raw_paused(id: &str, paused: bool) -> TauriResult<()> {
-    invoke(
-        "pty_set_raw_paused",
-        &serde_json::json!({ "id": id, "paused": paused }).to_string(),
-    )
-    .await
-}
-
 /// Tell the backend a `pty:raw` listener has (re)subscribed for `id` — the
 /// "someone is listening again" handshake. Clears `raw_paused`; the backend
 /// read loop detects the true→false transition on its next iteration and
@@ -684,10 +824,36 @@ pub async fn pty_set_raw_paused(id: &str, paused: bool) -> TauriResult<()> {
 /// subscribes. Makes a session that was paused (e.g. pane dropped without
 /// remount) self-heal on the next re-show, closing the stuck-paused gap.
 /// No-op (and Ok) if the session does not exist yet on a brand-new spawn.
-pub async fn pty_attach_listener(id: &str) -> TauriResult<()> {
-    invoke(
+pub async fn pty_attach_listener(id: &str, owner: &str, replace_current: bool) -> TauriResult<u64> {
+    // Keep the generation as a string across IPC: JavaScript numbers cannot
+    // represent every u64 exactly, while generations are part of a race-safety
+    // lease and must never be rounded.
+    let generation: String = invoke(
         "pty_attach_listener",
-        &serde_json::json!({ "id": id }).to_string(),
+        &serde_json::json!({
+            "id": id,
+            "owner": owner,
+            "replace_current": replace_current,
+        })
+        .to_string(),
+    )
+    .await?;
+    generation
+        .parse::<u64>()
+        .map_err(|_| JsValue::from_str("invalid listener generation"))
+}
+
+/// Detach a raw PTY listener lease. Older generations are ignored by the
+/// backend, so a stale xterm teardown cannot pause a newer mount.
+pub async fn pty_detach_listener(id: &str, owner: &str, generation: u64) -> TauriResult<bool> {
+    invoke(
+        "pty_detach_listener",
+        &serde_json::json!({
+            "id": id,
+            "owner": owner,
+            "generation": generation.to_string(),
+        })
+        .to_string(),
     )
     .await
 }
@@ -842,6 +1008,34 @@ pub async fn athena_chat(message: &str) -> TauriResult<String> {
     .await
 }
 
+/// Start a request-scoped streaming chat turn. Events arrive on
+/// `athena:stream` and are filtered by request ID in the Athena store.
+pub async fn athena_chat_stream(
+    message: &str,
+    session_id: &str,
+    request_id: &str,
+) -> TauriResult<String> {
+    invoke(
+        "athena_chat_stream",
+        &serde_json::json!({
+            "message": message,
+            "session_id": session_id,
+            "request_id": request_id,
+        })
+        .to_string(),
+    )
+    .await
+}
+
+/// Cancel an in-flight streaming chat turn.
+pub async fn athena_cancel_stream(request_id: &str) -> TauriResult<bool> {
+    invoke(
+        "athena_cancel_stream",
+        &serde_json::json!({ "request_id": request_id }).to_string(),
+    )
+    .await
+}
+
 /// Send a chat message within a specific session.
 pub async fn athena_chat_with_session(message: &str, session_id: &str) -> TauriResult<String> {
     invoke(
@@ -866,6 +1060,15 @@ pub async fn summarize_agent_title(raw_prompt: &str) -> TauriResult<String> {
     invoke(
         "summarize_agent_title",
         &serde_json::json!({ "rawPrompt": raw_prompt }).to_string(),
+    )
+    .await
+}
+
+/// Respond to Athena's pending ask_user tool.
+pub async fn athena_user_answer(request_id: &str, answer: &str) -> TauriResult<bool> {
+    invoke(
+        "athena_user_answer",
+        &serde_json::json!({ "request_id": request_id, "answer": answer }).to_string(),
     )
     .await
 }
@@ -1123,6 +1326,9 @@ pub fn listen(
     event: &str,
     callback: impl FnMut(String) + 'static,
 ) -> Result<Box<dyn FnOnce()>, TauriBridgeError> {
+    // Performance instrumentation: every delivered push event is counted here
+    // (the single chokepoint for backend→frontend traffic).
+    let event_for_metrics = event.to_string();
     let window = web_sys::window().ok_or_else(|| TauriBridgeError {
         message: format!("listen({}): no window object", event),
     })?;
@@ -1178,6 +1384,7 @@ pub fn listen(
                     .map(|s| s.as_string().unwrap_or_default())
                     .unwrap_or_default()
             };
+            crate::utils::perf_metrics::record_event(&event_for_metrics, payload_str.len() as u64);
             callback(payload_str);
         }
     }) as Box<dyn FnMut(JsValue)>);
@@ -1222,7 +1429,8 @@ pub fn listen(
                 }
                 drop(closure_js);
             },
-        ) as Box<dyn FnOnce(JsValue)>);
+        )
+            as Box<dyn FnOnce(JsValue)>);
         let _ = then_fn.call1(&registration, cleanup.as_ref());
     });
 

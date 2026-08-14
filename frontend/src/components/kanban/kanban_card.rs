@@ -17,15 +17,10 @@ pub fn KanbanCard(props: KanbanCardProps) -> Element {
     let id_for_save = props.task.id.clone();
     let id_for_delete = props.task.id.clone();
 
-    let accent_color = match props.task.assigned_agent {
-        Some(_) => "var(--accent)",
-        None => "var(--textDim)",
-    };
-
     rsx! {
         div {
             class: "kanban-card card is-interactive lit-sweep",
-            style: "border-left: 3px solid {accent_color}; border-top: 1px solid var(--border); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); cursor: grab;",
+            style: "border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bgSecondary); cursor: grab;",
 
             if *is_editing.read() {
                 // Edit mode

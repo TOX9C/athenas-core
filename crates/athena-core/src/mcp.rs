@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::tool_executor::ToolExecutor;
+use crate::tool_executor::{ToolCallResult, ToolExecutor, ToolExecutorError};
 
 #[path = "mcp_protocol.rs"]
 mod mcp_protocol;
@@ -25,6 +25,10 @@ mod mcp_dispatch;
 
 #[path = "mcp_transport.rs"]
 mod mcp_transport;
+
+#[cfg(test)]
+#[path = "mcp_integration_tests.rs"]
+mod mcp_integration_tests;
 
 // ---------------------------------------------------------------------------
 // MCP Server
@@ -59,7 +63,7 @@ pub struct McpServer {
 impl std::fmt::Debug for McpServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpServer")
-            .field("token", &self.token)
+            .field("token", &"[REDACTED]")
             .field("port", &self.port)
             .finish()
     }
@@ -179,6 +183,7 @@ impl McpServer {
         let spawn_handler = self.spawn_handler.clone();
         let output_handler = self.output_handler.clone();
         let agent_comms_handler = self.agent_comms_handler.clone();
+        let tool_executor = self.tool_executor.clone();
 
         tokio::spawn(async move {
             mcp_transport::accept_loop(
@@ -192,6 +197,7 @@ impl McpServer {
                 spawn_handler,
                 output_handler,
                 agent_comms_handler,
+                tool_executor,
             )
             .await;
         });
@@ -235,64 +241,25 @@ impl McpServer {
         let spawn_handler = self.spawn_handler.clone();
         let output_handler = self.output_handler.clone();
         let agent_comms_handler = self.agent_comms_handler.clone();
+        let tool_executor = self.tool_executor.clone();
 
         tokio::spawn(async move {
             log::info!("MCP stdio server started");
-            let stdin = tokio::io::stdin();
-            let stdout = tokio::io::stdout();
-            let mut reader = BufReader::new(stdin);
-            let writer = Arc::new(tokio::sync::Mutex::new(stdout));
-            let mut line = String::new();
-
-            loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => {
-                        log::info!("MCP stdio: EOF on stdin, shutting down");
-                        break;
-                    }
-                    Ok(_) => {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-
-                        let req: JsonRpcRequest = match serde_json::from_str(trimmed) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                log::warn!("MCP stdio: parse error: {}", e);
-                                let err = mcp_dispatch::make_parse_error_response(trimmed);
-                                let mut w = writer.lock().await;
-                                let _ = w.write_all((err + "\n").as_bytes()).await;
-                                continue;
-                            }
-                        };
-
-                        // For stdio mode, skip authentication since the
-                        // process is spawned by the client itself.
-                        let response = mcp_dispatch::handle_request_impl(
-                            &token,
-                            &req,
-                            &task_handler,
-                            &spawn_handler,
-                            &output_handler,
-                            &agent_comms_handler,
-                        )
-                        .await;
-
-                        if response.id.is_some() {
-                            let json = McpServer::serialize_response(&response) + "\n";
-                            let mut w = writer.lock().await;
-                            if w.write_all(json.as_bytes()).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("MCP stdio: read error: {}", e);
-                        break;
-                    }
-                }
+            let reader = BufReader::new(tokio::io::stdin());
+            let writer = tokio::io::stdout();
+            if let Err(error) = run_stdio_loop(
+                reader,
+                writer,
+                token,
+                task_handler,
+                spawn_handler,
+                output_handler,
+                agent_comms_handler,
+                tool_executor,
+            )
+            .await
+            {
+                log::error!("MCP stdio: I/O error: {error}");
             }
         });
     }
@@ -315,63 +282,14 @@ impl McpServer {
     /// Dispatches to the appropriate handler based on the method name.
     /// Returns a `JsonRpcResponse` with either the result or an error.
     pub async fn handle_request(&self, req: &JsonRpcRequest) -> JsonRpcResponse {
-        // Try to delegate tool calls to the tool executor first
-        if req.method == "tools/call" {
-            if let Some(ref tool_exec_arc) = self.tool_executor {
-                let name = req
-                    .params
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let args = req.params.get("arguments").cloned().unwrap_or_default();
-
-                // Map MCP tool name to ToolExecutor tool name
-                let executor_name = mcp_dispatch::map_mcp_to_executor_name(name);
-
-                // Convert args to ToolInput
-                if let Some(tool_input) = mcp_dispatch::args_to_tool_input(&args) {
-                    let tool_exec = tool_exec_arc.lock();
-                    {
-                        match tool_exec.execute_tool_call(executor_name, &tool_input) {
-                            Ok(result) => {
-                                return JsonRpcResponse {
-                                    jsonrpc: "2.0".into(),
-                                    id: req.id.clone(),
-                                    result: Some(serde_json::json!({
-                                        "content": [{ "type": "text", "text": result.text }]
-                                    })),
-                                    error: None,
-                                };
-                            }
-                            Err(crate::tool_executor::ToolExecutorError::UnknownTool(_)) => {
-                                // Fall through to existing handlers
-                            }
-                            Err(e) => {
-                                return JsonRpcResponse {
-                                    jsonrpc: "2.0".into(),
-                                    id: req.id.clone(),
-                                    result: None,
-                                    error: Some(JsonRpcError {
-                                        code: -32603,
-                                        message: format!("Tool execution error: {}", e),
-                                        data: None,
-                                    }),
-                                };
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fall through to the existing handler implementation
-        mcp_dispatch::handle_request_impl(
+        handle_request_with_executor(
             &self.token,
             req,
             &self.task_handler,
             &self.spawn_handler,
             &self.output_handler,
             &self.agent_comms_handler,
+            self.tool_executor.as_ref(),
         )
         .await
     }
@@ -435,6 +353,248 @@ impl McpServer {
 // Free functions for request handling (shared between McpServer and
 // the per-connection handler thread).
 // ---------------------------------------------------------------------------
+
+/// Run the line-delimited stdio request loop over arbitrary async streams.
+///
+/// The production entry point supplies stdin/stdout, while tests can use
+/// in-memory duplex streams to verify the real stdio protocol without a
+/// subprocess or a global stdin/stdout race.
+// The stdio transport intentionally mirrors the TCP handler dependencies while
+// keeping this generic loop easy to exercise with in-memory streams.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run_stdio_loop<R, W>(
+    mut reader: R,
+    mut writer: W,
+    token: String,
+    task_handler: Option<TaskHandler>,
+    spawn_handler: Option<SpawnHandler>,
+    output_handler: Option<OutputHandler>,
+    agent_comms_handler: Option<AgentCommsHandler>,
+    tool_executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>,
+) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => return Ok(()),
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                let req: JsonRpcRequest = match serde_json::from_str(trimmed) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        log::warn!("MCP stdio: parse error: {error}");
+                        let response = mcp_dispatch::make_parse_error_response(trimmed);
+                        writer.write_all((response + "\n").as_bytes()).await?;
+                        continue;
+                    }
+                };
+
+                // Stdio is a trusted child-process boundary, so it does not
+                // repeat TCP token authentication. Tool calls still use the
+                // same executor-backed router as TCP and Tauri.
+                let response = handle_request_with_executor(
+                    &token,
+                    &req,
+                    &task_handler,
+                    &spawn_handler,
+                    &output_handler,
+                    &agent_comms_handler,
+                    tool_executor.as_ref(),
+                )
+                .await;
+
+                if response.id.is_some() {
+                    let json = McpServer::serialize_response(&response) + "\n";
+                    writer.write_all(json.as_bytes()).await?;
+                    writer.flush().await?;
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Route one request through the canonical executor-backed path.
+///
+/// Every transport uses this function so external MCP clients cannot
+/// accidentally receive the legacy placeholder handlers while the local
+/// Tauri command uses the real [`ToolExecutor`].
+pub(super) async fn handle_request_with_executor(
+    token: &str,
+    req: &JsonRpcRequest,
+    task_handler: &Option<TaskHandler>,
+    spawn_handler: &Option<SpawnHandler>,
+    output_handler: &Option<OutputHandler>,
+    agent_comms_handler: &Option<AgentCommsHandler>,
+    tool_executor: Option<&Arc<parking_lot::Mutex<ToolExecutor>>>,
+) -> JsonRpcResponse {
+    if req.method == "tools/list" {
+        let tools = if tool_executor.is_some() {
+            mcp_protocol::get_tools()
+        } else {
+            Vec::new()
+        };
+        return JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            id: req.id.clone(),
+            result: Some(serde_json::json!({ "tools": tools })),
+            error: None,
+        };
+    }
+
+    if req.method == "tools/call" {
+        if let Some(tool_executor) = tool_executor {
+            let name = req
+                .params
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let args = req.params.get("arguments").cloned().unwrap_or_default();
+
+            if is_executor_mcp_tool(name) {
+                let executor = Arc::clone(tool_executor);
+                let tool_name = name.to_string();
+                let result = tokio::task::spawn_blocking(move || {
+                    let executor = executor.lock();
+                    execute_mcp_tool_call(&executor, &tool_name, &args)
+                })
+                .await;
+
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) => Err(ToolExecutorError::Notification(format!(
+                        "tool worker failed: {error}"
+                    ))),
+                };
+                return tool_result_response(req, result);
+            }
+        }
+    }
+
+    mcp_dispatch::handle_request_impl(
+        token,
+        req,
+        task_handler,
+        spawn_handler,
+        output_handler,
+        agent_comms_handler,
+    )
+    .await
+}
+
+fn is_executor_mcp_tool(name: &str) -> bool {
+    matches!(
+        name,
+        // Legacy MCP aliases.
+        "create_tasks"
+            | "get_next_task"
+            | "update_task_status"
+            | "spawn_agents"
+            | "get_output"
+            | "list_agent_panes"
+            | "code_search"
+            | "search_files"
+    ) || crate::tool_schema::orchestrator_tools()
+        .iter()
+        .any(|tool| tool.name == name)
+}
+
+fn execute_mcp_tool_call(
+    executor: &ToolExecutor,
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<ToolCallResult, ToolExecutorError> {
+    // The legacy `create_tasks` contract accepts a batch. Execute each task
+    // through the canonical single-task executor so the external route has
+    // the same persistence and validation behavior as local tool calls.
+    if name == "create_tasks" {
+        if let Some(tasks) = args.get("tasks").and_then(|value| value.as_array()) {
+            let space_id = args
+                .get("spaceId")
+                .or_else(|| args.get("space_id"))
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+            let mut messages = Vec::with_capacity(tasks.len());
+            for task in tasks {
+                let mut task_args = task.clone();
+                let object = task_args
+                    .as_object_mut()
+                    .ok_or_else(|| ToolExecutorError::MissingParam("tasks[].title".into()))?;
+                if let Some(space_id) = space_id.as_ref() {
+                    object
+                        .entry("space_id".to_string())
+                        .or_insert_with(|| serde_json::Value::String(space_id.clone()));
+                }
+                let input = mcp_dispatch::args_to_tool_input(&task_args)
+                    .ok_or_else(|| ToolExecutorError::MissingParam("tasks[].title".into()))?;
+                let result = executor.execute_tool_call("kanban_create_task", &input)?;
+                messages.push(result.text);
+            }
+            return Ok(ToolCallResult {
+                text: messages.join("\n"),
+                is_error: None,
+            });
+        }
+    }
+
+    let mut normalized = args.clone();
+    if let Some(object) = normalized.as_object_mut() {
+        // Preserve the historical MCP names while translating them to the
+        // canonical executor input fields. `spawn_agents` historically used
+        // count/instruction; the executor uses agent_count/task_prompt.
+        if name == "spawn_agents" {
+            if let Some(value) = object.get("count").cloned() {
+                object.entry("agent_count").or_insert(value);
+            }
+            if let Some(value) = object.get("instruction").cloned() {
+                object.entry("task_prompt").or_insert(value);
+            }
+            object
+                .entry("agent_type")
+                .or_insert_with(|| serde_json::Value::String("claude".into()));
+        }
+    }
+
+    let input = mcp_dispatch::args_to_tool_input(&normalized)
+        .ok_or_else(|| ToolExecutorError::MissingParam("arguments".into()))?;
+    let executor_name = mcp_dispatch::map_mcp_to_executor_name(name);
+    executor.execute_tool_call(executor_name, &input)
+}
+
+fn tool_result_response(
+    req: &JsonRpcRequest,
+    result: Result<ToolCallResult, ToolExecutorError>,
+) -> JsonRpcResponse {
+    let payload = match result {
+        Ok(result) => {
+            let mut payload = serde_json::json!({
+                "content": [{ "type": "text", "text": result.text }]
+            });
+            if let Some(is_error) = result.is_error {
+                payload["isError"] = serde_json::Value::Bool(is_error);
+            }
+            payload
+        }
+        Err(error) => serde_json::json!({
+            "isError": true,
+            "content": [{ "type": "text", "text": error.to_string() }]
+        }),
+    };
+    JsonRpcResponse {
+        jsonrpc: "2.0".into(),
+        id: req.id.clone(),
+        result: Some(payload),
+        error: None,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // TCP accept loop and per-connection handler

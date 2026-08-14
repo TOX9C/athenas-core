@@ -15,7 +15,9 @@ use thiserror::Error;
 mod types;
 pub use types::*;
 mod validation;
-pub use validation::{validate_plugin_install_method, validate_plugin_manifest};
+pub use validation::{
+    validate_plugin_config, validate_plugin_install_method, validate_plugin_manifest,
+};
 #[path = "discovery.rs"]
 mod discovery;
 #[path = "lifecycle.rs"]
@@ -29,6 +31,25 @@ use athena_core::EventEmitter;
 /// this are skipped during discovery to prevent a malicious or accidental
 /// oversized file from exhausting memory.
 pub const MAX_MANIFEST_BYTES: u64 = 1_048_576;
+/// Maximum serialized plugin configuration accepted through the host API.
+pub const MAX_PLUGIN_CONFIG_BYTES: usize = 256 * 1024;
+/// Maximum serialized plugin event payload accepted through the host API.
+pub const MAX_PLUGIN_EVENT_BYTES: usize = 256 * 1024;
+/// Maximum live sessions retained by one manager.
+pub const MAX_PLUGIN_SESSIONS: usize = 256;
+/// Maximum event types one session may subscribe to.
+pub const MAX_SESSION_SUBSCRIPTIONS: usize = 32;
+/// Maximum pending messages retained by one manager.
+pub const MAX_PENDING_PLUGIN_MESSAGES: usize = 1024;
+
+/// Public-release plugin trust policy.
+///
+/// Plugins are trusted developer integrations, not sandboxed third-party code.
+/// The public release does not provide a marketplace, remote installation, or
+/// process sandbox; callers must only register and run plugin code they trust.
+pub const PUBLIC_PLUGIN_TRUST_POLICY: &str = "trusted_developer_integrations";
+/// Pending plugin messages older than this are eligible for cleanup.
+pub const PENDING_PLUGIN_MESSAGE_TTL: Duration = Duration::from_secs(300);
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -42,6 +63,12 @@ pub enum PluginError {
 
     #[error("session not found: {0}")]
     SessionNotFound(String),
+
+    #[error("session '{session_id}' does not belong to plugin '{plugin_id}'")]
+    SessionOwnership {
+        session_id: String,
+        plugin_id: String,
+    },
 
     #[error("plugin already registered and active: {0}")]
     AlreadyRegistered(String),
@@ -61,6 +88,9 @@ pub enum PluginError {
 
     #[error("manifest validation failed: {0}")]
     ValidationFailed(String),
+
+    #[error("plugin limit exceeded: {0}")]
+    LimitExceeded(String),
 }
 
 impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, PluginManagerInner>>> for PluginError {
@@ -229,7 +259,10 @@ impl PluginManager {
                 return;
             }
         }
-        log::debug!("[plugin-manager] {} -> {}", channel, data);
+        // Event payloads may contain prompts, paths, output, or plugin errors.
+        // Keep the fallback diagnostic metadata-only; never serialize payloads
+        // into logs merely because no renderer emitter is installed.
+        log::debug!("[plugin-manager] event emitted on channel {channel}");
     }
 
     /// Set the stall timeout for health checking. Sessions with no activity
@@ -295,13 +328,20 @@ pub fn default_capabilities(agent_type: &AgentType) -> Vec<PluginCapability> {
     }
 }
 
-/// Intersect requested capabilities with the defaults allowed for an agent
-/// type. Mirrors `scopedCapabilities` in the TS `pluginHost.ts`.
-pub(crate) fn scoped_capabilities(
+/// Scope a session to both the agent's safe defaults and the plugin manifest's
+/// declared capabilities. `None` preserves the legacy library behavior for
+/// callers that do not have a manifest available; registered sessions always
+/// pass the manifest declaration.
+pub(crate) fn scoped_capabilities_with_manifest(
     agent_type: &AgentType,
     requested: Option<Vec<PluginCapability>>,
+    declared: Option<&[PluginCapability]>,
 ) -> Vec<PluginCapability> {
-    let allowed = default_capabilities(agent_type);
+    let mut allowed = default_capabilities(agent_type);
+    if let Some(declared) = declared {
+        let declared: HashSet<_> = declared.iter().cloned().collect();
+        allowed.retain(|cap| declared.contains(cap));
+    }
     match requested {
         Some(req) => {
             let allowed_set: HashSet<_> = allowed.into_iter().collect();
@@ -489,6 +529,41 @@ mod tests {
         assert_eq!(config["b"], 2);
     }
 
+    #[test]
+    fn plugin_config_schema_rejects_invalid_updates_and_accepts_valid_updates() {
+        let mgr = PluginManager::new();
+        let mut manifest = sample_manifest("schema-plugin");
+        manifest.config = Some(PluginConfigSchema {
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "mode": { "enum": ["safe", "fast"] },
+                    "retries": { "type": "integer", "minimum": 0, "maximum": 5 }
+                },
+                "required": ["mode"],
+                "additionalProperties": false
+            }),
+            defaults: serde_json::json!({"mode": "safe"}),
+        });
+        mgr.register_plugin(manifest).unwrap();
+
+        mgr.set_plugin_config("schema-plugin", &serde_json::json!({"mode": "safe"}))
+            .unwrap();
+        assert!(mgr
+            .set_plugin_config("schema-plugin", &serde_json::json!({"mode": "unsafe"}))
+            .is_err());
+        assert!(mgr
+            .set_plugin_config("schema-plugin", &serde_json::json!({"retries": 6}))
+            .is_err());
+        assert!(mgr
+            .set_plugin_config("schema-plugin", &serde_json::json!({"unknown": true}))
+            .is_err());
+        assert_eq!(
+            mgr.get_plugin_config("schema-plugin").unwrap(),
+            serde_json::json!({"mode": "safe"})
+        );
+    }
+
     // -- Session management tests -------------------------------------------
 
     #[test]
@@ -523,6 +598,11 @@ mod tests {
 
         assert_eq!(session.agent_id, "my-agent");
         assert_eq!(session.pane_id, Some("pane-1".to_string()));
+        assert_eq!(
+            mgr.get_session_by_agent_id("my-agent")
+                .and_then(|resolved| resolved.pane_id),
+            Some("pane-1".to_string())
+        );
     }
 
     #[test]
@@ -556,6 +636,62 @@ mod tests {
             )
             .unwrap();
 
+        assert_eq!(session.capabilities, vec![PluginCapability::Notifications]);
+    }
+
+    #[test]
+    fn disabled_plugin_rejects_new_sessions_and_cleans_existing_state() {
+        let mgr = PluginManager::new();
+        let mut manifest = sample_manifest("p1");
+        manifest.capabilities = vec![PluginCapability::Notifications, PluginCapability::Status];
+        mgr.register_plugin(manifest).unwrap();
+        let session = mgr
+            .register_session("p1", AgentType::Shell, None, None, None)
+            .unwrap();
+        mgr.subscribe_session(&session.id, &[PluginEventType::Notification])
+            .unwrap();
+        mgr.send_message(&session.id, "ping", serde_json::json!({}))
+            .unwrap();
+
+        mgr.disable_plugin("p1").unwrap();
+        assert!(mgr.get_session(&session.id).is_none());
+        assert!(mgr
+            .get_subscribers(&PluginEventType::Notification)
+            .is_empty());
+        assert!(mgr.get_pending_messages(&session.id).is_empty());
+        assert!(mgr
+            .register_session("p1", AgentType::Shell, None, None, None)
+            .is_err());
+    }
+
+    #[test]
+    fn config_and_message_limits_are_enforced() {
+        let mgr = PluginManager::new();
+        mgr.register_plugin(sample_manifest("p1")).unwrap();
+        let session = mgr
+            .register_session("p1", AgentType::Shell, None, None, None)
+            .unwrap();
+        let huge = "x".repeat(MAX_PLUGIN_CONFIG_BYTES + 1);
+        assert!(matches!(
+            mgr.set_plugin_config("p1", &serde_json::json!({"value": huge})),
+            Err(PluginError::LimitExceeded(_))
+        ));
+        let huge_params = serde_json::json!({"value": "x".repeat(MAX_PLUGIN_EVENT_BYTES + 1)});
+        assert!(matches!(
+            mgr.send_message(&session.id, "ping", huge_params),
+            Err(PluginError::LimitExceeded(_))
+        ));
+    }
+
+    #[test]
+    fn manifest_capabilities_limit_session_capabilities() {
+        let mgr = PluginManager::new();
+        let mut manifest = sample_manifest("p1");
+        manifest.capabilities = vec![PluginCapability::Notifications];
+        mgr.register_plugin(manifest).unwrap();
+        let session = mgr
+            .register_session("p1", AgentType::Claude, None, None, None)
+            .unwrap();
         assert_eq!(session.capabilities, vec![PluginCapability::Notifications]);
     }
 
@@ -613,6 +749,45 @@ mod tests {
 
         let found = mgr.get_session_by_agent_id("findme").unwrap();
         assert_eq!(found.id, session.id);
+    }
+
+    #[test]
+    fn ownership_aware_session_operations_reject_cross_plugin_access() {
+        let mgr = PluginManager::new();
+        mgr.register_plugin(sample_manifest("owner-a")).unwrap();
+        mgr.register_plugin(sample_manifest("owner-b")).unwrap();
+        let session = mgr
+            .register_session(
+                "owner-a",
+                AgentType::Claude,
+                Some("owned-agent".to_string()),
+                Some("pane-owned".to_string()),
+                None,
+            )
+            .unwrap();
+
+        let remove = mgr.remove_session_owned("owner-b", &session.id);
+        assert!(matches!(
+            remove,
+            Err(PluginError::SessionOwnership { ref session_id, ref plugin_id })
+                if session_id == &session.id && plugin_id == "owner-b"
+        ));
+        assert!(mgr.get_session(&session.id).is_some());
+
+        let subscribe =
+            mgr.subscribe_session_owned("owner-b", &session.id, &[PluginEventType::Notification]);
+        assert!(matches!(
+            subscribe,
+            Err(PluginError::SessionOwnership { .. })
+        ));
+
+        let send = mgr.send_message_owned("owner-b", &session.id, "ping", serde_json::json!({}));
+        assert!(matches!(send, Err(PluginError::SessionOwnership { .. })));
+
+        mgr.subscribe_session_owned("owner-a", &session.id, &[])
+            .unwrap();
+        mgr.remove_session_owned("owner-a", &session.id).unwrap();
+        assert!(mgr.get_session(&session.id).is_none());
     }
 
     // -- Event subscription tests -------------------------------------------
@@ -839,7 +1014,7 @@ mod tests {
         // syntactically valid JSON, but its size exceeds the limit and the
         // size check (which happens before parsing) should skip it.
         let padding_len = (MAX_MANIFEST_BYTES as usize) + 1024;
-        let padding: String = std::iter::repeat('a').take(padding_len).collect();
+        let padding = "a".repeat(padding_len);
         let oversized = serde_json::json!({
             "id": "huge",
             "name": "Huge",
@@ -951,6 +1126,15 @@ mod tests {
     }
 
     // -- Manifest validation tests -----------------------------------------
+
+    #[test]
+    fn validate_manifest_rejects_unsafe_identifier_and_oversized_text() {
+        let mut manifest = sample_manifest("bad id");
+        assert!(validate_plugin_manifest(&manifest).is_err());
+        manifest.id = "safe".to_string();
+        manifest.description = "x".repeat(8 * 1024 + 1);
+        assert!(validate_plugin_manifest(&manifest).is_err());
+    }
 
     #[test]
     fn validate_manifest_accepts_builtin() {

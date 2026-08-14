@@ -21,7 +21,7 @@ describe('Athena app launch', () => {
     expect(text).toContain('New Workspace');
   });
 
-  it('clicks the New Workspace button — currently causes WASM panic', async () => {
+  it('clicks the New Workspace button and opens the workspace modal', async () => {
     // tauri-wd has a Node.contains compatibility issue with WDIO's isDisplayed check,
     // so we use executeScript to dispatch click events directly.
     const result = await browser.execute(() => {
@@ -37,9 +37,11 @@ describe('Athena app launch', () => {
       return 'not found';
     });
 
+    expect(result).toBe('clicked: New Workspace');
     await browser.pause(500);
 
-    // Check for modal or WASM error after click
+    // The WASM event-handler panic (Dioxus 0.7 + WKWebView) is fixed upstream (v0.7.6)
+    // and verified locally, so this is now a hard assertion: the modal must open.
     const state = await browser.execute(() => {
       const overlay = document.querySelector('.modal-overlay');
       const errEl = document.getElementById('wasm-loading-error');
@@ -50,15 +52,7 @@ describe('Athena app launch', () => {
     });
 
     await browser.saveScreenshot(join(screenshotDir, 'after-click.png'));
-
-    // Known issue: Dioxus 0.7 event handlers can cause WASM panics in WKWebView.
-    // Log the state for debugging; skip hard assertion until the runtime issue is fixed.
-    if (state.modalOpen) {
-      console.log('[INFO] Modal opened successfully after click');
-    } else if (state.errorText) {
-      console.log('[WARN] WASM error after click:', state.errorText);
-    } else {
-      console.log('[WARN] Modal did not appear, no error reported');
-    }
+    expect(state.modalOpen).toBe(true);
+    expect(state.errorText).toBe('');
   });
 });

@@ -1,6 +1,7 @@
 use crate::components::mobile_xterm::MobileXtermMount;
 use crate::components::shared::icon::{
-    IconAthena, IconClose, IconFiles, IconGrid, IconMenu, IconPlus, IconTerminal,
+    IconAthena, IconChevronRight, IconClose, IconFiles, IconGrid, IconMenu, IconPlus, IconSeal,
+    IconTerminal,
 };
 use crate::stores::workspace::{GridTemplate, PaneConfig, Space};
 use crate::tauri_bridge;
@@ -52,7 +53,7 @@ fn screen_title(screen: MobileScreen) -> &'static str {
     match screen {
         MobileScreen::Spaces => "Spaces",
         MobileScreen::Terminal => "Terminal",
-        MobileScreen::Oracle => "Oracle",
+        MobileScreen::Oracle => "Chat",
         MobileScreen::Files => "Files",
     }
 }
@@ -81,24 +82,26 @@ pub fn MobileApp() -> Element {
         }
         spawn(async move {
             match tauri_bridge::store_get("workspaces").await {
-                Ok(raw) => match serde_json::from_str::<crate::stores::workspace::WorkspaceState>(&raw) {
-                    Ok(state) => {
-                        let selected = state
-                            .active_space_id
-                            .clone()
-                            .or_else(|| state.spaces.first().map(|space| space.id.clone()));
-                        let pane = selected
-                            .as_ref()
-                            .and_then(|id| state.spaces.iter().find(|space| &space.id == id))
-                            .and_then(|space| space.panes.first())
-                            .map(|pane| pane.id.clone());
-                        active_space.set(selected);
-                        active_pane.set(pane);
-                        spaces.set(state.spaces);
-                        status.set("Connected to Athena".to_string());
+                Ok(raw) => {
+                    match serde_json::from_str::<crate::stores::workspace::WorkspaceState>(&raw) {
+                        Ok(state) => {
+                            let selected = state
+                                .active_space_id
+                                .clone()
+                                .or_else(|| state.spaces.first().map(|space| space.id.clone()));
+                            let pane = selected
+                                .as_ref()
+                                .and_then(|id| state.spaces.iter().find(|space| &space.id == id))
+                                .and_then(|space| space.panes.first())
+                                .map(|pane| pane.id.clone());
+                            active_space.set(selected);
+                            active_pane.set(pane);
+                            spaces.set(state.spaces);
+                            status.set("Connected to Athena".to_string());
+                        }
+                        Err(error) => status.set(format!("Workspace data is invalid: {error}")),
                     }
-                    Err(error) => status.set(format!("Workspace data is invalid: {error}")),
-                },
+                }
                 Err(error) => status.set(format!("Connection failed: {error:?}")),
             }
         });
@@ -203,15 +206,7 @@ pub fn MobileApp() -> Element {
         spawn(async move {
             let _ = tauri_bridge::workspace_add_trusted_root(&dir).await;
             let shell = tauri_bridge::pty_default_shell_cached().await;
-            match tauri_bridge::pty_spawn(
-                &pane_id,
-                &dir,
-                &shell,
-                100,
-                28,
-            )
-            .await
-            {
+            match tauri_bridge::pty_spawn(&pane_id, &dir, &shell, 100, 28, false, None).await {
                 Ok(()) => {
                     active_pane.set(Some(pane_id));
                     active_screen.set(MobileScreen::Terminal);
@@ -243,7 +238,9 @@ pub fn MobileApp() -> Element {
                     IconMenu { size: Some(22), color: Some("currentColor".to_string()) }
                 }
                 div { class: "mobile-brand",
-                    span { class: "mobile-brand-seal", "Θ" }
+                    span { class: "mobile-brand-seal",
+                        IconSeal { size: Some(18), color: Some("var(--accent)".to_string()) }
+                    }
                     span { "Athena" }
                 }
                 div { class: "mobile-topbar-right",
@@ -295,7 +292,9 @@ pub fn MobileApp() -> Element {
                                                     small { "{space.panes.len()} panes" }
                                                     small { class: "mobile-space-path", "{space.dir}" }
                                                 }
-                                                span { class: "mobile-space-card-arrow", "›" }
+                                                span { class: "mobile-space-card-arrow",
+                                                    IconChevronRight { size: Some(15), color: Some("var(--textDim)".to_string()) }
+                                                }
                                             }
                                         }
                                     }
@@ -379,7 +378,7 @@ pub fn MobileApp() -> Element {
                                 }
                             }
                             div { class: "mobile-chat-compose",
-                                textarea { value: "{chat_input}", placeholder: "What should Athena do?", "aria-label": "Message Athena", oninput: move |event| chat_input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && event.modifiers().shift() == false { send_chat(); } }
+                                textarea { value: "{chat_input}", placeholder: "What should Athena do?", "aria-label": "Message Athena", oninput: move |event| chat_input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { send_chat(); } }
                                 button { class: "mobile-primary-button mobile-ask-button", disabled: *busy.read(), onclick: move |_| send_chat(), if *busy.read() { "Thinking…" } else { "Ask" } }
                             }
                         }
@@ -406,14 +405,19 @@ pub fn MobileApp() -> Element {
                     div { class: "mobile-drawer-backdrop", onclick: move |_| drawer_open.set(false) }
                     nav { class: "mobile-drawer", role: "navigation", "aria-label": "Mobile navigation",
                         div { class: "mobile-drawer-header",
-                            div { class: "mobile-brand", span { class: "mobile-brand-seal", "Θ" } span { "Athena" } }
+                            div { class: "mobile-brand",
+                                span { class: "mobile-brand-seal",
+                                    IconSeal { size: Some(18), color: Some("var(--accent)".to_string()) }
+                                }
+                                span { "Athena" }
+                            }
                             button { class: "mobile-icon-button", "aria-label": "Close navigation", onclick: move |_| drawer_open.set(false), IconClose { size: Some(20), color: Some("currentColor".to_string()) } }
                         }
                         div { class: "mobile-drawer-status", span { class: "mobile-live-dot" } "{status}" }
                         div { class: "mobile-nav-list",
                             button { class: if current_screen == MobileScreen::Spaces { "mobile-nav-item is-active" } else { "mobile-nav-item" }, onclick: move |_| { active_screen.set(MobileScreen::Spaces); drawer_open.set(false); }, IconGrid { size: Some(19), color: Some("currentColor".to_string()) } span { "Spaces" } }
                             button { class: if current_screen == MobileScreen::Terminal { "mobile-nav-item is-active" } else { "mobile-nav-item" }, onclick: move |_| { active_screen.set(MobileScreen::Terminal); drawer_open.set(false); }, IconTerminal { size: Some(19), color: Some("currentColor".to_string()) } span { "Terminal" } }
-                            button { class: if current_screen == MobileScreen::Oracle { "mobile-nav-item is-active" } else { "mobile-nav-item" }, onclick: move |_| { active_screen.set(MobileScreen::Oracle); drawer_open.set(false); }, IconAthena { size: Some(19), color: Some("currentColor".to_string()) } span { "Oracle" } }
+                            button { class: if current_screen == MobileScreen::Oracle { "mobile-nav-item is-active" } else { "mobile-nav-item" }, onclick: move |_| { active_screen.set(MobileScreen::Oracle); drawer_open.set(false); }, IconAthena { size: Some(19), color: Some("currentColor".to_string()) } span { "Chat" } }
                             button { class: if current_screen == MobileScreen::Files { "mobile-nav-item is-active" } else { "mobile-nav-item" }, onclick: move |_| { active_screen.set(MobileScreen::Files); drawer_open.set(false); }, IconFiles { size: Some(19), color: Some("currentColor".to_string()) } span { "Files" } }
                         }
                         div { class: "mobile-drawer-footer",

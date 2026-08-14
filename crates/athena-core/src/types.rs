@@ -1,9 +1,49 @@
 use serde::{Deserialize, Serialize};
 
 use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
 
 /// Shared event-emitter type used across crates for forwarding events to the frontend.
 pub type EventEmitter = Arc<Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>;
+
+/// Request-scoped events emitted while Athena is answering a message.
+/// The request ID prevents late chunks from a cancelled or superseded turn
+/// from mutating the active conversation in the frontend.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AthenaStreamEvent {
+    Started {
+        request_id: String,
+        session_id: String,
+    },
+    Delta {
+        request_id: String,
+        text: String,
+    },
+    Status {
+        request_id: String,
+        message: String,
+    },
+    Completed {
+        request_id: String,
+        text: String,
+    },
+    Error {
+        request_id: String,
+        message: String,
+        cancelled: bool,
+    },
+}
+
+/// Callback used by the Tauri adapter to forward stream events.
+pub type StreamEmitter = Arc<dyn Fn(AthenaStreamEvent) + Send + Sync>;
+
+/// Handle for cancelling one in-flight assistant request.
+#[derive(Clone)]
+pub struct AthenaRequest {
+    pub request_id: String,
+    pub cancel: CancellationToken,
+}
 
 /// Represents an image attachment with base64 data and media type.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

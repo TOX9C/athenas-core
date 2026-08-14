@@ -21,6 +21,8 @@ pub enum GlobalKeyAction {
     ShowSettings,
     ShowSwarmModal,
     AddShell,
+    IncreaseFontSize,
+    DecreaseFontSize,
     ResetWorkspaceView,
     Escape,
 }
@@ -35,6 +37,22 @@ pub fn classify(key: &Key, modifiers: Modifiers) -> Option<GlobalKeyAction> {
 
     let meta = modifiers.contains(Modifiers::META) || modifiers.contains(Modifiers::CONTROL);
     let shift = modifiers.contains(Modifiers::SHIFT);
+
+    // WebKit reports Cmd+= as `=` and Cmd+Shift+= as `+`. Treat both as
+    // increase so the shortcut works with either physical-key interpretation.
+    // Check these before the existing shift-specific shortcuts so Cmd++ is
+    // not mistaken for another command.
+    if meta {
+        match key {
+            Key::Character(c) if c == "=" || c == "+" => {
+                return Some(GlobalKeyAction::IncreaseFontSize);
+            }
+            Key::Character(c) if c == "-" && !shift => {
+                return Some(GlobalKeyAction::DecreaseFontSize);
+            }
+            _ => {}
+        }
+    }
 
     if meta && !shift {
         return match key {
@@ -120,6 +138,54 @@ mod tests {
             assert_eq!(
                 classify(&Key::Escape, modifiers),
                 Some(GlobalKeyAction::Escape)
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_font_size_shortcuts() {
+        assert_eq!(
+            classify(&Key::Character("=".into()), Modifiers::META),
+            Some(GlobalKeyAction::IncreaseFontSize)
+        );
+        assert_eq!(
+            classify(
+                &Key::Character("+".into()),
+                Modifiers::META | Modifiers::SHIFT
+            ),
+            Some(GlobalKeyAction::IncreaseFontSize)
+        );
+        assert_eq!(
+            classify(&Key::Character("-".into()), Modifiers::META),
+            Some(GlobalKeyAction::DecreaseFontSize)
+        );
+    }
+
+    #[test]
+    fn font_size_shortcuts_support_control_modifier() {
+        assert_eq!(
+            classify(&Key::Character("=".into()), Modifiers::CONTROL),
+            Some(GlobalKeyAction::IncreaseFontSize)
+        );
+        assert_eq!(
+            classify(
+                &Key::Character("+".into()),
+                Modifiers::CONTROL | Modifiers::SHIFT
+            ),
+            Some(GlobalKeyAction::IncreaseFontSize)
+        );
+        assert_eq!(
+            classify(&Key::Character("-".into()), Modifiers::CONTROL),
+            Some(GlobalKeyAction::DecreaseFontSize)
+        );
+    }
+
+    #[test]
+    fn unmodified_font_keys_are_not_global_shortcuts() {
+        for key in ["=", "+", "-"] {
+            assert_eq!(
+                classify(&Key::Character(key.into()), Modifiers::empty()),
+                None
             );
         }
     }

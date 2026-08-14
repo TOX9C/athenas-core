@@ -6,6 +6,8 @@ use crate::components::shared::icon::{
 };
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
+use crate::stores::athena::use_athena_store;
+use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
 use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType, Space};
@@ -34,8 +36,9 @@ fn render_shell_pane(
     agent_type: AgentType,
     resume_id: Option<String>,
     custom_cmd: Option<String>,
+    bypass_mode: Option<bool>,
 ) -> Element {
-    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id, custom_cmd } }
+    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id, custom_cmd, bypass_mode } }
 }
 
 #[cfg(not(feature = "xterm"))]
@@ -60,6 +63,7 @@ pub struct WorkspaceGridProps {
 
 #[component]
 pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
+    crate::utils::perf_metrics::mark_render("WorkspaceGrid");
     let space = match props.active_space {
         Some(s) => s,
         None => return rsx! { div {} },
@@ -109,6 +113,9 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     // the duration of a drag, mirroring the resize `DragOverlay` pattern.
     let pill_drag = use_signal(|| None::<crate::components::workspace::pill_drag::PillDrag>);
     let terminal_store = use_terminal_store();
+    let athena_store = use_athena_store();
+    let panel_store = use_panel_manager_store();
+    let ui_store = use_ui_store();
     let active_pane_id = terminal_store.read().active_session_id.clone();
     // Note: active pane selection is stored in TerminalStore (single source of truth).
     // The clicked pane gets a subtle gold focus ring (see `.pane-focus-ring`).
@@ -143,6 +150,13 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
             row_heights.set(vec![1.0_f64; target_row_count]);
         }
     });
+
+    let show_athena_fallback = pill_drag
+        .read()
+        .as_ref()
+        .is_some_and(|drag| drag.source_is_agent)
+        && (!ui_store.read().right_sidebar_open
+            || panel_store.read().active_right_panel != RightPanel::Assistant);
 
     rsx! {
         div {
@@ -200,9 +214,10 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                     let is_dnd_target = pill_drag
                                         .read()
                                         .as_ref()
-                                        .and_then(|d| d.target_pane_id.as_ref())
-                                        .map(|t| t == &pane.id)
-                                        .unwrap_or(false);
+                                        .and_then(|d| d.target.as_ref())
+                                        .is_some_and(|target| {
+                                            matches!(target, crate::components::workspace::pill_drag::PillDropTarget::Pane(id) if id == &pane.id)
+                                        });
                                     let wrapper_class = if is_dnd_target {
                                         "pane-wrap is-dnd-target"
                                     } else {
@@ -211,6 +226,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
 
                                     rsx! {
                                         div {
+                                            key: "pane-wrap-{space.id}-{pane.id}",
                                             class: "{wrapper_class} pane-astrolabe-mark",
                                             "data-pane-id": "{pane.id}",
                                             style: "{wrapper_style}",
@@ -225,12 +241,17 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 pane_id: pane.id.clone(),
                                                 cwd: space.dir.clone(),
                                                 agent_type: pane.agent_type.clone(),
-                                                is_shell: matches!(pane.agent_type, AgentType::Shell | AgentType::Custom),
+                                                // Every PTY-backed pane uses xterm.js. The legacy cell
+                                                // grid has no keyboard input surface, so restricting this
+                                                // to Shell/Custom makes interactive agents such as OMP
+                                                // render output while silently dropping all keystrokes.
+                                                use_xterm: true,
                                                 resume_id: pane.resume_id.clone(),
                                                 resume_cmd: pane.resume_cmd.clone(),
                                                 resume_dismissed: pane.resume_dismissed,
                                                 custom_cmd: pane.custom_cmd.clone(),
                                                 custom_agent_id: pane.custom_agent_id.clone(),
+                                                bypass_mode: pane.bypass_mode,
                                                 label: pane.label.clone(),
                                                 fullscreen_pane_id: fullscreen_pane_id,
                                                 pill_drag: pill_drag,
@@ -280,10 +301,22 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
         // unconditionally avoids a key-flip and keeps it outside the grid's
         // flex layout.
         if pill_drag.read().is_some() {
+            if show_athena_fallback {
+                div {
+                    class: "athena-dnd-fallback",
+                    "data-athena-drop": "true",
+                    aria_label: "Drop agent here to reference it in Athena",
+                    span { class: "athena-dnd-fallback-kicker", "ATHENA" }
+                    span { "Drop to reference this agent" }
+                }
+            }
             crate::components::workspace::pill_drag::PillDragOverlay {
                 drag: pill_drag,
                 workspace: workspace,
                 terminal_store: terminal_store,
+                athena_store: athena_store,
+                panel_store: panel_store,
+                ui_store: ui_store,
             }
         }
         crate::components::workspace::pill_drag::PillDragGhost {
@@ -302,12 +335,16 @@ struct PaneItemProps {
     pane_id: String,
     cwd: String,
     agent_type: AgentType,
-    is_shell: bool,
+    /// Whether this PTY-backed pane should use xterm.js for rendering and input.
+    /// All desktop PTY panes currently require this; the prop remains explicit
+    /// so a future non-PTY pane cannot accidentally enter the xterm lifecycle.
+    use_xterm: bool,
     resume_id: Option<String>,
     resume_cmd: Option<String>,
     resume_dismissed: Option<bool>,
     custom_cmd: Option<String>,
     custom_agent_id: Option<String>,
+    bypass_mode: Option<bool>,
     label: Option<String>,
     fullscreen_pane_id: Signal<Option<String>>,
     pill_drag: Signal<Option<crate::components::workspace::pill_drag::PillDrag>>,
@@ -315,6 +352,7 @@ struct PaneItemProps {
 
 #[component]
 fn PaneItem(props: PaneItemProps) -> Element {
+    crate::utils::perf_metrics::mark_render("PaneItem");
     let mut workspace = use_workspace_store();
     let mut terminal_store = use_terminal_store();
     let ui_state = use_ui_store();
@@ -342,6 +380,8 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let drag_pane_id = props.pane_id.clone();
     let drag_space_id = props.space_id.clone();
     let drag_agent_type = props.agent_type.clone();
+    let drag_pane_id_for_start = drag_pane_id.clone();
+    let drag_agent_type_for_start = drag_agent_type.clone();
 
     // Editable title state
     let mut editing_title = use_signal(|| false);
@@ -530,6 +570,8 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let title_text = tooltip.unwrap_or_else(|| display_label.clone());
     // Show the detected foreground process as a subtle badge when it's meaningful
     let right_badge = fg_process.filter(|p| p != "shell" && p != &left_label && !p.is_empty());
+    let drag_source_label = left_label.clone();
+    let drag_source_label_for_attr = drag_source_label.clone();
 
     // Per-pane agent-status dot — mirrors the space-level badges: gold while
     // the agent is working, amber + pulse when it finished / waits / errored.
@@ -614,12 +656,11 @@ fn PaneItem(props: PaneItemProps) -> Element {
                             return;
                         }
                         let coords = e.data.client_coordinates();
-                        let label_text = display_label.clone();
-                        let color = crate::utils::agent_commands::get_agent_color(&drag_agent_type);
+                        let color = crate::utils::agent_commands::get_agent_color(&drag_agent_type_for_start);
                         pill_drag.set(Some(crate::components::workspace::pill_drag::PillDrag {
-                            source_pane_id: drag_pane_id.clone(),
+                            source_pane_id: drag_pane_id_for_start.clone(),
                             source_space_id: drag_space_id.clone(),
-                            source_label: label_text,
+                            source_label: drag_source_label.clone(),
                             source_color: color.to_string(),
                             pointer_id: e.data.pointer_id(),
                             start_x: coords.x,
@@ -627,10 +668,16 @@ fn PaneItem(props: PaneItemProps) -> Element {
                             cur_x: coords.x,
                             cur_y: coords.y,
                             moved: false,
-                            target_pane_id: None,
+                            target: None,
+                            source_agent_type: drag_agent_type_for_start.to_string(),
+                            source_is_agent: !matches!(&drag_agent_type_for_start, AgentType::Shell),
                         }));
                     },
-                    style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 999px; cursor: grab; flex-shrink: 0;",
+                        "data-agent-pill": "true",
+                        "data-agent-type": "{drag_agent_type}",
+                        "data-agent-pane-id": "{drag_pane_id}",
+                        "data-agent-label": "{drag_source_label_for_attr}",
+                        style: "display: flex; align-items: center; gap: 8px; padding: 4px 10px; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: grab; flex-shrink: 0;",
 
                     // Left: agent-status dot (working / attention / idle)
                     span {
@@ -733,41 +780,41 @@ fn PaneItem(props: PaneItemProps) -> Element {
                             },
                             onclick: move |e| {
                                 e.stop_propagation();
-                                {
-                                    let mut ws = workspace.write();
-                                    ws.remove_pane_from_space(&space_id_for_close, &pane_id_for_close);
+                                // Keep the pane's registry signal alive until the
+                                // XtermMount drop hook has disposed its resources.
+                                // Removing it synchronously races that cleanup and
+                                // can leave the remaining grid blank.
+                                if terminal_registry.is_closing(&pane_id_for_close) {
+                                    return;
                                 }
-                                {
-                                    // `use_terminal_registry()` is a Dioxus hook
-                                    // and may NOT be called inside an event handler
-                                    // (runs outside render → "hook list already
-                                    // borrowed" panic on click). Use the registry
-                                    // captured synchronously at the top of PaneItem.
-                                    let registry = &terminal_registry;
-                                    let mut term = terminal_store.write();
-                                    // Phase 4 (Item 3): per-pane data lives in the
-                                    // registry; remove the pane's inner signal, drop
-                                    // the id from the slimmed store's membership set,
-                                    // reassign active if needed, and bump the
-                                    // whole-store generation (cross-session change).
-                                    registry.remove(&pane_id_for_close);
-                                    term.known_pane_ids.remove(&pane_id_for_close);
-                                    if term.active_session_id.as_deref()
-                                        == Some(&pane_id_for_close)
-                                    {
-                                        term.active_session_id =
-                                            term.known_pane_ids.iter().next().cloned();
+                                terminal_registry.mark_closing(&pane_id_for_close);
+                                let pane_id = pane_id_for_close.clone();
+                                let space_id = space_id_for_close.clone();
+                                let mut workspace = workspace;
+                                let mut terminal_store = terminal_store;
+                                let terminal_registry_for_close = terminal_registry.clone();
+                                let mut fullscreen_pane_id = fullscreen_pane_id;
+                                spawn(async move {
+                                    if pty_kill(&pane_id).await.is_err() {
+                                        terminal_registry_for_close.cancel_closing(&pane_id);
+                                        return;
                                     }
-                                    term.generation = term.generation.wrapping_add(1);
-                                }
-                                // Clear fullscreen if this pane was full-screened
-                                if is_fullscreen {
-                                    fullscreen_pane_id.set(None);
-                                }
-                                spawn({
-                                    let pane_id = pane_id_for_close.clone();
-                                    async move {
-                                        let _ = pty_kill(&pane_id).await;
+
+                                    workspace
+                                        .write()
+                                        .remove_pane_from_space(&space_id, &pane_id);
+                                    {
+                                        let mut term = terminal_store.write();
+                                        term.known_pane_ids.remove(&pane_id);
+                                        if term.active_session_id.as_deref() == Some(&pane_id) {
+                                            term.active_session_id =
+                                                term.known_pane_ids.iter().next().cloned();
+                                        }
+                                        term.generation = term.generation.wrapping_add(1);
+                                    }
+                                    // Clear fullscreen if this was the full-screen pane.
+                                    if is_fullscreen {
+                                        fullscreen_pane_id.set(None);
                                     }
                                 });
                             },
@@ -830,8 +877,8 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                 // Resume — write the selected variant into this
                                 // pane's PTY and run it.
                                 button {
-                                    class: "btn-pill",
-                                    style: "font-family: var(--font-ui); font-size: var(--text-2xs); font-weight: 600; color: var(--bg); background: var(--accent, var(--text)); border: none; border-radius: 999px; padding: 3px 12px; cursor: pointer;",
+                                    class: "btn-primary btn-sm",
+                                    style: "font-family: var(--font-ui); font-size: var(--text-2xs); font-weight: 600; padding: 3px 10px; cursor: pointer;",
                                     title: "Run this command in the pane",
                                     onclick: {
                                         let pane_id = props.pane_id.clone();
@@ -962,8 +1009,15 @@ fn PaneItem(props: PaneItemProps) -> Element {
             // own padding, so cols/rows stay correct with no clipping.
             div {
                 style: "flex: 1; min-width: 0; min-height: 0; padding: 4px; background: var(--bg); overflow: hidden;",
-                if props.is_shell {
-                    { render_shell_pane(props.pane_id.clone(), props.cwd.clone(), props.agent_type.clone(), props.resume_id.clone(), props.custom_cmd.clone()) }
+                if props.use_xterm {
+                    { render_shell_pane(
+                        props.pane_id.clone(),
+                        props.cwd.clone(),
+                        props.agent_type.clone(),
+                        props.resume_id.clone(),
+                        props.custom_cmd.clone(),
+                        props.bypass_mode,
+                    ) }
                 } else {
                     TerminalPaneBody { pane_id: props.pane_id.clone() }
                 }

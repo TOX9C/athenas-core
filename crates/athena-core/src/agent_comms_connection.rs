@@ -7,8 +7,9 @@ use std::sync::mpsc::{RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use super::{
-    generate_uuid, now_ms, AgentMessage, AgentSession, PendingInput, SessionInternal,
-    SessionStatus, INPUT_REQUEST_TIMEOUT, MAX_AGENT_LINE_BYTES,
+    generate_uuid, now_ms, validate_agent_message, AgentMessage, AgentSession, PendingInput,
+    SessionInternal, SessionStatus, INPUT_REQUEST_TIMEOUT, MAX_AGENT_ID_BYTES,
+    MAX_AGENT_LINE_BYTES,
 };
 use crate::EventEmitter;
 
@@ -27,7 +28,8 @@ fn emit_to_renderer(event_emitter: &EventEmitter, channel: &str, data: &serde_js
             return;
         }
     }
-    log::debug!("[agent-comms] {} -> {}", channel, data);
+    // Agent messages may contain credentials, prompts, or workspace output.
+    log::debug!("[agent-comms] event emitted on channel {channel}");
 }
 
 pub(super) fn handle_connection(
@@ -105,12 +107,32 @@ pub(super) fn handle_connection(
             Ok(m) => m,
             Err(_) => continue,
         };
+        if let Err(reason) = validate_agent_message(&msg) {
+            log::warn!("Agent comms: rejecting invalid message fields");
+            if let Some(id) = msg.id.clone() {
+                send_to_socket(
+                    &stream,
+                    &serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32600,
+                            "message": reason,
+                        }
+                    }),
+                );
+            }
+            continue;
+        }
 
         // Auth gate: reject every non-initialize method when not authenticated.
         if msg.method != "initialize" && !authenticated {
+            // The method field is unauthenticated input and may be very large
+            // or contain terminal-control characters. Log only its size so a
+            // local client cannot forge or bloat application logs.
             log::warn!(
-                "Agent comms: rejecting unauthenticated '{}' from {}",
-                msg.method,
+                "Agent comms: rejecting unauthenticated method ({} bytes) from {}",
+                msg.method.len(),
                 peer
             );
             if msg.id.is_some() {
@@ -133,7 +155,7 @@ pub(super) fn handle_connection(
         if msg.method == "initialize" {
             if handle_initialize(&stream, msg, &sessions, &token, &event_emitter, &tx) {
                 authenticated = true;
-                log::info!("Agent comms: client {} authenticated", peer);
+                log::info!("Agent comms: client authenticated from {}", peer);
             }
             continue;
         }
@@ -273,10 +295,10 @@ fn handle_initialize(
     );
 
     log::info!(
-        "Agent connected: session={} plugin={} agent={}",
-        session.id,
-        session.plugin_id,
-        session.agent_id
+        "Agent connected: session_id_bytes={} plugin_id_bytes={} agent_id_bytes={}",
+        session.id.len(),
+        session.plugin_id.len(),
+        session.agent_id.len()
     );
     true
 }
@@ -337,17 +359,14 @@ fn handle_notification(
         }),
     );
 
-    let notif = serde_json::json!({
-        "type": level,
-        "title": msg.params.get("title").and_then(|v| v.as_str()).unwrap_or("Agent Notification"),
-        "message": msg.params.get("message").and_then(|v| v.as_str()).unwrap_or(""),
-        "source": session.as_ref().map(|s| &s.plugin_id).unwrap_or(&"unknown".into()),
-        "agentId": session.as_ref().map(|s| &s.agent_id),
-        "data": msg.params.get("data"),
-        "timestamp": now_ms(),
-    });
-
-    log::info!("[agent notification] {}", notif);
+    // Notification payloads can contain prompts, terminal output, paths, or
+    // credentials supplied by an agent. The renderer receives the structured
+    // event above; application logs must remain metadata-only.
+    log::info!(
+        "[agent notification] received level_bytes={} agent_id_bytes={}",
+        level.len(),
+        session.as_ref().map(|s| s.agent_id.len()).unwrap_or(0)
+    );
 
     if msg.id.is_some() {
         send_to_socket(
@@ -398,10 +417,13 @@ fn handle_status(
 
         if new_status == "waiting_input" {
             if let Some(prompt) = msg.params.get("prompt").and_then(|v| v.as_str()) {
+                // Prompts may contain private workspace context or secrets.
+                // Keep this diagnostic metadata-only; the renderer receives
+                // the prompt through the structured event above.
+                let _ = prompt;
                 log::info!(
-                    "[agent status] waiting_input for agent={}: {}",
-                    s.agent_id,
-                    prompt
+                    "[agent status] waiting_input agent_id_bytes={}",
+                    s.agent_id.len()
                 );
             }
         }
@@ -450,6 +472,11 @@ pub(super) fn handle_request_input(
         .params
         .get("requestId")
         .and_then(|v| v.as_str())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_AGENT_ID_BYTES
+                && !value.chars().any(|c| c.is_control())
+        })
         .unwrap_or(&generate_uuid())
         .to_string();
 
@@ -458,17 +485,12 @@ pub(super) fn handle_request_input(
         .get("prompt")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let title = msg
-        .params
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Input Request");
-
+    // Titles and prompts are agent-provided text and may contain private
+    // workspace context or credentials. Keep the log metadata-only.
     log::info!(
-        "[agent input_request] requestId={} agent={} title={}",
-        request_id,
-        session.agent_id,
-        title
+        "[agent input_request] received request_id_bytes={} agent_id_bytes={}",
+        request_id.len(),
+        session.agent_id.len()
     );
 
     emit_to_renderer(
@@ -696,6 +718,6 @@ fn cleanup_connection(
             }),
         );
 
-        log::info!("Agent disconnected: agent={}", s.agent_id);
+        log::info!("Agent disconnected: agent_id_bytes={}", s.agent_id.len());
     }
 }

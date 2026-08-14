@@ -38,13 +38,13 @@ pub use agents::{
 #[cfg(test)]
 pub(crate) use athena::prompt_is_sensitive;
 pub use athena::{
-    athena_chat, athena_chat_with_images, athena_chat_with_session, athena_clear_context,
-    athena_set_session_context, athena_user_answer, clear_api_key, store_api_key,
-    summarize_agent_title,
+    athena_cancel_stream, athena_chat, athena_chat_stream, athena_chat_with_images,
+    athena_chat_with_session, athena_clear_context, athena_set_session_context, athena_user_answer,
+    clear_api_key, store_api_key, summarize_agent_title,
 };
 pub use browser::{
     browser_back, browser_forward, browser_hide, browser_navigate, browser_reload,
-    browser_set_bounds, browser_show,
+    browser_set_bounds, browser_show, shutdown_browser_children,
 };
 pub use filesystem::{
     fs_exists, fs_list_dir, fs_read_file, fs_read_file_as_base64, fs_search_files,
@@ -57,7 +57,8 @@ pub use notification::{
     notification_history, notification_mark_all_read, notification_mark_read, notification_push,
 };
 pub use output::{
-    get_pane_history, output_buffer_append, output_buffer_clear, output_buffer_get, output_buffer_list,
+    get_pane_history, output_buffer_append, output_buffer_clear, output_buffer_get,
+    output_buffer_list,
 };
 pub use plan::{plan_create, plan_get, plan_update_step};
 pub use plugin::{
@@ -69,10 +70,12 @@ pub use plugin::{
 };
 pub(crate) use pty::{now_ms, pty_read_loop, session_foreground_label};
 pub use pty::{
-    pty_agent_info, pty_attach_listener, pty_default_shell, pty_foreground_process, pty_get_cwd,
-    pty_get_history, pty_has_session, pty_is_ready, pty_kill, pty_resize, pty_set_raw_paused,
-    pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write, read_clipboard_text,
+    pty_agent_info, pty_attach_listener, pty_default_shell, pty_detach_listener,
+    pty_foreground_process, pty_get_cwd, pty_get_history, pty_has_session, pty_is_ready, pty_kill,
+    pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write, read_clipboard_text,
 };
+pub use relay::{relay_start, relay_status, relay_stop};
+pub use relay::{relay_token, RELAY_ENABLED_KEY};
 pub use resume::capture_resume_ids_on_exit;
 #[cfg(test)]
 pub(crate) use resume::merge_resume_ids_into_workspaces;
@@ -84,10 +87,11 @@ pub use shell::{
     shell_integration_compatible, shell_integration_parse, shell_integration_script,
     shell_integration_strip,
 };
-pub use relay::{relay_start, relay_status, relay_stop};
-pub use relay::{relay_token, RELAY_ENABLED_KEY};
 pub use store::{store_delete, store_get, store_has, store_set, test_llm_api_key};
-pub use swarm::{swarm_read_mailbox, swarm_read_state, swarm_send_message};
+pub use swarm::{
+    swarm_create, swarm_create_task, swarm_read_mailbox, swarm_read_state, swarm_send_message,
+    swarm_set_status, swarm_start_watch, swarm_stop_watch, swarm_update_agent, swarm_update_task,
+};
 pub use window::{
     window_close, window_is_maximized, window_maximize, window_minimize, window_platform,
 };
@@ -109,13 +113,11 @@ pub use workspace::{
 ///     release (so the sandbox silently allowed every path — a latent hole, not a
 ///     correct config).
 ///
-/// Resolution: look for the project-root marker (`src-tauri/tauri.conf.json`)
-/// by walking up from both `current_dir()` *and* the executable's directory.
-/// The exe path is stable across launch contexts: in dev it is
-/// `target/debug/athenas-core`, in release `…/Athena's Core.app/Contents/MacOS/…`,
-/// both of which live under the project root when built locally. If neither
-/// walk finds the marker, fall back to `current_dir()` so behavior is no worse
-/// than before (and so the validator still has *some* root to check against).
+/// Resolution first looks for the project-root marker
+/// (`src-tauri/tauri.conf.json`) from both `current_dir()` and the executable
+/// path. Finder-launched production apps do not contain that source marker, so
+/// the signed bundle's `Contents/Resources` directory is the only packaged
+/// fallback accepted. Any other unknown layout fails closed.
 fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
     let raw = std::env::current_dir()
         .map_err(|e| CommandError::Internal(format!("Failed to get workspace root: {}", e)))?;
@@ -123,33 +125,15 @@ fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
     let exe = std::env::current_exe()
         .map_err(|e| CommandError::Internal(format!("Failed to get current exe: {}", e)))?;
 
-    // Candidate starting points for the upward marker walk. `raw` (cwd)
-    // wins in dev; `exe` wins for a Finder-launched release bundle whose
-    // cwd is `/`. Both are cheap to try.
-    let starts: Vec<std::path::PathBuf> = vec![raw.clone(), exe.clone()];
-
-    let marker_name = std::path::Path::new("tauri.conf.json");
-    let src_tauri = std::path::Path::new("src-tauri");
-
-    let mut root_candidate: Option<std::path::PathBuf> = None;
-    'outer: for start in &starts {
-        let mut dir = start.as_path();
-        loop {
-            if dir.join(src_tauri).join(marker_name).exists() {
-                root_candidate = Some(dir.to_path_buf());
-                break 'outer;
-            }
-            match dir.parent() {
-                Some(parent) => dir = parent,
-                None => break,
-            }
-        }
-    }
-
-    let resolved = root_candidate.ok_or_else(|| {
-        CommandError::Internal(
-            "Cannot locate workspace root: src-tauri/tauri.conf.json not found".into(),
-        )
+    // Candidate starting points for the upward marker walk. `raw` wins in dev;
+    // `exe` wins for a Finder-launched release bundle whose cwd is `/`.
+    let starts = vec![raw.clone(), exe.clone()];
+    let resolved = resolve_workspace_root(&starts).or_else(|_| {
+        bundled_resource_root(&exe).ok_or_else(|| {
+            CommandError::Internal(
+                "Cannot locate workspace root: no project marker or app Resources directory".into(),
+            )
+        })
     })?;
     let canon = resolved.canonicalize().map_err(|e| {
         CommandError::Internal(format!("Failed to canonicalize workspace root: {}", e))
@@ -162,6 +146,52 @@ fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
         canon
     );
     Ok(canon)
+}
+
+/// Resolve the project root from candidate starting points.
+///
+/// This helper deliberately has no fallback root. A missing marker is an
+/// authorization failure, not a reason to broaden filesystem access.
+fn resolve_workspace_root(
+    starts: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, CommandError> {
+    let marker_name = std::path::Path::new("tauri.conf.json");
+    let src_tauri = std::path::Path::new("src-tauri");
+
+    for start in starts {
+        let mut dir = start.as_path();
+        loop {
+            if dir.join(src_tauri).join(marker_name).exists() {
+                return Ok(dir.to_path_buf());
+            }
+            match dir.parent() {
+                Some(parent) => dir = parent,
+                None => break,
+            }
+        }
+    }
+
+    Err(CommandError::Internal(
+        "Cannot locate workspace root: src-tauri/tauri.conf.json not found".into(),
+    ))
+}
+
+/// Return the app's packaged resource directory for a standard macOS bundle.
+///
+/// The strict `Contents/MacOS/<executable>` shape prevents arbitrary
+/// executable directories from becoming filesystem roots in development or
+/// malformed launch contexts.
+fn bundled_resource_root(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let macos = exe.parent()?;
+    if macos.file_name()?.to_str()? != "MacOS" {
+        return None;
+    }
+    let contents = macos.parent()?;
+    if contents.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+    let resources = contents.join("Resources");
+    resources.is_dir().then_some(resources)
 }
 
 /// Key under which the user's trusted workspace roots are persisted, as a
@@ -219,10 +249,19 @@ fn load_trusted_roots(store: &athena_store::KeyValueStore) -> Vec<std::path::Pat
 /// The full set of roots a request path may descend from: the app's own
 /// project root (always implicitly trusted) plus every user-added trusted
 /// root. All entries are canonicalized.
-fn effective_roots(store: &athena_store::KeyValueStore) -> Vec<std::path::PathBuf> {
-    let mut roots = vec![get_workspace_root().unwrap_or_else(|_| std::path::PathBuf::from("/"))];
+fn effective_roots(
+    store: &athena_store::KeyValueStore,
+) -> Result<Vec<std::path::PathBuf>, CommandError> {
+    effective_roots_from(store, get_workspace_root())
+}
+
+fn effective_roots_from(
+    store: &athena_store::KeyValueStore,
+    workspace_root: Result<std::path::PathBuf, CommandError>,
+) -> Result<Vec<std::path::PathBuf>, CommandError> {
+    let mut roots = vec![workspace_root?];
     roots.extend(load_trusted_roots(store));
-    roots
+    Ok(roots)
 }
 
 /// True if `canonical` is equal to or a descendant of any root in `roots`.
@@ -249,7 +288,7 @@ fn validate_path_exists(
     store: &athena_store::KeyValueStore,
     path: &std::path::Path,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let roots = effective_roots(store);
+    let roots = effective_roots(store)?;
     // Relative paths resolve against the project root (first effective root).
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -257,7 +296,7 @@ fn validate_path_exists(
         roots
             .first()
             .cloned()
-            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+            .ok_or_else(|| CommandError::Internal("workspace root is unavailable".into()))?
             .join(path)
     };
     let canonicalized = path.canonicalize().map_err(|e| {
@@ -287,14 +326,14 @@ fn validate_path(
     store: &athena_store::KeyValueStore,
     path: &std::path::Path,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let roots = effective_roots(store);
+    let roots = effective_roots(store)?;
     let full_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
         roots
             .first()
             .cloned()
-            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+            .ok_or_else(|| CommandError::Internal("workspace root is unavailable".into()))?
             .join(path)
     };
     let canonical = if full_path.exists() {
@@ -361,6 +400,50 @@ mod tests {
     // is_within_any_root is pure logic over canonicalized paths, so we can
     // exercise it without touching the disk (other than via canonicalize of
     // the temp dirs we construct).
+
+    #[test]
+    fn workspace_root_resolution_fails_closed_without_marker() {
+        let missing_root = std::env::temp_dir().join("athena_missing_workspace_marker");
+        std::fs::create_dir_all(&missing_root).unwrap();
+
+        let result = resolve_workspace_root(std::slice::from_ref(&missing_root));
+
+        assert!(
+            matches!(result, Err(CommandError::Internal(message)) if message.contains("Cannot locate workspace root"))
+        );
+        assert!(bundled_resource_root(&missing_root.join("app")).is_none());
+        std::fs::remove_dir_all(&missing_root).ok();
+    }
+
+    #[test]
+    fn effective_roots_propagates_workspace_resolution_failure() {
+        let store = athena_store::KeyValueStore::new_empty();
+        let result = effective_roots_from(
+            &store,
+            Err(CommandError::Internal("workspace resolution failed".into())),
+        );
+
+        assert!(
+            matches!(result, Err(CommandError::Internal(message)) if message == "workspace resolution failed")
+        );
+    }
+
+    #[test]
+    fn bundled_resource_root_accepts_only_standard_bundle_layout() {
+        let root = std::env::temp_dir().join("athena_bundle_layout");
+        let macos = root.join("Athena.app/Contents/MacOS");
+        let resources = root.join("Athena.app/Contents/Resources");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::create_dir_all(&resources).unwrap();
+
+        assert_eq!(
+            bundled_resource_root(&macos.join("athena")),
+            Some(resources.clone())
+        );
+        assert!(bundled_resource_root(&root.join("target/debug/athena")).is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn is_within_any_root_accepts_descendant_of_a_trusted_root() {

@@ -77,8 +77,43 @@ logs/
 
 # Coverage
 coverage/
+clippy-baseline.log
 
 # Compiled/binary artifacts
 *.rsbak
 *.scpt
 .superpowers/
+
+# Local signing, provisioning, and release material
+.secrets/
+/signing/
+/release/
+*.p12
+*.pfx
+*.pem
+*.key
+*.crt
+*.cer
+*.mobileprovision
+*.provisionprofile
+
+# Local runtime state
+.tauri/
+*.db
+*.sqlite
+*.sqlite3
+.envrc
+.direnv/
+*.pid
+*.sock
+*.crash
+
+# Local caches
+.cache/
+.cache-*/
+
+# Editor / tooling state
+.history/
+
+# macOS crash reports
+core.*

@@ -4,9 +4,11 @@ use strum::{Display, EnumString};
 use super::workspace::AgentType;
 
 /// Role an agent plays in the swarm.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, Display)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, Default)]
+#[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum AgentRole {
+    #[default]
     Coordinator,
     Builder,
     Scout,
@@ -45,6 +47,7 @@ pub enum SwarmStatus {
     Active,
     Paused,
     Completed,
+    Cancelled,
 }
 
 /// A task tracked by the swarm.

@@ -178,6 +178,35 @@ mod tests {
     }
 
     #[test]
+    fn built_in_agent_commands_cover_omp_and_bypass() {
+        assert_eq!(
+            get_agent_command(&AgentType::Omp, None, false),
+            Some("omp".to_string())
+        );
+        assert_eq!(
+            get_agent_command(&AgentType::Claude, None, true),
+            Some("claude --dangerously-skip-permissions".to_string())
+        );
+        assert_eq!(get_agent_command(&AgentType::Shell, None, false), None);
+    }
+
+    #[test]
+    fn custom_agent_command_is_used_without_duplicate_launch() {
+        assert_eq!(
+            get_agent_command(&AgentType::Custom, Some("my-agent --interactive"), false),
+            Some("my-agent --interactive".to_string())
+        );
+        assert_eq!(get_agent_command(&AgentType::Custom, None, false), None);
+    }
+
+    #[test]
+    fn agent_process_names_include_omp_but_not_custom_shell() {
+        assert_eq!(agent_process_name(&AgentType::Omp), Some("omp"));
+        assert_eq!(agent_process_name(&AgentType::Custom), None);
+        assert_eq!(agent_process_name(&AgentType::Shell), None);
+    }
+
+    #[test]
     fn variants_always_include_plain_claude() {
         let v = claude_resume_variants(ID, &[]);
         assert_eq!(v, vec![format!("claude --resume {}", ID)]);

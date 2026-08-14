@@ -11,7 +11,9 @@ pub fn AgentStatusList() -> Element {
     rsx! {
         div {
             class: "agent-status-list pane-astrolabe-mark",
-            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto; overflow-x: hidden; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-md);",
+            // The sidebar is already the section surface. Keep this list flush
+            // with it instead of drawing a rounded panel inside another panel.
+            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto; overflow-x: hidden; background: transparent; border: none; border-radius: 0;",
 
             if statuses.is_empty() {
                 EmptyState {
@@ -20,37 +22,26 @@ pub fn AgentStatusList() -> Element {
                     hint: Some("Running agents will appear here.".to_string()),
                 }
             } else {
-                // Feed header — accent + font-display.
-                div {
-                    style: "display: flex; align-items: center; gap: 6px; padding: 10px 14px; color: var(--accent); font-family: var(--font-display); font-weight: 600; letter-spacing: 0.04em; border-bottom: 1px solid var(--border);",
-                    "Agents"
-                }
                 for (id, status) in statuses.iter() {
                     {
-                        let (status_color, status_label, is_working) = match status.status {
-                            AgentRunStatus::Thinking | AgentRunStatus::Working => ("var(--accent)", "Working", true),
-                            AgentRunStatus::Completed => ("var(--success)", "Done", false),
-                            AgentRunStatus::Error => ("var(--error)", "Error", false),
-                            AgentRunStatus::WaitingForInput => ("var(--warning)", "Waiting", false),
-                            AgentRunStatus::Cancelled => ("var(--textDim)", "Cancelled", false),
-                            AgentRunStatus::Disconnected => ("var(--textDim)", "Offline", false),
-                            AgentRunStatus::Idle => ("var(--textDim)", "Idle", false),
+                        let (status_color, status_label) = match status.status {
+                            AgentRunStatus::Thinking | AgentRunStatus::Working => ("var(--accent)", "Working"),
+                            AgentRunStatus::Completed => ("var(--success)", "Done"),
+                            AgentRunStatus::Error => ("var(--error)", "Error"),
+                            AgentRunStatus::WaitingForInput => ("var(--warning)", "Waiting"),
+                            AgentRunStatus::Cancelled => ("var(--textDim)", "Cancelled"),
+                            AgentRunStatus::Disconnected => ("var(--textDim)", "Offline"),
+                            AgentRunStatus::Idle => ("var(--textDim)", "Idle"),
                         };
                         let entry_id = id.clone();
                         let entry_name = id.clone();
                         let msg = status.message.clone().unwrap_or_default();
                         let msg_preview: String = msg.chars().take(60).collect();
-                        let dot_class = if is_working { "pulse-soft" } else { "" };
                         rsx! {
                             div {
                                 key: "{entry_id}",
                                 class: "lit-sweep",
                                 style: "display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); transition: box-shadow var(--dur-fast) var(--ease);",
-
-                                div {
-                                    class: "{dot_class}",
-                                    style: "width: 8px; height: 8px; border-radius: var(--radius-pill); background: {status_color}; flex-shrink: 0;",
-                                }
 
                                 div {
                                     style: "flex: 1; min-width: 0;",
@@ -61,7 +52,8 @@ pub fn AgentStatusList() -> Element {
                                             "{entry_name}"
                                         }
                                         span {
-                                            style: "font-size: var(--text-2xs); padding: 1px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, {status_color} 12%, transparent); border: 1px solid color-mix(in srgb, {status_color} 32%, transparent); color: {status_color}; font-weight: 500;",
+                                            class: "status-label",
+                                            style: "color: {status_color};",
                                             "{status_label}"
                                         }
                                     }

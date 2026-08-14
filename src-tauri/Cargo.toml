@@ -11,6 +11,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-notification = "2"
+# Persist the main window's size, position, and maximized state across
+# relaunches (saved on exit/resize/move, restored on startup).
+tauri-plugin-window-state = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -47,8 +50,10 @@ tauri-plugin-webdriver-automation = "0.1.3"
 # ── Mobile mirror relay ───────────────────────────────────────────────────────
 # Serves the desktop frontend dist + WS bridge to the real command handlers,
 # so a phone WebView on the same network loads the ACTUAL app interface.
-# Bound to 0.0.0.0:8787. Runtime-toggled from Settings (persisted, default
-# off) — see the `relay_*` Tauri commands and `relay::RelayHandle`.
+# Bound to 0.0.0.0:8787 for trusted-LAN pairing. Runtime-toggled from Settings
+# (persisted, default off) — see the `relay_*` Tauri commands and
+# `relay::RelayHandle`. This is experimental and must not be exposed to the
+# public internet.
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs", "cors"] }
 tower = "0.5"

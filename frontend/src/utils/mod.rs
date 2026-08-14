@@ -1,11 +1,14 @@
 pub mod agent_commands;
 pub mod agent_display;
+pub mod file_icons;
+pub mod font_size;
 pub mod fuzzy_search;
 pub mod keybindings;
 pub mod notification_sound;
 pub mod pane_config;
 pub mod pane_label;
 pub mod pane_names;
+pub mod perf_metrics;
 pub mod platform_utils;
 pub mod resume_scanner;
 pub mod session;

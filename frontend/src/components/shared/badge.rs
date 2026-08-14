@@ -1,8 +1,7 @@
 use dioxus::prelude::*;
 
-/// Small status/label pill. `color` is the foreground/accent; the background is
-/// derived as a translucent tint of it via color-mix, so a single hue reads as a
-/// cohesive badge across themes.
+/// Small status/label marker. The neutral surface keeps labels legible without
+/// turning every piece of metadata into a colored pill.
 #[derive(Props, Clone, PartialEq)]
 pub struct BadgeProps {
     pub label: String,
@@ -23,16 +22,19 @@ pub fn Badge(props: BadgeProps) -> Element {
         .clone()
         .unwrap_or_else(|| props.color.clone());
     let style = if props.solid {
-        format!("background: {c}; color: var(--bg);", c = props.color)
+        format!(
+            "background: {c}; color: var(--bg); border: 1px solid {c};",
+            c = props.color
+        )
     } else {
         format!(
-            "background: color-mix(in srgb, {c} 15%, transparent); color: {fg}; border: 1px solid color-mix(in srgb, {c} 28%, transparent);",
-            c = props.color
+            "background: var(--bgTertiary); color: {fg}; border: 1px solid var(--border);",
+            fg = fg
         )
     };
     rsx! {
         span {
-            style: "display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: var(--radius-pill); font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.02em; line-height: 1.6; {style}",
+            style: "display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: var(--radius-sm); font-size: var(--text-2xs); font-weight: 500; letter-spacing: 0.03em; line-height: 1.4; {style}",
             "{props.label}"
         }
     }

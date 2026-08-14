@@ -1,10 +1,11 @@
 use crate::components::shared::icon::{IconMinus, IconPlus, IconSeal, IconSwarm, IconTerminal};
 use crate::components::shared::modal::Modal;
+use crate::stores::swarm::{use_swarm_store, SwarmAgent, SwarmAgentStatus, SwarmData};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{
     grid_for_pane_count, use_workspace_store, AgentType, PaneConfig, Space,
 };
-use crate::types::swarm::{AgentRole, SwarmAgent, SwarmAgentStatus};
+use crate::types::swarm::AgentRole;
 use crate::utils::agent_commands::get_agent_color;
 use dioxus::prelude::*;
 
@@ -35,9 +36,11 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     let mut space_name = use_signal(String::new);
     let mut space_dir = use_signal(String::new);
     let mut space_goal = use_signal(String::new);
+    let launch_error = use_signal(|| None::<String>);
 
     // Move store access above signals that need it for init
     let mut workspace_state = use_workspace_store();
+    let swarm_state = use_swarm_store();
     let mut ui_state = use_ui_store();
 
     // Terminal mode: per-row counts (built-in + custom agents)
@@ -268,7 +271,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         };
 
                                         let mut pane_configs = Vec::new();
-                                        let mut _swarm_agents = Vec::new();
+                                        let mut swarm_agents = Vec::new();
                                         for slot in slots.read().iter() {
                                             let pane_id = format!("swarm-{}", generate_id());
                                             let agent_id = generate_id();
@@ -285,7 +288,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 resume_cmd: None,
                                                 resume_dismissed: None,
                                             });
-                                            _swarm_agents.push(SwarmAgent {
+                                            swarm_agents.push(SwarmAgent {
                                                 id: agent_id,
                                                 role: slot.role.clone(),
                                                 agent_type: slot.agent_type.clone(),
@@ -298,9 +301,10 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         }
 
                                         let grid = grid_for_pane_count(pane_configs.len());
-                                        // Capture the dir for trust authorization before it is
-                                        // moved into the Space struct below.
+                                        // Capture the dir for trust authorization and backend
+                                        // mission creation before it is moved into Space.
                                         let trust_dir = dir.clone();
+                                        let swarm_dir = dir.clone();
                                         let space = Space {
                                             id: generate_id(),
                                             name,
@@ -312,27 +316,66 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             last_opened_at: now_ts,
                                         };
 
-                                        workspace_state.write().add_space(space);
-                                        // Authorize the Swarm mission's shared directory (see
-                                        // the terminal Launch handler for rationale).
+                                        let swarm_id = generate_id();
+                                        let swarm_data = SwarmData {
+                                            id: swarm_id,
+                                            workspace_dir: swarm_dir.clone(),
+                                            goal: goal.clone(),
+                                            agents: swarm_agents,
+                                            tasks: Vec::new(),
+                                            messages: Vec::new(),
+                                            status: crate::stores::swarm::SwarmOverallStatus::Active,
+                                            started_at: now_ts,
+                                            revision: 0,
+                                        };
+                                        let swarm_json = match serde_json::to_string(&swarm_data) {
+                                            Ok(json) => json,
+                                            Err(e) => {
+                                                web_sys::console::error_1(&format!("[NewSpaceModal] swarm serialization failed: {e}").into());
+                                                return;
+                                            }
+                                        };
+
+                                        // Keep the new space out of the global stores until
+                                        // authorization and mission persistence both succeed.
+                                        // Otherwise a failed IPC call leaves a ghost mission that
+                                        // the board cannot recover from disk.
+                                        let mut launch_error = launch_error;
+                                        let mut workspace_state = workspace_state;
+                                        let mut swarm_state = swarm_state;
+                                        let mut ui_state = ui_state;
                                         spawn(async move {
-                                            if let Err(e) =
+                                            if let Err(error) =
                                                 crate::tauri_bridge::workspace_add_trusted_root(
                                                     &trust_dir,
                                                 )
                                                 .await
                                             {
-                                                web_sys::console::warn_1(
-                                                    &format!(
-                                                        "[NewSpaceModal] trust-on-launch (swarm) failed for '{}': {:?}",
-                                                        trust_dir, e
-                                                    )
-                                                    .into(),
+                                                let message = format!(
+                                                    "Could not authorize the workspace: {:?}",
+                                                    error
                                                 );
+                                                web_sys::console::error_1(&message.clone().into());
+                                                launch_error.set(Some(message));
+                                                return;
+                                            }
+                                            match crate::tauri_bridge::swarm_create(&swarm_dir, &swarm_json).await {
+                                                Ok(_) => {
+                                                    workspace_state.write().add_space(space);
+                                                    swarm_state.write().replace_swarm(swarm_data);
+                                                    ui_state.write().panel = crate::stores::ui::Panel::Swarm;
+                                                    props.on_close.call(());
+                                                }
+                                                Err(error) => {
+                                                    let message = format!(
+                                                        "Could not create the swarm mission: {:?}",
+                                                        error
+                                                    );
+                                                    web_sys::console::error_1(&message.clone().into());
+                                                    launch_error.set(Some(message));
+                                                }
                                             }
                                         });
-                                        ui_state.write().panel = crate::stores::ui::Panel::Swarm;
-                                        props.on_close.call(());
                                     },
                                     "Launch Swarm"
                                 }
@@ -350,9 +393,10 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
             title: if step() == 0 { "New Workspace" } else if mode() == "terminal" { "Terminal Workspace" } else { "Swarm Mission" },
             on_close: move |_| props.on_close.call(()),
             width: 560,
+            compact: true,
             footer: Some(footer_el),
 
-            // Step indicator dots — Θ seal pendant at the leading edge.
+            // Step indicator dots — brand seal pendant at the leading edge.
             if step() > 0 {
                 div {
                     style: "display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border);",
@@ -743,6 +787,10 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         }
                                     }
                                 }
+                            }
+
+                            if let Some(error) = launch_error.read().as_ref() {
+                                p { style: "font-size: var(--text-xs); color: var(--error); margin: 2px 0 0 0;", "{error}" }
                             }
 
                             // Validation messages

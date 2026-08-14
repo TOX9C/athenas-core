@@ -1,7 +1,7 @@
 use super::agent_output_panel::AgentOutputPanel;
 use super::agent_selector::AgentSelector;
 use super::agent_status_bar::AgentPaneStatus;
-use crate::components::shared::icon::{IconBell, IconClose, IconHelmet, IconSearch, IconTerminal};
+use crate::components::shared::icon::{IconBell, IconClose, IconPulse, IconSearch, IconTerminal};
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::agent_output::use_agent_output_store;
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatus};
@@ -183,7 +183,7 @@ pub fn AgentInspector() -> Element {
                                         style: "display: inline-flex; align-items: center; gap: 5px;",
                                         {match tab_id {
                                             InspectorTab::Output => rsx! { IconTerminal { size: Some(13), color: Some("currentColor".to_string()) } },
-                                            InspectorTab::Status => rsx! { IconHelmet { size: Some(13), color: Some("currentColor".to_string()) } },
+                                            InspectorTab::Status => rsx! { IconPulse { size: Some(13), color: Some("currentColor".to_string()) } },
                                             InspectorTab::Notifications => rsx! { IconBell { size: Some(13), color: Some("currentColor".to_string()) } },
                                         }}
                                         span {
@@ -312,7 +312,6 @@ pub fn AgentInspector() -> Element {
                                             "success" | "task_complete" => "var(--success)",
                                             _ => "var(--accentTeal)",
                                         };
-                                        let type_bg = format!("{}1a", type_color);
                                         let n_id = n.id.clone();
                                         let n_title = n.title.clone();
                                         let n_type = n.notif_type.clone();
@@ -324,10 +323,12 @@ pub fn AgentInspector() -> Element {
                                                 style: "padding: 10px 12px; border-bottom: 1px solid var(--border); overflow-x: hidden;",
 
                                                 div {
-                                                    style: "display: flex; align-items: center; gap: 6px; overflow-x: hidden;",
+                                                    style: "display: flex; align-items: center; gap: 8px; overflow-x: hidden;",
 
                                                     span {
-                                                        style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {type_color}; flex-shrink: 0;",
+                                                        class: "status-label",
+                                                        style: "width: 64px; flex-shrink: 0; color: {type_color};",
+                                                        "{n_type}"
                                                     }
 
                                                     span {
@@ -335,17 +336,10 @@ pub fn AgentInspector() -> Element {
                                                         "{n_title}"
                                                     }
 
-                                                    if !n_type.is_empty() {
-                                                        span {
-                                                            class: "badge",
-                                                            style: "background: {type_bg}; color: {type_color}; flex-shrink: 0;",
-                                                            "{n_type}"
-                                                        }
-                                                    }
                                                 }
 
                                                 p {
-                                                    style: "font-size: var(--text-2xs); margin-top: 3px; color: var(--textDim); overflow: hidden; text-overflow: ellipsis; padding-left: 13px;",
+                                                    style: "font-size: var(--text-2xs); margin-top: 3px; color: var(--textDim); overflow: hidden; text-overflow: ellipsis;",
                                                     "{n_msg}"
                                                 }
                                             }
@@ -372,6 +366,12 @@ struct StatusRowProps {
 
 #[component]
 fn StatusRow(props: StatusRowProps) -> Element {
+    let value_color = if props.dot_color.is_empty() {
+        "var(--text)"
+    } else {
+        props.dot_color.as_str()
+    };
+
     rsx! {
         div {
             style: "display: flex; align-items: baseline; gap: 8px; overflow-x: hidden;",
@@ -382,12 +382,7 @@ fn StatusRow(props: StatusRowProps) -> Element {
             }
 
             span {
-                style: "font-size: var(--text-xs); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); flex: 1; min-width: 0;",
-                if !props.dot_color.is_empty() {
-                    span {
-                        style: "display: inline-block; width: 7px; height: 7px; border-radius: var(--radius-pill); background: {props.dot_color}; margin-right: 6px; vertical-align: middle;",
-                    }
-                }
+                style: "font-size: var(--text-xs); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: {value_color}; flex: 1; min-width: 0;",
                 "{props.value}"
             }
         }

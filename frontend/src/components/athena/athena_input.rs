@@ -1,4 +1,4 @@
-use crate::components::shared::icon::IconSend;
+use crate::components::shared::icon::{IconClose, IconRefresh, IconSend};
 use crate::stores::athena::{use_athena_store, AthenaMessage, AthenaState, MessageRole};
 use crate::stores::ui::use_ui_store;
 use crate::tauri_bridge;
@@ -37,37 +37,19 @@ async fn ensure_session_id(athena_state: &mut Signal<AthenaState>) -> String {
     session_id
 }
 
-/// Save the current Athena messages to the backend session store.
-async fn save_conversation(athena_state: &mut Signal<AthenaState>) {
-    let session_id = match athena_state.read().session_id.clone() {
-        Some(id) => id,
-        None => return,
-    };
-    let title = athena_state.read().session_title.clone();
-    let messages_json = athena_state.read().messages_as_json();
-    let _ = tauri_bridge::session_update(&session_id, Some(&title), Some(&messages_json)).await;
-}
-
-/// Async body of the submit flow: sends the message and persists the result.
+/// Async body of the submit flow. The backend emits deltas on
+/// `athena:stream`; this task only owns request startup/failure cleanup.
 async fn submit_message_async(text: String, athena_state: &mut Signal<AthenaState>) {
-    let _ = ensure_session_id(athena_state).await;
+    let session_id = ensure_session_id(athena_state).await;
+    let request_id = uuid::Uuid::new_v4().to_string();
 
-    // Set loading state
-    athena_state.write().set_loading(true);
-    athena_state.write().set_streaming(true);
-    athena_state
-        .write()
-        .set_streaming_status(Some("Sending to Athena...".to_string()));
-    athena_state.write().clear_error();
-
-    // Include dropped context in the prompt
+    // Include dropped context in the prompt.
     let context_fragment = {
         let athena_guard = athena_state.read();
         if athena_guard.dropped_context.is_empty() {
             String::new()
         } else {
-            let mut parts: Vec<String> = Vec::new();
-            parts.push("\n[Pinned Context]".to_string());
+            let mut parts: Vec<String> = vec!["\n[Pinned Context]".to_string()];
             for item in &athena_guard.dropped_context {
                 match item {
                     crate::stores::athena::DraggableItem::Agent {
@@ -96,45 +78,35 @@ async fn submit_message_async(text: String, athena_state: &mut Signal<AthenaStat
             parts.join("\n")
         }
     };
-
     let full_prompt = if context_fragment.is_empty() {
-        text.to_string()
+        text
     } else {
         format!("{}{}", text, context_fragment)
     };
 
-    match tauri_bridge::athena_chat(&full_prompt).await {
-        Ok(response) => {
-            let assistant_msg = AthenaMessage {
-                id: format!("msg-{}", chrono::Utc::now().timestamp_millis()),
-                role: MessageRole::Athena,
-                content: response,
-                timestamp: chrono::Utc::now().timestamp(),
-                is_error: false,
-                images: Vec::new(),
-                blocks: Vec::new(),
-            };
-            athena_state.write().add_message(assistant_msg);
+    athena_state.write().begin_stream(request_id.clone());
+    athena_state.write().add_message(AthenaMessage {
+        id: format!("msg-{}", chrono::Utc::now().timestamp_millis()),
+        role: MessageRole::Athena,
+        content: String::new(),
+        timestamp: chrono::Utc::now().timestamp(),
+        is_error: false,
+        images: Vec::new(),
+        blocks: Vec::new(),
+    });
+
+    match tauri_bridge::athena_chat_stream(&full_prompt, &session_id, &request_id).await {
+        Ok(_) => {
+            // The authoritative completion event owns persistence. Saving
+            // here would race the event listener and could overwrite the
+            // completed assistant text with a partial placeholder.
         }
-        Err(e) => {
-            let error_msg = AthenaMessage {
-                id: format!("msg-{}", chrono::Utc::now().timestamp_millis()),
-                role: MessageRole::Athena,
-                content: format!("Error: {:?}", e),
-                timestamp: chrono::Utc::now().timestamp(),
-                is_error: true,
-                images: Vec::new(),
-                blocks: Vec::new(),
-            };
-            athena_state.write().add_message(error_msg);
-            athena_state.write().set_error(Some(format!("{:?}", e)));
+        Err(error) => {
+            athena_state
+                .write()
+                .fail_stream(&request_id, format!("{:?}", error), false);
         }
     }
-
-    save_conversation(athena_state).await;
-    athena_state.write().set_loading(false);
-    athena_state.write().set_streaming(false);
-    athena_state.write().set_streaming_status(None);
 }
 
 /// Submit the current input text to the Athena chat orchestrator.
@@ -183,6 +155,14 @@ pub fn AthenaInput() -> Element {
     let mut input_history = use_signal(Vec::<String>::new);
     let mut history_idx = use_signal(|| None::<usize>);
     let is_loading = athena_state.read().is_loading;
+    let active_request_id = athena_state.read().active_request_id.clone();
+    let retry_text = athena_state
+        .read()
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::User)
+        .map(|message| message.content.clone());
     // Block sending until we've confirmed a key is set. This is what makes
     // the failure mode loud-and-clear ("set your key") instead of the old
     // behaviour where the request left, hit the env-var fallback, and came
@@ -269,6 +249,42 @@ pub fn AthenaInput() -> Element {
                         "Ask Athena... (Shift+Enter for newline)".to_string()
                     },
                     disabled: is_loading || is_blocked,
+                }
+
+                if is_loading {
+                    button {
+                        class: "btn-secondary",
+                        style: "padding: 0 14px; height: 40px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--warning);",
+                        title: "Stop generating",
+                        onclick: {
+                            let request_id = active_request_id.clone();
+                            move |_| {
+                                if let Some(request_id) = request_id.clone() {
+                                    spawn(async move {
+                                        let _ = tauri_bridge::athena_cancel_stream(&request_id).await;
+                                    });
+                                }
+                            }
+                        },
+                        IconClose { size: Some(15), color: Some("currentColor".to_string()) }
+                        "Stop"
+                    }
+                } else if let Some(retry_text) = retry_text.clone() {
+                    if athena_state.read().error.is_some() {
+                        button {
+                            class: "btn-secondary",
+                            style: "padding: 0 14px; height: 40px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;",
+                            title: "Retry last message",
+                            onclick: move |_| {
+                                let text = retry_text.clone();
+                                if athena_state.write().prepare_retry(&text) {
+                                    submit_message(&text, &mut athena_state, &mut input_text, &mut input_history, &mut history_idx);
+                                }
+                            },
+                            IconRefresh { size: Some(15), color: Some("currentColor".to_string()) }
+                            "Retry"
+                        }
+                    }
                 }
 
                 button {

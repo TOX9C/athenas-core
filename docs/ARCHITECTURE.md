@@ -14,7 +14,7 @@ Athena's Core is a Tauri 2 desktop application with a Dioxus (Rust/WASM) fronten
 │  │  App (lib.rs)              │  │  │  main.rs                   │  │
 │  │  ├─ Sidebar                │  │  │  ├─ tauri::Builder         │  │
 │  │  ├─ WorkspaceTabs          │  │  │  ├─ AppState::manage()     │  │
-│  │  ├─ TerminalGrid           │  │  │  ├─ 78 invoke_handlers     │  │
+│  │  ├─ TerminalGrid           │  │  │  ├─ 133 invoke_handlers    │  │
 │  │  ├─ AthenaPanel            │  │  │  └─ graceful_shutdown      │  │
 │  │  ├─ KanbanBoard            │  │  └───────────────────────────┘  │
 │  │  ├─ SwarmBoard             │  │                                 │
@@ -66,19 +66,19 @@ Athena's Core is a Tauri 2 desktop application with a Dioxus (Rust/WASM) fronten
 
 The Tauri application binary. Serves as the entry point and IPC bridge.
 
-**Dependencies:** `tauri`, `tauri-plugin-shell`, `tauri-plugin-dialog`, `tauri-plugin-updater`, `tokio`, all workspace crates.
+**Dependencies:** `tauri`, `tauri-plugin-shell`, `tauri-plugin-dialog`, `tauri-plugin-log`, `tauri-plugin-clipboard-manager`, `tauri-plugin-notification`, `tokio`, and all workspace crates. No in-app updater plugin is shipped in the current build.
 
 **Key files:**
 
 - `main.rs` — App builder, command registration, graceful shutdown handler
 - `state.rs` — `AppState` struct holding all shared services behind `Arc<Mutex>` / `Arc<tokio::sync::Mutex>`
-- `commands/mod.rs` — 78 `#[tauri::command]` functions organized by domain
+- `commands/mod.rs` — 133 `#[tauri::command]` functions organized by domain (per-domain modules re-exported from `mod.rs`)
 
 ### athena-frontend
 
 Dioxus web application compiled to WASM. Renders the entire UI.
 
-**Dependencies:** `dioxus`, `dioxus-router`, `wasm-bindgen`, `web-sys`, `gloo`, `serde`, `chrono`.
+**Dependencies:** `dioxus`, `dioxus-web`, `wasm-bindgen`, `web-sys`, `gloo`, `serde`, `chrono`.
 
 **Key modules:**
 
@@ -87,7 +87,11 @@ Dioxus web application compiled to WASM. Renders the entire UI.
 - `stores/` — 15 signal-based stores matching Electron's Zustand stores
 - `tauri_bridge.rs` — `invoke()` and `listen()` wrappers for Tauri IPC
 - `themes/` — Theme definitions and CSS variable application
-- `xterm_interop.rs` — xterm.js terminal integration via `web_sys`
+- `components/workspace/xterm_mount.rs` — xterm.js terminal integration via `web_sys`
+
+### athena-browser
+
+The browser is a native Tauri child WebView, not an iframe. Dioxus owns the toolbar and a measured placeholder; `src-tauri/src/commands/browser.rs` creates, closes, validates, and positions the child WebView. `BrowserManager` owns URL/title/loading/history state and receives native navigation, title, and page-load callbacks. The child accepts only validated HTTP(S) URLs and is explicitly closed during app shutdown. The frontend parks the child during sidebar/main-area relocation and reconciles its state from the returned model snapshot plus `browser:*` events. Browser commands are local-desktop-only and are intentionally excluded from the Mobile Mirror relay allowlist.
 
 ### athena-core
 
@@ -98,7 +102,7 @@ Core business logic: LLM orchestration, MCP server, agent communications, search
 **Modules:**
 
 - `orchestrator.rs` — `AthenaOrchestrator`: dispatches messages to Anthropic/OpenAI-compatible APIs, handles tool call loops
-- `mcp.rs` — `McpServer`: TCP JSON-RPC 2.0 server on port 4545, exposes 14 tools to external agents
+- `mcp.rs` — `McpServer`: TCP JSON-RPC 2.0 server on port 4545, exposes 30 executor-backed and legacy-alias tools to external agents
 - `agent_comms.rs` — `AgentComms`: TCP server on port 4546 for agent lifecycle (initialize, notify, status, input request, heartbeat)
 - `tool_executor.rs` — Built-in tool implementations (create_tasks, get_next_task, update_task_status, notify, etc.)
 - `output_buffer.rs` — Line-numbered, timestamped output capture per agent pane
@@ -137,10 +141,6 @@ Persistent storage layer.
 ### athena-fs
 
 File system utilities and directory watching.
-
-### athena-browser
-
-Browser manager for opening/navigating embedded webviews.
 
 ### athena-plugins
 
@@ -339,7 +339,7 @@ JSON-RPC 2.0 over TCP. Exposes Athena's tool interface to external agents and pl
 4. Client sends `tools/list` to discover available tools
 5. Client calls tools via `tools/call` with `{"name":"...","arguments":{...}}`
 
-**Available tools:** `create_tasks`, `get_next_task`, `update_task_status`, `spawn_agents`, `notify`, `status_update`, `get_output`, `list_agent_panes`, `athena_forward_output`, `send_message_to_agent`, `read_agent_messages`, `request_input`, `code_search`, `search_files`
+**Available tools (21):** `close_terminals`, `launch_builtin_agent`, `run_command_in_terminals`, `launch_custom_agent`, `read_agent_output`, `list_agents`, `check_agent_status`, `create_execution_plan`, `dispatch_plan_step`, `prompt_agent`, `ask_user`, `evaluate_results`, `kanban_list_tasks`, `kanban_create_task`, `kanban_update_task`, `kanban_delete_task`, `fs_read_file`, `fs_list_dir`, `fs_search`, `workspace_list`, `workspace_get_active`, `workspace_switch`. Source of truth: `crates/athena-core/src/tool_schema.rs`.
 
 ### Agent Comms (Port 4546)
 
@@ -383,13 +383,11 @@ Both MCP and Agent Comms servers require a UUID token for initialization. Connec
 
 ### Tauri Capabilities
 
-The app uses minimal Tauri capabilities:
+- The main window capability (`src-tauri/capabilities/default.json`) grants the 133 command-aligned custom permissions plus core/dialog/window/event/clipboard entries. It is **not** least-privilege by feature area; the backend validators are the primary security boundary. See [`docs/release/CAPABILITY_PLUGIN_INVENTORY.md`](release/CAPABILITY_PLUGIN_INVENTORY.md) for the full inventory and the C-1 finding regarding future capability splitting.
+- Plugins in use: `tauri-plugin-shell`, `tauri-plugin-dialog`, `tauri-plugin-log`, `tauri-plugin-clipboard-manager`, `tauri-plugin-notification`, `tauri-plugin-window-state`.
+- Release delivery uses signed/notarized DMG publication and a documented manual-update runbook; no in-app updater plugin or update endpoint is included in this build. See [`docs/release/UPDATER_DECISION_0.3.0.md`](release/UPDATER_DECISION_0.3.0.md).
 
-- `tauri-plugin-shell` — for external process management
-- `tauri-plugin-dialog` — for file/folder picker dialogs
-- `tauri-plugin-updater` — for auto-update functionality
-
-No direct filesystem or shell access is exposed beyond the explicit command handlers.
+Filesystem and process access are gated by the explicit command handlers in `src-tauri/src/commands/` and the path sandbox in `athena-fs`. The filesystem root resolver accepts only a verified source-tree marker or standard macOS bundle `Contents/Resources`; it does not fall back to `/`.
 
 ### Content Security Policy
 

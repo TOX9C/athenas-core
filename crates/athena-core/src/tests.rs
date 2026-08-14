@@ -549,7 +549,7 @@ mod agent_comms_tests {
 // ---------------------------------------------------------------------------
 
 mod swarm_tests {
-    use crate::swarm::{SwarmCoordinator, SwarmState};
+    use crate::swarm::{SwarmAgent, SwarmCoordinator, SwarmState};
 
     fn make_coordinator() -> SwarmCoordinator {
         SwarmCoordinator::new()
@@ -565,10 +565,57 @@ mod swarm_tests {
     }
 
     #[tokio::test]
+    async fn test_create_persists_and_emits_full_state() {
+        let coord = make_coordinator();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let state = SwarmState {
+            id: "swarm-1".to_string(),
+            goal: "Ship it".to_string(),
+            agents: vec![SwarmAgent {
+                id: "agent-1".to_string(),
+                role: "builder".to_string(),
+                agent_type: "codex".to_string(),
+                pane_id: "pane-1".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let created = coord.create_swarm(dir, state).await.unwrap();
+        assert_eq!(created.revision, 1);
+        assert_eq!(created.workspace_dir, dir);
+        let persisted = coord.read_state(dir).await.unwrap().unwrap();
+        assert_eq!(persisted.agents[0].pane_id, "pane-1");
+        coord.stop_watch(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn test_send_message() {
         let coord = make_coordinator();
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_str().unwrap();
+        coord
+            .create_swarm(
+                dir,
+                SwarmState {
+                    id: "swarm-1".to_string(),
+                    agents: vec![
+                        SwarmAgent {
+                            id: "agent-a".to_string(),
+                            pane_id: "pane-a".to_string(),
+                            ..Default::default()
+                        },
+                        SwarmAgent {
+                            id: "agent-b".to_string(),
+                            pane_id: "pane-b".to_string(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
         coord
             .send_message(dir, "agent-a", "agent-b", "hello")
             .await
@@ -584,9 +631,31 @@ mod swarm_tests {
         let coord = make_coordinator();
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_str().unwrap();
-        let mailbox = coord.read_mailbox(dir, "nonexistent").await.unwrap();
-        assert!(mailbox.is_empty());
+        let result = coord.read_mailbox(dir, "nonexistent").await;
+        assert!(result.is_err());
 
+        coord
+            .create_swarm(
+                dir,
+                SwarmState {
+                    id: "swarm-1".to_string(),
+                    agents: vec![
+                        SwarmAgent {
+                            id: "sender".to_string(),
+                            pane_id: "pane-sender".to_string(),
+                            ..Default::default()
+                        },
+                        SwarmAgent {
+                            id: "receiver".to_string(),
+                            pane_id: "pane-receiver".to_string(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
         coord
             .send_message(dir, "sender", "receiver", "msg1")
             .await
@@ -624,6 +693,42 @@ mod swarm_tests {
     }
 
     #[tokio::test]
+    async fn test_message_updates_canonical_state() {
+        let coord = make_coordinator();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        coord
+            .create_swarm(
+                dir,
+                SwarmState {
+                    id: "swarm-1".to_string(),
+                    agents: vec![
+                        SwarmAgent {
+                            id: "a".to_string(),
+                            role: "builder".to_string(),
+                            pane_id: "pane-a".to_string(),
+                            ..Default::default()
+                        },
+                        SwarmAgent {
+                            id: "b".to_string(),
+                            role: "reviewer".to_string(),
+                            pane_id: "pane-b".to_string(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        coord.send_message(dir, "a", "b", "hello").await.unwrap();
+        let state = coord.read_state(dir).await.unwrap().unwrap();
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].to, "b");
+        coord.stop_watch(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn test_watch_prevents_duplicates() {
         let coord = make_coordinator();
         let tmp = tempfile::tempdir().unwrap();
@@ -631,6 +736,8 @@ mod swarm_tests {
         coord.watch_state(dir).await.unwrap();
         coord.watch_state(dir).await.unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));
+        coord.stop_watch(dir).unwrap();
+        coord.watch_state(dir).await.unwrap();
         coord.stop_watch(dir).unwrap();
     }
 
@@ -692,8 +799,8 @@ mod shell_integration_tests {
 
     #[test]
     fn test_strip_osc_sequences() {
-        let input = format!("hello\x1b]633;P;/tmp\x07world\x1b]633;A\x07end");
-        let stripped = strip_osc633(&input);
+        let input = "hello\x1b]633;P;/tmp\x07world\x1b]633;A\x07end";
+        let stripped = strip_osc633(input);
         assert_eq!(stripped, "helloworldend");
     }
 
@@ -722,9 +829,8 @@ mod shell_integration_tests {
     #[test]
     fn test_process_sequences_full_flow() {
         let mut tracker = CommandTracker::new();
-        let data =
-            format!("\x1b]633;B;cargo build\x07\x1b]633;C\x07\x1b]633;E\x07\x1b]633;D;0\x07");
-        let parsed = parse_osc633(&data);
+        let data = "\x1b]633;B;cargo build\x07\x1b]633;C\x07\x1b]633;E\x07\x1b]633;D;0\x07";
+        let parsed = parse_osc633(data);
         let events = process_sequences(&mut tracker, &parsed, "pane-1");
         assert_eq!(events.len(), 3);
         assert!(matches!(
@@ -743,8 +849,8 @@ mod shell_integration_tests {
 
     #[test]
     fn test_strip_osc_multiple_sequences() {
-        let input = format!("start\x1b]633;P;/tmp\x07mid\x1b]633;A\x07end");
-        let stripped = strip_osc633(&input);
+        let input = "start\x1b]633;P;/tmp\x07mid\x1b]633;A\x07end";
+        let stripped = strip_osc633(input);
         assert_eq!(stripped, "startmidend");
     }
 

@@ -1,4 +1,4 @@
-use crate::components::shared::icon::IconHelmet;
+use crate::components::shared::icon::IconPulse;
 use crate::stores::agent_output::use_agent_output_store;
 use crate::stores::agent_status::use_agent_status_store;
 use crate::utils::agent_display::get_agent_color_str;
@@ -38,8 +38,6 @@ pub fn AgentStatusBar(props: AgentStatusBarProps) -> Element {
 
     let (label, word, color) = status_label(&current_status.status);
     let agent_color = get_agent_color_str(&current_status.agent_type);
-    let is_spinning = matches!(current_status.status.as_str(), "thinking" | "working");
-    let dot_class = if is_spinning { "pulse-soft" } else { "" };
     let display_id: String = props.pane_id.chars().take(10).collect();
     let msg_preview: String = current_status.message.chars().take(40).collect();
     let ago = time_ago(current_status.last_updated_at);
@@ -51,18 +49,16 @@ pub fn AgentStatusBar(props: AgentStatusBarProps) -> Element {
             // Agent helmet glyph
             span {
                 style: "display: inline-flex; align-items: center; color: {agent_color}; flex-shrink: 0;",
-                IconHelmet { size: Some(14), color: Some("currentColor".to_string()) }
+                IconPulse { size: Some(14), color: Some("currentColor".to_string()) }
             }
 
-            // Status chip — dot + readable word
+            // Status label. The word carries the state without a capsule or
+            // accent marker competing with the agent identity glyph.
             span {
-                style: "display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: var(--radius-pill); border: 1px solid var(--border); flex-shrink: 0;",
-                div {
-                    class: "{dot_class}",
-                    style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {color}; flex-shrink: 0;",
-                }
+                class: "status-label",
+                style: "color: {color}; flex-shrink: 0;",
                 span {
-                    style: "font-size: var(--text-2xs); font-weight: 600; font-family: var(--font-display); letter-spacing: 0.04em; color: {color};",
+                    style: "font-family: var(--font-display);",
                     title: "{label}",
                     "{word}"
                 }

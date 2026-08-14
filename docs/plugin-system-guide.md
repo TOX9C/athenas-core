@@ -1,184 +1,164 @@
 # Plugin System Guide
 
-Athena's Core includes a plugin system that allows external tools and AI agents to integrate with the application via the Model Context Protocol (MCP).
+This is the current native plugin-manager guide for Athena's Core. Plugins are trusted developer integrations, not sandboxed extensions. The user must review plugin source, installation hooks, MCP commands, environment variables, and requested capabilities before enabling a plugin.
 
-## Overview
+## Runtime topology
 
-Plugins are extensions that communicate with Athena through MCP. They can:
+Bundled Claude Code and OpenCode integrations use:
 
-- Send notifications to the user
-- Request input from the user
-- Report status, errors, and completions
-- Create and manage tasks
-- Read application state (spaces, agents, tasks)
-- Read captured terminal output from agent panes
-- Forward output to other plugins for processing
-
-## Managing Plugins
-
-### Listing Installed Plugins
-
-```typescript
-const registry = await window.athena.plugins.list()
-// Returns: { [pluginId]: { name, version, status, description, author, config, error? } }
+```text
+external CLI → stdio → bin/mcp-proxy.js → authenticated TCP → Rust McpServer :4545
 ```
 
-### Registering a Plugin
+The legacy agent-comms service on port `4546` is not the public plugin transport. Do not expose it or configure new integrations against it.
 
-```typescript
-const result = await window.athena.plugins.register({
-  id: 'my-plugin',
-  name: 'My Plugin',
-  version: '1.0.0',
-  description: 'Does useful things',
-  author: 'Your Name',
-  entryPoint: './index.js',
-  permissions: ['terminal', 'notifications'],
-  mcpConfig: {
-    command: 'node',
-    args: ['./my-plugin.js'],
-    env: { API_KEY: '...' },
+## Plugin lifecycle
+
+A plugin moves through these statuses:
+
+```text
+registered → installed → enabled → disabled
+                         └──────→ error
+```
+
+Registration validates the full manifest before it enters the registry. Disabling a plugin removes its active sessions, subscriptions, and pending messages. Unregistering also removes the plugin entry and emits a registry update.
+
+The manager provides lifecycle operations through Tauri commands and callbacks:
+
+| Operation                          | Purpose                                                    |
+| ---------------------------------- | ---------------------------------------------------------- |
+| `plugin_host_discover_plugins`     | Read JSON manifests from a validated workspace directory   |
+| `plugin_host_setup_plugin`         | Register a trusted internal plugin by ID/name/version      |
+| `plugin_host_remove_plugin`        | Remove a plugin and clean up sessions                      |
+| `plugin_host_register_session`     | Associate an agent/session with a plugin and optional pane |
+| `plugin_host_unregister_session`   | Remove a plugin session                                    |
+| `plugin_host_subscribe`            | Subscribe a session to bounded event types                 |
+| `plugin_host_send_message`         | Queue a bounded message for a session                      |
+| `plugin_get_config`                | Read the current plugin configuration                      |
+| `plugin_set_config`                | Merge and schema-validate configuration                    |
+| `plugin_enable` / `plugin_disable` | Change active lifecycle state                              |
+| `plugin_set_error`                 | Mark a plugin as unhealthy with a bounded diagnostic       |
+
+`plugin_register` is a low-level internal command that creates a minimal manifest. Complete disk manifests should go through discovery and registration validation.
+
+## Manifest and capabilities
+
+The native manifest uses camelCase JSON names:
+
+```json
+{
+  "id": "com.example.plugin",
+  "name": "Example Plugin",
+  "version": "1.0.0",
+  "description": "A trusted local integration.",
+  "author": "Example",
+  "permissions": ["notifications"],
+  "capabilities": ["notifications", "status"],
+  "tools": [],
+  "subscribesTo": ["notification", "status_update"],
+  "mcpConfig": {
+    "command": "node",
+    "args": ["dist/server.js"],
+    "env": { "NODE_ENV": "production" }
   },
-})
-// Returns: { success: true, id: 'my-plugin' }
+  "config": {
+    "schema": {
+      "type": "object",
+      "properties": { "mode": { "type": "string", "enum": ["safe", "fast"] } },
+      "required": ["mode"],
+      "additionalProperties": false
+    },
+    "defaults": { "mode": "safe" }
+  },
+  "install": { "type": "mcp_server", "command": "node", "args": ["dist/server.js"] }
+}
 ```
 
-### Enabling/Disabling Plugins
+Supported capabilities are `notifications`, `status`, `tasks`, `agentControl`, `userInput`, `file_access`, and `swarm`.
 
-```typescript
-await window.athena.plugins.enable('my-plugin')
-await window.athena.plugins.disable('my-plugin')
+A session's effective capabilities are the intersection of:
+
+1. safe defaults for its agent type,
+2. capabilities declared by the plugin manifest, and
+3. capabilities requested by the session.
+
+The plugin cannot expand the agent's safe defaults by requesting additional values.
+
+## Configuration
+
+`config.schema` and `config.defaults` are validated during manifest registration. The host supports a bounded JSON-Schema subset:
+
+- `type` (including a list of types)
+- `properties`
+- `required`
+- `additionalProperties`
+- `items` for one repeated item schema
+- `enum` and `const`
+- `minLength` and `maxLength`
+- `minimum` and `maximum`
+
+Boolean schemas are supported. Unsupported keywords—including `oneOf`, `anyOf`, `allOf`, `pattern`, tuple-style `items`, and references—are rejected so the UI never implies validation that the host does not perform. Schema nesting is capped at 64 levels.
+
+The following limits apply:
+
+- Manifest/configuration/event payloads: 256 KiB serialized.
+- Plugin error text: bounded before it is stored or emitted.
+- Event subscriptions: at most 32 per manifest/session as applicable.
+- Sessions and pending messages: bounded by the plugin manager limits.
+
+`plugin_set_config` merges object updates and validates the complete merged object. Invalid updates do not replace the existing value.
+
+## Session and event model
+
+A plugin session contains a generated/session-provided ID, plugin ID, agent ID, optional pane ID, agent type, status, timestamps, and effective capabilities. Session statuses are `active`, `idle`, `waitingInput`, and `disconnected`.
+
+Events include:
+
+- `notification`
+- `status_update`
+- `taskComplete`, `taskError`, and `progressUpdate`
+- `needsInput` and `userResponse`
+- `agentSpawned`, `agentExited`, `agentStalled`, `agentConnected`, and `agentDisconnected`
+- `artifactProduced`
+- `controlCommand`
+- `pluginRegistered` and `pluginError`
+- `outputForwarded`
+
+Event payloads should carry stable IDs (`pluginId`, `sessionId`, `agentId`, and `paneId`) and must not rely on human-readable pane labels.
+
+## Security rules
+
+Manifest validation rejects:
+
+- empty/oversized/invalid plugin IDs;
+- absolute or traversing hook paths;
+- shell metacharacters in hook paths;
+- non-whitelisted MCP executables and executable paths;
+- `PATH` or `HOME` environment overrides;
+- oversized subscription/configuration payloads;
+- malformed schemas, unknown validation keywords, invalid type arrays, duplicate required names, invalid numeric bounds, and excessive nesting.
+
+The plugin host is not a sandbox. A trusted plugin can still read files, start processes, access network resources, and observe data available to its process. Capability declarations are coordination and UI policy; they are not an OS-level security boundary. Owner-aware session methods perform an atomic stored-owner check, but they only become an authentication boundary when `plugin_id` is obtained from an authenticated host/session context; legacy ID-only Tauri operations remain trusted compatibility paths.
+
+## Operational checklist
+
+When installing a plugin:
+
+1. Review its source and manifest.
+2. Review every `install` hook and MCP command/argument.
+3. Confirm environment variables do not contain secrets unless intentionally passed by the integration.
+4. Confirm requested capabilities are necessary.
+5. Test enable/disable and session cleanup.
+6. Test invalid configuration and malformed event payloads.
+7. Keep diagnostics on stderr or a redacted logger; never write MCP protocol output or credentials to stdout/logs.
+
+Repository checks:
+
+```bash
+cargo test -p athena-plugins
+npm run check:plugin-integration
+npm run check:tauri-permissions
+npm run check:release-privacy
 ```
 
-### Configuring a Plugin
-
-```typescript
-await window.athena.plugins.configure('my-plugin', {
-  apiKey: 'new-key',
-  maxRetries: 5,
-})
-```
-
-### Removing a Plugin
-
-```typescript
-await window.athena.plugins.unregister('my-plugin')
-```
-
-## Listening for Plugin Events
-
-```typescript
-// Registry changes
-const unsub = window.athena.plugins.onRegistryUpdated((registry) => {
-  console.log('Plugin registry updated:', registry)
-})
-
-// Plugin enabled
-window.athena.plugins.onPluginEnabled(({ id, name }) => {
-  console.log(`Plugin ${name} enabled`)
-})
-
-// Plugin disabled
-window.athena.plugins.onPluginDisabled(({ id }) => {
-  console.log(`Plugin ${id} disabled`)
-})
-
-// Plugin error
-window.athena.plugins.onPluginError(({ id, error }) => {
-  console.error(`Plugin ${id} error:`, error)
-})
-
-// Clean up
-unsub()
-```
-
-## Plugin Permissions
-
-Plugins declare required permissions in their manifest:
-
-| Permission      | Description                |
-| --------------- | -------------------------- |
-| `terminal`      | Access to PTY sessions     |
-| `filesystem`    | Read/write file system     |
-| `notifications` | Send notifications to user |
-| `clipboard`     | Access clipboard           |
-| `network`       | Make network requests      |
-
-## Plugin Status Lifecycle
-
-```
-installed → enabled → disabled → enabled (re-enable)
-                     → error → disabled → enabled (fix + re-enable)
-```
-
-## MCP Configuration
-
-Plugins with MCP support include an `mcpConfig` in their manifest. When enabled, Athena's orchestrator can discover and use the plugin's MCP tools and resources.
-
-To get MCP configs for all enabled plugins:
-
-```typescript
-const configs = await window.athena.plugins.getAllMcpConfigs()
-// Returns: { [pluginId]: { name, command, args, env? } }
-```
-
-## Output Reading & Forwarding
-
-Plugins can read captured terminal output from agent panes and forward it for real-time processing.
-
-### Reading Output from the Renderer
-
-```typescript
-const { outputCapture } = window.athena
-
-// List all panes with captured output
-const agents = await outputCapture.listAgents()
-
-// Read output for a specific pane
-const lines = await outputCapture.read('pane-1', { limit: 50 })
-
-// Get buffer metadata
-const info = await outputCapture.getInfo('pane-1')
-
-// Subscribe to live output
-const unsub = outputCapture.onOutputLine((line) => {
-  console.log(`[${line.lineNum}] ${line.text}`)
-})
-
-// Clear buffer
-await outputCapture.clear('pane-1')
-```
-
-### Using the OutputForwarder (Plugin Side)
-
-Plugins that produce output should forward it to Athena via the shared `OutputForwarder`:
-
-```typescript
-import { createOutputForwarder, hookStreamToForwarder } from '@athenas-core/plugins/shared'
-
-const forwarder = createOutputForwarder({
-  pluginId: 'my-plugin',
-  athenaHost: 'localhost',
-  athenaPort: 9515,
-  authToken: sessionToken,
-})
-
-await forwarder.connect()
-
-// Forward a single line
-forwarder.forward('my-pane', 'Build completed successfully')
-
-// Hook a Node.js stream (stdout/stderr) to forward automatically
-hookStreamToForwarder(process.stdout, forwarder, 'my-pane')
-hookStreamToForwarder(process.stderr, forwarder, 'my-pane', 'stderr')
-
-// Clean up
-forwarder.disconnect()
-```
-
-### OutputForwarder Features
-
-- **Batching**: Lines are batched (100ms interval, 50 max lines per batch) to reduce network overhead
-- **Reconnect buffering**: Up to 5000 lines buffered during reconnection attempts
-- **Auto-reconnect**: Exponential backoff with 5 retries
-- **ANSI stripping**: Optional `stripAnsi` config to clean terminal escape codes before forwarding
+For release approval, reconcile this guide with `docs/release/PLUGIN_TRUST_POLICY.md`, `docs/release/CAPABILITY_PLUGIN_INVENTORY.md`, and `docs/release/SECURITY_REVIEW.md`.

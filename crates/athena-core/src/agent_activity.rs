@@ -11,7 +11,9 @@
 //!   command finished. Output silence alone only moves the badge to idle.
 //! - **Notifications fire on transitions only**, with per-pane cooldown.
 
-use crate::agent_detection::{agent_label, HistorySnapshot};
+use crate::agent_detection::{
+    agent_label, command_contains_agent, AgentHistoryStatus, HistorySnapshot,
+};
 use crate::notification::{NotificationEvent, NotificationService, NotificationType};
 use crate::EventEmitter;
 use std::collections::{HashMap, HashSet};
@@ -54,6 +56,9 @@ impl AgentActivityStatus {
         }
     }
 
+    /// Parse a wire-format activity status. Kept as an inherent compatibility
+    /// helper while the public enum retains its original API shape.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> AgentActivityStatus {
         match s {
             "thinking" => AgentActivityStatus::Thinking,
@@ -114,14 +119,6 @@ impl AgentNotifyConfig {
     }
 }
 
-/// Window (ms) for the bursty-agent promotion: when an agent is FIRST
-/// detected, output within this window counts as "sustained" and promotes
-/// straight to Working. Deliberately small (~3× the 1.5s heartbeat interval)
-/// so a just-started agent that emitted during startup is caught, without
-/// attributing stale output from a *previous* command (up to 30s old under
-/// `idle_after_ms`) to the newly-detected agent.
-pub const FRESH_DETECTION_OUTPUT_WINDOW_MS: u64 = 5_000;
-
 /// Default silence threshold before an agent badge moves to idle.
 pub const DEFAULT_IDLE_AFTER_MS: u64 = 30_000;
 /// Minimum working duration before a "finished" notification may fire.
@@ -129,9 +126,23 @@ pub const DEFAULT_MIN_WORK_MS: u64 = 15_000;
 /// Per-pane cooldown between notifications of the same kind.
 pub const DEFAULT_NOTIFY_COOLDOWN_MS: u64 = 15_000;
 
+type EmittedSignature = (
+    AgentActivityStatus,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<u64>,
+);
+
 #[derive(Debug, Clone)]
 struct PaneActivity {
     pane_id: String,
+    /// PTY registration generation that owns this activity record. Included
+    /// in lifecycle events so a late exit from an older PTY cannot clear a
+    /// newly reused pane id in the frontend.
+    generation: Option<u64>,
     status: AgentActivityStatus,
     agent_key: Option<String>,
     /// Raw classified foreground label (`"vim"`, `"claude"`, `"node"`, …;
@@ -144,20 +155,20 @@ struct PaneActivity {
     /// the frontend can summarize without re-polling `ps`).
     task_title: Option<String>,
     raw_prompt: Option<String>,
+    /// Timestamp of the latest history snapshot consumed for this pane. OMP
+    /// keeps one session id across many prompts, so session id alone cannot
+    /// identify a new turn.
+    history_timestamp_ms: Option<u64>,
     last_output_at: u64,
     work_started_at: Option<u64>,
+    /// Explicit agent launches print startup banners before the first
+    /// heartbeat. Ignore those bytes so an idle CLI is not counted as working.
+    startup_pending: bool,
     plugin_connected: bool,
     last_notified_at: HashMap<NotifyKind, u64>,
     /// Signature of the last emitted `agent:status` payload so we only emit
     /// on change.
-    last_emitted: Option<(
-        AgentActivityStatus,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )>,
+    last_emitted: Option<EmittedSignature>,
 }
 
 /// Public snapshot of a pane's activity, used by tests and diagnostics.
@@ -284,7 +295,8 @@ impl AgentActivityTracker {
                 return;
             }
         }
-        log::debug!("[agent-activity] {} -> {}", channel, data);
+        // Activity payloads may include task titles and prompt-derived metadata.
+        log::debug!("[agent-activity] event emitted on channel {channel}");
     }
 
     fn entry_or_insert(&self, pane_id: &str) -> PaneActivity {
@@ -293,14 +305,17 @@ impl AgentActivityTracker {
             .entry(pane_id.to_string())
             .or_insert_with(|| PaneActivity {
                 pane_id: pane_id.to_string(),
+                generation: None,
                 status: AgentActivityStatus::Idle,
                 agent_key: None,
                 raw_fg: None,
                 session_id: None,
                 task_title: None,
                 raw_prompt: None,
+                history_timestamp_ms: None,
                 last_output_at: 0,
                 work_started_at: None,
+                startup_pending: false,
                 plugin_connected: false,
                 last_notified_at: HashMap::new(),
                 last_emitted: None,
@@ -366,6 +381,10 @@ impl AgentActivityTracker {
             .unwrap_or_else(|p| p.into_inner())
             .insert(pane_id.to_string(), generation);
         self.entry_or_insert(pane_id);
+        self.update(pane_id, |entry| {
+            entry.generation = Some(generation);
+            entry.last_emitted = None;
+        });
         generation
     }
 
@@ -452,6 +471,12 @@ impl AgentActivityTracker {
         self.update(pane_id, |e| {
             e.last_output_at = now_ms;
             if e.plugin_connected || e.agent_key.is_none() {
+                return;
+            }
+            // A freshly launched CLI emits banners, warnings, and its idle
+            // prompt before the first heartbeat has confirmed the foreground
+            // process. Do not turn that startup noise into a working badge.
+            if e.startup_pending {
                 return;
             }
             match e.status {
@@ -545,16 +570,7 @@ impl AgentActivityTracker {
             let is_agent_launch = e
                 .agent_key
                 .as_deref()
-                .map(|key| {
-                    let c = command.trim();
-                    !c.is_empty()
-                        && c.split_whitespace().any(|w| {
-                            let base = w.split(['/', '=']).last().unwrap_or(w);
-                            base == key
-                                || base.contains(key)
-                                || key == "omp" && (base == "omp" || base == "oh-my-pi")
-                        })
-                })
+                .map(|key| command_contains_agent(command, key))
                 .unwrap_or(false);
             if !is_agent_launch {
                 return;
@@ -641,44 +657,56 @@ impl AgentActivityTracker {
 
             match agent_key {
                 Some(key) => {
+                    // Explicit launch paths mark startup output as pending.
+                    // Once the heartbeat confirms the expected foreground
+                    // agent, later output pulses represent real activity.
+                    if e.startup_pending && e.agent_key.as_deref() == Some(key) {
+                        e.startup_pending = false;
+                        changed = true;
+                    }
                     // First detection (or re-detection after completion).
                     if e.agent_key.as_deref() != Some(key) {
                         e.agent_key = Some(key.to_string());
-                        // If the agent already emitted output before the first
-                        // heartbeat saw it (output pulses are dropped while
-                        // agent_key is None), promote straight to Working — a
-                        // bursty agent (echo one; echo two; then a long silent
-                        // tool call) would otherwise sit Idle for its whole
-                        // run and only show Working at exit. Output within the
-                        // fresh-detection window counts as "sustained" (kept
-                        // well below idle_after_ms so stale output from a
-                        // previous command isn't attributed to the new agent).
-                        let has_fresh_output = e.last_output_at > 0
-                            && now_ms.saturating_sub(e.last_output_at)
-                                <= FRESH_DETECTION_OUTPUT_WINDOW_MS;
-                        if has_fresh_output {
-                            e.status = AgentActivityStatus::Working;
-                            e.work_started_at = Some(now_ms);
-                        } else {
-                            e.status = AgentActivityStatus::Idle;
-                            e.work_started_at = None;
-                        }
+                        // Detection alone is not proof of active work. Agent
+                        // CLIs print startup banners, warnings, and prompts
+                        // while they are idle; attributing that pre-detection
+                        // output to Working makes an untouched Claude pane
+                        // look active. Start at Idle and only promote after a
+                        // subsequent output pulse while the agent is known.
+                        e.status = AgentActivityStatus::Idle;
+                        e.work_started_at = None;
+                        e.history_timestamp_ms = None;
                         changed = true;
                     }
-                    // New turn started (session file advanced).
+                    // New prompt / session metadata. OMP keeps a single
+                    // session id across turns, so compare its timestamp and
+                    // title as well as the session id.
                     if let Some(h) = history {
-                        if e.session_id.as_deref() != Some(h.session_id.as_str()) {
+                        let history_changed = e.session_id.as_deref()
+                            != Some(h.session_id.as_str())
+                            || e.history_timestamp_ms != Some(h.timestamp_ms)
+                            || e.task_title.as_deref() != Some(h.task_title.as_str());
+                        if history_changed {
                             e.session_id = Some(h.session_id.clone());
                             e.task_title = Some(h.task_title.clone());
                             e.raw_prompt = Some(h.raw_prompt.clone());
-                            if e.status == AgentActivityStatus::Completed {
-                                e.status = AgentActivityStatus::Idle;
-                                e.work_started_at = None;
-                                changed = true;
-                            }
+                            e.history_timestamp_ms = Some(h.timestamp_ms);
+                            changed = true;
                         }
                     }
-                    // Silence → badge idle only (never a notification). Applies
+
+                    // A harness-owned session lifecycle record is stronger
+                    // than output volume or silence. This is what lets a
+                    // persistent OMP process move to Completed while it stays
+                    // in the foreground after returning to its input editor.
+                    let authoritative_status = history.and_then(|h| h.activity);
+                    if let Some(status) = authoritative_status {
+                        changed |= self.apply_history_status(e, status, now_ms);
+                    }
+
+                    // Silence → badge idle only (never a notification). Do
+                    // not override an authoritative "working" record: model
+                    // calls and tools may be quiet for minutes.
                     // to both Working and Thinking (a one-pulse "thinking"
                     // agent that goes quiet must dim back too).
                     //
@@ -693,14 +721,21 @@ impl AgentActivityTracker {
                     if matches!(
                         e.status,
                         AgentActivityStatus::Working | AgentActivityStatus::Thinking
-                    ) && e.last_output_at > 0
+                    ) && authoritative_status != Some(AgentHistoryStatus::Working)
+                        && e.last_output_at > 0
                         && now_ms.saturating_sub(e.last_output_at) > self.idle_after_ms
                     {
                         e.status = AgentActivityStatus::Idle;
                         changed = true;
                     }
-                    // Waiting-for-input heuristic (native agents only).
-                    if e.status != AgentActivityStatus::WaitingForInput
+                    // Waiting-for-input output remains a useful fallback for
+                    // native agents and for OMP confirmation prompts, but do
+                    // not let stale tail text undo an authoritative completed
+                    // or error state from the session log.
+                    if !matches!(
+                        authoritative_status,
+                        Some(AgentHistoryStatus::Completed | AgentHistoryStatus::Error)
+                    ) && e.status != AgentActivityStatus::WaitingForInput
                         && output_tail
                             .map(tail_looks_waiting_for_input)
                             .unwrap_or(false)
@@ -736,6 +771,67 @@ impl AgentActivityTracker {
     }
 
     // -- Notification + emission --------------------------------------------
+
+    /// Apply a positive lifecycle state reconstructed from a harness session
+    /// file. The agent key intentionally remains set for Completed/Waiting:
+    /// persistent TUIs keep the same foreground process across turns.
+    fn apply_history_status(
+        &self,
+        entry: &mut PaneActivity,
+        status: AgentHistoryStatus,
+        now_ms: u64,
+    ) -> bool {
+        match status {
+            AgentHistoryStatus::Working => {
+                // A durable log can say that the turn is still in flight while
+                // the terminal is visibly paused at a permission prompt. Keep
+                // the higher-fidelity WaitingForInput state until user output
+                // resumes (on_pty_output transitions it back to Working).
+                if matches!(
+                    entry.status,
+                    AgentActivityStatus::Working | AgentActivityStatus::WaitingForInput
+                ) {
+                    return false;
+                }
+                entry.status = AgentActivityStatus::Working;
+                if entry.work_started_at.is_none() {
+                    entry.work_started_at = Some(now_ms);
+                }
+                true
+            }
+            AgentHistoryStatus::Completed => {
+                if entry.status == AgentActivityStatus::Completed {
+                    return false;
+                }
+                let work_ok = entry
+                    .work_started_at
+                    .map(|start| now_ms.saturating_sub(start) >= self.min_work_ms)
+                    .unwrap_or(false);
+                if entry.status == AgentActivityStatus::Working && work_ok {
+                    self.notify_locked(entry, NotifyKind::Finished, now_ms);
+                }
+                entry.status = AgentActivityStatus::Completed;
+                entry.work_started_at = None;
+                true
+            }
+            AgentHistoryStatus::WaitingForInput => {
+                if entry.status == AgentActivityStatus::WaitingForInput {
+                    return false;
+                }
+                entry.status = AgentActivityStatus::WaitingForInput;
+                self.notify_locked(entry, NotifyKind::NeedsAttention, now_ms);
+                true
+            }
+            AgentHistoryStatus::Error => {
+                if entry.status == AgentActivityStatus::Error {
+                    return false;
+                }
+                entry.status = AgentActivityStatus::Error;
+                self.notify_locked(entry, NotifyKind::Error, now_ms);
+                true
+            }
+        }
+    }
 
     fn notify_locked(&self, e: &mut PaneActivity, kind: NotifyKind, now_ms: u64) {
         // Per-type toggle (frontend setting) gates the notification.
@@ -817,6 +913,7 @@ impl AgentActivityTracker {
             e.session_id.clone(),
             e.task_title.clone(),
             e.raw_prompt.clone(),
+            e.generation,
         );
         if e.last_emitted.as_ref() == Some(&signature) {
             return;
@@ -825,6 +922,7 @@ impl AgentActivityTracker {
 
         let payload = serde_json::json!({
             "paneId": e.pane_id,
+            "generation": e.generation,
             "status": e.status.as_str(),
             "message": status_message(&e.status),
             // Raw foreground label (any process, not just known agents) so
@@ -848,6 +946,7 @@ impl AgentActivityTracker {
         self.update(pane_id, |e| {
             if e.agent_key.is_none() {
                 e.agent_key = Some(agent_key.to_string());
+                e.startup_pending = true;
                 self.notify_locked(e, NotifyKind::Started, now_ms);
             }
         });
@@ -1001,13 +1100,11 @@ mod tests {
     }
 
     #[test]
-    fn bursty_agent_with_pre_detection_output_promotes_straight_to_working() {
-        // Output pulses arriving BEFORE the first heartbeat that registers the
-        // agent (agent_key is still None) used to be dropped by
-        // `on_pty_output`; the agent then sat Idle for its whole run and only
-        // showed Working at exit. The heartbeat must promote a freshly
-        // detected agent straight to Working when output arrived recently
-        // (within idle_after_ms).
+    fn pre_detection_output_does_not_mark_idle_agent_as_working() {
+        // Startup banners arrive before the heartbeat classifies the
+        // foreground process. They must not make an otherwise idle agent look
+        // active; a later output pulse while the agent is known can still
+        // promote it to Thinking/Working.
         let (mut t, _events) = tracker();
         // The pane is already tracked (the production heartbeat loop inserts
         // every live session on its first tick). Widen the silence threshold so
@@ -1019,18 +1116,15 @@ mod tests {
         t.on_pty_output("p1", 1000);
         t.on_pty_output("p1", 1001);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
-        // First detection: recent output (within
-        // FRESH_DETECTION_OUTPUT_WINDOW_MS) → straight to Working.
         t.heartbeat("p1", Some("claude"), None, None, 3000);
-        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
     }
 
     #[test]
     fn freshly_detected_agent_with_no_recent_output_stays_idle() {
         let (t, _events) = tracker();
-        // Output long ago (beyond FRESH_DETECTION_OUTPUT_WINDOW_MS) →
-        // detection stays Idle; the next pulse will promote to Thinking →
-        // Working.
+        // Detection starts Idle; a later pulse while the agent is known will
+        // promote to Thinking → Working.
         t.on_pty_output("p1", 1000);
         t.heartbeat("p1", Some("claude"), None, None, 7000);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
@@ -1271,6 +1365,59 @@ mod tests {
     }
 
     #[test]
+    fn persistent_harness_session_log_marks_turn_completed_without_process_exit() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        let working = HistorySnapshot {
+            task_title: "refactor the auth module".into(),
+            session_id: "omp-1".into(),
+            timestamp_ms: 1000,
+            raw_prompt: "refactor the auth module".into(),
+            activity: Some(AgentHistoryStatus::Working),
+        };
+        let completed = HistorySnapshot {
+            activity: Some(AgentHistoryStatus::Completed),
+            timestamp_ms: 2000,
+            ..working.clone()
+        };
+
+        t.heartbeat("p1", Some("omp"), Some(&working), None, 1000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
+        t.heartbeat("p1", Some("omp"), Some(&completed), None, 2000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        assert_eq!(svc.get_history(None).len(), 1);
+        assert_eq!(svc.get_history(None)[0].title, "Agent finished");
+    }
+
+    #[test]
+    fn authoritative_working_does_not_clear_permission_wait() {
+        let (t, _events) = tracker();
+        let working = HistorySnapshot {
+            task_title: "run the migration".into(),
+            session_id: "omp-2".into(),
+            timestamp_ms: 1000,
+            raw_prompt: "run the migration".into(),
+            activity: Some(AgentHistoryStatus::Working),
+        };
+        t.heartbeat(
+            "p1",
+            Some("omp"),
+            Some(&working),
+            Some("Do you want to continue? (y/n)"),
+            1000,
+        );
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+        t.heartbeat(
+            "p1",
+            Some("omp"),
+            Some(&working),
+            Some("Do you want to continue? (y/n)"),
+            2500,
+        );
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+    }
+
+    #[test]
     fn session_id_change_resets_completed_turn() {
         let (t, _events) = tracker();
         let h1 = HistorySnapshot {
@@ -1278,12 +1425,14 @@ mod tests {
             session_id: "s1".into(),
             timestamp_ms: 1,
             raw_prompt: "task one".into(),
+            activity: None,
         };
         let h2 = HistorySnapshot {
             task_title: "task two".into(),
             session_id: "s2".into(),
             timestamp_ms: 2,
             raw_prompt: "task two".into(),
+            activity: None,
         };
         t.heartbeat("p1", Some("claude"), Some(&h1), None, 1000);
         t.on_pty_output("p1", 1100);
@@ -1324,6 +1473,9 @@ mod tests {
         let (t, _events) = tracker();
         let svc = t.notifications.clone().unwrap();
         t.notify_agent_started("p1", "codex", 1000);
+        // The first heartbeat clears launch-banner suppression; subsequent
+        // output represents the user's actual turn.
+        t.heartbeat("p1", Some("codex"), None, None, 1050);
         t.on_pty_output("p1", 1100);
         t.on_pty_output("p1", 1101);
         t.cancel_pane("p1", 1200);

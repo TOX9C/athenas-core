@@ -1,5 +1,6 @@
 use super::{validate_path_exists, CommandError};
 use crate::state::AppState;
+use athena_plugins::{MAX_PLUGIN_CONFIG_BYTES, MAX_PLUGIN_EVENT_BYTES};
 use tauri::State;
 
 // ── Plugin commands ──────────────────────────────────────────────────────────
@@ -98,6 +99,9 @@ pub fn plugin_set_config(
     plugin_id: String,
     config: String,
 ) -> Result<(), String> {
+    if config.len() > MAX_PLUGIN_CONFIG_BYTES {
+        return Err("plugin configuration exceeds 256 KiB".to_string());
+    }
     let config_value: serde_json::Value =
         serde_json::from_str(&config).map_err(|e| e.to_string())?;
     state
@@ -113,6 +117,9 @@ pub fn plugin_set_error(
     plugin_id: String,
     error: String,
 ) -> Result<(), String> {
+    if error.len() > 8 * 1024 {
+        return Err("plugin error message exceeds 8 KiB".to_string());
+    }
     state
         .plugin_manager
         .set_plugin_error(&plugin_id, &error)
@@ -151,6 +158,9 @@ pub fn plugin_host_emit_event(
     let parsed_type: athena_plugins::PluginEventType =
         serde_json::from_str(&format!("\"{}\"", event_type.to_lowercase()))
             .map_err(|e| format!("Invalid event type '{}': {}", event_type, e))?;
+    if data.len() > MAX_PLUGIN_EVENT_BYTES {
+        return Err("plugin event payload exceeds 256 KiB".to_string());
+    }
     let payload: athena_plugins::PluginEventPayload =
         serde_json::from_str(&data).map_err(|e| format!("Invalid event payload: {}", e))?;
     let source = athena_plugins::PluginEventSource {
@@ -172,6 +182,9 @@ pub fn plugin_host_subscribe(
     session_id: String,
     event_types: String,
 ) -> Result<(), String> {
+    if event_types.len() > MAX_PLUGIN_EVENT_BYTES {
+        return Err("plugin event subscription payload exceeds 256 KiB".to_string());
+    }
     let types: Vec<athena_plugins::PluginEventType> =
         serde_json::from_str(&event_types).map_err(|e| format!("Invalid event types: {}", e))?;
     state

@@ -1,5 +1,6 @@
 use super::file_tree::FileNode;
 use crate::components::shared::icon::{IconChevronRight, IconFolder};
+use crate::utils::file_icons::get_file_icon;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -18,19 +19,39 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
     let chevron_rotation: i32 = if expanded() { 90 } else { 0 };
 
     let (icon_text, icon_color) = if props.node.is_dir {
-        ("", "var(--accent)")
+        (String::new(), "var(--accent)")
     } else {
-        match props.node.name.rsplit('.').next() {
-            Some("rs") => ("rs", "#dea584"),
-            Some("ts") | Some("tsx") => ("ts", "#3178c6"),
-            Some("js") | Some("jsx") => ("js", "#f7df1e"),
-            Some("json") => ("json", "#cbcb41"),
-            Some("md") => ("md", "#519aba"),
-            Some("css") | Some("scss") => ("css", "#563d7c"),
-            Some("toml") => ("cfg", "#9b499c"),
-            Some("yaml") | Some("yml") => ("cfg", "#9b499c"),
-            _ => ("doc", "var(--textDim)"),
-        }
+        let code = get_file_icon(&props.node.name);
+        let ext = props
+            .node
+            .name
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let color = match ext.as_str() {
+            "rs" => "#C98A5A",
+            "ts" | "tsx" => "#4C8DD6",
+            "js" | "jsx" => "#C9B64B",
+            "json" => "#B0B04B",
+            "md" => "#5A9BC9",
+            "css" | "scss" => "#6E5A9E",
+            "toml" | "yaml" | "yml" => "#9B6AB0",
+            "sh" | "bash" | "zsh" => "#7BAE5A",
+            "py" => "#C9A24B",
+            "go" => "#4F9EC9",
+            _ => "var(--textDim)",
+        };
+        let label = if code.is_empty() {
+            if props.node.name.starts_with('.') {
+                "·".to_string()
+            } else {
+                "DOC".to_string()
+            }
+        } else {
+            code.to_string()
+        };
+        (label, color)
     };
 
     let node_for_click = props.node.clone();
@@ -72,7 +93,7 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
                     }
                 } else {
                     span {
-                        style: "font-size: var(--text-2xs); font-weight: 700; color: {icon_color}; background: {icon_color}18; padding: 1px 3px; border-radius: var(--radius-sm); line-height: 1;",
+                        style: "font-size: 8px; font-weight: 700; letter-spacing: 0.04em; color: {icon_color}; background: {icon_color}1f; padding: 2px 3.5px; border-radius: 4px; line-height: 1; font-family: var(--fontFamily);",
                         "{icon_text}"
                     }
                 }

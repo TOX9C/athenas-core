@@ -19,12 +19,6 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
         _ => "var(--textDim)",
     };
 
-    let _is_active = matches!(
-        props.agent.status,
-        crate::stores::swarm::SwarmAgentStatus::Thinking
-            | crate::stores::swarm::SwarmAgentStatus::Writing
-    );
-
     let status_label = match &props.agent.status {
         crate::stores::swarm::SwarmAgentStatus::Thinking => "thinking",
         crate::stores::swarm::SwarmAgentStatus::Writing => "writing",
@@ -62,9 +56,10 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
                     "{props.agent.id}"
                 }
 
-                // Status pill — flat chip with status-color edge
+                // Status is readable metadata, not a decorative pill.
                 div {
-                    style: "font-size: var(--text-2xs); font-weight: 600; padding: 1px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, {status_color} 12%, transparent); color: {status_color}; border: 1px solid color-mix(in srgb, {status_color} 32%, transparent); text-transform: capitalize; white-space: nowrap;",
+                    class: "status-label",
+                    style: "color: {status_color}; white-space: nowrap;",
                     "{status_label}"
                 }
             }
@@ -83,17 +78,11 @@ pub fn AgentCard(props: AgentCardProps) -> Element {
                 SwarmRoleBadge { role: role_str }
             }
 
-            // Nudge button for stalled agents — flat btn-secondary
-            if matches!(props.agent.status, crate::stores::swarm::SwarmAgentStatus::Stalled | crate::stores::swarm::SwarmAgentStatus::Blocked) {
-                button {
-                    class: "btn-secondary btn-sm",
-                    style: "align-self: flex-start; margin-top: 2px;",
-                    onclick: move |_| {
-                        // TODO: nudge agent via Tauri IPC
-                    },
-                    "Nudge"
-                }
-            }
+            // Stalled/blocked agents are intentionally represented by the
+            // status pill only. There is no safe nudge action here yet: the
+            // backend requires the swarm directory and sender identity, which
+            // are not part of this card's data contract. Do not expose a
+            // visible no-op control to users.
         }
     }
 }

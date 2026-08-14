@@ -32,6 +32,9 @@ pub struct AthenaState {
     pub is_loading: bool,
     pub is_streaming: bool,
     pub streaming_status: Option<String>,
+    /// Request ID currently allowed to mutate this conversation. Late events
+    /// from cancelled or superseded turns are ignored.
+    pub active_request_id: Option<String>,
     pub error: Option<String>,
     pub model: String,
     pub provider: String,
@@ -68,6 +71,7 @@ impl AthenaState {
             is_loading: false,
             is_streaming: false,
             streaming_status: None,
+            active_request_id: None,
             error: None,
             model: DEFAULT_MODEL.to_string(),
             provider: DEFAULT_PROVIDER.to_string(),
@@ -112,12 +116,108 @@ impl AthenaState {
         self.streaming_status = status;
     }
 
+    pub fn begin_stream(&mut self, request_id: String) {
+        self.active_request_id = Some(request_id);
+        self.is_loading = true;
+        self.is_streaming = true;
+        self.streaming_status = Some("Connecting…".to_string());
+        self.error = None;
+    }
+
+    pub fn accepts_stream_event(&self, request_id: &str) -> bool {
+        self.active_request_id.as_deref() == Some(request_id)
+    }
+
+    pub fn append_stream_delta(&mut self, request_id: &str, delta: &str) {
+        if !self.accepts_stream_event(request_id) {
+            return;
+        }
+        if let Some(message) = self.messages.back_mut() {
+            if message.role == MessageRole::Athena && !message.is_error {
+                message.content.push_str(delta);
+            }
+        }
+    }
+
+    pub fn finish_stream(&mut self, request_id: &str, final_text: Option<&str>) {
+        if !self.accepts_stream_event(request_id) {
+            return;
+        }
+        if let Some(final_text) = final_text {
+            if let Some(message) = self.messages.back_mut() {
+                if message.role == MessageRole::Athena && !message.is_error {
+                    message.content = final_text.to_string();
+                }
+            }
+        }
+        self.active_request_id = None;
+        self.is_loading = false;
+        self.is_streaming = false;
+        self.streaming_status = None;
+    }
+
+    /// Invalidate an active request before loading another session. A late
+    /// provider event must never mutate the newly selected conversation.
+    pub fn invalidate_active_request(&mut self) -> Option<String> {
+        let request_id = self.active_request_id.take();
+        self.is_loading = false;
+        self.is_streaming = false;
+        self.streaming_status = None;
+        request_id
+    }
+
+    pub fn fail_stream(&mut self, request_id: &str, message: String, cancelled: bool) {
+        if !self.accepts_stream_event(request_id) {
+            return;
+        }
+        self.active_request_id = None;
+        self.is_loading = false;
+        self.is_streaming = false;
+        self.streaming_status = None;
+        if !cancelled {
+            self.error = Some(message.clone());
+            if let Some(last) = self.messages.back_mut() {
+                if last.role == MessageRole::Athena && !last.is_error {
+                    if last.content.is_empty() {
+                        last.content = format!("Error: {message}");
+                    }
+                    last.is_error = true;
+                }
+            }
+        }
+    }
+
     pub fn set_error(&mut self, error: Option<String>) {
         self.error = error;
     }
 
     pub fn clear_error(&mut self) {
         self.error = None;
+    }
+
+    /// Remove the failed turn before replaying it so Retry does not duplicate
+    /// the user message or leave an obsolete error bubble in the transcript.
+    pub fn prepare_retry(&mut self, text: &str) -> bool {
+        if self.error.is_none() {
+            return false;
+        }
+        let failed_assistant = self
+            .messages
+            .back()
+            .is_some_and(|message| message.role == MessageRole::Athena && message.is_error);
+        if !failed_assistant {
+            return false;
+        }
+        self.messages.pop_back();
+        let matching_user = self
+            .messages
+            .back()
+            .is_some_and(|message| message.role == MessageRole::User && message.content == text);
+        if matching_user {
+            self.messages.pop_back();
+        }
+        self.error = None;
+        true
     }
 
     pub fn set_model(&mut self, model: impl Into<String>) {
@@ -137,11 +237,13 @@ impl AthenaState {
     }
 
     pub fn clear_messages(&mut self) {
+        self.invalidate_active_request();
         self.messages.clear();
         self.error = None;
     }
 
     pub fn set_messages(&mut self, messages: Vec<AthenaMessage>) {
+        self.invalidate_active_request();
         // Convert Vec into VecDeque via FromIterator.
         self.messages = messages.into_iter().collect();
         self.error = None;
@@ -153,6 +255,34 @@ impl AthenaState {
 
     pub fn set_session_title(&mut self, title: impl Into<String>) {
         self.session_title = title.into();
+    }
+
+    /// Pin an agent to Athena's prompt context. Repeated drops of the same
+    /// pane are intentionally idempotent so a drag jitter or accidental
+    /// re-drop cannot duplicate the reference shown to the user or sent to
+    /// the model.
+    pub fn add_agent_context(
+        &mut self,
+        pane_id: impl Into<String>,
+        agent_type: impl Into<String>,
+        label: impl Into<String>,
+    ) -> bool {
+        let item = DraggableItem::Agent {
+            pane_id: pane_id.into(),
+            agent_type: agent_type.into(),
+            label: label.into(),
+        };
+        let pane_id = match &item {
+            DraggableItem::Agent { pane_id, .. } => pane_id,
+            _ => return false,
+        };
+        if self.dropped_context.iter().any(|existing| {
+            matches!(existing, DraggableItem::Agent { pane_id: existing_id, .. } if existing_id == pane_id)
+        }) {
+            return false;
+        }
+        self.dropped_context.push(item);
+        true
     }
 
     /// Record the result of the backend `llm.api_key` probe. Called on
@@ -463,5 +593,60 @@ mod tests {
         }
         s.clear_messages();
         assert!(s.messages.is_empty());
+    }
+
+    #[test]
+    fn agent_context_is_added_once_per_exact_reference() {
+        let mut s = AthenaState::default();
+        assert!(s.add_agent_context("pane-1", "claude", "Builder"));
+        assert!(!s.add_agent_context("pane-1", "claude", "Builder"));
+        assert!(!s.add_agent_context("pane-1", "codex", "Renamed Builder"));
+        assert_eq!(s.dropped_context.len(), 1);
+    }
+
+    #[test]
+    fn agent_context_keeps_distinct_panes_separate() {
+        let mut s = AthenaState::default();
+        assert!(s.add_agent_context("pane-1", "claude", "Builder"));
+        assert!(s.add_agent_context("pane-2", "codex", "Reviewer"));
+        assert_eq!(s.dropped_context.len(), 2);
+    }
+
+    #[test]
+    fn prepare_retry_removes_failed_turn_without_touching_earlier_history() {
+        let mut s = AthenaState::default();
+        s.add_message(AthenaMessage {
+            id: "old-user".into(),
+            role: MessageRole::User,
+            content: "older question".into(),
+            timestamp: 0,
+            is_error: false,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+        s.add_message(AthenaMessage {
+            id: "failed-user".into(),
+            role: MessageRole::User,
+            content: "try again".into(),
+            timestamp: 0,
+            is_error: false,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+        s.add_message(AthenaMessage {
+            id: "failed-assistant".into(),
+            role: MessageRole::Athena,
+            content: "Error: timeout".into(),
+            timestamp: 0,
+            is_error: true,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+        s.error = Some("timeout".into());
+
+        assert!(s.prepare_retry("try again"));
+        assert_eq!(s.messages.len(), 1);
+        assert_eq!(s.messages.front().unwrap().content, "older question");
+        assert!(s.error.is_none());
     }
 }

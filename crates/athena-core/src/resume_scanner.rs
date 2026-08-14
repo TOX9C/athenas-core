@@ -21,8 +21,9 @@
 //! by the backend's app-exit path where there is no per-chunk state to
 //! maintain.
 
-use athena_resume_scanner::{extract_resume_id, scan_text_for_resume_id as scan_snapshot, AnsiStripper, MAX_SCAN_BUFFER};
-
+use athena_resume_scanner::{
+    extract_resume_id, scan_text_for_resume_id as scan_snapshot, AnsiStripper, MAX_SCAN_BUFFER,
+};
 
 /// A stateful scanner for a single pane. Create one, feed it text via
 /// [`ResumeScanner::feed`], and obtain newly detected resume ids. Each

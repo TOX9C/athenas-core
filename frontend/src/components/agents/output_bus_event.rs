@@ -23,10 +23,11 @@ pub(super) enum OutputBusEvent {
         task_title: Option<String>,
         session_id: Option<String>,
         raw_prompt: Option<String>,
+        generation: Option<u64>,
     },
     TerminalExit {
         pane_id: String,
-        now: i64,
+        generation: Option<u64>,
     },
     TerminalData {
         session_id: String,
@@ -51,7 +52,10 @@ pub(super) enum OutputBusEvent {
         message: String,
         now: i64,
     },
-    OutputLine(OutputLine),
+    OutputBatch {
+        pane_id: String,
+        lines: Vec<OutputLine>,
+    },
     PaneRegistered {
         pane_id: String,
         agent_type: String,

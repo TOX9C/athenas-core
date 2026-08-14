@@ -2,8 +2,8 @@ use super::athena_input::AthenaInput;
 use super::chat_message::AthenaChatMessage;
 use super::session_switcher::SessionSwitcher;
 use super::thinking::AthenaThinkingIndicator;
-use crate::components::shared::icon::{IconClose, IconSeal};
-use crate::components::shared::illustration::OwlMark;
+use crate::components::shared::icon::{IconClose, IconSeal, IconWarning};
+use crate::components::shared::illustration::CoreMark;
 use crate::stores::athena::{
     use_athena_store, AskUserOption, AthenaMessage, MessageRole, PlanStatus, PlanStepStatus,
     StepEvaluation,
@@ -55,15 +55,74 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
 
         let store = athena_state;
 
+        // athena:stream — request-scoped text and lifecycle events. Every
+        // mutation is guarded by the active request ID in AthenaState.
+        let mut stream_store = store;
+        if let Ok(u) = tauri_bridge::listen("athena:stream", move |payload: String| {
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                return;
+            };
+            let request_id = event
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if request_id.is_empty() {
+                return;
+            }
+            match event.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                "delta" => {
+                    if let Some(text) = event.get("text").and_then(|v| v.as_str()) {
+                        stream_store.write().append_stream_delta(request_id, text);
+                    }
+                }
+                "status" => {
+                    if let Some(message) = event.get("message").and_then(|v| v.as_str()) {
+                        if stream_store.read().accepts_stream_event(request_id) {
+                            stream_store
+                                .write()
+                                .set_streaming_status(Some(message.to_string()));
+                        }
+                    }
+                }
+                "completed" => {
+                    let final_text = event.get("text").and_then(|v| v.as_str());
+                    stream_store.write().finish_stream(request_id, final_text);
+                }
+                "error" => {
+                    let message = event
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Athena request failed");
+                    let cancelled = event
+                        .get("cancelled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    stream_store
+                        .write()
+                        .fail_stream(request_id, message.to_string(), cancelled);
+                }
+                _ => {}
+            }
+        }) {
+            unlisteners_clone.borrow_mut().push(u);
+        }
+
         // athena:askUser — Show interactive user question modal.
         let mut ask_store = store;
         if let Ok(u) = tauri_bridge::listen("athena:askUser", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let request_id = val
+                let question_id = val
                     .get("requestId")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let stream_request_id =
+                    val.get("request_id").and_then(|v| v.as_str()).unwrap_or("");
+                if !stream_request_id.is_empty()
+                    && !ask_store.read().accepts_stream_event(stream_request_id)
+                {
+                    return;
+                }
                 let question = val
                     .get("question")
                     .and_then(|v| v.as_str())
@@ -88,7 +147,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     .unwrap_or_default();
                 ask_store
                     .write()
-                    .handle_ask_user(request_id, question, options);
+                    .handle_ask_user(question_id, question, options);
             }
         }) {
             unlisteners_clone.borrow_mut().push(u);
@@ -98,8 +157,19 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         let mut plan_store = store;
         if let Ok(u) = tauri_bridge::listen("athena:planUpdate", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+                let stream_request_id = val
+                    .get("requestId")
+                    .or_else(|| val.get("request_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if stream_request_id.is_empty()
+                    || !plan_store.read().accepts_stream_event(stream_request_id)
+                {
+                    return;
+                }
                 let plan_id = val
                     .get("planId")
+                    .or_else(|| val.get("plan_id"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -177,8 +247,19 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         let mut eval_store = store;
         if let Ok(u) = tauri_bridge::listen("athena:planEvaluated", move |payload: String| {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+                let stream_request_id = val
+                    .get("requestId")
+                    .or_else(|| val.get("request_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if stream_request_id.is_empty()
+                    || !eval_store.read().accepts_stream_event(stream_request_id)
+                {
+                    return;
+                }
                 let plan_id = val
                     .get("planId")
+                    .or_else(|| val.get("plan_id"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -385,17 +466,17 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         AthenaPanelMode::Overlay => "position: absolute; bottom: 0; left: 0; right: 0; height: 35vh; display: flex; flex-direction: row; background: var(--bg); color: var(--text); border-top: 1px solid var(--border); z-index: 100;",
         AthenaPanelMode::Compact => "flex: 1; display: flex; flex-direction: row; min-width: 0; min-height: 0; background: var(--bg); color: var(--text); overflow: hidden;",
     };
-
     rsx! {
         div {
             class: "athena-panel",
+            "data-athena-drop": "true",
             style: wrapper_style,
 
             // Main chat area
             div {
                 style: "flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;",
 
-                // Header — panel crown with Θ seal + session switcher + status dot.
+                // Header — brand seal + session switcher + status dot.
                 div {
                     style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
 
@@ -440,7 +521,9 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                 if let Some(ref err) = state.api_keyring_error {
                     div {
                         style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--warning); background: rgba(235, 145, 19, 0.08); color: var(--warning); font-size: 12px;",
-                        span { style: "flex-shrink: 0;", "⚠️" }
+                        span { style: "flex-shrink: 0; display: inline-flex; align-items: center;",
+                            IconWarning { size: Some(13), color: Some("var(--warning)".to_string()) }
+                        }
                         span { "{err}" }
                     }
                 }
@@ -460,6 +543,10 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                                 rsx! {
                                     span {
                                         key: "context-{i}",
+                                        "data-agent-pane-id": match item {
+                                            crate::stores::athena::DraggableItem::Agent { pane_id, .. } => pane_id.clone(),
+                                            _ => String::new(),
+                                        },
                                         style: "padding: 1px 6px; border-radius: 4px; background: var(--bg); border: 1px solid var(--border); font-size: 10px;",
                                         "{display}"
                                     }
@@ -482,20 +569,22 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                 // Great-circle rule — meridian divider between the header band and the message log.
                 hr { class: "great-circle-rule", style: "margin: 0; width: 100%;" }
 
-                // Messages
+                // Messages. Keep the log on its own surface so the chat reads
+                // as a deliberate workspace rather than transparent text over
+                // the sidebar chrome.
                 div {
-                    style: "flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px;",
+                    class: "athena-message-log",
+                    style: "flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; background: var(--bg);",
 
                     if state.messages.is_empty() {
                         div {
-                            style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--textDim);",
+                            class: "athena-empty-state",
+                            style: "flex: 1; display: flex; align-items: center; justify-content: center;",
                             div {
-                                style: "text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px;",
-                                span {
-                                    style: "opacity: 0.55; display: block;",
-                                    OwlMark { size: Some(40) }
-                                }
-                                span { style: "font-family: var(--font-display); font-size: 15px;", "Ask Athena anything..." }
+                                style: "text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 260px;",
+                                div { class: "athena-empty-mark", CoreMark { size: Some(44) } }
+                                strong { "Start with Athena" }
+                                span { "Ask for a plan, a refactor, or a second pair of eyes on the work in your workspace." }
                             }
                         }
                     } else {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-swarm-set-status"
+description = "Enables the swarm_set_status command without any pre-configured scope."
+commands.allow = ["swarm_set_status"]
+
+[[permission]]
+identifier = "deny-swarm-set-status"
+description = "Denies the swarm_set_status command without any pre-configured scope."
+commands.deny = ["swarm_set_status"]

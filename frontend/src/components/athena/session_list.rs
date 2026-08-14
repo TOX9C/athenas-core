@@ -10,6 +10,11 @@ async fn load_session(
     session_id: &str,
     athena_state: &mut Signal<crate::stores::athena::AthenaState>,
 ) {
+    let request_id = athena_state.read().active_request_id.clone();
+    if let Some(request_id) = request_id {
+        let _ = tauri_bridge::athena_cancel_stream(&request_id).await;
+        athena_state.write().invalidate_active_request();
+    }
     match tauri_bridge::session_get(session_id).await {
         Ok(json) => {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {

@@ -10,6 +10,8 @@ pub fn ShortcutsRef() -> Element {
                 ("\u{2318}T", "New terminal"),
                 ("\u{2318}J", "Toggle sidebar"),
                 ("\u{2318}1-9", "Switch panel"),
+                ("\u{2318}= / \u{2318}+", "Increase shared font size"),
+                ("\u{2318}-", "Decrease shared font size"),
             ],
         ),
         (

@@ -2,9 +2,8 @@ use super::activity_feed::SwarmActivityFeed;
 use super::agent_card::AgentCard;
 use crate::components::shared::icon::IconSwarm;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
-use crate::stores::swarm::{
-    use_swarm_store, MailboxMessage, SwarmAgentStatus, SwarmOverallStatus, SwarmTaskStatus,
-};
+use crate::stores::swarm::{parse_swarm_data, use_swarm_store, SwarmOverallStatus};
+use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 use std::cell::RefCell;
@@ -20,326 +19,230 @@ pub struct ActivityEntry {
     pub timestamp: i64,
 }
 
+fn status_label(status: &SwarmOverallStatus) -> &'static str {
+    match status {
+        SwarmOverallStatus::Active => "active",
+        SwarmOverallStatus::Paused => "paused",
+        SwarmOverallStatus::Completed => "completed",
+        SwarmOverallStatus::Cancelled => "cancelled",
+    }
+}
+
 #[component]
 pub fn SwarmBoard() -> Element {
     let swarm_state = use_swarm_store();
-    let mut mounted = use_signal(|| false);
+    let workspace = use_workspace_store();
+    let mut task_title = use_signal(String::new);
+    let mut task_description = use_signal(String::new);
+    let mut message_text = use_signal(String::new);
     let unlisten: Rc<RefCell<Option<Box<dyn FnOnce()>>>> = use_hook(|| Rc::new(RefCell::new(None)));
-    let unlisten_clone = unlisten.clone();
+    let watched_dir: Rc<RefCell<Option<String>>> = use_hook(|| Rc::new(RefCell::new(None)));
 
-    // Register Tauri event listeners on mount.
+    // Load persisted state whenever the active workspace changes. This also
+    // recovers a mission after an app restart, before the first watcher tick.
+    use_effect({
+        let watched_dir = watched_dir.clone();
+        let mut store = swarm_state;
+        move || {
+            let state = workspace.read();
+            let dir = state
+                .active_space_id
+                .as_ref()
+                .and_then(|id| state.spaces.iter().find(|space| &space.id == id))
+                .map(|space| space.dir.clone());
+            let Some(dir) = dir else {
+                store.write().set_swarm(None);
+                if let Some(previous_dir) = watched_dir.borrow_mut().take() {
+                    spawn(async move {
+                        let _ = tauri_bridge::swarm_stop_watch(&previous_dir).await;
+                    });
+                }
+                return;
+            };
+            let previous_dir = watched_dir.borrow_mut().replace(dir.clone());
+            if let Some(previous_dir) = previous_dir.filter(|previous| previous != &dir) {
+                spawn(async move {
+                    let _ = tauri_bridge::swarm_stop_watch(&previous_dir).await;
+                });
+            }
+            spawn(async move {
+                match tauri_bridge::swarm_read_state(&dir).await {
+                    Ok(raw) if raw.trim() != "null" => {
+                        match parse_swarm_data(&raw) {
+                            Ok(data) if data.workspace_dir == dir => {
+                                store.write().replace_swarm(data)
+                            }
+                            Ok(data) => web_sys::console::warn_1(
+                                &format!(
+                                    "[SwarmBoard] ignoring state for unexpected workspace: {:?}",
+                                    data.workspace_dir
+                                )
+                                .into(),
+                            ),
+                            Err(error) => web_sys::console::warn_1(
+                                &format!("[SwarmBoard] state parse failed: {error}").into(),
+                            ),
+                        }
+                        if let Err(error) = tauri_bridge::swarm_start_watch(&dir).await {
+                            web_sys::console::warn_1(
+                                &format!("[SwarmBoard] watcher start failed: {:?}", error).into(),
+                            );
+                        }
+                    }
+                    Ok(_) => store.write().set_swarm(None),
+                    Err(error) => web_sys::console::warn_1(
+                        &format!("[SwarmBoard] state load failed: {:?}", error).into(),
+                    ),
+                }
+            });
+        }
+    });
+
+    // Subscribe once to the canonical full-state event. Every mutation emits
+    // the same complete contract, so the board never has to merge partial
+    // payloads or guess which fields changed.
+    let unlisten_effect = unlisten.clone();
     use_effect(move || {
-        if mounted() {
+        if unlisten_effect.borrow().is_some() {
             return;
         }
-        mounted.set(true);
-
         let mut store = swarm_state;
-
-        // swarm:stateChange — Refresh swarm state display.
-        if let Ok(u) = tauri_bridge::listen("swarm:stateChange", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                // Check if it's a full state replacement.
-                if val.get("id").is_some() {
-                    let id = val
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let goal = val
-                        .get("goal")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let status_str = val
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("active");
-                    let status = match status_str {
-                        "paused" => SwarmOverallStatus::Paused,
-                        "completed" => SwarmOverallStatus::Completed,
-                        _ => SwarmOverallStatus::Active,
+        let current_workspace = workspace;
+        if let Ok(unlisten_fn) =
+            tauri_bridge::listen("swarm:stateChange", move |payload: String| {
+                if let Ok(data) = parse_swarm_data(&payload) {
+                    let active_dir = {
+                        let state = current_workspace.read();
+                        state
+                            .active_space_id
+                            .as_ref()
+                            .and_then(|id| {
+                                state
+                                    .spaces
+                                    .iter()
+                                    .find(|space| &space.id == id)
+                                    .map(|space| space.dir.as_str())
+                            })
+                            .map(str::to_string)
                     };
-                    let started_at = val.get("startedAt").and_then(|v| v.as_i64()).unwrap_or(0);
-
-                    // Parse agents.
-                    let agents: Vec<crate::stores::swarm::SwarmAgent> = val
-                        .get("agents")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|a| {
-                                    let id = a.get("id").and_then(|v| v.as_str())?.to_string();
-                                    let pane_id = a
-                                        .get("paneId")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let last_action = a
-                                        .get("lastAction")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let last_action_at =
-                                        a.get("lastActionAt").and_then(|v| v.as_i64()).unwrap_or(0);
-                                    let status_str =
-                                        a.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
-                                    let agent_status = match status_str {
-                                        "thinking" => SwarmAgentStatus::Thinking,
-                                        "writing" => SwarmAgentStatus::Writing,
-                                        "waiting" => SwarmAgentStatus::Waiting,
-                                        "done" => SwarmAgentStatus::Done,
-                                        "blocked" => SwarmAgentStatus::Blocked,
-                                        "stalled" => SwarmAgentStatus::Stalled,
-                                        _ => SwarmAgentStatus::Idle,
-                                    };
-                                    Some(crate::stores::swarm::SwarmAgent {
-                                        id,
-                                        role: crate::stores::swarm::AgentRole::default(),
-                                        agent_type: crate::stores::workspace::AgentType::Shell,
-                                        pane_id,
-                                        status: agent_status,
-                                        current_task: None,
-                                        last_action,
-                                        last_action_at,
-                                    })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    // Parse tasks.
-                    let tasks: Vec<crate::stores::swarm::SwarmTask> = val
-                        .get("tasks")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|t| {
-                                    let id = t.get("id").and_then(|v| v.as_str())?.to_string();
-                                    let title =
-                                        t.get("title").and_then(|v| v.as_str())?.to_string();
-                                    let description = t
-                                        .get("description")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let assigned_agent_id = t
-                                        .get("assignedAgentId")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let created_at =
-                                        t.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
-                                    let last_updated_at = t
-                                        .get("lastUpdatedAt")
-                                        .and_then(|v| v.as_i64())
-                                        .unwrap_or(0);
-                                    let status_str = t
-                                        .get("status")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("queued");
-                                    let task_status = match status_str {
-                                        "building" => SwarmTaskStatus::Building,
-                                        "review" => SwarmTaskStatus::Review,
-                                        "done" => SwarmTaskStatus::Done,
-                                        "blocked" => SwarmTaskStatus::Blocked,
-                                        "stalled" => SwarmTaskStatus::Stalled,
-                                        _ => SwarmTaskStatus::Queued,
-                                    };
-                                    Some(crate::stores::swarm::SwarmTask {
-                                        id,
-                                        title,
-                                        description,
-                                        assigned_agent_id,
-                                        owned_files: Vec::new(),
-                                        status: task_status,
-                                        depends_on: Vec::new(),
-                                        created_at,
-                                        completed_at: None,
-                                        last_updated_at,
-                                    })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    // Parse messages.
-                    let messages: Vec<MailboxMessage> = val
-                        .get("messages")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|m| {
-                                    let id = m.get("id").and_then(|v| v.as_str())?.to_string();
-                                    let from = m.get("from").and_then(|v| v.as_str())?.to_string();
-                                    let to = m.get("to").and_then(|v| v.as_str())?.to_string();
-                                    let content =
-                                        m.get("content").and_then(|v| v.as_str())?.to_string();
-                                    let timestamp =
-                                        m.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-                                    let read =
-                                        m.get("read").and_then(|v| v.as_bool()).unwrap_or(false);
-                                    Some(MailboxMessage {
-                                        id,
-                                        from,
-                                        to,
-                                        content,
-                                        timestamp,
-                                        read,
-                                    })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    let swarm_data = crate::stores::swarm::SwarmData {
-                        id,
-                        goal,
-                        agents,
-                        tasks,
-                        messages,
-                        status,
-                        started_at,
-                    };
-                    store.write().replace_swarm(swarm_data);
-                } else if let Some(agent_id) = val.get("agentId").and_then(|v| v.as_str()) {
-                    // Partial update: agent status change.
-                    let status_str = val.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
-                    let agent_status = match status_str {
-                        "thinking" => SwarmAgentStatus::Thinking,
-                        "writing" => SwarmAgentStatus::Writing,
-                        "waiting" => SwarmAgentStatus::Waiting,
-                        "done" => SwarmAgentStatus::Done,
-                        "blocked" => SwarmAgentStatus::Blocked,
-                        "stalled" => SwarmAgentStatus::Stalled,
-                        _ => SwarmAgentStatus::Idle,
-                    };
-                    store.write().update_agent_status(agent_id, agent_status);
-                } else if val.get("mailboxMessage").is_some() {
-                    // Mailbox message.
-                    let mb = val.get("mailboxMessage");
-                    if let Some(msg_obj) = mb.and_then(|v| v.as_object()) {
-                        let id = msg_obj
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let from = msg_obj
-                            .get("from")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let to = msg_obj
-                            .get("to")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let content = msg_obj
-                            .get("content")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let timestamp = msg_obj
-                            .get("timestamp")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-                        let read = msg_obj
-                            .get("read")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        store.write().add_mailbox_message(MailboxMessage {
-                            id,
-                            from,
-                            to,
-                            content,
-                            timestamp,
-                            read,
-                        });
+                    if !data.workspace_dir.is_empty()
+                        && active_dir.as_deref() == Some(data.workspace_dir.as_str())
+                    {
+                        store.write().replace_swarm(data);
                     }
                 }
-            }
-        }) {
-            *unlisten_clone.borrow_mut() = Some(u);
+            })
+        {
+            *unlisten_effect.borrow_mut() = Some(unlisten_fn);
         }
     });
 
-    // Cleanup: unlisten on component unmount.
     let unlisten_drop = unlisten.clone();
+    let watched_dir_drop = watched_dir.clone();
     use_drop(move || {
-        if let Some(u) = unlisten_drop.borrow_mut().take() {
-            u();
+        if let Some(unlisten_fn) = unlisten_drop.borrow_mut().take() {
+            unlisten_fn();
+        }
+        if let Some(dir) = watched_dir_drop.borrow_mut().take() {
+            spawn(async move {
+                let _ = tauri_bridge::swarm_stop_watch(&dir).await;
+            });
         }
     });
 
-    let (agents, activities) = match &swarm_state.read().active_swarm {
+    let active_dir = {
+        let state = workspace.read();
+        state
+            .active_space_id
+            .as_ref()
+            .and_then(|id| state.spaces.iter().find(|space| &space.id == id))
+            .map(|space| space.dir.clone())
+    };
+    let active_swarm = swarm_state.read().active_swarm.clone();
+    let (agents, tasks, activities, status, goal) = match active_swarm {
         Some(swarm) => {
-            let agents = swarm.agents.clone();
-            let activities: Vec<ActivityEntry> = swarm
+            let activities = swarm
                 .messages
                 .iter()
-                .map(|m| ActivityEntry {
-                    id: m.id.clone(),
-                    agent_name: m.from.clone(),
+                .map(|message| ActivityEntry {
+                    id: message.id.clone(),
+                    agent_name: message.from.clone(),
                     role: "agent".to_string(),
-                    action: m.content.clone(),
-                    timestamp: m.timestamp,
+                    action: message.content.clone(),
+                    timestamp: message.timestamp,
                 })
                 .collect();
-            (agents, activities)
+            (
+                swarm.agents,
+                swarm.tasks,
+                activities,
+                status_label(&swarm.status),
+                swarm.goal,
+            )
         }
-        None => (Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), Vec::new(), "idle", String::new()),
     };
 
-    // Constellation map geometry — derived purely from the agents vector
-    // enumeration index `i`. NO new state, signals, props, or handlers: this
-    // is a pure read of the existing agents list, recomputed each render.
-    //
-    // Star position (percent of the field):
-    //   top  = 14 + (i % 5) * 19        → rows of 5
-    //   left = 16 + (i / 5) * 26 + (i % 3) * 12
-    // The arc map reuses the SAME formula so stars + arcs line up. Anchored
-    // into a 100x100 SVG viewBox with preserveAspectRatio="none" so the
-    // percentages map 1:1 to the absolutely-positioned star wrappers.
-    let star_positions: Vec<(f32, f32)> = agents
-        .iter()
-        .enumerate()
-        .map(|(i, _)| {
-            let top = 14.0 + ((i % 5) as f32) * 19.0;
-            let left = 16.0 + ((i / 5) as f32) * 26.0 + ((i % 3) as f32) * 12.0;
-            (left, top)
-        })
-        .collect();
-    let arc_path: String = star_positions
-        .windows(2)
-        .map(|w| {
-            // Slight quadratic curve up so the constellation reads as an arc
-            // rather than a polyline.
-            let (x1, y1) = w[0];
-            let (x2, y2) = w[1];
-            let cx = (x1 + x2) / 2.0;
-            let cy = ((y1 + y2) / 2.0) - 4.0;
-            format!("M{x1:.2},{y1:.2} Q{cx:.2},{cy:.2} {x2:.2},{y2:.2} ")
-        })
-        .collect();
+    let first_agent = agents.first().map(|agent| agent.id.clone());
+    let second_agent = agents.get(1).map(|agent| agent.id.clone());
+    let can_add_task =
+        active_dir.is_some() && first_agent.is_some() && !task_title().trim().is_empty();
+    let can_send_message = active_dir.is_some()
+        && first_agent.is_some()
+        && second_agent.is_some()
+        && !message_text().trim().is_empty();
+    let dir_for_controls = active_dir.clone();
+    let pause_dir = active_dir.clone().unwrap_or_default();
+    let complete_dir = active_dir.clone().unwrap_or_default();
+    let dir_for_task = active_dir.clone();
+    let dir_for_message = active_dir.clone();
+    let first_for_task = first_agent.clone();
+    let first_for_message = first_agent.clone();
+    let second_for_message = second_agent.clone();
 
     rsx! {
         div {
             class: "swarm-board",
             style: "display: flex; height: 100%; background: var(--bg); color: var(--text);",
-
-            // Agent cards grid
             div {
-                style: "flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column;",
+                class: "swarm-main",
+                style: "flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 12px;",                    div { style: "display: flex; align-items: center; gap: 8px; margin-bottom: 2px;",
 
-                div {
-                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 14px;",
                     IconSwarm { size: Some(18), color: Some("var(--accent)".to_string()) }
                     span {
-                        style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; letter-spacing: 0.01em; color: var(--text);",
+                        style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--text);",
                         "Swarm"
                     }
+                    span {
+                        style: "font-size: var(--text-xs); color: var(--accent); text-transform: uppercase; letter-spacing: .08em;",
+                        "{status}"
+                    }
+                    div { style: "flex: 1;" }
+                    if dir_for_controls.is_some() {
+                        button {
+                            class: "btn-ghost",
+                            disabled: status == "completed" || status == "cancelled",
+                            onclick: move |_| {
+                                let next = if status == "paused" { "active" } else { "paused" };
+                                let dir = pause_dir.clone();
+                                spawn(async move { let _ = tauri_bridge::swarm_set_status(&dir, next).await; });
+                            },
+                            if status == "paused" { "Resume" } else { "Pause" }
+                        }
+                        button {
+                            class: "btn-ghost",
+                            disabled: status == "completed" || status == "cancelled",
+                            onclick: move |_| {
+                                let dir = complete_dir.clone();
+                                spawn(async move { let _ = tauri_bridge::swarm_set_status(&dir, "completed").await; });
+                            },
+                            "Complete"
+                        }
+                    }
                 }
-
+                if !goal.is_empty() {
+                    div { style: "padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--textMuted); font-size: var(--text-sm);", "{goal}" }
+                }
                 if agents.is_empty() {
                     EmptyState {
                         kind: EmptyArt::Swarm,
@@ -347,54 +250,76 @@ pub fn SwarmBoard() -> Element {
                         hint: Some("Launch a swarm to coordinate agents.".to_string()),
                     }
                 } else {
-                    // Constellation map — see star_positions / arc_path docs above.
                     div {
-                        style: "position: relative; flex: 1; min-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
-
-                        // Gold great-circle arcs between consecutive agents —
-                        // the constellation lines linking the stars.
-                        if star_positions.len() >= 2 {
-                            svg {
-                                style: "position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;",
-                                view_box: "0 0 100 100",
-                                preserve_aspect_ratio: "none",
-                                path {
-                                    d: "{arc_path}",
-                                    fill: "none",
-                                    stroke: "var(--accent)",
-                                    stroke_width: "0.4",
-                                    stroke_opacity: "0.55",
-                                    stroke_dasharray: "1.2 1.6",
-                                    stroke_linecap: "round",
-                                }
+                        class: "swarm-network",
+                        style: "display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
+                        div {
+                            style: "display: flex; align-items: baseline; justify-content: space-between; gap: 12px;",
+                            div {
+                                style: "font-family: var(--font-display); font-size: var(--text-md); font-weight: 600; color: var(--text);",
+                                "Agent roster"
+                            }
+                            span {
+                                style: "font-size: var(--text-xs); color: var(--textMuted);",
+                                "{agents.len()} agents working toward this mission"
                             }
                         }
-
-                        // Agent "stars" — each wrapped at position: absolute
-                        // at the deterministic coord, with the existing
-                        // AgentCard (props + handlers byte-identical) inside.
-                        for (i, agent) in agents.iter().enumerate() {
-                            {
-                                let top = 14.0 + ((i % 5) as f32) * 19.0;
-                                let left = 16.0 + ((i / 5) as f32) * 26.0 + ((i % 3) as f32) * 12.0;
-                                rsx! {
-                                    div {
-                                        key: "{agent.id}",
-                                        style: "position: absolute; top: {top:.2}%; left: {left:.2}%; width: 168px; transform: translate(-50%, -50%); z-index: 2;",
-                                        AgentCard { agent: agent.clone() }
-                                    }
-                                }
+                        div {
+                            class: "swarm-agent-grid",
+                            style: "display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 10px;",
+                            for agent in agents.iter() {
+                                AgentCard { key: "{agent.id}", agent: agent.clone() }
+                            }
+                        }
+                    }
+                }
+                div {
+                    style: "display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px;",
+                    div { style: "padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bgSecondary);",
+                        div { style: "font-size: var(--text-xs); color: var(--accent); text-transform: uppercase; margin-bottom: 8px;", "Tasks" }
+                        for task in tasks.iter() {
+                            div { key: "{task.id}", style: "display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid var(--border); font-size: var(--text-xs);",
+                                span { style: "flex: 1;", "{task.title}" }
+                                span { style: "color: var(--textMuted);", "{task.status:?}" }
+                            }
+                        }
+                        if let Some(dir) = dir_for_task.clone() {
+                            input { class: "field", value: "{task_title}", placeholder: "New task", oninput: move |event| task_title.set(event.value()) }
+                            textarea { class: "field", style: "margin-top: 6px; min-height: 42px;", value: "{task_description}", placeholder: "Description (optional)", oninput: move |event| task_description.set(event.value()) }
+                            button { class: "btn-primary", style: "margin-top: 6px;", disabled: !can_add_task,
+                                onclick: move |_| {
+                                    let dir = dir.clone();
+                                    let agent = first_for_task.clone().unwrap_or_default();
+                                    let title = task_title();
+                                    let description = task_description();
+                                    spawn(async move { let _ = tauri_bridge::swarm_create_task(&dir, &title, &description, &agent).await; });
+                                    task_title.set(String::new());
+                                    task_description.set(String::new());
+                                },
+                                "Add task"
+                            }
+                        }
+                    }
+                    div { style: "padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bgSecondary);",
+                        div { style: "font-size: var(--text-xs); color: var(--accent); text-transform: uppercase; margin-bottom: 8px;", "Send message" }
+                        input { class: "field", value: "{message_text}", placeholder: "Message the next agent", oninput: move |event| message_text.set(event.value()) }
+                        if let Some(dir) = dir_for_message.clone() {
+                            button { class: "btn-primary", style: "margin-top: 6px;", disabled: !can_send_message,
+                                onclick: move |_| {
+                                    let dir = dir.clone();
+                                    let from = first_for_message.clone().unwrap_or_default();
+                                    let to = second_for_message.clone().unwrap_or_default();
+                                    let content = message_text();
+                                    spawn(async move { let _ = tauri_bridge::swarm_send_message(&dir, &from, &to, &content).await; });
+                                    message_text.set(String::new());
+                                },
+                                "Send"
                             }
                         }
                     }
                 }
             }
-
-            // Activity feed sidebar
-            div {
-                style: "width: 280px; border-left: 1px solid var(--border); background: var(--bgSecondary);",
-                SwarmActivityFeed { activities: activities }
-            }
+            div { style: "width: 280px; border-left: 1px solid var(--border); background: var(--bgSecondary);", SwarmActivityFeed { activities } }
         }
     }
 }

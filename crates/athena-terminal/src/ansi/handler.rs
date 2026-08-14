@@ -89,7 +89,17 @@ impl Perform for AnsiHandler {
 /// Apply a collected list of ANSI operations to the given grid.
 use crate::grid::Grid;
 
+/// Apply parsed operations to the grid, discarding protocol responses.
+///
+/// Kept as the stable convenience API for callers that only need rendering.
 pub fn apply_ops(grid: &mut Grid, ops: Vec<AnsiOp>) {
+    let _ = apply_ops_with_responses(grid, ops);
+}
+
+/// Apply parsed operations and return terminal-protocol responses that must be
+/// written back to the PTY by the session owner.
+pub fn apply_ops_with_responses(grid: &mut Grid, ops: Vec<AnsiOp>) -> Vec<Vec<u8>> {
+    let mut responses = Vec::new();
     for op in ops {
         match op {
             AnsiOp::Print(c) => {
@@ -112,7 +122,7 @@ pub fn apply_ops(grid: &mut Grid, ops: Vec<AnsiOp>) {
                         grid.carriage_return();
                         grid.newline();
                     }
-                    0x88 => {} // HTS - TODO
+                    0x88 => grid.set_tab_stop(), // HTS - set tab stop
                     0x8D => {
                         // RI
                         let top = grid.scroll_region.top;
@@ -127,14 +137,16 @@ pub fn apply_ops(grid: &mut Grid, ops: Vec<AnsiOp>) {
             }
             AnsiOp::Csi {
                 params,
-                intermediates: _,
+                intermediates,
                 ignore: _,
                 action,
             } => {
-                apply_csi(grid, &params, action);
+                if let Some(response) = apply_csi(grid, &params, &intermediates, action) {
+                    responses.push(response);
+                }
             }
             AnsiOp::Esc {
-                intermediates: _,
+                intermediates,
                 ignore: _,
                 byte,
             } => {
@@ -153,8 +165,10 @@ pub fn apply_ops(grid: &mut Grid, ops: Vec<AnsiOp>) {
                         grid.clear();
                         grid.move_cursor_to(0, 0);
                     }
-                    b'H' => {}        // HTS - TODO
-                    b'(' | b')' => {} // Charset select - TODO
+                    b'H' if intermediates.is_empty() => grid.set_tab_stop(), // HTS
+                    // ESC ( B / ESC ) 0 select a character set. The grid
+                    // currently renders Unicode directly and has no alternate
+                    // charset state, so these selectors are safely consumed.
                     _ => {}
                 }
             }
@@ -181,9 +195,15 @@ pub fn apply_ops(grid: &mut Grid, ops: Vec<AnsiOp>) {
             AnsiOp::DcsUnhook => {}
         }
     }
+    responses
 }
 
-fn apply_csi(grid: &mut Grid, params: &[u16], action: char) {
+fn apply_csi(
+    grid: &mut Grid,
+    params: &[u16],
+    intermediates: &[u8],
+    action: char,
+) -> Option<Vec<u8>> {
     let param_or = |idx: usize, default: u16| -> u16 {
         if let Some(&p) = params.get(idx) {
             if p == 0 {
@@ -196,6 +216,7 @@ fn apply_csi(grid: &mut Grid, params: &[u16], action: char) {
         }
     };
 
+    let mut response = None;
     match action {
         'A' => grid.move_cursor_up(param_or(0, 1) as usize),
         'B' => grid.move_cursor_down(param_or(0, 1) as usize),
@@ -246,9 +267,12 @@ fn apply_csi(grid: &mut Grid, params: &[u16], action: char) {
         'm' => grid.set_sgr(params),
         's' => grid.save_cursor(),
         'u' => grid.restore_cursor(),
-        'n' if param_or(0, 0) == 6 => {
-            // DSR - Device Status Report (cursor position)
-            // TODO: emit response
+        'n' if intermediates.is_empty() && param_or(0, 0) == 6 => {
+            // DSR 6: report cursor position using the standard 1-based
+            // `CSI row ; col R` response. The caller writes this response to
+            // the PTY after releasing the grid lock.
+            response =
+                Some(format!("\x1b[{};{}R", grid.cursor.row + 1, grid.cursor.col + 1).into_bytes());
         }
         'd' => {
             let row = param_or(0, 1) as usize;
@@ -280,5 +304,42 @@ fn apply_csi(grid: &mut Grid, params: &[u16], action: char) {
             }
         }
         _ => {}
+    }
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vte::Parser;
+
+    fn parse(input: &[u8]) -> (Grid, Vec<Vec<u8>>) {
+        let mut parser = Parser::new();
+        let mut handler = AnsiHandler::new();
+        parser.advance(&mut handler, input);
+        let mut grid = Grid::new(20, 4);
+        let responses = apply_ops_with_responses(&mut grid, handler.ops());
+        (grid, responses)
+    }
+
+    #[test]
+    fn dsr_reports_one_based_cursor_position() {
+        let (_grid, responses) = parse(b"abc\x1b[6n");
+        assert_eq!(responses, vec![b"\x1b[1;4R".to_vec()]);
+    }
+
+    #[test]
+    fn private_dsr_is_not_answered_as_a_standard_cursor_query() {
+        let (_grid, responses) = parse(b"\x1b[?6n");
+        assert!(responses.is_empty());
+    }
+
+    #[test]
+    fn hts_adds_a_tab_stop() {
+        let (mut grid, responses) = parse(b"\x1b[2G\x1bH");
+        assert!(responses.is_empty());
+        grid.move_cursor_to_col(0);
+        grid.tab();
+        assert_eq!(grid.cursor.col, 1);
     }
 }

@@ -29,14 +29,17 @@ async function lastSpaceState() {
     const grid = grids[grids.length - 1] || null
     const tabs = Array.from(document.querySelectorAll('.workspace-tab'))
     const tab = tabs[tabs.length - 1] || null
+    const rows = Array.from(document.querySelectorAll('.workspace-row'))
+    const row = rows[rows.length - 1] || null
     const dots = grid ? Array.from(grid.querySelectorAll('.status-dot')) : []
     const wraps = grid ? Array.from(grid.querySelectorAll('.pane-wrap')) : []
-    const badges = tab
-      ? Array.from(tab.querySelectorAll('.badge')).map((b) => ({
+    const badges = row
+      ? Array.from(row.querySelectorAll('.badge')).map((b) => ({
           label: b.getAttribute('aria-label'),
           text: (b.textContent || '').trim(),
         }))
       : []
+    const topTabBadges = tab ? Array.from(tab.querySelectorAll('.badge')).length : 0
     return {
       hasGrid: !!grid,
       hasTab: !!tab,
@@ -44,12 +47,13 @@ async function lastSpaceState() {
       dotClasses: dots.map((d) => d.className),
       paneIds: wraps.map((w) => w.getAttribute('data-pane-id')),
       badges,
+      topTabBadges,
     }
   })
 }
 
 describe('Agent activity detection UI', () => {
-  it('shows per-pane dots, zero badges for shell panes, and live working/total badges for a running agent-like process', async function () {
+  it('shows per-pane dots, hides zero badges for shell panes, and shows only live working badges for an agent-like process', async function () {
     // The full loop (launch + agent simulation + settle) exceeds the 60s
     // default mocha window.
     this.timeout(150000)
@@ -138,6 +142,7 @@ describe('Agent activity detection UI', () => {
       expect(cls).toContain('is-idle')
     }
     expect(idleState.badges.length).toBe(0)
+    expect(idleState.topTabBadges).toBe(0)
     expect(idleState.paneIds.length).toBe(3)
     const paneId = idleState.paneIds[0]
     expect(paneId).toBeTruthy()
@@ -196,14 +201,14 @@ describe('Agent activity detection UI', () => {
     console.log('[agent-badges] pty_write accepted by backend')
 
 
-    // ── 4. The agent appears: a working/thinking dot in the pane and the
-    //       [working][total] badges on the space tab.
+    // ── 4. The agent appears: a working/thinking dot in the pane and a
+    //       non-zero working badge in the workspace row.
     await browser.waitUntil(
       async () => {
         const s = await lastSpaceState()
         const labels = s.badges.map((b) => b.label)
         const liveDot = s.dotClasses.some((c) => c.includes('is-working') || c.includes('is-thinking'))
-        return liveDot && labels.includes('Agents working') && labels.includes('Agents')
+        return liveDot && labels.includes('Agents working')
       },
       {
         timeout: 20000,
@@ -212,18 +217,15 @@ describe('Agent activity detection UI', () => {
       },
     )
 
-    // ── 5. The user's core ask: working sits LEFT of total.
+    // ── 5. The user's core ask: only the non-zero working count is shown;
+    //       the redundant total count is omitted.
     const badgeOrder = await lastSpaceState()
     const labels = badgeOrder.badges.map((b) => b.label)
     const texts = badgeOrder.badges.map((b) => b.text)
     const workingIdx = labels.indexOf('Agents working')
-    const totalIdx = labels.indexOf('Agents')
     expect(workingIdx).toBeGreaterThanOrEqual(0)
-    expect(totalIdx).toBeGreaterThanOrEqual(0)
-    expect(workingIdx).toBeLessThan(totalIdx)
-    // working badge shows a count >= 1; total badge a count >= 1
+    expect(labels).not.toContain('Agents')
     expect(Number(texts[workingIdx])).toBeGreaterThanOrEqual(1)
-    expect(Number(texts[totalIdx])).toBeGreaterThanOrEqual(1)
 
     await browser.saveScreenshot(join(screenshotDir, 'agent-badges-working.png'))
 

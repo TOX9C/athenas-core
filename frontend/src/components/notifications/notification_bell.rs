@@ -5,6 +5,20 @@ use crate::stores::notification::{
 };
 use crate::tauri_bridge;
 use dioxus::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+fn notification_type_label(notification_type: &NotificationType) -> &'static str {
+    match notification_type {
+        NotificationType::Info => "Info",
+        NotificationType::Warning => "Warning",
+        NotificationType::Error => "Error",
+        NotificationType::Success => "Success",
+        NotificationType::NeedsInput => "Needs input",
+        NotificationType::TaskComplete => "Complete",
+        NotificationType::TaskError => "Task error",
+    }
+}
 
 /// Shared open state for the root-level notification popover.
 pub fn provide_notification_overlay_store() {
@@ -22,11 +36,49 @@ fn use_notification_overlay_store() -> Signal<bool> {
 pub fn NotificationBell() -> Element {
     let mut dropdown_open = use_notification_overlay_store();
     let notifications = use_notification_store();
+    let notification_pulse = use_signal(|| 0u64);
+    let unlisten: Rc<RefCell<Option<Box<dyn FnOnce()>>>> = use_hook(|| Rc::new(RefCell::new(None)));
+
+    // Unread history is persistent state, not a live activity signal. Listen
+    // for the backend event itself so a bell restored with old unread items is
+    // steady, while a newly arriving notification gets one short pulse even
+    // when unread_count was already non-zero.
+    let unlisten_for_effect = unlisten.clone();
+    use_effect(move || {
+        if unlisten_for_effect.borrow().is_some() {
+            return;
+        }
+        let mut pulse = notification_pulse;
+        if let Ok(handle) = tauri_bridge::listen("notifications:new", move |_payload: String| {
+            // The key below changes on every event, forcing a fresh DOM node
+            // and therefore replaying the CSS animation even if another
+            // notification arrived during the previous pulse.
+            pulse.set(pulse().wrapping_add(1));
+        }) {
+            *unlisten_for_effect.borrow_mut() = Some(handle);
+        }
+    });
+
+    let unlisten_for_drop = unlisten.clone();
+    use_drop(move || {
+        if let Some(handle) = unlisten_for_drop.borrow_mut().take() {
+            handle();
+        }
+    });
+
     let unread_count = notifications.read().iter().filter(|n| !n.read).count();
+    let bell_class = if notification_pulse() > 0 {
+        "icon-btn notification-bell-is-new"
+    } else if unread_count > 0 {
+        "icon-btn notification-bell-has-unread"
+    } else {
+        "icon-btn"
+    };
 
     rsx! {
         button {
-            class: "icon-btn",
+            key: "notification-bell-{notification_pulse()}",
+            class: "{bell_class}",
             style: "position: relative;",
             "aria-label": "Notifications",
             "aria-expanded": "{dropdown_open()}",
@@ -34,7 +86,7 @@ pub fn NotificationBell() -> Element {
             IconBell { size: Some(16), color: Some("currentColor".to_string()) }
             if unread_count > 0 {
                 span {
-                    style: "position: absolute; top: -4px; right: -4px; background: var(--accent); color: var(--bg); font-size: var(--text-2xs); font-weight: 700; padding: 1px 4px; border-radius: var(--radius-pill); min-width: 14px; text-align: center; line-height: 1.3; border: 1px solid var(--bgSecondary);",
+                    style: "position: absolute; top: -5px; right: -5px; background: var(--bgTertiary); color: var(--accent); font-size: var(--text-2xs); font-weight: 600; padding: 1px 4px; border-radius: var(--radius-sm); min-width: 14px; text-align: center; line-height: 1.3; border: 1px solid var(--border);",
                     "{unread_count}"
                 }
             }
@@ -73,7 +125,7 @@ pub fn NotificationPopover() -> Element {
                 style: "position: sticky; top: 0; z-index: 1; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; color: var(--accent); letter-spacing: 0.04em; background: var(--bgSecondary); display: flex; align-items: center; justify-content: space-between; gap: 6px;",
                 "Notifications"
                 if unread_count > 0 {
-                    span { class: "badge", style: "background: var(--accentSubtle); color: var(--accent);", "{unread_count}" }
+                    span { class: "badge", style: "color: var(--accent);", "{unread_count}" }
                 }
             }
 
@@ -99,6 +151,7 @@ pub fn NotificationPopover() -> Element {
                             NotificationType::Success | NotificationType::TaskComplete => "var(--success)",
                             _ => "var(--accentTeal)",
                         };
+                        let type_label = notification_type_label(&n.r#type);
                         rsx! {
                             div {
                                 key: "{id}",
@@ -112,7 +165,11 @@ pub fn NotificationPopover() -> Element {
                                         spawn(async move { let _ = tauri_bridge::notification_mark_read(&id).await; });
                                     }
                                 },
-                                div { style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {type_color}; flex-shrink: 0; margin-top: 4px;" }
+                                span {
+                                    class: "status-label",
+                                    style: "width: 64px; flex-shrink: 0; color: {type_color};",
+                                    "{type_label}"
+                                }
                                 div {
                                     style: "flex: 1; min-width: 0;",
                                     div { style: "font-size: var(--text-sm); font-weight: {weight}; color: {title_color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;", "{display_title}" }

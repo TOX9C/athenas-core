@@ -20,11 +20,8 @@ pub async fn mcp_init(state: State<'_, AppState>, port: u16) -> Result<(), Strin
             ))
         };
     }
-    server
-        .init(port)
-        .map_err(|e| e.to_string())
+    server.init(port).map_err(|e| e.to_string())
 }
-
 
 /// Shut down the MCP server.
 #[tauri::command]

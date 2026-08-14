@@ -1,4 +1,4 @@
-use crate::ansi::handler::{apply_ops, AnsiHandler};
+use crate::ansi::handler::{apply_ops_with_responses, AnsiHandler};
 use crate::grid::CellDelta;
 use crate::grid::Grid;
 use log::info;
@@ -7,12 +7,13 @@ use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::{close, fork, setsid, ForkResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::CString;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::io::{IntoRawFd, RawFd};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 use vte::Parser;
 
@@ -74,6 +75,8 @@ pub struct TerminalUpdate {
 }
 
 /// A PTY session combining a shell process, PTY file descriptor, and terminal grid.
+static STARTUP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub struct TerminalSession {
     pub id: String,
     pub grid: Arc<Mutex<Grid>>,
@@ -92,6 +95,10 @@ pub struct TerminalSession {
     pub pgid: nix::unistd::Pid,
     pub shell: String,
     pub cwd: String,
+    /// Slave TTY path used by harnesses such as OMP to associate a terminal
+    /// with their durable session breadcrumb. Best-effort; some platforms or
+    /// multiplexer layers do not expose a path.
+    pub tty_path: Option<String>,
     pub status: Mutex<PtyStatus>,
     /// Whether this session is rendered by xterm.js on the frontend.
     /// When true, the `terminal:data` event (cell deltas) is skipped
@@ -104,10 +111,42 @@ pub struct TerminalSession {
     /// remount (pane swap): the old mount pauses the backend before unlisten,
     /// and the new mount unpauses after re-subscribe + snapshot replay.
     pub raw_paused: AtomicBool,
+    /// Monotonically increasing xterm listener generation. A teardown may only
+    /// pause the generation it detached; this prevents an old async teardown
+    /// from pausing a newer remounted listener.
+    pub listener_generation: AtomicU64,
+    /// Serializes the generation check and raw-pause update. Without this
+    /// critical section, a stale detach could observe its generation, then a
+    /// newer attach could unpause, and finally the stale detach could pause the
+    /// new listener.
+    listener_lifecycle_lock: std::sync::Mutex<()>,
+    /// Owner token for the currently attached frontend mount. Generations
+    /// protect ordering; the owner token also protects against a late attach
+    /// from an abandoned mount claiming the replacement mount's generation.
+    listener_owner: std::sync::Mutex<Option<String>>,
+    /// Marks the current owner as detached. A late attach from that same
+    /// owner must be rejected even while output is paused; a new mount owner
+    /// may claim the paused session.
+    listener_owner_detached: std::sync::Mutex<bool>,
+    /// Owner allowed to claim a startup-paused session before the first
+    /// listener attaches. This prevents a delayed attach from an abandoned
+    /// mount stealing the pause from the replacement mount.
+    pending_listener_owner: std::sync::Mutex<Option<String>>,
+    /// Safety deadline for a startup pause. If xterm initialization fails
+    /// before the listener handshake, the PTY must eventually resume output.
+    startup_pause_deadline: std::sync::Mutex<Option<Instant>>,
+    /// Owner tokens cancelled before their delayed attach arrived. These
+    /// tombstones prevent a stale attach from reclaiming an expired/cancelled
+    /// startup pause before the replacement mount can attach.
+    rejected_startup_owner: std::sync::Mutex<Option<String>>,
     /// Ensures only one background reader consumes a session's PTY master.
     /// `SessionManager::spawn` intentionally returns an existing session for
     /// duplicate IDs, so callers must claim the read loop separately.
     reader_started: AtomicBool,
+    /// Optional private startup file/directory used to load shell integration
+    /// before the interactive prompt. Keeping this out of the PTY input stream
+    /// prevents zsh from echoing the generated hook definitions to the user.
+    startup_cleanup_path: Option<std::path::PathBuf>,
     pub pending_writes: Mutex<VecDeque<Vec<u8>>>,
     /// Serialize writes to the PTY master.
     ///
@@ -140,6 +179,7 @@ impl Drop for TerminalSession {
         // process table. The grace-then-SIGKILL escalation also handles
         // defiant shells that ignore SIGTERM.
         reap_process_group(self.shell_pid, self.pgid);
+        cleanup_startup_path(self.startup_cleanup_path.as_deref());
     }
 }
 
@@ -155,6 +195,24 @@ impl TerminalSession {
         cols: usize,
         rows: usize,
     ) -> Self {
+        Self::new_with_startup(
+            id, master_fd, shell_pid, pgid, shell, cwd, None, cols, rows, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_startup(
+        id: String,
+        master_fd: RawFd,
+        shell_pid: nix::unistd::Pid,
+        pgid: nix::unistd::Pid,
+        shell: String,
+        cwd: String,
+        tty_path: Option<String>,
+        cols: usize,
+        rows: usize,
+        startup_cleanup_path: Option<std::path::PathBuf>,
+    ) -> Self {
         Self {
             id,
             grid: Arc::new(Mutex::new(Grid::new(cols, rows))),
@@ -163,10 +221,19 @@ impl TerminalSession {
             pgid,
             shell,
             cwd,
+            tty_path,
             status: Mutex::new(PtyStatus::Spawning),
             is_xterm: AtomicBool::new(false),
             raw_paused: AtomicBool::new(false),
+            listener_generation: AtomicU64::new(0),
+            listener_lifecycle_lock: std::sync::Mutex::new(()),
+            listener_owner: std::sync::Mutex::new(None),
+            listener_owner_detached: std::sync::Mutex::new(false),
+            pending_listener_owner: std::sync::Mutex::new(None),
+            startup_pause_deadline: std::sync::Mutex::new(None),
+            rejected_startup_owner: std::sync::Mutex::new(None),
             reader_started: AtomicBool::new(false),
+            startup_cleanup_path,
             pending_writes: Mutex::new(VecDeque::new()),
             write_lock: Mutex::new(()),
             parser: Mutex::new(Parser::new()),
@@ -287,6 +354,245 @@ impl TerminalSession {
         .map_err(io::Error::other)?
     }
 
+    /// Begin a bounded startup pause before the frontend's raw listener exists.
+    ///
+    /// The owner is optional for legacy callers that do not use xterm startup
+    /// handshakes. When present, only that mount may claim the paused session.
+    pub fn begin_startup_pause(&self, owner: Option<String>) {
+        let _lifecycle_guard = self
+            .listener_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *self
+            .pending_listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = owner;
+        *self
+            .startup_pause_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Instant::now() + Duration::from_secs(5));
+        *self
+            .rejected_startup_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.raw_paused.store(true, Ordering::Release);
+    }
+
+    /// Release an abandoned startup pause. Returns true when this call
+    /// actually resumed output so the read loop can flush its coalesced burst.
+    pub fn expire_startup_pause(&self) -> bool {
+        let _lifecycle_guard = self
+            .listener_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let expired = self
+            .startup_pause_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        if !expired || !self.raw_paused.load(Ordering::Acquire) {
+            return false;
+        }
+        let pending_owner = self
+            .pending_listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        *self
+            .rejected_startup_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = pending_owner;
+        *self
+            .pending_listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .startup_pause_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.raw_paused.store(false, Ordering::Release);
+        true
+    }
+
+    /// Register a new frontend raw-output listener generation and resume output.
+    ///
+    /// The generation is allocated before clearing `raw_paused`, so an older
+    /// teardown racing this attach can only observe a stale generation and is
+    /// ignored by `detach_listener`.
+    pub fn attach_listener(&self, owner: String, replace_current: bool) -> Option<u64> {
+        let _lifecycle_guard = self
+            .listener_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut current_owner = self
+            .listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut owner_detached = self
+            .listener_owner_detached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut pending_owner = self
+            .pending_listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut pause_deadline = self
+            .startup_pause_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut paused = self.raw_paused.load(Ordering::Acquire);
+        if replace_current && (current_owner.is_some() || pending_owner.is_some()) {
+            // A remount explicitly supersedes any older attach still in
+            // flight. The lifecycle lock makes replacement and attachment
+            // one atomic handoff.
+            *current_owner = None;
+            *owner_detached = false;
+            *pending_owner = Some(owner.clone());
+            *self
+                .rejected_startup_owner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+        if paused && pause_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            *pending_owner = None;
+            *pause_deadline = None;
+            self.raw_paused.store(false, Ordering::Release);
+            paused = false;
+        }
+        if current_owner.is_none()
+            && pending_owner
+                .as_deref()
+                .is_some_and(|pending| pending != owner.as_str())
+        {
+            // A delayed attach from an abandoned startup mount cannot claim
+            // the replacement mount's pending pause.
+            return None;
+        }
+        if current_owner.is_none()
+            && pending_owner.is_none()
+            && self
+                .rejected_startup_owner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_deref()
+                == Some(owner.as_str())
+        {
+            // This owner was explicitly cancelled or expired before its
+            // attach arrived; do not let the stale task reclaim the session.
+            return None;
+        }
+        if current_owner.as_deref() == Some(owner.as_str()) && *owner_detached && paused {
+            // This owner already detached. Its attach response arrived late;
+            // do not let it reclaim a paused session needed by a remount.
+            return None;
+        }
+        if current_owner
+            .as_deref()
+            .is_some_and(|current| current != owner)
+            && !paused
+        {
+            // A different owner is already live. This is a late attach from an
+            // abandoned mount; rejecting it keeps it from stealing ownership
+            // from the replacement mount.
+            return None;
+        }
+        if current_owner.as_deref() == Some(owner.as_str()) && !paused {
+            return Some(self.listener_generation.load(Ordering::Acquire));
+        }
+        let generation = self.listener_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        *current_owner = Some(owner);
+        *owner_detached = false;
+        *pending_owner = None;
+        *pause_deadline = None;
+        *self
+            .rejected_startup_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.raw_paused.store(false, Ordering::Release);
+        Some(generation)
+    }
+
+    /// Cancel a startup listener lease before its first attach arrives.
+    /// Generation zero is reserved for this pre-attach cleanup path.
+    pub fn cancel_startup_pause(&self, owner: &str) -> bool {
+        let _lifecycle_guard = self
+            .listener_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pending_matches = self
+            .pending_listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_deref()
+            == Some(owner);
+        let current_matches = self
+            .listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_deref()
+            == Some(owner);
+        if !pending_matches && !current_matches {
+            return false;
+        }
+        if current_matches {
+            *self
+                .listener_owner_detached
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            self.raw_paused.store(true, Ordering::Release);
+        } else {
+            self.raw_paused.store(false, Ordering::Release);
+        }
+        *self
+            .pending_listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .startup_pause_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .rejected_startup_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(owner.to_string());
+        true
+    }
+
+    /// Pause output only when both the generation and mount owner are still
+    /// current. Returns false for stale or abandoned teardown work.
+    pub fn detach_listener(&self, owner: &str, generation: u64) -> bool {
+        let _lifecycle_guard = self
+            .listener_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.listener_generation.load(Ordering::Acquire) != generation {
+            return false;
+        }
+        let current_owner = self
+            .listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current_owner.as_deref() != Some(owner) {
+            return false;
+        }
+        *self
+            .listener_owner_detached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        *self
+            .pending_listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .startup_pause_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        drop(current_owner);
+        self.raw_paused.store(true, Ordering::Release);
+        true
+    }
+
     /// Claim ownership of the session's background PTY reader.
     ///
     /// Multiple callers can receive the same `Arc<TerminalSession>` when a
@@ -332,6 +638,127 @@ pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, Arc<TerminalSession>>>>,
 }
 
+/// Return flags that keep the app terminal independent from broken or
+/// machine-specific interactive shell startup files. Athena owns the PTY
+/// environment, so `.zshrc`/`.bashrc` failures must not prevent a usable shell.
+fn shell_name(shell: &str) -> &str {
+    std::path::Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+}
+
+fn cleanup_startup_path(path: Option<&std::path::Path>) {
+    if let Some(path) = path {
+        let _ = std::fs::remove_dir_all(path);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Quote a path for a shell `source` command without allowing path characters
+/// to become shell syntax. Startup files are generated by Athena, but the
+/// user's home directory may contain spaces or apostrophes.
+fn shell_single_quote(path: &std::path::Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+/// Preserve the user's normal interactive shell configuration while keeping
+/// Athena's integration script in a private startup file. The private file is
+/// the only file passed to the child shell, so Athena can load hooks silently;
+/// sourcing the real rc file first restores Oh My Zsh, prompts, aliases, and
+/// user PATH setup.
+fn startup_script_with_user_config(shell: &str, integration_script: &str) -> String {
+    let user_home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let user_rcs: Vec<std::path::PathBuf> = match shell_name(shell) {
+        "zsh" => {
+            let dir = std::env::var_os("ZDOTDIR")
+                .map(std::path::PathBuf::from)
+                .or_else(|| user_home.clone());
+            dir.into_iter()
+                .flat_map(|dir| [dir.join(".zshenv"), dir.join(".zshrc")])
+                .collect()
+        }
+        "bash" => user_home
+            .map(|dir| vec![dir.join(".bashrc")])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    let source_user = user_rcs
+        .into_iter()
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let quoted = shell_single_quote(&path);
+            format!("if [[ -r {quoted} ]]; then source {quoted}; fi\n")
+        })
+        .collect::<String>();
+
+    // A user's rc file may assume Oh My Zsh's conventional ZSH variable is
+    // exported by an outer login shell. Athena launches zsh directly with
+    // `-d -i`, so make the well-known install location explicit before
+    // sourcing `.zshrc`. This prevents `source /oh-my-zsh.sh` and the follow-on
+    // `compdef: command not found` cascade without modifying the user's files.
+    let omz_bootstrap = if shell_name(shell) == "zsh" {
+        "if [[ -z \"${ZSH:-}\" || ! -f \"${ZSH}/oh-my-zsh.sh\" ]]; then\n  unset ZSH\n  for __athena_omz in \"$HOME/.oh-my-zsh\" \"$HOME/.config/oh-my-zsh\" \"/opt/homebrew/share/oh-my-zsh\" \"/usr/local/share/oh-my-zsh\"; do\n    if [[ -f \"$__athena_omz/oh-my-zsh.sh\" ]]; then export ZSH=\"$__athena_omz\"; break; fi\n  done\n  unset __athena_omz\nfi\n"
+    } else {
+        ""
+    };
+
+    format!("{omz_bootstrap}{source_user}\n{integration_script}\n")
+}
+
+fn shell_flags(shell: &str) -> &'static [&'static str] {
+    match shell_name(shell) {
+        "zsh" => &["-f", "-i"],
+        "bash" => &["--noprofile", "--norc", "-i"],
+        "fish" => &["--no-config", "--interactive"],
+        "sh" => &["-i"],
+        _ => &[],
+    }
+}
+
+/// Build a predictable terminal environment while preserving the user's
+/// normal environment for PATH and tool discovery. `TERM` and `COLORTERM`
+/// are essential for ANSI/true-colour output from agent CLIs.
+fn child_environment_with_startup(startup_env: Option<(&str, &std::path::Path)>) -> Vec<CString> {
+    let mut values = BTreeMap::new();
+    for (key, value) in std::env::vars() {
+        values.insert(key, value);
+    }
+    values.insert("TERM".to_string(), "xterm-256color".to_string());
+    values.insert("COLORTERM".to_string(), "truecolor".to_string());
+    values.insert("TERM_PROGRAM".to_string(), "Athena".to_string());
+    values.insert("ATHENA_SHELL_INTEGRATION".to_string(), "1".to_string());
+    if let Some((key, path)) = startup_env {
+        values.insert(key.to_string(), path.to_string_lossy().into_owned());
+    }
+    let home_bin = values.get("HOME").map(|home| format!("{home}/.local/bin"));
+    let bun_bin = values.get("HOME").map(|home| format!("{home}/.bun/bin"));
+    if let Some(path) = values.get_mut("PATH") {
+        let mut prefix = Vec::new();
+        for entry in [
+            Some("/opt/homebrew/bin".to_string()),
+            Some("/usr/local/bin".to_string()),
+            home_bin,
+            bun_bin,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !path.split(':').any(|current| current == entry) {
+                prefix.push(entry);
+            }
+        }
+        if !prefix.is_empty() {
+            *path = format!("{}:{path}", prefix.join(":"));
+        }
+    }
+    values
+        .into_iter()
+        .filter_map(|(key, value)| CString::new(format!("{key}={value}")).ok())
+        .collect()
+}
+
 impl SessionManager {
     pub fn new() -> Self {
         Self {
@@ -346,6 +773,19 @@ impl SessionManager {
         cwd: &str,
         cols: u16,
         rows: u16,
+    ) -> io::Result<Arc<TerminalSession>> {
+        self.spawn_with_startup_script(id, shell, cwd, cols, rows, None)
+            .await
+    }
+
+    pub async fn spawn_with_startup_script(
+        &self,
+        id: String,
+        shell: &str,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        startup_script: Option<&str>,
     ) -> io::Result<Arc<TerminalSession>> {
         info!(
             "Spawning PTY session: id={}, shell={}, cwd={}",
@@ -416,9 +856,109 @@ impl SessionManager {
         let master_fd = pty.master.into_raw_fd();
         let slave_fd = pty.slave.into_raw_fd();
 
-        let shell_cstr = CString::new(shell.as_bytes())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        let args: Vec<CString> = vec![shell_cstr.clone()];
+        // Load integration through the shell's startup mechanism rather than
+        // writing the script into the interactive input stream. The latter is
+        // echoed by zsh and leaves the terminal showing function definitions.
+        let startup_cleanup_path = startup_script.and_then(|script| {
+            let suffix = STARTUP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let base =
+                std::env::temp_dir().join(format!("athena-shell-{}-{suffix}", std::process::id()));
+            let write_new = |path: &std::path::Path, contents: &str| -> io::Result<()> {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)?;
+                file.write_all(contents.as_bytes())?;
+                file.flush()
+            };
+            let zsh_or_bash_script = startup_script_with_user_config(shell, script);
+            let result = match shell_name(shell) {
+                "zsh" => std::fs::create_dir(&base)
+                    .and_then(|_| {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            std::fs::set_permissions(
+                                &base,
+                                std::fs::Permissions::from_mode(0o700),
+                            )?;
+                        }
+                        write_new(&base.join(".zshrc"), &zsh_or_bash_script)
+                    })
+                    .map(|_| base.clone()),
+                "bash" => {
+                    let path = base.with_extension("bashrc");
+                    write_new(&path, &zsh_or_bash_script).map(|_| path)
+                }
+                "fish" => {
+                    let path = base.with_extension("fish");
+                    write_new(&path, script).map(|_| path)
+                }
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unsupported shell integration startup",
+                )),
+            };
+            match result {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    cleanup_startup_path(Some(&base));
+                    log::warn!("could not prepare shell integration startup file: {error}");
+                    None
+                }
+            }
+        });
+
+        let shell_cstr = match CString::new(shell.as_bytes()) {
+            Ok(shell_cstr) => shell_cstr,
+            Err(error) => {
+                cleanup_startup_path(startup_cleanup_path.as_deref());
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, error));
+            }
+        };
+        let mut args: Vec<CString> = vec![shell_cstr.clone()];
+        match (shell_name(shell), startup_cleanup_path.as_deref()) {
+            ("zsh", Some(_)) => args.extend(
+                ["-d", "-i"]
+                    .into_iter()
+                    .map(|flag| CString::new(flag).expect("static shell flag has no NUL")),
+            ),
+            ("bash", Some(path)) => {
+                args.extend(
+                    ["--noprofile", "--rcfile"]
+                        .into_iter()
+                        .map(|flag| CString::new(flag).expect("static shell flag has no NUL")),
+                );
+                args.push(
+                    CString::new(path.to_string_lossy().as_bytes()).expect("path has no NUL"),
+                );
+                args.push(CString::new("-i").expect("static shell flag has no NUL"));
+            }
+            ("fish", Some(path)) => {
+                args.extend(
+                    ["--no-config", "--init-command"]
+                        .into_iter()
+                        .map(|flag| CString::new(flag).expect("static shell flag has no NUL")),
+                );
+                let command = format!("source '{}'", path.to_string_lossy().replace('\'', "\\'"));
+                args.push(CString::new(command).expect("path has no NUL"));
+                args.push(CString::new("--interactive").expect("static shell flag has no NUL"));
+            }
+            (_, Some(_)) | (_, None) => {
+                args.extend(
+                    shell_flags(shell)
+                        .iter()
+                        .map(|flag| CString::new(*flag).expect("static shell flag has no NUL")),
+                );
+            }
+        }
+        let startup_env = match (shell_name(shell), startup_cleanup_path.as_deref()) {
+            // Point zsh at the generated rc directory; that file explicitly
+            // sources the user's real rc files and then Athena's hooks.
+            ("zsh", Some(path)) => Some(("ZDOTDIR", path)),
+            _ => None,
+        };
+        let environment = child_environment_with_startup(startup_env);
 
         match unsafe { fork() } {
             Ok(ForkResult::Child) => {
@@ -446,13 +986,28 @@ impl SessionManager {
                 }
                 let _ = close(slave_fd);
                 let _ = nix::unistd::chdir(std::path::Path::new(cwd));
-                let _ = nix::unistd::execvp(&shell_cstr, &args);
-                // execvp only returns on failure.
+                let _ = nix::unistd::execve(&shell_cstr, &args, &environment);
+                // execve only returns on failure.
                 let _ = unsafe { libc::write(err_write, [2u8].as_ptr() as *const _, 1) };
                 let _ = close(err_write);
                 std::process::exit(1);
             }
             Ok(ForkResult::Parent { child }) => {
+                // OMP derives its terminal breadcrumb key from ttyname(0).
+                // Capture the PTY slave path before closing the parent's copy
+                // so the heartbeat can prefer an exact session mapping over
+                // a newest-by-cwd approximation.
+                let tty_path = unsafe {
+                    let ptr = libc::ttyname(slave_fd);
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        std::ffi::CStr::from_ptr(ptr)
+                            .to_str()
+                            .ok()
+                            .map(str::to_string)
+                    }
+                };
                 let _ = close(slave_fd);
                 let _ = close(err_write);
 
@@ -472,6 +1027,7 @@ impl SessionManager {
                     };
                     let _ = nix::sys::wait::waitpid(child, None);
                     let _ = close(master_fd);
+                    cleanup_startup_path(startup_cleanup_path.as_deref());
                     return Err(io::Error::other(err_msg));
                 }
 
@@ -489,15 +1045,17 @@ impl SessionManager {
                     _ => child,
                 };
 
-                let session = Arc::new(TerminalSession::new(
+                let session = Arc::new(TerminalSession::new_with_startup(
                     id.clone(),
                     master_fd,
                     child,
                     pgid,
                     shell.to_string(),
                     cwd.to_string(),
+                    tty_path,
                     cols as usize,
                     rows as usize,
+                    startup_cleanup_path.clone(),
                 ));
 
                 // Defensive re-check: with the write lock held continuously
@@ -519,7 +1077,10 @@ impl SessionManager {
                 sessions.insert(id.clone(), session.clone());
                 Ok(session)
             }
-            Err(e) => Err(io::Error::other(e.to_string())),
+            Err(e) => {
+                cleanup_startup_path(startup_cleanup_path.as_deref());
+                Err(io::Error::other(e.to_string()))
+            }
         }
     }
 
@@ -732,8 +1293,17 @@ impl TerminalSession {
     /// resulting ops to the grid. Returns a `TerminalUpdate` with cell
     /// deltas only if the grid state actually changed.
     pub async fn parse_bytes(&self, data: &[u8]) -> io::Result<Option<TerminalUpdate>> {
+        Ok(self.parse_bytes_with_responses(data).await?.0)
+    }
+
+    /// Parse PTY bytes and return any terminal-protocol responses (currently
+    /// DSR cursor-position replies) alongside the optional grid update.
+    pub async fn parse_bytes_with_responses(
+        &self,
+        data: &[u8],
+    ) -> io::Result<(Option<TerminalUpdate>, Vec<Vec<u8>>)> {
         if data.is_empty() {
-            return Ok(None);
+            return Ok((None, Vec::new()));
         }
 
         // Feed bytes through the persistent parser; the handler is a local
@@ -745,8 +1315,7 @@ impl TerminalSession {
         drop(parser_guard);
 
         let mut grid_guard = self.grid.lock().await;
-        apply_ops(&mut grid_guard, ops);
-
+        let responses = apply_ops_with_responses(&mut grid_guard, ops);
         let deltas = grid_guard.dirty_deltas();
         let cursor_row = grid_guard.cursor.row;
         let cursor_col = grid_guard.cursor.col;
@@ -769,7 +1338,7 @@ impl TerminalSession {
             None
         };
         drop(grid_guard);
-        Ok(update)
+        Ok((update, responses))
     }
 
     /// Convenience wrapper: `read_bytes` + `parse_bytes` in one call.
@@ -788,6 +1357,56 @@ impl TerminalSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zsh_startup_bootstrap_rejects_stale_omz_path() {
+        let script = startup_script_with_user_config("/bin/zsh", "echo athena");
+        assert!(script.contains("${ZSH}/oh-my-zsh.sh"));
+        assert!(script.contains("$HOME/.oh-my-zsh"));
+        assert!(script.contains("echo athena"));
+    }
+
+    #[test]
+    fn shell_flags_disable_user_startup_files() {
+        assert_eq!(shell_flags("/bin/zsh"), &["-f", "-i"]);
+        assert_eq!(shell_flags("/bin/bash"), &["--noprofile", "--norc", "-i"]);
+        assert_eq!(
+            shell_flags("/usr/bin/fish"),
+            &["--no-config", "--interactive"]
+        );
+    }
+
+    #[test]
+    fn shell_integration_token_is_one_shot_and_retryable() {
+        let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
+        let session = TerminalSession::new(
+            "integration-token".to_string(),
+            read_end.into_raw_fd(),
+            nix::unistd::Pid::from_raw(1),
+            nix::unistd::Pid::from_raw(1),
+            "/bin/zsh".to_string(),
+            "/".to_string(),
+            80,
+            24,
+        );
+        assert!(session.startup_cleanup_path.is_none());
+        session.close_fd();
+    }
+
+    #[test]
+    fn child_environment_requests_color_terminal() {
+        let env = child_environment_with_startup(None);
+        let values: Vec<&str> = env.iter().filter_map(|value| value.to_str().ok()).collect();
+        assert!(values.contains(&"TERM=xterm-256color"));
+        assert!(values.contains(&"COLORTERM=truecolor"));
+        if let Ok(home) = std::env::var("HOME") {
+            let path = values.iter().find_map(|value| value.strip_prefix("PATH="));
+            assert!(path.is_some_and(|path| {
+                path.split(':')
+                    .any(|entry| entry == format!("{home}/.bun/bin"))
+            }));
+        }
+    }
 
     #[tokio::test]
     async fn spawn_with_same_id_returns_existing() {
@@ -928,6 +1547,119 @@ mod tests {
         let err = result.err().expect("already checked");
         assert!(err.to_string().contains("execvp"));
         assert!(!manager.has_session("fail_id").await);
+    }
+
+    #[test]
+    fn listener_generation_ignores_stale_detach() {
+        let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
+        let foreign_pgid = nix::unistd::Pid::from_raw(1);
+        let session = TerminalSession::new(
+            "listener-generation".to_string(),
+            read_end.into_raw_fd(),
+            foreign_pgid,
+            foreign_pgid,
+            "/bin/sh".to_string(),
+            "/".to_string(),
+            80,
+            24,
+        );
+
+        let first = session
+            .attach_listener("owner-a".to_string(), false)
+            .expect("first owner should attach");
+        assert!(session
+            .attach_listener("owner-b".to_string(), false)
+            .is_none());
+        assert!(!session.raw_paused.load(Ordering::Acquire));
+        assert!(session.detach_listener("owner-a", first));
+        assert!(session.raw_paused.load(Ordering::Acquire));
+        let second = session
+            .attach_listener("owner-b".to_string(), false)
+            .expect("paused session should accept replacement owner");
+        assert!(second > first);
+        assert!(!session.raw_paused.load(Ordering::Acquire));
+        assert!(!session.detach_listener("owner-a", second));
+        assert!(!session.raw_paused.load(Ordering::Acquire));
+        assert!(session.detach_listener("owner-b", second));
+        assert!(session
+            .attach_listener("owner-b".to_string(), false)
+            .is_none());
+        assert!(session.raw_paused.load(Ordering::Acquire));
+        let third = session
+            .attach_listener("owner-c".to_string(), false)
+            .expect("new owner should reclaim paused session");
+        assert!(third > second);
+        assert!(!session.raw_paused.load(Ordering::Acquire));
+        assert!(session.detach_listener("owner-c", third));
+
+        // A replacement may supersede an old owner even if that owner already
+        // attached and cleared the pause before the replacement arrived.
+        let fourth = session
+            .attach_listener("owner-d".to_string(), true)
+            .expect("replacement owner should supersede the old live owner");
+        assert!(fourth > third);
+        assert!(!session.detach_listener("owner-c", fourth));
+        assert!(session.detach_listener("owner-d", fourth));
+        session.close_fd();
+    }
+
+    #[test]
+    fn cancelled_startup_owner_cannot_reclaim() {
+        let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
+        let foreign_pgid = nix::unistd::Pid::from_raw(1);
+        let session = TerminalSession::new(
+            "startup-lease-cancel".to_string(),
+            read_end.into_raw_fd(),
+            foreign_pgid,
+            foreign_pgid,
+            "/bin/sh".to_string(),
+            "/".to_string(),
+            80,
+            24,
+        );
+
+        session.begin_startup_pause(Some("owner-a".to_string()));
+        assert!(session.cancel_startup_pause("owner-a"));
+        assert!(!session.raw_paused.load(Ordering::Acquire));
+        assert!(session
+            .attach_listener("owner-a".to_string(), false)
+            .is_none());
+        assert!(session
+            .attach_listener("owner-b".to_string(), false)
+            .is_some());
+        session.close_fd();
+    }
+
+    #[test]
+    fn expired_startup_owner_cannot_reclaim() {
+        let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
+        let foreign_pgid = nix::unistd::Pid::from_raw(1);
+        let session = TerminalSession::new(
+            "startup-lease-expiry".to_string(),
+            read_end.into_raw_fd(),
+            foreign_pgid,
+            foreign_pgid,
+            "/bin/sh".to_string(),
+            "/".to_string(),
+            80,
+            24,
+        );
+
+        session.begin_startup_pause(Some("owner-a".to_string()));
+        *session
+            .startup_pause_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Instant::now() - Duration::from_secs(1));
+        assert!(session.expire_startup_pause());
+        assert!(!session.raw_paused.load(Ordering::Acquire));
+        assert!(session
+            .attach_listener("owner-a".to_string(), false)
+            .is_none());
+        assert!(session
+            .attach_listener("owner-b".to_string(), false)
+            .is_some());
+        session.close_fd();
     }
 
     /// Only one caller may claim a session's background PTY reader.

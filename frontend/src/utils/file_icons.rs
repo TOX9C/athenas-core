@@ -1,6 +1,6 @@
 //! File icon utility — ported from src/utils/fileIcons.ts
 //!
-//! Maps file extensions to emoji icons.
+//! Maps file extensions to short text badges used in the file tree.
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;

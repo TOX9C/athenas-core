@@ -2,19 +2,11 @@
 
 <img src="src-tauri/icons/128x128.png?v=2025" alt="Athena's Core" width="128" height="128" />
 
-A next-generation desktop IDE for AI-assisted software development. Athena's Core unifies a multi-pane terminal, AI chat assistant, task management, and multi-agent orchestration into a single cross-platform native application.
+A next-generation desktop IDE for AI-assisted software development. Athena's Core unifies a multi-pane terminal, AI chat assistant, task management, and multi-agent orchestration into a single native application. The current release scope is macOS on Apple Silicon (arm64), macOS 13.0 or newer; other platforms are not release artifacts yet.
 
 ## Preview
 
-<p align="center">
-  <a href="docs/athenas-core-ad.mp4">
-    <img src="docs/athenas-core-ad.gif" alt="Athena's Core — Product Showcase" width="900" />
-  </a>
-</p>
-
-<p align="center">
-  <i>75-second product showcase: workspace, AI chat, swarm, kanban, editor, and command palette.<br><a href="docs/athenas-core-ad.mp4">Download the full 1080p MP4 (5 MB)</a></i>
-</p>
+A native desktop workspace for AI-assisted software development — multi-pane terminal, AI chat, task management, and multi-agent orchestration in a single ~15MB Rust + Tauri binary.
 
 ---
 
@@ -25,6 +17,7 @@ A next-generation desktop IDE for AI-assisted software development. Athena's Cor
 - [Getting Started](#getting-started)
 - [Architecture](#architecture)
 - [Screenshots](#screenshots)
+- [Privacy and Support](#privacy-and-support)
 - [License](#license)
 
 ---
@@ -95,8 +88,9 @@ Browse the web without leaving your workspace.
 
 - **Embedded webview**: Full web browsing capability within a resizable sidebar panel
 - **Navigation controls**: Back, forward, reload with full history tracking
-- **External links**: Open links in your native browser with one click
-- **Safe URL handling**: Dangerous schemes and empty URLs are automatically rejected
+- **Native child webview**: Sites render in a real Tauri WebView rather than an iframe, with docking and sidebar relocation support
+- **Live page state**: Clicked links, redirects, document titles, and load status synchronize back to the toolbar
+- **Safe URL handling**: Only validated HTTP(S) URLs are accepted; dangerous schemes, credentials, malformed hosts, and empty URLs are rejected. Private IPv4/localhost targets remain available for local development.
 
 ### Notification System
 
@@ -159,10 +153,8 @@ Organize your work into isolated workspaces.
 - **Node.js 18+** - For the Dioxus frontend build tools
 - **Tauri CLI** - `cargo install tauri-cli`
 - **Dioxus CLI** - `cargo install --git https://github.com/DioxusLabs/dioxus dioxus-cli`
-- **Platform dependencies**:
-  - **macOS**: Xcode Command Line Tools
-  - **Linux**: `webkit2gtk-4.1`, `build-essential`, `curl`, `wget`, `libssl-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`
-  - **Windows**: WebView2 (included in Windows 10/11), Visual Studio Build Tools
+- **Platform dependencies** (macOS only — Windows and Linux are not release targets yet):
+  - **macOS 13.0+ on Apple Silicon**: Xcode Command Line Tools for development; public DMGs are signed/notarized release artifacts.
 
 ### Quick Start
 
@@ -234,7 +226,7 @@ cargo test --workspace -- --nocapture
 
 | Crate             | Purpose                                             |
 | ----------------- | --------------------------------------------------- |
-| `src-tauri`       | Tauri binary, 95 IPC commands, app shell            |
+| `src-tauri`       | Tauri binary, 133 IPC commands, app shell           |
 | `athena-frontend` | Dioxus web frontend, 85+ components, 15 stores      |
 | `athena-core`     | LLM orchestrator, MCP server, agent comms, search   |
 | `athena-terminal` | PTY session manager with ANSI/VT100 emulator        |
@@ -247,9 +239,7 @@ cargo test --workspace -- --nocapture
 
 ## Screenshots
 
-![Athena's Core Showcase](docs/athenas-core-ad.gif)
-
-_75-second product showcase: workspace, AI chat, swarm, kanban, editor, and command palette._
+Screenshots will be added with the public release.
 
 ---
 
@@ -267,6 +257,12 @@ _75-second product showcase: workspace, AI chat, swarm, kanban, editor, and comm
 | `Cmd+,`                               | Open settings                 |
 | `Cmd+W`                               | Close active pane             |
 | `Escape`                              | Close modals / dismiss popups |
+
+---
+
+## Privacy and Support
+
+Before public distribution, review the [Privacy Notice](docs/release/PRIVACY_NOTICE.md) for provider, plugin, browser, and Mobile Mirror data flows. For troubleshooting and safe diagnostic collection, use the [Support Runbook](docs/release/SUPPORT_RUNBOOK.md). Never send API keys, relay tokens, or unredacted credentials in an issue.
 
 ---
 

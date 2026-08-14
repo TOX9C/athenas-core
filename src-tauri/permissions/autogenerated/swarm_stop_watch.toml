@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-swarm-stop-watch"
+description = "Enables the swarm_stop_watch command without any pre-configured scope."
+commands.allow = ["swarm_stop_watch"]
+
+[[permission]]
+identifier = "deny-swarm-stop-watch"
+description = "Denies the swarm_stop_watch command without any pre-configured scope."
+commands.deny = ["swarm_stop_watch"]

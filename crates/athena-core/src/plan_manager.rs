@@ -122,7 +122,8 @@ impl PlanManager {
             emitter(channel, data);
             return;
         }
-        log::debug!("[plan-manager] {} -> {}", channel, data);
+        // Plan goals/reasoning can contain private workspace context.
+        log::debug!("[plan-manager] event emitted on channel {channel}");
     }
 
     fn now() -> u64 {

@@ -34,6 +34,18 @@
 #console-log .warn { color: #f59e0b; }
 #console-log .info { color: #38bdf8; }
 #console-log .success { color: #22c55e; }
+#wasm-watchdog-error {
+  display: none; position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  z-index: 100000; max-width: 460px; padding: 12px 14px; border: 1px solid rgba(239,68,68,.35);
+  border-radius: 6px; background: rgba(239,68,68,.08); color: #fca5a5;
+  font-size: 11px; line-height: 1.45; text-align: center;
+}
+#wasm-watchdog-reload {
+  display: none; position: fixed; left: 50%; top: calc(50% + 58px); transform: translateX(-50%);
+  z-index: 100001; border: 1px solid var(--accent, #38bdf8); border-radius: 5px;
+  padding: 7px 11px; background: transparent; color: var(--accent, #38bdf8);
+  cursor: pointer; font: inherit; font-size: 12px;
+}
 </style>
 <script>
 // Console capture — forward all console output to visible DOM element
@@ -140,6 +152,123 @@ function showOverlayError(msg) {
     errEl.textContent = msg;
   }
 }
+
+// The WASM runtime cannot be revived after an `unreachable` trap. Keep the
+// recovery layer in JavaScript, outside Dioxus, and only reload after a
+// sustained lack of DOM progress. The reload marker prevents a crash loop from
+// repeatedly tearing down and rebuilding the WebView without showing a useful
+// diagnostic to the user.
+(function installWasmWatchdog() {
+  var heartbeatMs = 5000;
+  var silenceLimitMs = 15000;
+  var lastHeartbeat = Date.now();
+  var reloadKey = 'athena-wasm-watchdog-reloaded';
+  var stabilizationKey = 'athena-wasm-watchdog-stabilizing';
+  var stabilizationMs = 30000;
+  var reloadInFlight = false;
+  var storageAvailable = true;
+  try {
+    var storageProbe = '__athena_watchdog_probe__';
+    sessionStorage.setItem(storageProbe, '1');
+    sessionStorage.removeItem(storageProbe);
+  } catch (e) {
+    storageAvailable = false;
+    console.warn('[WATCHDOG] sessionStorage unavailable; auto-reload disabled');
+  }
+  function reportAndReload(reason) {
+    if (reloadInFlight) return;
+    var alreadyReloaded = false;
+    var stabilizing = false;
+    if (storageAvailable) {
+      try {
+        alreadyReloaded = sessionStorage.getItem(reloadKey) === '1';
+        stabilizing = sessionStorage.getItem(stabilizationKey) === '1';
+      } catch (e) {
+        storageAvailable = false;
+      }
+    }
+    var errorEl = document.getElementById('wasm-watchdog-error');
+    var reloadButton = document.getElementById('wasm-watchdog-reload');
+    var message = 'The interface stopped responding' + (reason ? ': ' + reason : '') + '.';
+    if (errorEl) {
+      errorEl.textContent = alreadyReloaded
+        ? message + ' Reload was already attempted. Please quit and reopen Athena.'
+        : message + ' Athena will reload once to recover the WebView.';
+      errorEl.style.display = 'block';
+    }
+    if (alreadyReloaded || stabilizing || !storageAvailable) {
+      if (reloadButton) reloadButton.style.display = 'inline-block';
+      return;
+    }
+    reloadInFlight = true;
+    try {
+      sessionStorage.setItem(reloadKey, '1');
+      sessionStorage.setItem(stabilizationKey, '1');
+    } catch (e) {
+      storageAvailable = false;
+      if (reloadButton) reloadButton.style.display = 'inline-block';
+      return;
+    }
+    console.error('[WATCHDOG] Reloading after stalled WASM runtime:', reason);
+    setTimeout(function() { window.location.reload(); }, 250);
+  }
+
+  window.addEventListener('athena-wasm-heartbeat', function() {
+    lastHeartbeat = Date.now();
+  });
+  window.__athenaWasmHeartbeat = function() {
+    lastHeartbeat = Date.now();
+  };
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible') {
+      // WebView timers may be suspended while minimized or asleep. Give the
+      // WASM runtime a fresh grace period after visibility returns instead of
+      // treating a stale pre-sleep timestamp as a crash.
+      lastHeartbeat = Date.now();
+      window.__athenaWatchdogStabilizationStarted = Date.now();
+    }
+  });
+  window.addEventListener('error', function(event) {
+    var message = event && event.message || '';
+    if (/unreachable|wasm|WebAssembly|panic|dioxus/i.test(message)) {
+      reportAndReload(message);
+    }
+  });
+
+  setInterval(function() {
+    var node = document.getElementById('main');
+    var now = Date.now();
+    if (document.visibilityState === 'hidden') {
+      return;
+    }
+    // Once Dioxus has mounted, the heartbeat is the only liveness signal we
+    // trust. Do not require recent user input: freezes can happen during
+    // background rendering, PTY output, modal effects, or panel transitions.
+    // The mount check prevents a slow cold start from being treated as a
+    // runtime freeze.
+    if (node && node.querySelector('[data-dioxus-id]')
+      && now - lastHeartbeat > silenceLimitMs) {
+      reportAndReload('no WASM heartbeat for ' + silenceLimitMs + 'ms');
+    }
+    if (node && node.querySelector('[data-dioxus-id]') && now - lastHeartbeat < silenceLimitMs && storageAvailable) {
+      try {
+        if (sessionStorage.getItem(stabilizationKey) === '1') {
+          // Keep the reload marker during a post-reload stabilization window;
+          // a second freeze in that window must require explicit recovery.
+          if (!window.__athenaWatchdogStabilizationStarted) {
+            window.__athenaWatchdogStabilizationStarted = now;
+          }
+          if (now - window.__athenaWatchdogStabilizationStarted >= stabilizationMs) {
+            sessionStorage.removeItem(reloadKey);
+            sessionStorage.removeItem(stabilizationKey);
+          }
+        } else {
+          sessionStorage.removeItem(reloadKey);
+        }
+      } catch (e) { storageAvailable = false; }
+    }
+  }, heartbeatMs);
+})();
 var _checkCount = 0;
 var _checkInterval = setInterval(function() {
   _checkCount++;
@@ -248,6 +377,8 @@ document.addEventListener('click', function(event) {
     <div id="wasm-loading-error" style="font-size: 11px; color: #ef4444; max-width: 400px; text-align: center;"></div>
   </div>
 </div>
+<div id="wasm-watchdog-error"></div>
+<button id="wasm-watchdog-reload" type="button" onclick="try { sessionStorage.removeItem('athena-wasm-watchdog-reloaded'); sessionStorage.removeItem('athena-wasm-watchdog-stabilizing'); } catch (e) {} window.location.reload();">Reload interface</button>
 <div id="console-log"></div>
 <script src="./vendor/xterm/xterm.js"></script>
 <script src="./vendor/xterm/addon-fit.js"></script>

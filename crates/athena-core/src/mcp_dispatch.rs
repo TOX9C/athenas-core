@@ -110,11 +110,16 @@ async fn handle_tool_call_impl(
                 .and_then(|v| v.as_str())
                 .unwrap_or("Agent Notification");
             let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            // Notification text can contain agent output or secrets; log only
+            // bounded metadata, never the supplied title/message.
             log::info!(
-                "[MCP notify] level={}, title={}, msg={}",
-                level,
-                title,
-                message
+                "[MCP notify] level category={}, title length={}, message length={}",
+                match level {
+                    "info" | "success" | "warning" | "error" => level,
+                    _ => "other",
+                },
+                title.len(),
+                message.len()
             );
             serde_json::json!({ "content": [{ "type": "text", "text": "Notification delivered." }] })
         }
@@ -124,16 +129,28 @@ async fn handle_tool_call_impl(
                 .and_then(|v| v.as_str())
                 .unwrap_or("idle");
             let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            log::info!("[MCP status_update] status={}, msg={}", status, message);
+            log::info!(
+                "[MCP status_update] status category={}, message length={}",
+                match status {
+                    "idle" | "working" | "waiting" | "completed" | "failed" => status,
+                    _ => "other",
+                },
+                message.len()
+            );
             serde_json::json!({ "content": [{ "type": "text", "text": format!("Status updated to: {}", status) }] })
         }
         "request_input" => {
             let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-            let title = args
+            let _title = args
                 .get("title")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Input Request");
-            log::info!("[MCP request_input] title={}, prompt={}", title, prompt);
+            // Prompts may contain credentials, private paths, or workspace data;
+            // never copy the user-supplied text into logs.
+            log::info!(
+                "[MCP request_input] title received; prompt length={}",
+                prompt.len()
+            );
             serde_json::json!({ "content": [{ "type": "text", "text": "Input request received. (Blocking input not yet available — use environment variables or config files for now.)" }] })
         }
         "create_tasks" => {
@@ -187,9 +204,9 @@ async fn handle_tool_call_impl(
                 .unwrap_or(0);
             let session_id = args.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
             log::info!(
-                "[MCP athena_forward_output] entries={}, session={}",
+                "[MCP athena_forward_output] entries={}, session length={}",
                 entries,
-                session_id
+                session_id.len()
             );
             serde_json::json!({ "content": [{ "type": "text", "text": format!("Forwarded {} output entries.", entries) }] })
         }
@@ -303,8 +320,8 @@ async fn handle_tool_call_impl(
                         serde_json::json!({ "content": [{ "type": "text", "text": format!("{}{}", header, formatted) }] })
                     }
                 }
-                Err(e) => {
-                    serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": format!("Search error: {}", e) }] })
+                Err(_) => {
+                    serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Search failed. Check the path and search pattern, then try again." }] })
                 }
             }
         }
@@ -340,8 +357,8 @@ async fn handle_tool_call_impl(
                         serde_json::json!({ "content": [{ "type": "text", "text": format!("Found {} files:\n\n{}", results.len(), formatted) }] })
                     }
                 }
-                Err(e) => {
-                    serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": format!("Search error: {}", e) }] })
+                Err(_) => {
+                    serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Search failed. Check the path and search pattern, then try again." }] })
                 }
             }
         }

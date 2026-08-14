@@ -23,7 +23,10 @@ impl PanelManagerState {
     pub fn new() -> Self {
         Self {
             active_panel: ExclusivePanel::None,
-            active_right_panel: RightPanel::None,
+            // The global Athena button opens the sidebar before any tab has
+            // been selected. Start with the useful default instead of rendering
+            // an empty pane; subsequent closes preserve the selected tab.
+            active_right_panel: RightPanel::Assistant,
             right_panel_width_percent: 35.0,
         }
     }
@@ -56,6 +59,19 @@ impl PanelManagerState {
         }
     }
 
+    /// Toggle the global sidebar button. It does not change the user's last
+    /// selected tab; only an uninitialized state gets the Assistant default.
+    pub fn toggle_right_sidebar(&mut self, currently_open: bool) -> bool {
+        if currently_open {
+            false
+        } else {
+            if self.active_right_panel == RightPanel::None {
+                self.active_right_panel = RightPanel::Assistant;
+            }
+            true
+        }
+    }
+
     /// Open a specific right sidebar panel. Unlike `toggle_right_panel`,
     /// this unconditionally sets the active panel without ever closing it.
     pub fn open_right_panel(&mut self, panel: RightPanel) {
@@ -75,4 +91,22 @@ pub fn use_panel_manager_store() -> Signal<PanelManagerState> {
 /// Initialize the panel manager store as a context provider.
 pub fn provide_panel_manager_store() {
     use_context_provider(|| Signal::new(PanelManagerState::new()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_toggle_defaults_and_preserves_selected_panel() {
+        let mut state = PanelManagerState::new();
+        assert_eq!(state.active_right_panel, RightPanel::Assistant);
+        assert!(state.toggle_right_sidebar(false));
+
+        state.active_right_panel = RightPanel::Browser;
+        assert!(!state.toggle_right_sidebar(true));
+        assert_eq!(state.active_right_panel, RightPanel::Browser);
+        assert!(state.toggle_right_sidebar(false));
+        assert_eq!(state.active_right_panel, RightPanel::Browser);
+    }
 }

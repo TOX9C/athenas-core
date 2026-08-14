@@ -2,6 +2,7 @@ use crate::notification::NotificationType as NotifType;
 use crate::tool_executor::{to_openai_tools, ToolExecutor};
 use crate::types::*;
 use secrecy::ExposeSecret;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -20,6 +21,8 @@ mod orchestrator_session;
 use orchestrator_messages::{AnthropicMessage, OpenAIMessage};
 #[path = "orchestrator_snapshot.rs"]
 mod orchestrator_snapshot;
+#[path = "orchestrator_stream.rs"]
+mod orchestrator_stream;
 /// Stable Anthropic API version header value.
 #[path = "orchestrator_support.rs"]
 mod orchestrator_support;
@@ -105,6 +108,17 @@ pub struct AthenaOrchestrator {
     snapshot_cache: parking_lot::Mutex<Option<(String, Instant)>>,
     /// Optional notification service for pushing status alerts.
     notification_service: Option<Arc<crate::notification::NotificationService>>,
+    /// Active request cancellation handles, keyed by request ID.
+    active_requests: Arc<parking_lot::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
+    /// Serializes conversation mutation and provider turns. The legacy API
+    /// keeps process-global histories, so concurrent turns must not interleave.
+    conversation_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Optional callback used by the application adapter to emit stream events.
+    stream_emitter: Arc<parking_lot::Mutex<Option<crate::types::StreamEmitter>>>,
+    /// Event sender handle used to cancel blocking UI tools without waiting on
+    /// the executor mutex.
+    tool_event_sender:
+        Arc<parking_lot::Mutex<Option<Arc<dyn crate::tool_executor::ToolEventSender>>>>,
 }
 
 impl Default for AthenaOrchestrator {
@@ -139,6 +153,10 @@ impl AthenaOrchestrator {
             kv_store: None,
             snapshot_cache: parking_lot::Mutex::new(None),
             notification_service: None,
+            active_requests: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            conversation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            stream_emitter: Arc::new(parking_lot::Mutex::new(None)),
+            tool_event_sender: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -163,6 +181,7 @@ impl AthenaOrchestrator {
         kv_store: Option<Arc<athena_store::KeyValueStore>>,
         notification_service: Option<Arc<crate::notification::NotificationService>>,
     ) -> Self {
+        let tool_event_sender = executor.lock().event_sender_handle();
         Self {
             anthropic_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             openai_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -183,6 +202,10 @@ impl AthenaOrchestrator {
             kv_store,
             snapshot_cache: parking_lot::Mutex::new(None),
             notification_service,
+            active_requests: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            conversation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            stream_emitter: Arc::new(parking_lot::Mutex::new(None)),
+            tool_event_sender: Arc::new(parking_lot::Mutex::new(Some(tool_event_sender))),
         }
     }
 
@@ -192,6 +215,7 @@ impl AthenaOrchestrator {
     /// dispatches them and the results are fed back into the conversation
     /// loop automatically.
     pub fn new_with_executor(executor: Arc<parking_lot::Mutex<ToolExecutor>>) -> Self {
+        let tool_event_sender = executor.lock().event_sender_handle();
         Self {
             anthropic_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             openai_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -212,11 +236,19 @@ impl AthenaOrchestrator {
             kv_store: None,
             snapshot_cache: parking_lot::Mutex::new(None),
             notification_service: None,
+            active_requests: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            conversation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            stream_emitter: Arc::new(parking_lot::Mutex::new(None)),
+            tool_event_sender: Arc::new(parking_lot::Mutex::new(Some(tool_event_sender))),
         }
     }
 
     /// Replace or clear the tool executor at runtime.
     pub fn set_tool_executor(&mut self, executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>) {
+        let sender = executor
+            .as_ref()
+            .map(|value| value.lock().event_sender_handle());
+        *self.tool_event_sender.lock() = sender;
         self.tool_executor = executor;
     }
 
@@ -256,8 +288,32 @@ impl AthenaOrchestrator {
         estimate_tokens(text)
     }
 
-    /// Send a message to the configured LLM provider.
+    /// Send a message to the configured LLM provider, serializing it with
+    /// streamed turns that share the legacy conversation buffers.
     pub async fn send_message(
+        &self,
+        text: String,
+        images: Option<Vec<ImageData>>,
+    ) -> Result<String, OrchestratorError> {
+        let _conversation_guard = self.conversation_lock.lock().await;
+        self.send_message_locked(text, images).await
+    }
+
+    /// Send a legacy turn within a specific session. Session selection and
+    /// provider mutation happen under the same lock as the request, avoiding
+    /// cross-session auto-save races.
+    pub async fn send_message_with_session(
+        &self,
+        session_id: String,
+        text: String,
+        images: Option<Vec<ImageData>>,
+    ) -> Result<String, OrchestratorError> {
+        let _conversation_guard = self.conversation_lock.lock().await;
+        self.set_current_session_id(session_id);
+        self.send_message_locked(text, images).await
+    }
+
+    async fn send_message_locked(
         &self,
         text: String,
         images: Option<Vec<ImageData>>,
@@ -366,17 +422,6 @@ impl AthenaOrchestrator {
 
         result
     }
-
-    /// Execute a single tool call through the configured executor.
-    ///
-    /// Returns a tuple of `(text, is_error)`. If no executor is configured,
-    /// returns an error message with `is_error = true`.
-    ///
-    /// The synchronous `ToolExecutor::execute_tool_call` performs blocking work
-    /// (filesystem reads, kanban DB ops, the `ask_user` mpsc receive, etc.) that
-    /// would otherwise stall the Tokio runtime worker thread. We offload the
-    /// dispatch to `tokio::task::spawn_blocking` so the async runtime stays
-    /// responsive to other tasks (HTTP, rate limiter, cancellation, etc.).
 
     /// Send a message using Anthropic's Messages API.
     ///

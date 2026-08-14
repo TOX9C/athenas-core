@@ -42,7 +42,7 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
                                     let resp = label.clone();
                                     let mut ath = athena;
                                     spawn(async move {
-                                        let _ = tauri_bridge::agent_respond_input(&req_id, &resp).await;
+                                        let _ = tauri_bridge::athena_user_answer(&req_id, &resp).await;
                                         ath.write().mark_ask_user_answered(&req_id, &resp);
                                     });
                                 }
@@ -74,7 +74,7 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
                             let req_id = request_id.clone();
                             let mut ath = athena;
                             spawn(async move {
-                                let _ = tauri_bridge::agent_respond_input(&req_id, &text).await;
+                                let _ = tauri_bridge::athena_user_answer(&req_id, &text).await;
                                 ath.write().mark_ask_user_answered(&req_id, &text);
                             });
                             custom_text.set(String::new());

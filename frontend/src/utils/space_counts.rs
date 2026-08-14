@@ -1,12 +1,9 @@
-//! Pure per-space agent-count helpers shared by the workspace tab bar and the
-//! sidebar workspace list.
+//! Pure per-space agent-count helpers for the workspace list.
 //!
-//! The workspace tab shows three badges per space, left → right:
-//! `[working] [total] [attention]`. `total` is the legacy "how many agents are
-//! in this space" count; `working` sits to its LEFT (the user's explicit ask:
-//! "to the left of that four, the amount of agents that are working"); and
-//! `attention` marks agents that finished work, are waiting for input, or
-//! errored.
+//! The sidebar renders only optional non-zero badges for `[working]` and
+//! `[attention]`. `total` remains an internal presence count so shell panes
+//! with idle status entries are not mistaken for agents; it is intentionally
+//! not rendered as UI.
 
 use crate::stores::agent_status::{AgentRunStatus, AgentStatus};
 use crate::types::workspace::{AgentType, PaneConfig};
@@ -218,5 +215,23 @@ mod tests {
     fn empty_space_is_zero() {
         let c = count_space_agents(&[], &[]);
         assert_eq!(c, SpaceCounts::default());
+    }
+
+    #[test]
+    fn three_idle_shell_panes_have_no_active_agent_count() {
+        let panes = [
+            pane("p1", AgentType::Shell),
+            pane("p2", AgentType::Shell),
+            pane("p3", AgentType::Shell),
+        ];
+        let statuses = [
+            status("p1", AgentRunStatus::Idle),
+            status("p2", AgentRunStatus::Idle),
+            status("p3", AgentRunStatus::Idle),
+        ];
+        let counts = count_space_agents(&panes, &statuses);
+        assert_eq!(counts.working, 0);
+        assert_eq!(counts.total, 0);
+        assert_eq!(counts.attention, 0);
     }
 }

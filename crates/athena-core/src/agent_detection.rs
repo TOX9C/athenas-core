@@ -12,7 +12,29 @@
 //! failure.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+/// Lifecycle state reconstructed from an agent's own durable session log.
+///
+/// This is intentionally separate from `AgentActivityStatus`: detection stays
+/// independent of the activity tracker, while the tracker can treat a harness
+/// lifecycle event as stronger evidence than PTY silence.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentHistoryStatus {
+    Working,
+    Completed,
+    WaitingForInput,
+    Error,
+}
+
+const OMP_SESSION_TAIL_BYTES: u64 = 128 * 1024;
+const OMP_SESSION_PREFIX_BYTES: u64 = 16 * 1024;
+
+fn default_history_status() -> Option<AgentHistoryStatus> {
+    None
+}
 
 // ---------------------------------------------------------------------------
 // HistorySnapshot
@@ -29,6 +51,11 @@ pub struct HistorySnapshot {
     pub timestamp_ms: u64,
     /// Raw prompt text (used for LLM title summarization).
     pub raw_prompt: String,
+    /// Optional authoritative lifecycle state reconstructed from the harness
+    /// session log. `None` means the agent has no supported durable lifecycle
+    /// format and the PTY/output heuristics remain in charge.
+    #[serde(default = "default_history_status")]
+    pub activity: Option<AgentHistoryStatus>,
 }
 
 // ---------------------------------------------------------------------------
@@ -46,8 +73,8 @@ pub struct AgentSpec {
     /// Exact binary-name aliases (the key itself must be first). Matched
     /// against the `ps` comm name for direct (non-wrapped) binaries.
     pub binary_names: &'static [&'static str],
-    /// Substrings matched case-insensitively against the FULL command line of
-    /// script-runtime (node/bun) processes. Empty = binary-name match only.
+    /// Legacy alias hints retained for roster metadata. Runtime matching uses
+    /// exact binary names and path components via `token_matches_spec`.
     pub substrings: &'static [&'static str],
     /// Optional session-file probe.
     pub probe: Option<fn() -> Option<HistorySnapshot>>,
@@ -118,27 +145,55 @@ pub const KNOWN_AGENTS: &[AgentSpec] = &[
         key: "omp",
         label: "OMP (oh my pi)",
         binary_names: &["omp", "oh-my-pi", "oh_my_pi"],
-        substrings: &[],
+        // OMP is commonly installed as the `omp` Bun shim. Match only
+        // path/argument boundaries here; a broad `omp` substring would turn
+        // ordinary commands such as `competition` into false agent hits.
+        substrings: &["oh-my-pi", "oh_my_pi", "/omp", " omp"],
         probe: None,
     },
 ];
 
 /// Canonical agent keys — used by app-exit resume capture and the tracker.
 pub const AGENT_FG_NAMES: &[&str] = &[
-    "claude",
-    "codex",
-    "opencode",
-    "gemini",
-    "qwen",
-    "aider",
-    "cursor",
-    "freebuff",
-    "omp",
+    "claude", "codex", "opencode", "gemini", "qwen", "aider", "cursor", "freebuff", "omp",
 ];
 
 /// True when `key` is a known agent key.
 pub fn is_known_agent_key(key: &str) -> bool {
     KNOWN_AGENTS.iter().any(|s| s.key == key)
+}
+
+/// Normalize a process or command alias to the canonical agent key.
+///
+/// The activity tracker stores canonical keys, while launch commands may use
+/// one of an agent's executable aliases (for example `oh-my-pi` for `omp`).
+/// Keeping this normalization in the shared detector prevents each lifecycle
+/// caller from implementing a subtly different alias table.
+pub fn canonical_agent_key(name: &str) -> Option<&'static str> {
+    let name = Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name)
+        .trim_start_matches('-')
+        .trim_matches(|c: char| matches!(c, '\'' | '"' | ';' | ','));
+    KNOWN_AGENTS
+        .iter()
+        .find(|spec| spec.key == name || spec.binary_names.contains(&name))
+        .map(|spec| spec.key)
+}
+
+/// Return whether a shell command invokes the canonical agent key.
+///
+/// Matching is token-based rather than `contains`, so an OMP command cannot
+/// be confused with an unrelated executable such as `competition`.
+pub fn command_contains_agent(command: &str, agent_key: &str) -> bool {
+    let Some(canonical) = canonical_agent_key(agent_key) else {
+        return false;
+    };
+    command
+        .split_whitespace()
+        .filter_map(canonical_agent_key)
+        .any(|key| key == canonical)
 }
 
 /// Look up a spec by key.
@@ -161,13 +216,29 @@ fn is_script_runtime(comm: &str) -> bool {
 }
 
 fn binary_matches(comm: &str, spec: &AgentSpec) -> bool {
-    spec.binary_names.iter().any(|b| *b == comm)
+    spec.binary_names.contains(&comm)
 }
 
-fn line_matches(lower_line: &str, spec: &AgentSpec) -> bool {
-    spec.substrings
-        .iter()
-        .any(|s| lower_line.contains(s))
+fn token_matches_spec(token: &str, spec: &AgentSpec) -> bool {
+    let normalized = token
+        .trim_matches(|c: char| matches!(c, '\'' | '"' | ';' | ',' | '(' | ')'))
+        .to_lowercase();
+    let path_match = Path::new(&normalized).components().any(|component| {
+        let component = component.as_os_str().to_string_lossy();
+        spec.binary_names
+            .iter()
+            .any(|alias| component == alias.to_lowercase())
+    });
+    path_match
+        || spec
+            .binary_names
+            .iter()
+            .any(|alias| normalized == alias.to_lowercase())
+}
+
+fn line_matches(line: &str, spec: &AgentSpec) -> bool {
+    line.split_whitespace()
+        .any(|token| token_matches_spec(token, spec))
 }
 
 /// Classify the output of `ps -o command= -g <pgid>` into an agent key, a
@@ -175,9 +246,9 @@ fn line_matches(lower_line: &str, spec: &AgentSpec) -> bool {
 ///
 /// - Shell processes are skipped (the first non-shell line is the foreground
 ///   process).
-/// - Script runtimes (node/bun/deno) are classified by scanning the FULL
-///   command line for known agent substrings (`node .../claude ...`), falling
-///   back to `"node"`.
+/// - Script runtimes (node/bun/deno) are classified by scanning FULL command
+///   line tokens for known agent binary names/path components, falling back to
+///   `"node"`.
 /// - Direct binaries are classified by exact binary-name match; anything else
 ///   returns the comm name (e.g. `vim`).
 pub fn classify_foreground_ps(stdout: &str) -> String {
@@ -275,6 +346,7 @@ fn parse_claude_history(content: &str) -> Option<HistorySnapshot> {
             session_id: session_id.to_string(),
             timestamp_ms: timestamp,
             raw_prompt: display,
+            activity: None,
         });
     }
     None
@@ -311,6 +383,7 @@ fn parse_codex_history(content: &str) -> Option<HistorySnapshot> {
             session_id: session_id.to_string(),
             timestamp_ms: timestamp,
             raw_prompt: display,
+            activity: None,
         });
     }
     None
@@ -332,16 +405,13 @@ fn parse_qwen_history(content: &str, mtime: u64) -> Option<HistorySnapshot> {
         if json.get("role").and_then(|v| v.as_str()) != Some("user") {
             continue;
         }
-        let Some(text) = json
-            .get("content")
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                json.get("content")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.get("text"))
-                    .and_then(|v| v.as_str())
-            }) else {
+        let Some(text) = json.get("content").and_then(|v| v.as_str()).or_else(|| {
+            json.get("content")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+        }) else {
             continue;
         };
         let text = text.trim().to_string();
@@ -358,6 +428,7 @@ fn parse_qwen_history(content: &str, mtime: u64) -> Option<HistorySnapshot> {
             session_id,
             timestamp_ms: mtime,
             raw_prompt: text,
+            activity: None,
         });
     }
     None
@@ -370,11 +441,15 @@ fn scrape_qwen_history() -> Option<HistorySnapshot> {
     let root = home_dir()?.join(".qwen/projects");
     let mut newest: Option<(std::path::PathBuf, u64)> = None;
     let scan = |dir: &Path, newest: &mut Option<(std::path::PathBuf, u64)>| {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let Ok(chats) = std::fs::read_dir(&path.join("chats")) else { continue };
+                let Ok(chats) = std::fs::read_dir(path.join("chats")) else {
+                    continue;
+                };
                 for chat in chats.flatten() {
                     let p = chat.path();
                     if let Some(m) = file_mtime_ms(&p) {
@@ -406,6 +481,7 @@ fn parse_aider_history(content: &str, mtime: u64) -> Option<HistorySnapshot> {
                 session_id: format!("aider-{}", mtime),
                 timestamp_ms: mtime,
                 raw_prompt: text,
+                activity: None,
             });
         }
     }
@@ -422,9 +498,243 @@ fn scrape_aider_history() -> Option<HistorySnapshot> {
     parse_aider_history(&content, mtime)
 }
 
+/// Read a bounded byte window from a file without loading an entire session
+/// transcript into memory. OMP sessions can grow very large over time.
+fn read_file_window(path: &Path, offset: u64, max_bytes: u64) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let start = offset.min(size);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity(max_bytes.min(size.saturating_sub(start)) as usize);
+    file.take(max_bytes).read_to_end(&mut bytes).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn json_message_text(message: &serde_json::Value) -> Option<String> {
+    let content = message.get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.trim().to_string());
+    }
+    content.as_array().map(|blocks| {
+        blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("")
+            .trim()
+            .to_string()
+    })
+}
+
+fn message_contains_tool_call(message: &serde_json::Value) -> bool {
+    message
+        .get("content")
+        .and_then(|content| content.as_array())
+        .map(|blocks| {
+            blocks.iter().any(|block| {
+                matches!(
+                    block.get("type").and_then(|v| v.as_str()),
+                    Some("toolCall") | Some("tool_use")
+                )
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Parse the bounded portion of an OMP JSONL session.
+///
+/// OMP persists a user message before a turn and a final assistant message
+/// after it settles. A trailing user/tool result (or a persisted
+/// `tool_execution_start` marker) therefore means work is still in flight;
+/// a final assistant message without tool calls means the turn yielded back
+/// to the user even though the `omp` process remains in the foreground.
+fn parse_omp_session(content: &str, mtime_ms: u64) -> Option<HistorySnapshot> {
+    let mut session_id = None;
+    let mut session_title = None;
+    let mut last_prompt = None;
+    let mut activity = None;
+
+    for line in content.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match entry.get("type").and_then(|v| v.as_str()) {
+            Some("session") => {
+                session_id = entry.get("id").and_then(|v| v.as_str()).map(str::to_string);
+                session_title = entry
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+            }
+            Some("message") => {
+                let Some(message) = entry.get("message") else {
+                    continue;
+                };
+                match message.get("role").and_then(|v| v.as_str()) {
+                    Some("user") => {
+                        if let Some(text) =
+                            json_message_text(message).filter(|text| is_valid_prompt(text))
+                        {
+                            last_prompt = Some(text);
+                        }
+                        activity = Some(AgentHistoryStatus::Working);
+                    }
+                    Some("assistant") => {
+                        activity = if message.get("stopReason").and_then(|v| v.as_str())
+                            == Some("error")
+                        {
+                            Some(AgentHistoryStatus::Error)
+                        } else if message_contains_tool_call(message) {
+                            Some(AgentHistoryStatus::Working)
+                        } else {
+                            Some(AgentHistoryStatus::Completed)
+                        };
+                    }
+                    Some("toolResult") => {
+                        activity = Some(AgentHistoryStatus::Working);
+                    }
+                    _ => {}
+                }
+            }
+            Some("custom")
+                if entry.get("customType").and_then(|v| v.as_str())
+                    == Some("tool_execution_start") =>
+            {
+                activity = Some(AgentHistoryStatus::Working);
+            }
+            Some("session_exit") => {
+                // A persisted exit is a positive boundary, but do not let a
+                // stale shutdown record override a later message in the same
+                // bounded window; this branch is only reached in file order.
+                activity = Some(AgentHistoryStatus::Completed);
+            }
+            _ => {}
+        }
+    }
+
+    let session_id = session_id?;
+    let task_title = last_prompt
+        .clone()
+        .or(session_title)
+        .unwrap_or_else(|| "OMP session".to_string());
+    Some(HistorySnapshot {
+        task_title,
+        session_id,
+        timestamp_ms: mtime_ms,
+        raw_prompt: last_prompt.unwrap_or_default(),
+        activity,
+    })
+}
+
+fn omp_header_matches(prefix: &str, cwd: &Path) -> bool {
+    let expected = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    prefix.lines().any(|line| {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        if entry.get("type").and_then(|v| v.as_str()) != Some("session") {
+            return false;
+        }
+        let Some(recorded) = entry.get("cwd").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        Path::new(recorded)
+            .canonicalize()
+            .map(|path| path == expected)
+            .unwrap_or_else(|_| expected.as_path() == Path::new(recorded))
+    })
+}
+
+fn parse_omp_session_file(path: &Path, cwd: &Path) -> Option<HistorySnapshot> {
+    let prefix = read_file_window(path, 0, OMP_SESSION_PREFIX_BYTES)?;
+    if !omp_header_matches(&prefix, cwd) {
+        return None;
+    }
+    let size = path.metadata().ok()?.len();
+    let mtime = file_mtime_ms(path).unwrap_or(0);
+    let tail = read_file_window(
+        path,
+        size.saturating_sub(OMP_SESSION_TAIL_BYTES),
+        OMP_SESSION_TAIL_BYTES,
+    )?;
+    parse_omp_session(&format!("{prefix}\n{tail}"), mtime)
+}
+
+fn omp_breadcrumb_session_path(tty_path: &str) -> Option<PathBuf> {
+    let terminal_id = tty_path.strip_prefix("/dev/")?.replace('/', "-");
+    Some(
+        home_dir()?
+            .join(".omp/agent/terminal-sessions")
+            .join(terminal_id),
+    )
+}
+
+/// Scrape OMP's current file-backed session for a PTY working directory.
+///
+/// OMP exposes a much better signal than terminal silence: its session JSONL
+/// records user messages, tool execution boundaries, and settled assistant
+/// messages. Prefer OMP's own TTY breadcrumb for exact mapping; the cwd scan
+/// below is a conservative fallback for multiplexers or platforms without a
+/// visible slave TTY path.
+pub fn scrape_omp_history(cwd: &Path) -> Option<HistorySnapshot> {
+    let root = home_dir()?.join(".omp/agent/sessions");
+    let mut newest: Option<(PathBuf, u64)> = None;
+    for bucket in std::fs::read_dir(root).ok()?.flatten() {
+        if !bucket.path().is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(bucket.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(prefix) = read_file_window(&path, 0, OMP_SESSION_PREFIX_BYTES) else {
+                continue;
+            };
+            let mtime = file_mtime_ms(&path).unwrap_or(0);
+            if omp_header_matches(&prefix, cwd)
+                && newest
+                    .as_ref()
+                    .map(|(_, current)| mtime > *current)
+                    .unwrap_or(true)
+            {
+                newest = Some((path, mtime));
+            }
+        }
+    }
+    let (path, _) = newest?;
+    parse_omp_session_file(&path, cwd)
+}
+
+/// Dispatch a history scrape by agent key, using the pane cwd and optional
+/// slave TTY path when a harness has a durable session format (currently OMP).
+pub fn scrape_agent_history_for_cwd(
+    agent_key: &str,
+    cwd: &Path,
+    tty_path: Option<&str>,
+) -> Option<HistorySnapshot> {
+    if agent_key == "omp" {
+        if let Some(path) = tty_path.and_then(omp_breadcrumb_session_path) {
+            if let Ok(lines) = std::fs::read_to_string(&path) {
+                if let Some(session_file) = lines.lines().nth(1).map(PathBuf::from) {
+                    if let Some(snapshot) = parse_omp_session_file(&session_file, cwd) {
+                        return Some(snapshot);
+                    }
+                }
+            }
+        }
+        scrape_omp_history(cwd)
+    } else {
+        scrape_agent_history(agent_key)
+    }
+}
+
 /// Dispatch a history scrape by agent key.
 pub fn scrape_agent_history(agent_key: &str) -> Option<HistorySnapshot> {
-    agent_spec(agent_key).and_then(|spec| spec.probe.map(|p| p()).flatten())
+    agent_spec(agent_key).and_then(|spec| spec.probe.and_then(|probe| probe()))
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +757,41 @@ mod tests {
         assert_eq!(classify_foreground_ps("freebuff\n"), "freebuff");
         assert_eq!(classify_foreground_ps("omp\n"), "omp");
         assert_eq!(classify_foreground_ps("oh-my-pi\n"), "omp");
+        assert_eq!(classify_foreground_ps("oh_my_pi\n"), "omp");
+    }
+
+    #[test]
+    fn canonicalizes_agent_aliases() {
+        assert_eq!(canonical_agent_key("omp"), Some("omp"));
+        assert_eq!(canonical_agent_key("oh-my-pi"), Some("omp"));
+        assert_eq!(canonical_agent_key("/Users/me/.bun/bin/omp"), Some("omp"));
+        assert_eq!(canonical_agent_key("competition"), None);
+        assert!(command_contains_agent("omp --verbose", "omp"));
+        assert!(command_contains_agent(
+            "bun /Users/me/.bun/bin/oh-my-pi",
+            "omp"
+        ));
+        assert!(!command_contains_agent("competition --verbose", "omp"));
+    }
+
+    #[test]
+    fn classifies_bun_wrapped_omp_without_broad_substring_matches() {
+        assert_eq!(
+            classify_foreground_ps("bun /Users/me/.bun/bin/omp\n"),
+            "omp"
+        );
+        assert_eq!(
+            classify_foreground_ps("bun /Users/me/oh-my-pi/dist/cli.js\n"),
+            "omp"
+        );
+        assert_eq!(
+            classify_foreground_ps("bun /Users/me/tools/omplugin.js\n"),
+            "node"
+        );
+        assert_eq!(
+            classify_foreground_ps("bun /Users/me/tools/competition.js\n"),
+            "node"
+        );
     }
 
     #[test]
@@ -460,7 +805,9 @@ mod tests {
     #[test]
     fn classifies_node_wrapped_agents() {
         assert_eq!(
-            classify_foreground_ps("node /usr/local/lib/claude/cli.js --dangerously-skip-permissions\n"),
+            classify_foreground_ps(
+                "node /usr/local/lib/claude/cli.js --dangerously-skip-permissions\n"
+            ),
             "claude"
         );
         assert_eq!(
@@ -582,6 +929,33 @@ mod tests {
             "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"summarize this codebase\"}]}\n";
         let snap = parse_qwen_history(content, 0).unwrap();
         assert_eq!(snap.task_title, "summarize this codebase");
+    }
+
+    #[test]
+    fn omp_session_log_reconstructs_working_and_completed_turns() {
+        let header = r#"{"type":"session","version":3,"id":"omp-1","cwd":"/tmp/project","title":"refactor"}"#;
+        let user = r#"{"type":"message","id":"u1","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"refactor the auth module"}]}}"#;
+        let assistant = r#"{"type":"message","id":"a1","parentId":"u1","message":{"role":"assistant","content":[{"type":"text","text":"Done."}],"stopReason":"stop"}}"#;
+
+        let working = parse_omp_session(&format!("{header}\n{user}"), 10).unwrap();
+        assert_eq!(working.session_id, "omp-1");
+        assert_eq!(working.activity, Some(AgentHistoryStatus::Working));
+        assert_eq!(working.raw_prompt, "refactor the auth module");
+
+        // JSON with a normal assistant message is the positive settle signal;
+        // no process exit is required.
+        let complete = parse_omp_session(&format!("{header}\n{user}\n{assistant}"), 20).unwrap();
+        assert_eq!(complete.activity, Some(AgentHistoryStatus::Completed));
+    }
+
+    #[test]
+    fn omp_session_log_treats_tool_execution_as_working() {
+        let content = r#"
+{"type":"session","version":3,"id":"omp-2","cwd":"/tmp/project"}
+{"type":"custom","customType":"tool_execution_start","data":{"toolName":"bash"}}
+"#;
+        let snapshot = parse_omp_session(content, 42).unwrap();
+        assert_eq!(snapshot.activity, Some(AgentHistoryStatus::Working));
     }
 
     // ---------------------------------------------------------------------

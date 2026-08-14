@@ -22,6 +22,47 @@ pub async fn athena_chat(state: State<'_, AppState>, message: String) -> Result<
         .map_err(|e| e.to_string())
 }
 
+/// Start a request-scoped streaming chat turn. Chunks and lifecycle events are
+/// emitted on `athena:stream`; the returned string is only a compatibility
+/// fallback for callers that still await the command result.
+#[tauri::command]
+pub async fn athena_chat_stream(
+    state: State<'_, AppState>,
+    message: String,
+    session_id: String,
+    request_id: String,
+) -> Result<String, String> {
+    if request_id.trim().is_empty() {
+        return Err("request_id is required".to_string());
+    }
+    if !state.rate_limiter.check("athena_chat_stream") {
+        return Err("Rate limit exceeded. Please wait a moment.".to_string());
+    }
+    let orchestrator = Arc::clone(&state.orchestrator);
+    match build_provider_config_from_store(&state) {
+        Ok(config) => orchestrator.set_provider_config(config),
+        Err(ProviderConfigError::MissingApiKey) => {
+            return Err("API key is required. Please set it in Settings → Athena.".to_string());
+        }
+    }
+    let cancel = orchestrator
+        .register_request(&request_id)
+        .map_err(|e| e.to_string())?;
+    orchestrator
+        .stream_message(request_id, session_id, message, None, cancel)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Cancel an in-flight streaming chat request.
+#[tauri::command]
+pub fn athena_cancel_stream(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> Result<bool, String> {
+    Ok(state.orchestrator.cancel_request(&request_id))
+}
+
 /// Send a text message to the LLM provider, associating it with a specific session.
 #[tauri::command]
 pub async fn athena_chat_with_session(
@@ -36,9 +77,8 @@ pub async fn athena_chat_with_session(
             return Err("API key is required. Please set it in Settings → Athena.".to_string());
         }
     }
-    orchestrator.set_current_session_id(session_id);
     orchestrator
-        .send_message(message, None)
+        .send_message_with_session(session_id, message, None)
         .await
         .map_err(|e| e.to_string())
 }

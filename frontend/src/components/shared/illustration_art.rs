@@ -13,245 +13,166 @@ fn illo(children: Element) -> Element {
     }
 }
 
-/// The astrolabe ring frame — three concentric engraved rings + 12 degree ticks.
-/// Each empty-state illo carries its own frame so the art reads as a single
-/// instrument observation. Drawn on the same 120×96 viewBox as `illo`, fitted
-/// to the lower 96px-tall plaque (so the rings sit centered behind the motif).
-/// `stroke` is the dim engraved color (callers pass `var(--textDim)`).
-fn astrolabe_frame(stroke: &str) -> Element {
+/// The subtle motif frame — two concentric rings that give each small
+/// illustration a shared visual grammar. `stroke` is the dim color.
+fn panel_frame(stroke: &str) -> Element {
     rsx! {
-        // outer ring (engraved disc rim)
-        circle { cx: "60", cy: "48", r: "45", stroke: stroke, stroke_width: "1", fill: "none", stroke_opacity: "0.55" }
-        // mid ring (almucantar guide)
-        circle { cx: "60", cy: "48", r: "37", stroke: stroke, stroke_width: "1", fill: "none", stroke_opacity: "0.28" }
-        // inner ring (the ecliptica)
-        circle { cx: "60", cy: "48", r: "29", stroke: stroke, stroke_width: "1", fill: "none", stroke_opacity: "0.18" }
-        // 12 degree ticks around the outer ring (cardinal + intercardinal + thirds)
-        g { stroke: stroke, stroke_width: "1", stroke_opacity: "0.5",
-            // cardinals
-            path { d: "M60 3 V10" }
-            path { d: "M60 86 V93" }
-            path { d: "M15 48 H22" }
-            path { d: "M98 48 H105" }
-            // diagonals
-            path { d: "M28 16 L33 21" }
-            path { d: "M87 16 L82 21" }
-            path { d: "M28 80 L33 75" }
-            path { d: "M87 80 L82 75" }
-            // tertiary ticks
-            path { d: "M49 4.4 L50.5 11" }
-            path { d: "M71 4.4 L69.5 11" }
-            path { d: "M49 91.6 L50.5 85" }
-            path { d: "M71 91.6 L69.5 85" }
-        }
-        // lapis star — one per illo, placed by caller via a separate element.
+        // outer motif ring
+        circle { cx: "60", cy: "48", r: "44", stroke: stroke, stroke_width: "1", fill: "none", stroke_opacity: "0.4" }
+        // inner guide ring
+        circle { cx: "60", cy: "48", r: "35", stroke: stroke, stroke_width: "1", fill: "none", stroke_opacity: "0.18" }
     }
 }
 
-/// A single lapis star at `(cx, cy)` — the instrument's sighting mark. Each illo
-/// places it at a different point inside the frame so no two panels share a
-/// star (the constellation varies across the observatory).
-fn lapis_star(cx: &str, cy: &str) -> Element {
+/// A single gold sparkle at `(cx, cy)` — the accent focal mark. Each motif
+/// places it at a different point so no two states share the same composition.
+fn gold_sparkle(cx: &str, cy: &str) -> Element {
     let cx_f: f32 = cx.parse().unwrap_or(60.0);
     let cy_f: f32 = cy.parse().unwrap_or(48.0);
-    // 4-point sparkle cross, length 3.6px from center
     let sparkle = format!(
         "M{cx_f:.2} {lo_y:.2} V{hi_y:.2} M{lo_x:.2} {cy_f:.2} H{hi_x:.2}",
-        lo_y = cy_f - 1.8,
-        hi_y = cy_f + 1.8,
-        lo_x = cx_f - 1.8,
-        hi_x = cx_f + 1.8,
+        lo_y = cy_f - 2.4,
+        hi_y = cy_f + 2.4,
+        lo_x = cx_f - 2.4,
+        hi_x = cx_f + 2.4,
     );
     rsx! {
-        circle { cx: cx, cy: cy, r: "1.1", fill: "var(--accentLapis)", stroke: "none", opacity: "0.95" }
-        // faint four-point sparkle cross
-        path { d: "{sparkle}", stroke: "var(--accentLapis)", stroke_width: "0.6", stroke_opacity: "0.55" }
+        circle { cx: cx, cy: cy, r: "1.2", fill: "var(--accent)", stroke: "none" }
+        path { d: "{sparkle}", stroke: "var(--accent)", stroke_width: "0.8", stroke_opacity: "0.6" }
     }
 }
 
 // ── Individual illustrations ────────────────────────────────────────────────
 
-/// Owl perched on a branch — workspaces / generic. Astrolabe-framed, lapis
-/// star sights the upper-left of the disc.
-pub(super) fn illo_owl_branch() -> Element {
+/// Window workspace — panes behind a shell prompt. Workspaces / generic.
+pub(super) fn illo_workspace() -> Element {
     illo(rsx! {
-        {astrolabe_frame("var(--textDim)")}
-        // branch
-        path { d: "M14 72h92", stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.6" }
-        path { d: "M86 72c8-2 14-6 20-12", stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.5" }
-        // owl body
-        g { stroke: "var(--accent)", stroke_width: "1.6",
-            path { d: "M44 32c0-9 7-16 16-16s16 7 16 16v16a16 16 0 0 1-32 0z" }
-            // brows rising into ear tufts
-            path { d: "M47.5 34c-.8-5 1-8.4 4-9.4 2.2 1.6 2.9 4.6 2.3 7.4" }
-            path { d: "M72.5 34c.8-5-1-8.4-4-9.4-2.2 1.6-2.9 4.6-2.3 7.4" }
-            circle { cx: "53", cy: "36", r: "4.6" }
-            circle { cx: "67", cy: "36", r: "4.6" }
-            path { d: "M60 39.5l-2.5 4h5z" }
-            path { d: "M52 64v6M60 65v6M68 64v6" }
-        }
-        circle { cx: "53", cy: "36", r: "1.4", fill: "var(--accent)", stroke: "none" }
-        circle { cx: "67", cy: "36", r: "1.4", fill: "var(--accent)", stroke: "none" }
-        {lapis_star("28", "20")}
-    })
-}
-
-/// Unrolled scroll — sessions / history. Astrolabe-framed, lapis star sights
-/// the upper-right.
-pub(super) fn illo_scroll() -> Element {
-    illo(rsx! {
-        {astrolabe_frame("var(--textDim)")}
+        {panel_frame("var(--textDim)")}
         g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.75",
-            path { d: "M34 26h46a6 6 0 0 1 6 6v34" }
-            path { d: "M34 26a6 6 0 0 0-6 6v4h12v-4a6 6 0 0 0-6-6z" }
-            path { d: "M86 66a6 6 0 0 1-6 6H40a6 6 0 0 1-6-6V36h40v30a6 6 0 0 0 6 6z" }
+            // window frame
+            rect { x: "34", y: "22", width: "52", height: "42", rx: "5" }
+            // title bar line
+            path { d: "M34 30 H86" }
+            // grid splits
+            path { d: "M60 30 V64 M34 46 H86" }
+        }
+        g { stroke: "var(--accent)", stroke_width: "1.7",
+            // shell prompt in the focused pane
+            path { d: "M44 38 L50 43 L44 48" }
+            path { d: "M54 48 H62" }
+        }
+        {gold_sparkle("92", "22")}
+    })
+}
+
+/// Chat session — speech bubble with a sparkle. Sessions / history.
+pub(super) fn illo_sessions() -> Element {
+    illo(rsx! {
+        {panel_frame("var(--textDim)")}
+        g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.75",
+            path { d: "M86 30 H58 A10 10 0 0 0 48 40 V56 A10 10 0 0 0 58 66 H66 L72 72 V66 H86 A10 10 0 0 0 96 56 V40 A10 10 0 0 0 86 30 Z" }
+        }
+        g { stroke: "var(--accent)", stroke_width: "1.7",
+            path { d: "M58 46 H80 M58 54 H72" }
+        }
+        {gold_sparkle("48", "40")}
+    })
+}
+
+/// Kanban board — three columns with cards.
+pub(super) fn illo_kanban() -> Element {
+    illo(rsx! {
+        {panel_frame("var(--textDim)")}
+        g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.75",
+            rect { x: "28", y: "24", width: "64", height: "44", rx: "5" }
+            path { d: "M28 32 H92 M49.3 24 V68 M70.7 24 V68" }
+        }
+        g { stroke: "var(--accent)", stroke_width: "1.7",
+            // card in the center column
+            rect { x: "55.5", y: "38", width: "9.5", height: "7", rx: "1.5" }
+            path { d: "M55.5 50 H65 M55.5 56 H62" }
+        }
+        {gold_sparkle("92", "24")}
+    })
+}
+
+/// Swarm network — hub with satellites.
+pub(super) fn illo_swarm() -> Element {
+    illo(rsx! {
+        {panel_frame("var(--textDim)")}
+        g { stroke: "var(--textDim)", stroke_width: "1.3", opacity: "0.6",
+            path { d: "M60 46 V28 M60 46 L82 34 M60 46 L82 60 M60 46 L40 60 M60 46 L38 34" }
+        }
+        g { stroke: "var(--textDim)", stroke_width: "1.5", fill: "var(--bg)",
+            circle { cx: "60", cy: "28", r: "4" }
+            circle { cx: "82", cy: "34", r: "4" }
+            circle { cx: "82", cy: "60", r: "4" }
+            circle { cx: "40", cy: "60", r: "4" }
+            circle { cx: "38", cy: "34", r: "4" }
+        }
+        circle { cx: "60", cy: "46", r: "7", stroke: "var(--accent)", stroke_width: "1.8", fill: "var(--bg)" }
+        circle { cx: "60", cy: "46", r: "2.4", fill: "var(--accent)", stroke: "none" }
+        {gold_sparkle("82", "34")}
+    })
+}
+
+/// Notifications — bell with a quiet dot.
+pub(super) fn illo_notifications() -> Element {
+    illo(rsx! {
+        {panel_frame("var(--textDim)")}
+        g { stroke: "var(--textDim)", stroke_width: "1.6", opacity: "0.75",
+            path { d: "M80 42 C80 28 72 24 60 24 C48 24 40 28 40 42 C40 56 36 58 36 58 H84 C84 58 80 56 80 42 Z" }
+            path { d: "M68 68 C68 72 64 74 60 74 C56 74 52 72 52 68" }
+        }
+        circle { cx: "60", cy: "44", r: "2.2", fill: "var(--accent)", stroke: "none" }
+        {gold_sparkle("86", "20")}
+    })
+}
+
+/// Plugins — interlocking blocks.
+pub(super) fn illo_plugins() -> Element {
+    illo(rsx! {
+        {panel_frame("var(--textDim)")}
+        g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.75",
+            path { d: "M52 28 H70 A6 6 0 0 1 76 34 V38 A4 4 0 0 1 72 42 V50 A4 4 0 0 1 76 54 V58 A6 6 0 0 1 70 64 H52 A6 6 0 0 1 46 58 V34 A6 6 0 0 1 52 28 Z" }
         }
         g { stroke: "var(--accent)", stroke_width: "1.6",
-            line { x1: "44", y1: "46", x2: "70", y2: "46" }
-            line { x1: "44", y1: "54", x2: "70", y2: "54" }
-            line { x1: "44", y1: "62", x2: "60", y2: "62" }
+            path { d: "M46 40 H42 A4 4 0 0 0 38 44 V54 A4 4 0 0 0 42 58 H46" }
+            path { d: "M44 46 H40 M44 52 H41" }
         }
-        {lapis_star("92", "22")}
+        {gold_sparkle("72", "34")}
     })
 }
 
-/// Temple façade columns — kanban board. Astrolabe-framed, lapis star sights
-/// the apex of the pediment (over the gable).
-pub(super) fn illo_temple() -> Element {
+/// Files — folder with a document.
+pub(super) fn illo_files() -> Element {
     illo(rsx! {
-        {astrolabe_frame("var(--textDim)")}
-        g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.7",
-            path { d: "M28 30l32-12 32 12" }
-            line { x1: "24", y1: "30", x2: "96", y2: "30" }
-            line { x1: "26", y1: "74", x2: "94", y2: "74" }
-            line { x1: "22", y1: "80", x2: "98", y2: "80" }
+        {panel_frame("var(--textDim)")}
+        g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.75",
+            path { d: "M34 32 H56 L62 38 H88 A6 6 0 0 1 94 44 V64 A6 6 0 0 1 88 70 H40 A6 6 0 0 1 34 64 Z" }
         }
-        g { stroke: "var(--accent)", stroke_width: "1.6",
-            line { x1: "36", y1: "34", x2: "36", y2: "74" }
-            line { x1: "52", y1: "34", x2: "52", y2: "74" }
-            line { x1: "68", y1: "34", x2: "68", y2: "74" }
-            line { x1: "84", y1: "34", x2: "84", y2: "74" }
+        g { stroke: "var(--accent)", stroke_width: "1.7",
+            // document leaning on the folder
+            path { d: "M56 34 V62 A4 4 0 0 0 60 66 H78 A4 4 0 0 0 82 62 V46 L72 34 Z" }
+            path { d: "M72 34 V46 H82" }
+            path { d: "M62 54 H76 M62 60 H72" }
         }
-        {lapis_star("60", "10")}
+        {gold_sparkle("34", "30")}
     })
 }
 
-/// Constellation network — swarm. Astrolabe-framed; each satellite joins the
-/// outer ring's degree ticks, the lapis star sights the far-right node.
-pub(super) fn illo_constellation() -> Element {
+/// Agents — two avatars.
+pub(super) fn illo_agents() -> Element {
     illo(rsx! {
-        {astrolabe_frame("var(--textDim)")}
-        g { stroke: "var(--textDim)", stroke_width: "1.2", opacity: "0.55",
-            line { x1: "60", y1: "48", x2: "60", y2: "24" }
-            line { x1: "60", y1: "48", x2: "88", y2: "36" }
-            line { x1: "60", y1: "48", x2: "90", y2: "64" }
-            line { x1: "60", y1: "48", x2: "60", y2: "76" }
-            line { x1: "60", y1: "48", x2: "32", y2: "64" }
-            line { x1: "60", y1: "48", x2: "30", y2: "36" }
+        {panel_frame("var(--textDim)")}
+        g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.75",
+            path { d: "M38 72 V66 A8 8 0 0 1 46 58 H74 A8 8 0 0 1 82 66 V72" }
         }
-        g { stroke: "var(--textDim)", stroke_width: "1.4", fill: "var(--bg)",
-            circle { cx: "60", cy: "24", r: "4" }
-            circle { cx: "88", cy: "36", r: "4" }
-            circle { cx: "90", cy: "64", r: "4" }
-            circle { cx: "60", cy: "76", r: "4" }
-            circle { cx: "32", cy: "64", r: "4" }
-            circle { cx: "30", cy: "36", r: "4" }
+        g { stroke: "var(--textDim)", stroke_width: "1.5", opacity: "0.6",
+            circle { cx: "46", cy: "40", r: "8" }
+            circle { cx: "74", cy: "40", r: "8" }
         }
-        circle { cx: "60", cy: "48", r: "7", stroke: "var(--accent)", stroke_width: "1.7", fill: "var(--bg)" }
-        circle { cx: "60", cy: "48", r: "2", fill: "var(--accent)", stroke: "none" }
-        {lapis_star("88", "36")}
-    })
-}
-
-/// Sleeping owl — no notifications. Astrolabe-framed, lapis star sights
-/// the upper-left where the zzz drifts.
-pub(super) fn illo_sleeping_owl() -> Element {
-    illo(rsx! {
-        {astrolabe_frame("var(--textDim)")}
-        g { stroke: "var(--textDim)", stroke_width: "1.6",
-            path { d: "M44 38c0-9 7-16 16-16s16 7 16 16v12a16 16 0 0 1-32 0z" }
-            // brow tufts
-            path { d: "M47.5 40c-.8-5 1-8.4 4-9.4 2.2 1.6 2.9 4.6 2.3 7.4" }
-            path { d: "M72.5 40c.8-5-1-8.4-4-9.4-2.2 1.6-2.9 4.6-2.3 7.4" }
-            // closed eyes (downward arcs)
-            path { d: "M49 41c1.6 2.2 6.4 2.2 8 0" }
-            path { d: "M63 41c1.6 2.2 6.4 2.2 8 0" }
-            path { d: "M60 45l-2 3h4z", stroke: "var(--accent)" }
-        }
-        // zzz
-        g { stroke: "var(--accent)", stroke_width: "1.4", opacity: "0.8",
-            path { d: "M80 30h6l-6 6h6" }
-            path { d: "M88 22h4l-4 4h4" }
-        }
-        {lapis_star("96", "16")}
-    })
-}
-
-/// Laurel wreath — plugins. Astrolabe-framed, lapis star sights the center
-/// check (the laureate's seal).
-pub(super) fn illo_laurel_wreath() -> Element {
-    illo(rsx! {
-        {astrolabe_frame("var(--textDim)")}
-        g { stroke: "var(--accent)", stroke_width: "1.5",
-            path { d: "M60 78c-16 0-26-12-26-28 0-8 3-15 7-19" }
-            path { d: "M60 78c16 0 26-12 26-28 0-8-3-15-7-19" }
-        }
-        g { stroke: "var(--textDim)", stroke_width: "1.3", opacity: "0.7",
-            path { d: "M41 33c-3-1-6 0-8 3 3 1 6 0 8-3z" }
-            path { d: "M37 44c-3-1-6 0-8 3 3 1 6 0 8-3z" }
-            path { d: "M37 56c-3 0-6 2-7 5 3 1 6-1 7-5z" }
-            path { d: "M79 33c3-1 6 0 8 3-3 1-6 0-8-3z" }
-            path { d: "M83 44c3-1 6 0 8 3-3 1-6 0-8-3z" }
-            path { d: "M83 56c3 0 6 2 7 5-3 1-6-1-7-5z" }
-        }
-        path { d: "M52 50l6 6 12-12", stroke: "var(--accent)", stroke_width: "1.8" }
-        {lapis_star("60", "48")}
-    })
-}
-
-/// Amphora — files. Astrolabe-framed, lapis star sights the upper-right
-/// (the vessel's open handle).
-pub(super) fn illo_amphora() -> Element {
-    illo(rsx! {
-        {astrolabe_frame("var(--textDim)")}
-        g { stroke: "var(--accent)", stroke_width: "1.6",
-            path { d: "M50 24h20M53 24c0 7-10 10-10 20a17 17 0 0 0 34 0c0-10-10-13-10-20" }
-            path { d: "M47 34c-6 0-10 3-10 7M73 34c6 0 10 3 10 7" }
-            path { d: "M54 64h12l-2 8h-8z" }
-        }
-        g { stroke: "var(--textDim)", stroke_width: "1.2", opacity: "0.6",
-            line { x1: "50", y1: "46", x2: "70", y2: "46" }
-            line { x1: "49", y1: "52", x2: "71", y2: "52" }
-        }
-        {lapis_star("90", "26")}
-    })
-}
-
-/// Corinthian helmet — agents. Astrolabe-framed, lapis star sights the
-/// upper-left where the crest plume rises.
-pub(super) fn illo_helmet() -> Element {
-    illo(rsx! {
-        {astrolabe_frame("var(--textDim)")}
-        g { stroke: "var(--accent)", stroke_width: "1.6",
-            // dome + outer sides
-            path { d: "M40 64 L40 56 C40 38 48 28 60 28 C72 28 80 38 80 56 L80 64" }
-            // cheek guards turning inward (open mouth gap between)
-            path { d: "M40 64 C40 69 44 72 49 72 L49 55" }
-            path { d: "M80 64 C80 69 76 72 71 72 L71 55" }
-            // nose guard (the vertical of the Corinthian 'T')
-            line { x1: "60", y1: "44", x2: "60", y2: "67" }
-            // eye openings
-            path { d: "M50 47 q4 -3.2 7.5 0 q-3.75 2.6 -7.5 0 z" }
-            path { d: "M62.5 47 q3.5 -3.2 7.5 0 q-3.75 2.6 -7.5 0 z" }
-        }
-        // crest / plume
-        g { stroke: "var(--textDim)", stroke_width: "1.3", opacity: "0.75",
-            path { d: "M48 27 C52 15 68 15 72 27" }
-            line { x1: "53", y1: "20", x2: "55", y2: "26" }
-            line { x1: "58", y1: "17", x2: "59", y2: "25" }
-            line { x1: "63", y1: "17", x2: "63", y2: "25" }
-            line { x1: "68", y1: "20", x2: "67", y2: "26" }
-        }
-        {lapis_star("30", "14")}
+        circle { cx: "46", cy: "40", r: "8", stroke: "var(--accent)", stroke_width: "1.8", fill: "var(--bg)" }
+        {gold_sparkle("46", "40")}
     })
 }

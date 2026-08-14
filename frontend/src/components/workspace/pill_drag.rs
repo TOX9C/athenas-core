@@ -7,17 +7,28 @@
 //! so WKWebView never loses the drag when the cursor leaves the source pill.
 //! Uses PointerEvents (not MouseEvent) for unified mouse/touch/stylus.
 //!
-//! Task 2 scope: `PillDrag` state struct, `PILL_DRAG_THRESHOLD`, the pure
-//! `walk_to_data_pane_id` DOM-walk helper, and the `nearest_pane_id_under_point`
-//! JS-interop hit-test. The `PillDragOverlay`/`PillDragGhost` components are
-//! added in Task 3.
+//! The drag session supports both pane swapping and an Athena context drop
+//! target. The fullscreen overlay keeps pointer capture reliable in WKWebView,
+//! while DOM hit-testing distinguishes the two destinations.
 
 use dioxus::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 /// Drag threshold in CSS pixels. Below this, a pointerdown is treated as a
 /// click (lets double-click rename + icon-button clicks pass through).
 pub const PILL_DRAG_THRESHOLD: f64 = 4.0;
+
+/// Where a pane-pill drag can be released.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PillDropTarget {
+    /// Swap the dragged pane with another pane in the same workspace.
+    Pane(String),
+    /// Pin the dragged agent as context in Athena.
+    Athena,
+}
 
 /// A live pane-pill drag session. `None` (on the owning `Signal`) when idle.
 #[derive(Clone, Debug)]
@@ -45,8 +56,13 @@ pub struct PillDrag {
     /// Has the pointer crossed the threshold? If false, pointerup is a click
     /// (no swap, no drag preview shown).
     pub moved: bool,
-    /// Hit-tested target pane id (same space, not the source), or `None`.
-    pub target_pane_id: Option<String>,
+    /// Hit-tested release destination, or `None` when outside a valid target.
+    pub target: Option<PillDropTarget>,
+    /// Agent type copied into Athena context when this drag is released there.
+    pub source_agent_type: String,
+    /// Typed eligibility flag for Athena references. Plain shell panes set this
+    /// to false regardless of their display label or enum formatting.
+    pub source_is_agent: bool,
 }
 
 /// Walk up the DOM from `el` to the nearest ancestor (inclusive) carrying a
@@ -65,11 +81,32 @@ pub(crate) fn walk_to_data_pane_id(el: Option<web_sys::Element>) -> Option<Strin
     None
 }
 
+/// Resolve the nearest supported drop destination while walking up from a
+/// hit-tested element. Pane IDs take precedence because pane wrappers are
+/// nested inside the workspace, while Athena is a sibling surface.
+fn walk_to_drop_target(el: Option<web_sys::Element>) -> Option<PillDropTarget> {
+    let mut node = el;
+    while let Some(elem) = node {
+        if let Some(value) = elem.get_attribute("data-pane-id") {
+            return Some(PillDropTarget::Pane(value));
+        }
+        if elem
+            .get_attribute("data-athena-drop")
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Some(PillDropTarget::Athena);
+        }
+        node = elem.parent_element();
+    }
+    None
+}
+
 /// Find the topmost pane under screen point `(x, y)` by calling
 /// `document.elementFromPoint` then walking up to the nearest
 /// `[data-pane-id]` ancestor. Returns its value, or `None` if the point is
 /// not over any pane (e.g. over the sidebar, the titlebar, or the drag-overlay
-/// scrim itself).
+/// scrim itself). This legacy helper remains useful to callers that only need
+/// pane resolution; the full drag path uses `find_drop_target`.
 ///
 /// Note: `document.elementFromPoint` returns the topmost element at the point
 /// — during a drag this is usually the `PillDragOverlay` scrim (it has
@@ -94,7 +131,7 @@ pub fn nearest_pane_id_under_point(x: f64, y: f64) -> Option<String> {
 /// pane below, then restore it. Returns the target pane id filtered to
 /// "not the source" — same-space filtering happens in the store (a swap
 /// with a pane id absent from this space no-ops there).
-fn find_drop_target(x: f64, y: f64, drag: &PillDrag) -> Option<String> {
+fn find_drop_target(x: f64, y: f64, drag: &PillDrag) -> Option<PillDropTarget> {
     let window = web_sys::window()?;
     let document = window.document()?;
     // Repeatedly find the top element; if it's the scrim, hide it and retry.
@@ -112,20 +149,59 @@ fn find_drop_target(x: f64, y: f64, drag: &PillDrag) -> Option<String> {
                             .unwrap_or_default();
                         let _ = style.set_property("pointer-events", "none");
                         let result =
-                            walk_to_data_pane_id(document.element_from_point(x as f32, y as f32));
+                            walk_to_drop_target(document.element_from_point(x as f32, y as f32));
                         let _ = style.set_property("pointer-events", &prev);
-                        return filter_target(result, drag);
+                        let result = filter_target(result, drag);
+                        set_athena_drag_hover(matches!(result, Some(PillDropTarget::Athena)));
+                        return result;
                     }
                     // pointer-events toggle failed — retry once.
                     continue;
                 }
                 // Hit something that isn't the scrim — walk up from it.
-                return filter_target(walk_to_data_pane_id(top), drag);
+                let result = filter_target(walk_to_drop_target(top), drag);
+                set_athena_drag_hover(matches!(result, Some(PillDropTarget::Athena)));
+                return result;
             }
-            None => return None,
+            None => {
+                set_athena_drag_hover(false);
+                return None;
+            }
         }
     }
+    set_athena_drag_hover(false);
     None
+}
+
+/// Toggle the visual state on Athena without introducing a second global
+/// Dioxus signal solely for a pointer-move paint effect. The drag overlay is
+/// above the panel, so Athena itself cannot receive `:hover` while dragging.
+fn set_athena_drag_hover(active: bool) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Ok(nodes) = document.query_selector_all("[data-athena-drop]") else {
+        return;
+    };
+    for index in 0..nodes.length() {
+        if let Some(node) = nodes.item(index) {
+            if let Ok(element) = node.dyn_into::<web_sys::Element>() {
+                let mut classes = element
+                    .get_attribute("class")
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                let has_class = classes.iter().any(|class| class == "is-dnd-target");
+                if active && !has_class {
+                    classes.push("is-dnd-target".to_string());
+                } else if !active {
+                    classes.retain(|class| class != "is-dnd-target");
+                }
+                let _ = element.set_attribute("class", &classes.join(" "));
+            }
+        }
+    }
 }
 
 /// True if `el` is the `PillDragOverlay` scrim (carries a non-empty
@@ -139,13 +215,10 @@ fn is_overlay_scrim(el: &web_sys::Element) -> bool {
 /// Keep the target only if it's not the source pane. (Same-space filtering is
 /// enforced by `swap_pane_agents`, which no-ops if the target id isn't in the
 /// source space — so we don't need the target's space id here.)
-fn filter_target(found: Option<String>, drag: &PillDrag) -> Option<String> {
-    found.and_then(|id| {
-        if id == drag.source_pane_id {
-            None
-        } else {
-            Some(id)
-        }
+fn filter_target(found: Option<PillDropTarget>, drag: &PillDrag) -> Option<PillDropTarget> {
+    found.and_then(|target| match target {
+        PillDropTarget::Pane(id) if id == drag.source_pane_id => None,
+        other => Some(other),
     })
 }
 
@@ -158,6 +231,9 @@ pub struct PillDragOverlayProps {
     pub drag: Signal<Option<PillDrag>>,
     pub workspace: Signal<crate::stores::workspace::WorkspaceState>,
     pub terminal_store: Signal<crate::stores::terminal::TerminalStore>,
+    pub athena_store: Signal<crate::stores::athena::AthenaState>,
+    pub panel_store: Signal<crate::stores::panel_manager::PanelManagerState>,
+    pub ui_store: Signal<crate::stores::ui::UIState>,
 }
 
 /// Fullscreen transparent overlay that owns `pointermove`/`pointerup` for the
@@ -171,6 +247,50 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
     let mut drag = props.drag;
     let mut workspace = props.workspace;
     let mut terminal_store = props.terminal_store;
+    let mut athena_store = props.athena_store;
+    let mut panel_store = props.panel_store;
+    let mut ui_store = props.ui_store;
+
+    // Window-level cancellation matters when WKWebView backgrounds the app or
+    // the pointer leaves the document before the overlay receives pointerup.
+    // Keep the closures alive until unmount and remove both listeners in the
+    // same hook lifetime.
+    let cancel_handler: Rc<RefCell<Option<Closure<dyn FnMut(web_sys::Event)>>>> =
+        use_hook(|| Rc::new(RefCell::new(None)));
+    let cancel_handler_for_effect = cancel_handler.clone();
+    use_effect(move || {
+        if cancel_handler_for_effect.borrow().is_some() {
+            return;
+        }
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Some(document) = window.document() else {
+            return;
+        };
+        let mut drag_for_window = drag;
+        let handler = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            drag_for_window.set(None);
+            set_athena_drag_hover(false);
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        let callback = handler.as_ref().unchecked_ref();
+        let _ = window.add_event_listener_with_callback("blur", callback);
+        let _ = document.add_event_listener_with_callback("visibilitychange", callback);
+        *cancel_handler_for_effect.borrow_mut() = Some(handler);
+    });
+    let cancel_handler_for_drop = cancel_handler.clone();
+    use_drop(move || {
+        if let (Some(window), Some(handler)) = (
+            web_sys::window(),
+            cancel_handler_for_drop.borrow_mut().take(),
+        ) {
+            let callback = handler.as_ref().unchecked_ref();
+            let _ = window.remove_event_listener_with_callback("blur", callback);
+            if let Some(document) = window.document() {
+                let _ = document.remove_event_listener_with_callback("visibilitychange", callback);
+            }
+        }
+    });
 
     let onpointermove = move |e: PointerEvent| {
         let coords = e.data.client_coordinates();
@@ -196,7 +316,7 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
         }
         current.cur_x = coords.x;
         current.cur_y = coords.y;
-        current.target_pane_id = find_drop_target(coords.x, coords.y, &current);
+        current.target = find_drop_target(coords.x, coords.y, &current);
         drag.set(Some(current));
     };
 
@@ -213,6 +333,7 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
         }
         let finished = drag.read().clone();
         drag.set(None);
+        set_athena_drag_hover(false);
         let Some(d) = finished else {
             return;
         };
@@ -220,19 +341,51 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
             // A click, not a drag — no swap.
             return;
         }
-        if let Some(target) = d.target_pane_id.as_ref() {
-            if target != &d.source_pane_id {
-                {
-                    let mut ws = workspace.write();
-                    ws.swap_pane_agents(&d.source_space_id, &d.source_pane_id, target);
-                }
+        match d.target {
+            Some(PillDropTarget::Pane(target)) if target != d.source_pane_id => {
+                let mut ws = workspace.write();
+                ws.swap_pane_agents(&d.source_space_id, &d.source_pane_id, &target);
                 // Focus the moved agent at its new slot. `set_active` keys on
                 // pane id (not slot index), and `swap_pane_agents` migrated the
                 // pane id with the agent, so this stays valid post-swap.
-                terminal_store.write().set_active(d.source_pane_id.clone());
+                terminal_store.write().set_active(d.source_pane_id);
             }
+            Some(PillDropTarget::Athena) if d.source_is_agent => {
+                athena_store.write().add_agent_context(
+                    d.source_pane_id,
+                    d.source_agent_type,
+                    d.source_label,
+                );
+                // Make the successful reference immediately visible even
+                // when the drop landed on the temporary fallback target.
+                panel_store
+                    .write()
+                    .open_right_panel(crate::stores::panel_manager::RightPanel::Assistant);
+                ui_store.write().right_sidebar_open = true;
+            }
+            _ => {}
         }
-        // Dropping outside any pane, or on self → no-op; drag already cleared.
+        // Dropping outside any valid target, or on self, is a no-op.
+    };
+
+    let onpointercancel = move |e: PointerEvent| {
+        let is_origin = drag
+            .read()
+            .as_ref()
+            .map(|current| e.data.pointer_id() == current.pointer_id)
+            .unwrap_or(true);
+        if !is_origin {
+            return;
+        }
+        drag.set(None);
+        set_athena_drag_hover(false);
+    };
+    let onmouseleave = move |_e: MouseEvent| {
+        // WKWebView can cancel a pointer sequence while the window is losing
+        // focus without delivering pointerup. Treat leaving the capture
+        // surface as an abort so a stale highlight cannot survive.
+        drag.set(None);
+        set_athena_drag_hover(false);
     };
 
     let is_grabbing = drag.read().as_ref().map(|d| d.moved).unwrap_or(false);
@@ -248,6 +401,8 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
             "data-no-drop": "true",
             onpointermove: onpointermove,
             onpointerup: onpointerup,
+            onpointercancel: onpointercancel,
+            onmouseleave: onmouseleave,
         }
     }
 }
@@ -293,5 +448,40 @@ mod tests {
     #[test]
     fn walk_to_data_pane_id_none_for_none() {
         assert_eq!(walk_to_data_pane_id(None), None);
+    }
+
+    fn test_drag() -> PillDrag {
+        PillDrag {
+            source_pane_id: "pane-1".into(),
+            source_space_id: "space-1".into(),
+            source_label: "Builder".into(),
+            source_color: "var(--accent)".into(),
+            pointer_id: 1,
+            start_x: 0.0,
+            start_y: 0.0,
+            cur_x: 0.0,
+            cur_y: 0.0,
+            moved: true,
+            target: None,
+            source_agent_type: "claude".into(),
+            source_is_agent: true,
+        }
+    }
+
+    #[test]
+    fn filter_target_rejects_source_but_keeps_other_panes_and_athena() {
+        let drag = test_drag();
+        assert_eq!(
+            filter_target(Some(PillDropTarget::Pane("pane-1".into())), &drag),
+            None
+        );
+        assert_eq!(
+            filter_target(Some(PillDropTarget::Pane("pane-2".into())), &drag),
+            Some(PillDropTarget::Pane("pane-2".into()))
+        );
+        assert_eq!(
+            filter_target(Some(PillDropTarget::Athena), &drag),
+            Some(PillDropTarget::Athena)
+        );
     }
 }

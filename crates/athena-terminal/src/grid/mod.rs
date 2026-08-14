@@ -77,6 +77,9 @@ pub struct Grid {
     _bracketed_paste: bool,
     /// Mouse tracking mode (0 = off, 1000 = normal, 1002 = motion, 1003 = all motion)
     _mouse_mode: u16,
+    /// Horizontal tab stops. The default terminal layout uses stops every
+    /// eight columns; HTS can add a stop at the current cursor column.
+    tab_stops: Vec<bool>,
 }
 
 impl Default for Grid {
@@ -123,6 +126,7 @@ impl Grid {
             _reverse_video: false,
             _bracketed_paste: false,
             _mouse_mode: 0,
+            tab_stops: (0..cols).map(|col| col % 8 == 0).collect(),
         };
         for _ in 0..rows {
             grid.rows.push(Row::new(cols));
@@ -236,8 +240,22 @@ impl Grid {
     }
 
     pub fn tab(&mut self) {
-        let next_tab = (self.cursor.col / 8 + 1) * 8;
-        self.cursor.col = next_tab.min(self.cols.saturating_sub(1));
+        let next_tab = self
+            .tab_stops
+            .iter()
+            .enumerate()
+            .skip(self.cursor.col.saturating_add(1))
+            .find_map(|(col, is_stop)| is_stop.then_some(col))
+            .unwrap_or_else(|| self.cols.saturating_sub(1));
+        self.cursor.col = next_tab;
+        self.wrap_next = false;
+    }
+
+    /// Set a horizontal tab stop at the current cursor column (HTS).
+    pub fn set_tab_stop(&mut self) {
+        if let Some(stop) = self.tab_stops.get_mut(self.cursor.col) {
+            *stop = true;
+        }
     }
 
     pub fn backspace(&mut self) {
@@ -504,6 +522,16 @@ impl Grid {
         for row in &mut self.rows {
             row.resize(cols, &self.default_cell);
         }
+        self.tab_stops.resize(cols, false);
+        for col in 0..cols {
+            if col % 8 == 0 && self.tab_stops.get(col).is_some() {
+                // Preserve the conventional default stops for newly-created
+                // columns without overwriting explicit stops in existing ones.
+                if col >= self.cols {
+                    self.tab_stops[col] = true;
+                }
+            }
+        }
         self.cols = cols;
         self.rows_count = rows;
         self.scroll_region.bottom = self.scroll_region.bottom.min(rows.saturating_sub(1));
@@ -692,5 +720,15 @@ mod tests {
         let mut g = Grid::new(80, 24);
         g.set_sgr(&[1]);
         assert!(g.current_flags.contains(CellFlags::BOLD));
+    }
+
+    #[test]
+    fn tab_stops_can_be_set_and_used() {
+        let mut g = Grid::new(20, 4);
+        g.move_cursor_to_col(2);
+        g.set_tab_stop();
+        g.move_cursor_to_col(0);
+        g.tab();
+        assert_eq!(g.cursor.col, 2);
     }
 }

@@ -33,7 +33,18 @@ impl AgentStatusState {
     ) {
         let key = pane_id.into();
         if let Some(entry) = self.statuses.iter_mut().find(|(id, _)| id == &key) {
+            // A late event from an older PTY must not overwrite the status of
+            // a newer PTY that reused the same pane id. Legacy updates without
+            // a generation remain accepted for plugin/backward compatibility.
+            if let (Some(current), Some(incoming)) = (entry.1.generation, update.generation) {
+                if current != incoming {
+                    return;
+                }
+            }
             entry.1.last_updated_at = now;
+            if let Some(generation) = update.generation {
+                entry.1.generation = Some(generation);
+            }
             if let Some(status) = update.status {
                 entry.1.status = status;
             }
@@ -48,6 +59,7 @@ impl AgentStatusState {
                 key.clone(),
                 AgentStatus {
                     pane_id: key,
+                    generation: update.generation,
                     status: update.status.unwrap_or_default(),
                     message: update.message,
                     progress: update.progress,
@@ -71,6 +83,7 @@ impl AgentStatusState {
                 pane_id.clone(),
                 AgentStatus {
                     pane_id,
+                    generation: None,
                     status: AgentRunStatus::Idle,
                     message: Some("Connected".to_string()),
                     progress: None,
@@ -100,6 +113,7 @@ impl AgentStatusState {
                 pane_id.clone(),
                 AgentStatus {
                     pane_id,
+                    generation: None,
                     status: AgentRunStatus::WaitingForInput,
                     message: Some(message),
                     progress: None,

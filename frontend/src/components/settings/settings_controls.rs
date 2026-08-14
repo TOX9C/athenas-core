@@ -1,6 +1,8 @@
 //! Reusable controls shared by the settings sections.
 
+use crate::components::shared::icon::{IconCheck, IconChevronDown};
 use crate::themes::AVAILABLE_FONTS;
+use crate::utils::font_size::{adjust_font_size, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -116,7 +118,9 @@ pub(super) fn FontDropdown(props: FontDropdownProps) -> Element {
                 class: if open() { "font-dropdown-afford is-open" } else { "font-dropdown-afford" },
                 onclick: move |_| open.toggle(),
                 span { class: "name", style: "font-family: '{props.current}', monospace;", "{props.current}" }
-                span { class: "chevron", "▾" }
+                span { class: "chevron",
+                    IconChevronDown { size: Some(12), color: Some("currentColor".to_string()) }
+                }
             }
             if open() {
                 div { class: "font-dropdown-pop",
@@ -138,7 +142,9 @@ pub(super) fn FontDropdown(props: FontDropdownProps) -> Element {
                                         props.on_select.call(font_for_click.clone());
                                     },
                                     span { "{font_str}" }
-                                    span { class: "check", "✓" }
+                                    span { class: "check",
+                                        IconCheck { size: Some(12), color: Some("currentColor".to_string()) }
+                                    }
                                 }
                             }
                         }
@@ -161,7 +167,7 @@ pub(super) struct SizeStepperProps {
 pub(super) fn SizeStepper(props: SizeStepperProps) -> Element {
     let step = |delta: i8| {
         move |_| {
-            let next = (props.value as i16 + delta as i16).clamp(10, 24) as u8;
+            let next = adjust_font_size(props.value, delta);
             if next != props.value {
                 props.on_change.call(next);
             }
@@ -173,7 +179,7 @@ pub(super) fn SizeStepper(props: SizeStepperProps) -> Element {
                 class: "size-step",
                 r#type: "button",
                 aria_label: "Decrease font size",
-                disabled: props.value <= 10,
+                disabled: props.value <= MIN_FONT_SIZE,
                 onclick: step(-1),
                 "−"
             }
@@ -185,7 +191,7 @@ pub(super) fn SizeStepper(props: SizeStepperProps) -> Element {
                 class: "size-step",
                 r#type: "button",
                 aria_label: "Increase font size",
-                disabled: props.value >= 24,
+                disabled: props.value >= MAX_FONT_SIZE,
                 onclick: step(1),
                 "+"
             }

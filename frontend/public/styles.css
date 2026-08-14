@@ -1,13 +1,12 @@
 /* ============================================================================
    ATHENA'S CORE — Design System
-   "Obsidian & Gold / The Athenaeum"
-   A dark temple at night, lit by the lamp of wisdom.
+   Obsidian & gold on precision-neutral surfaces.
 
    Layers in this file:
-     1. @font-face          — Cormorant (display) · Hanken Grotesk (UI) · Monaspace Neon (mono)
+     1. @font-face          — Hanken Grotesk (UI + display) · Monaspace Neon (mono)
      2. :root tokens        — color · type scale · spacing · radius · elevation · motion · atmosphere
      3. Base / reset        — html/body, scrollbars, selection, focus ring
-     4. Atmosphere          — lamp glow + grain overlay (driven by theme tokens)
+     4. Atmosphere          — glow + grain overlay (driven by theme tokens)
      5. Motion              — keyframes + reduced-motion guard
      6. Syntax + utilities  — preserved semantic utility classes (token-driven)
    ============================================================================ */
@@ -142,8 +141,9 @@
   --terminalCursor: #c9a24b;
   --terminalSelection: rgba(201, 162, 75, 0.18);
 
-  /* type families */
-  --font-display: 'Cormorant', 'Iowan Old Style', Georgia, serif;
+  /* type families — the serif display face is retired; chrome is all
+     geometric sans, the mono stays for code and data surfaces */
+  --font-display: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-ui: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --fontFamily:
     'Monaspace Neon', 'JetBrains Mono', ui-monospace, Menlo, monospace; /* mono (user-overridable) */
@@ -172,15 +172,15 @@
   --space-8: 32px;
 
   /* radius */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
   --radius-pill: 999px;
 
-  /* elevation — soft, warm-black */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.38);
-  --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.5);
+  /* elevation — soft, layered neutral-black */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.22);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.24), 0 8px 24px rgba(0, 0, 0, 0.18);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.28), 0 24px 64px rgba(0, 0, 0, 0.42);
   --inset-hairline: inset 0 0 0 1px var(--border);
 
   /* motion */
@@ -222,6 +222,21 @@
   --tb-tab-height: 30px;
   --tb-tab-font: var(--text-xs);
   --tb-switcher-font: var(--text-2xs);
+}
+
+/* ── Theme cross-fade ────────────────────────────────────────────────────────
+   themes/mod.rs adds `theme-anim` to <html> for ~360ms around each palette
+   apply, so the whole chrome cross-fades instead of snapping. The rule is
+   scoped to that brief window — zero ongoing cost, and it intentionally
+   overrides component transitions only while the palette is morphing. */
+html.theme-anim *,
+html.theme-anim {
+  transition:
+    background-color 0.3s var(--ease) !important,
+    color 0.3s var(--ease) !important,
+    border-color 0.3s var(--ease) !important,
+    fill 0.3s var(--ease) !important,
+    stroke 0.3s var(--ease) !important;
 }
 
 /* ── 3. Base ─────────────────────────────────────────────────────────────── */
@@ -294,11 +309,12 @@ button {
   color: inherit;
 }
 
-/* No global focus ring — each component expresses its own hover/active/selected
-   state. Keyboard focus changes nothing visually beyond the element's own states.
-   (The gold --ring token is retained only for components that explicitly opt in.) */
+/* Keyboard focus — a single restrained gold ring, keyboard-only. Mouse users
+   never see it; components keep their own hover/active/selected vocabulary. */
 :focus-visible {
-  outline: none;
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
 }
 
 h1,
@@ -380,6 +396,26 @@ h3,
     transform: none;
   }
 }
+@keyframes panel-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 @keyframes pulse-soft {
   0%,
   100% {
@@ -396,6 +432,20 @@ h3,
 .animate-fade {
   animation: reveal-fade var(--dur-slow) var(--ease) both;
 }
+
+/* Panel mount transition — plays when a main panel (kanban / swarm / editor /
+   settings / browser / notifications) is mounted on a panel switch. The wrapper
+   also re-declares the parent's flex geometry so inserting it around a panel
+   never changes the layout the panel previously filled directly. */
+.panel-enter {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
+  min-width: 0;
+  min-height: 0;
+  animation: panel-rise var(--dur-slow) var(--ease) both;
+}
+
 .lamp-glow {
 }
 .orbit-glow {
@@ -630,6 +680,103 @@ h3,
   border-radius: var(--radius-pill);
 }
 
+/* Athena chat surfaces — the log and message plaques are intentionally
+   opaque so the conversation has a visual home inside the sidebar. */
+.athena-message-log {
+  background: var(--bg);
+}
+
+.athena-empty-state {
+  color: var(--textMuted);
+}
+
+.athena-empty-state strong {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.athena-empty-state span {
+  color: var(--textMuted);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.athena-empty-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bgSecondary);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Athena drop target — appears only while the pointer overlay reports a valid
+   agent reference destination. Keep the state on the whole panel so both the
+   compact sidebar and the bottom overlay communicate the same affordance. */
+.athena-panel.is-dnd-target {
+  position: relative;
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    0 0 0 3px var(--accentSubtle);
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.athena-panel.is-dnd-target::after {
+  content: 'Drop to reference this agent';
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 2;
+  padding: 2px 7px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  background: var(--bgSecondary);
+  color: var(--accent);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+}
+
+.athena-dnd-fallback {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 190px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--bgSecondary);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+  animation: reveal-fade var(--dur-fast) var(--ease) both;
+}
+.athena-dnd-fallback-kicker {
+  color: var(--accent);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+/* Workspace tab — quiet hover surface reveal (color handled inline). */
+.workspace-tab:hover {
+  background-color: var(--bgHover);
+}
+
 /* Agent-activity status dot inside workspace-tab / sidebar badges.
    `is-working` = gold (actively working), `is-attention` = amber + pulse
    (finished work, waiting for input, or errored). */
@@ -657,7 +804,8 @@ h3,
   opacity: 0.45;
 }
 
-/* Buttons — text-first, no resting box. Gold hairline (::after) on hover. */
+/* Buttons — text-first, no resting box. Hover lifts the surface with a quiet
+   background reveal; press gives a soft spring dip. */
 .btn-primary,
 .btn-ghost,
 .btn-secondary {
@@ -675,37 +823,33 @@ h3,
   background: transparent;
   color: var(--text);
   position: relative;
-  transition: color var(--dur-fast) var(--ease);
-}
-.btn-primary {
-  color: var(--accent);
-  font-weight: 600;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    transform 110ms var(--ease);
 }
 .btn-primary:hover {
   color: var(--accentHover);
+  background-color: var(--accentSubtle);
 }
 .btn-primary:active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.98);
 }
 
-.btn-secondary {
-  color: var(--text);
-}
 .btn-secondary:hover {
   color: var(--text);
+  background-color: var(--bgHover);
 }
 .btn-secondary:active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.98);
 }
 
-.btn-ghost {
-  color: var(--textMuted);
-}
 .btn-ghost:hover {
   color: var(--text);
+  background-color: var(--bgHover);
 }
 .btn-ghost:active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.98);
 }
 
 /* danger — text-only. */
@@ -713,12 +857,17 @@ h3,
   background: transparent;
   color: var(--error);
   border: none;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    transform 110ms var(--ease);
 }
 .btn-danger:hover {
   color: var(--error);
+  background-color: rgba(197, 101, 77, 0.1);
 }
 .btn-danger:active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.98);
 }
 
 .btn-sm {
@@ -755,7 +904,7 @@ button:disabled {
   transform: none;
 }
 
-/* Icon-only button — ghost resting, no underline. */
+/* Icon-only button — quiet resting surface, gold on hover/active. */
 .icon-btn {
   display: inline-flex;
   align-items: center;
@@ -768,16 +917,34 @@ button:disabled {
   background: transparent;
   color: var(--textMuted);
   cursor: pointer;
-  transition: color var(--dur-fast) var(--ease);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    transform 90ms var(--ease);
 }
 .icon-btn:hover {
   color: var(--text);
+  background: var(--bgHover);
 }
 .icon-btn:active {
   color: var(--accent);
+  transform: scale(0.92);
 }
 .icon-btn.is-active {
   color: var(--accent);
+  background: var(--accentSubtle);
+}
+
+/* Notification bell: an unread notification is attention, not agent work.
+   The bell gets a restrained pulse so a fast completion event is still
+   discoverable, while the per-pane dot remains the source of truth for
+   working state. */
+.notification-bell-has-unread {
+  color: var(--accent);
+}
+.notification-bell-is-new {
+  color: var(--accent);
+  animation: pulse-soft 1.6s ease-in-out 2;
 }
 
 /* Class-based disabled state for icon-btn / btn-secondary that drive their
@@ -825,6 +992,8 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  transform-origin: top;
+  animation: pop-in 160ms var(--ease) both;
 }
 .quick-menu-section {
   font-family: var(--font-display);
@@ -855,19 +1024,38 @@ button:disabled {
   background: var(--bgHover);
   color: var(--accent);
 }
+.quick-menu-row:active {
+  transform: scale(0.985);
+}
 
-/* Card surface — flat, hairline only on hover (interactive). */
+/* Card surface — hierarchy comes from spacing and a quiet neutral surface,
+   not an accent rail or a decorative glow. */
 .card {
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   box-shadow: none;
   transition:
+    background-color var(--dur-fast) var(--ease),
     border-color var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
 }
 .card.is-interactive {
   cursor: pointer;
+}
+
+/* Semantic labels use color sparingly and keep their geometry square enough to
+   read as metadata rather than a collection of status pills. */
+.status-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 0;
+  color: var(--textMuted);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  text-transform: uppercase;
 }
 
 /* Sidebar / list rows. */
@@ -961,6 +1149,18 @@ button:disabled {
   cursor: pointer;
   background: transparent;
   border: none;
+  border-radius: var(--radius-sm);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    transform 90ms var(--ease);
+}
+.codex-index-item:hover {
+  color: var(--text);
+  background-color: var(--bgHover);
+}
+.codex-index-item:active {
+  transform: scale(0.96);
 }
 
 .codex-index-item .glyph {
@@ -1033,7 +1233,6 @@ button:disabled {
   margin-left: auto;
   color: var(--textDim);
   font-family: var(--font-display);
-  font-style: italic;
   font-size: 12px;
   max-width: 240px;
   text-align: right;
@@ -1142,20 +1341,27 @@ button:disabled {
   border-radius: var(--radius-md);
   font-family: var(--font-ui);
   cursor: pointer;
-  transition: background 0.18s ease;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    transform 110ms var(--ease),
+    box-shadow 0.18s ease;
 }
 
 .save-btn:hover {
   background: var(--accentHover);
   border-color: var(--accentHover);
+  box-shadow: 0 2px 10px var(--accentSubtle);
 }
 .save-btn:active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.98);
+  box-shadow: none;
 }
 .save-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   transform: none;
+  box-shadow: none;
 }
 
 /* Settings-preview card — the live font/size preview area.
@@ -1245,6 +1451,8 @@ button:disabled {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   max-height: 220px;
   overflow-y: auto;
+  transform-origin: top;
+  animation: pop-in 160ms var(--ease) both;
 }
 
 .font-dropdown-opt {
@@ -1338,6 +1546,23 @@ button:disabled {
 }
 
 .lit-sweep {
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    /* keep the icon-btn press-scale alive on `icon-btn lit-sweep` elements */ transform 110ms
+      var(--ease);
+}
+.lit-sweep:hover {
+  background-color: var(--bgHover);
+}
+/* Interactive cards keep their existing footprint on hover. The old gold
+   inset edge made every row look like a generated dashboard tile. */
+.card.lit-sweep:hover,
+.kanban-card.lit-sweep:hover {
+  border-color: var(--border);
+  box-shadow: none;
 }
 
 /* Font-family picker button. Constant geometry lives here in a static class
@@ -1358,12 +1583,169 @@ button:disabled {
     color 0.18s ease;
 }
 
-/* Θ seal — the brand mark. Sizes the IconSeal disc + gold halo. */
+/* Brand mark — the hexagonal core. The titlebar mark keeps its stroke weights
+   from the inline SVG (the frame is heavier than the inner ring, a deliberate
+   hierarchy), so no blanket stroke-width override. */
 .seal-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  filter: drop-shadow(0 0 3px var(--accentSubtle));
+  color: var(--accent);
+  filter: none;
+}
+
+.titlebar .seal-mark {
+  opacity: 0.92;
+}
+
+/* Empty states and welcome art are open compositions, not framed image cards.
+   They stay deliberately quieter than the title so the state feels like part
+   of the product chrome rather than an embedded poster. */
+.empty-state .animate-rise {
+  max-width: 420px;
+  gap: 12px;
+  padding: 24px;
+}
+
+.empty-state-art {
+  width: 132px;
+  height: 106px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--textDim);
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.empty-state-art svg {
+  width: 132px;
+  height: 106px;
+}
+
+.welcome-laurel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: min(230px, 60vw);
+  color: var(--accent);
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+.welcome-laurel svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.swarm-empty-state .animate-rise {
+  align-items: flex-start;
+  text-align: left;
+  width: min(100%, 420px);
+}
+
+.swarm-empty-state .animate-rise > div:nth-child(2) {
+  align-items: flex-start;
+}
+
+.swarm-empty-state .animate-rise > div:nth-child(2) div {
+  text-align: left;
+}
+
+/* Launch Swarm is a focused prompt, not a tall settings dialog. */
+.modal-container.is-compact {
+  height: auto !important;
+  max-height: 70vh;
+}
+
+.swarm-goal-field {
+  min-height: 92px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  line-height: 1.5;
+}
+
+.swarm-goal-field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accentSubtle);
+}
+
+/* Swarm workspace: constrain the activity canvas so large monitors gain
+   useful density instead of a stretched empty plane. */
+.swarm-main {
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.swarm-network {
+  min-height: 0 !important;
+  max-height: none;
+}
+
+.swarm-agent-grid {
+  min-width: 0;
+}
+
+.swarm-agent-grid .agent-card {
+  min-width: 0;
+  height: 100%;
+}
+
+/* Settings: smaller index, quieter headers, and a readable content measure. */
+.settings-panel .codex-index,
+.modal-container .codex-index {
+  width: 60px;
+  padding: 14px 0;
+}
+
+.settings-panel .codex-index-item,
+.modal-container .codex-index-item {
+  padding: 9px 0;
+  font-size: 12px;
+}
+
+.settings-panel .codex-index-item .glyph,
+.modal-container .codex-index-item .glyph {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  opacity: 0.78;
+}
+
+.settings-panel .codex-index-item.is-active .glyph,
+.modal-container .codex-index-item.is-active .glyph {
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-panel .codex-tome,
+.modal-container .codex-tome {
+  padding: 22px 28px 32px;
+  max-width: 860px;
+}
+
+.settings-panel .codex-section,
+.modal-container .codex-section {
+  margin-bottom: 30px;
+}
+
+.settings-panel .codex-section-num,
+.modal-container .codex-section-num {
+  font-size: 20px;
+}
+
+.settings-panel .codex-section-title,
+.modal-container .codex-section-title {
+  font-size: 19px;
+}
+
+.settings-panel .codex-section-epi,
+.modal-container .codex-section-epi {
+  max-width: 200px;
+  font-size: 11px;
 }
 
 /* Resize handle — hairline at rest with no hover effect. */
@@ -1437,13 +1819,21 @@ button:disabled {
   border-radius: var(--radius-sm);
   cursor: pointer;
   position: relative;
-  transition: color var(--dur-fast) var(--ease);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    transform 90ms var(--ease);
 }
 .segmented-item:hover {
   color: var(--text);
+  background-color: var(--bgHover);
+}
+.segmented-item:active {
+  transform: scale(0.97);
 }
 .segmented-item.is-active {
   color: var(--accent);
+  background-color: var(--accentSubtle);
 }
 
 /* Context menu — flat menu (shadow kept, no frost). */
@@ -1456,7 +1846,8 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  animation: reveal-fade var(--dur-fast) var(--ease) both;
+  transform-origin: top;
+  animation: pop-in 160ms var(--ease) both;
 }
 .context-menu-item {
   display: flex;
@@ -1472,8 +1863,17 @@ button:disabled {
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
+.context-menu-item {
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    transform 90ms var(--ease);
+}
 .context-menu-item:hover {
   background: var(--bgHover);
+}
+.context-menu-item:active {
+  transform: scale(0.985);
 }
 .context-menu-item.is-danger {
   color: var(--error);
@@ -1596,9 +1996,9 @@ button:disabled {
   .tb-extra-btn {
     display: none !important;
   }
-  /* Keep the Θ seal at narrow widths, hide the "ATHENA" letters to make room
-     for the workspace tabs. The seal-mark stays; the sibling wordmark span
-     drops out. Spec §4.2 — the wordmark clips gracefully. */
+  /* Keep the core mark at narrow widths, hide the "ATHENA" letters to make
+     room for the workspace tabs. The seal-mark stays; the sibling wordmark
+     span drops out. The wordmark clips gracefully. */
   .titlebar .seal-mark + span {
     display: none;
   }
@@ -1609,10 +2009,23 @@ button:disabled {
   background-color: var(--bg) !important;
 }
 .xterm-mount {
-  contain: layout paint;
+  /* Do not use paint containment here: WebKit can retain a stale canvas
+     backing store when an alt-screen TUI scrolls or a flex pane is reflowed.
+     The pane wrapper already owns layout bounds; xterm owns its viewport. */
+  min-width: 0;
+  min-height: 0;
 }
 .xterm-mount .xterm {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
+}
+.xterm-mount .xterm-viewport {
+  overflow-y: scroll !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain;
 }
 
 /* ── Pane-pill drag-and-drop swap ────────────────────────────────────────── */

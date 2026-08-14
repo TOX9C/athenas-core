@@ -2,9 +2,11 @@ use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
-    pty_attach_listener, pty_default_shell_cached, pty_has_session, pty_listen_raw, pty_resize,
-    pty_set_raw_paused, pty_set_xterm, pty_spawn, pty_write, read_clipboard_text,
+    pty_attach_listener, pty_default_shell_cached, pty_detach_listener, pty_has_session,
+    pty_listen_raw, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write,
+    read_clipboard_text,
 };
+use crate::utils::agent_commands::get_agent_command;
 use crate::utils::resume_scanner::ResumeScanner;
 use dioxus::prelude::*;
 use std::cell::RefCell;
@@ -31,19 +33,148 @@ const XTERM_CONVERT_EOL: bool = false;
 
 #[cfg(test)]
 mod tests {
-    use super::XTERM_CONVERT_EOL;
+    use super::active_pane_matches;
 
     #[test]
-    fn unix_pty_output_keeps_native_line_endings() {
-        assert!(!XTERM_CONVERT_EOL);
+    fn active_focus_only_targets_the_selected_pane() {
+        assert!(active_pane_matches(Some("pane-1"), "pane-1"));
+        assert!(!active_pane_matches(Some("pane-2"), "pane-1"));
+        assert!(!active_pane_matches(None, "pane-1"));
     }
 }
 
-/// Queue one PTY input payload and drain it in order.
-///
-/// xterm.js emits input synchronously, while Tauri invokes complete
-/// asynchronously. Keeping one drain in flight prevents normal input and
-/// custom shortcut input from overlapping on the same PTY.
+/// Focus the xterm hidden textarea and retry once after WebKit completes the
+/// DOM/layout work triggered by `open()`. Interactive TUIs render without this
+/// focus, but xterm.js has nowhere to send their key events.
+fn focus_xterm(term: &JsValue) {
+    if let Ok(focus_val) = js_sys::Reflect::get(term, &JsValue::from_str("focus")) {
+        if let Ok(focus_fn) = focus_val.dyn_into::<js_sys::Function>() {
+            let _ = focus_fn.call0(term);
+        }
+    }
+}
+
+/// Do not steal focus from a real form control when the app resumes. The
+/// xterm helper textarea is the one editable element that is safe to recover.
+fn focus_recovery_allowed(document: &web_sys::Document) -> bool {
+    let Some(active) = document.active_element() else {
+        return true;
+    };
+    let tag = active.tag_name().to_ascii_lowercase();
+    if tag == "input" || tag == "textarea" || active.has_attribute("contenteditable") {
+        return active
+            .get_attribute("class")
+            .map(|classes| {
+                classes
+                    .split_ascii_whitespace()
+                    .any(|class_name| class_name == "xterm-helper-textarea")
+            })
+            .unwrap_or(false);
+    }
+    true
+}
+
+fn document_is_visible(document: &web_sys::Document) -> bool {
+    js_sys::Reflect::get(document, &JsValue::from_str("visibilityState"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .map(|state| state == "visible")
+        .unwrap_or(true)
+}
+
+fn active_pane_matches(active_session_id: Option<&str>, pane_id: &str) -> bool {
+    active_session_id == Some(pane_id)
+}
+
+/// Return whether this mount is the first visible xterm and no helper textarea
+/// currently owns focus. This is the renderer-only fallback for the short
+/// window before the terminal store's active-pane effect catches up.
+fn initial_xterm_focus_candidate(
+    document: &web_sys::Document,
+    container: &web_sys::Element,
+) -> bool {
+    let helper_focused = document
+        .active_element()
+        .and_then(|active| active.get_attribute("class"))
+        .map(|classes| {
+            classes
+                .split_ascii_whitespace()
+                .any(|class_name| class_name == "xterm-helper-textarea")
+        })
+        .unwrap_or(false);
+    if helper_focused || !focus_recovery_allowed(document) {
+        return false;
+    }
+
+    let mounts = document
+        .query_selector_all(".xterm-mount[data-terminal-renderer=\"xterm\"]")
+        .ok();
+    let Some(mounts) = mounts else {
+        return false;
+    };
+    for index in 0..mounts.length() {
+        let Some(mount) = mounts
+            .item(index)
+            .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        let rect = mount.get_bounding_client_rect();
+        if rect.width() > 0.0 && rect.height() > 0.0 {
+            return mount.is_same_node(Some(container.as_ref()));
+        }
+    }
+    false
+}
+
+fn schedule_initial_xterm_focus(
+    window: &web_sys::Window,
+    term: &JsValue,
+    active: &Rc<RefCell<bool>>,
+) {
+    if !*active.borrow() {
+        return;
+    }
+    focus_xterm(term);
+    let term_for_frame = term.clone();
+    let active_for_frame = active.clone();
+    let frame = Closure::once_into_js(move || {
+        if *active_for_frame.borrow() {
+            focus_xterm(&term_for_frame);
+        }
+    });
+    let _ = window.request_animation_frame(frame.as_ref().unchecked_ref());
+}
+
+fn schedule_xterm_focus(
+    window: &web_sys::Window,
+    term: &JsValue,
+    active: &Rc<RefCell<bool>>,
+    pane_id: &str,
+    terminal_store: Signal<crate::stores::terminal::TerminalStore>,
+) {
+    if !*active.borrow()
+        || !active_pane_matches(terminal_store.peek().active_session_id.as_deref(), pane_id)
+    {
+        return;
+    }
+    focus_xterm(term);
+    let term_for_frame = term.clone();
+    let active_for_frame = active.clone();
+    let pane_id_for_frame = pane_id.to_string();
+    let frame = Closure::once_into_js(move || {
+        if *active_for_frame.borrow()
+            && active_pane_matches(
+                terminal_store.peek().active_session_id.as_deref(),
+                pane_id_for_frame.as_str(),
+            )
+        {
+            focus_xterm(&term_for_frame);
+        }
+    });
+    let _ = window.request_animation_frame(frame.as_ref().unchecked_ref());
+}
+
 fn enqueue_pty_input(
     queue: &Rc<RefCell<VecDeque<String>>>,
     draining: &Rc<RefCell<bool>>,
@@ -101,8 +232,17 @@ struct XtermCleanup {
     /// Rooted ResizeObserver callback closure. Kept alive while the observer
     /// is connected; dropped on unmount to avoid leaking the closure.
     _ro_closure: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+    /// Pending ResizeObserver debounce timer. Cleared on unmount so a delayed
+    /// callback cannot retain a disposed terminal longer than necessary.
+    _ro_timer: Option<Rc<RefCell<Option<i32>>>>,
     /// Rooted keydown handler for custom macOS keyboard shortcuts.
     _keydown_handler: Option<JsValue>,
+    /// Capture-phase pointer handler. xterm/WebKit can stop bubbling pointer
+    /// events before the Dioxus wrapper sees them, which otherwise leaves the
+    /// previously active pane's hidden textarea focused.
+    _pointerdown_handler: Option<JsValue>,
+    /// Container on which the capture-phase pointer handler is registered.
+    _pointerdown_container: Option<web_sys::Element>,
     /// Shared input-lifecycle flag; set false before a mount is disposed so
     /// queued or delayed shortcut input cannot reach a later pane instance.
     input_active: Option<Rc<RefCell<bool>>>,
@@ -111,6 +251,14 @@ struct XtermCleanup {
     _visibility_observer: Option<JsValue>,
     /// Rooted IntersectionObserver callback closure.
     _vis_callback: Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>>,
+    /// Listener lease generation shared with the attach/detach IPC tasks.
+    listener_generation: Option<Rc<RefCell<Option<u64>>>>,
+    /// Focus recovery listener installed on the window/document. WebKit can
+    /// lose the hidden textarea's native focus after app resume even while the
+    /// terminal canvas remains rendered.
+    _focus_recovery_handler: Option<JsValue>,
+    _focus_recovery_window: Option<web_sys::Window>,
+    _focus_recovery_document: Option<web_sys::Document>,
     /// Rooted `@xterm/addon-serialize` instance. Kept alive for the mount so
     /// `serialize_buffer` can read the live buffer in `use_drop` *before*
     /// `term.dispose()` destroys it. Dropping this JsValue after dispose lets
@@ -129,8 +277,12 @@ pub fn XtermMount(
     agent_type: AgentType,
     resume_id: Option<String>,
     custom_cmd: Option<String>,
+    bypass_mode: Option<bool>,
 ) -> Element {
     let mount_id = pane_id.clone();
+    let listener_owner: Rc<String> =
+        use_hook(|| Rc::new(format!("desktop:{}", js_sys::Math::random())));
+    let listener_owner_for_effect = listener_owner.clone();
     let mut cleanup: Signal<Option<XtermCleanup>> = use_signal(|| None);
     // The async mount task can outlive the component by a few turns while
     // PTY/session setup and xterm loading are in flight. Keep a lifecycle flag
@@ -140,6 +292,11 @@ pub fn XtermMount(
     let is_initialized = use_hook(|| Rc::new(RefCell::new(false)));
     let term_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let fit_ref: Signal<Option<JsValue>> = use_signal(|| None);
+    // Coalesce fit requests across ResizeObserver, visibility restoration,
+    // font changes, and pane relayouts. This flag belongs to the component,
+    // not to one async mount task, so reactive effects can share it safely.
+    let fit_pending: Rc<RefCell<bool>> = use_hook(|| Rc::new(RefCell::new(false)));
+    let fit_pending_for_effect = fit_pending.clone();
     let mut terminal_store = use_terminal_store();
     let terminal_registry = use_terminal_registry();
     // Clone for use_drop BEFORE use_effect moves the original terminal_registry
@@ -150,6 +307,7 @@ pub fn XtermMount(
     let mount_active_for_drop = mount_active.clone();
 
     use_effect(move || {
+        let fit_pending_for_task = fit_pending_for_effect.clone();
         let already_init = *is_initialized.borrow();
         if already_init {
             return;
@@ -185,6 +343,11 @@ pub fn XtermMount(
         let agent_type_for_spawn = agent_type.clone();
         let resume_id_for_spawn = resume_id.clone();
         let custom_cmd_for_spawn = custom_cmd.clone();
+        let agent_command_for_spawn = get_agent_command(
+            &agent_type,
+            custom_cmd.as_deref(),
+            bypass_mode.unwrap_or(false),
+        );
         let mount_id_for_spawn = mount_id.clone();
         let spawn_cwd = if cwd.trim().is_empty() {
             "/tmp".to_string()
@@ -205,6 +368,7 @@ pub fn XtermMount(
         // Ensure a PTY session exists before initializing xterm, then set up
         // the terminal. Everything that touches the xterm instance happens in
         // this async block so we can `await` the backend spawn first.
+        let listener_owner_for_task = listener_owner_for_effect.clone();
         spawn(async move {
             if !*mount_active_for_task.borrow() {
                 return;
@@ -219,30 +383,64 @@ pub fn XtermMount(
             // bindings instead.
             let mut store = terminal_store;
             let registry = &terminal_registry;
+
             // One-shot membership check via the per-pane registry (Item 3): no
             // subscription is created inside this spawn.
             let has_session = registry.contains(&mount_id_for_spawn);
             let has_backend = pty_has_session(&mount_id_for_spawn).await.unwrap_or(false);
+            if !*mount_active_for_task.borrow() {
+                return;
+            }
             let reusing_existing_session = has_session || has_backend;
             if !has_session {
                 if !has_backend {
                     let shell = pty_default_shell_cached().await;
+                    if !*mount_active_for_task.borrow() {
+                        return;
+                    }
+                    let launch_command = agent_command_for_spawn.clone();
                     web_sys::console::log_1(
                         &format!(
-                            "[XtermMount] spawning PTY id={} cwd={} shell={} cols=80 rows=24",
-                            mount_id_for_spawn, spawn_cwd, shell
+                            "[XtermMount] spawning PTY id={} cwd={} shell={} cols=80 rows=24 agent={:?}",
+                            mount_id_for_spawn, spawn_cwd, shell, launch_command
                         )
                         .into(),
                     );
-                    if let Err(e) = pty_spawn(&mount_id_for_spawn, &spawn_cwd, &shell, 80, 24).await
-                    {
+                    let spawn_result = if let Some(agent_cmd) = launch_command.as_deref() {
+                        pty_spawn_agent(
+                            &mount_id_for_spawn,
+                            &spawn_cwd,
+                            &shell,
+                            &format!("{}\n", agent_cmd),
+                            80,
+                            24,
+                            true,
+                            Some(listener_owner_for_task.as_str()),
+                        )
+                        .await
+                    } else {
+                        pty_spawn(
+                            &mount_id_for_spawn,
+                            &spawn_cwd,
+                            &shell,
+                            80,
+                            24,
+                            true,
+                            Some(listener_owner_for_task.as_str()),
+                        )
+                        .await
+                    };
+                    if let Err(e) = spawn_result {
                         web_sys::console::error_1(
                             &format!(
-                                "XtermMount: pty_spawn failed for id={} cwd={} shell={}: {e:?}",
-                                mount_id_for_spawn, spawn_cwd, shell
+                                "XtermMount: PTY spawn failed for id={} cwd={} shell={} agent={:?}: {e:?}",
+                                mount_id_for_spawn, spawn_cwd, shell, agent_command_for_spawn
                             )
                             .into(),
                         );
+                        return;
+                    }
+                    if !*mount_active_for_task.borrow() {
                         return;
                     }
                     web_sys::console::log_1(
@@ -265,28 +463,10 @@ pub fn XtermMount(
                 // app launch. The `resume_id_for_spawn` binding is retained only
                 // so the spawn signature stays stable for custom_cmd handling.
                 let _ = &resume_id_for_spawn;
-                if !has_backend {
-                    // Write custom agent command into newly spawned shell
-                    if let Some(ref cmd_str) = custom_cmd_for_spawn {
-                        if matches!(agent_type_for_spawn, AgentType::Custom) {
-                            let cmd_with_newline = format!("{}\n", cmd_str);
-                            let mount_id_for_custom = mount_id_for_spawn.clone();
-                            spawn(async move {
-                                if let Err(e) =
-                                    pty_write(&mount_id_for_custom, &cmd_with_newline).await
-                                {
-                                    web_sys::console::error_1(
-                                        &format!(
-                                            "XtermMount: custom command write failed: {:?}",
-                                            e
-                                        )
-                                        .into(),
-                                    );
-                                }
-                            });
-                        }
-                    }
-                }
+                // Agent commands are written by `pty_spawn_agent` before its
+                // reader starts, so no separate fire-and-forget write is needed.
+                // Keep the captured values alive for the resume/bootstrap path.
+                let _ = (&custom_cmd_for_spawn, &agent_type_for_spawn);
             } else {
                 web_sys::console::log_1(
                     &format!(
@@ -306,6 +486,9 @@ pub fn XtermMount(
             // emitting `terminal:data` cell-delta events (xterm.js parses
             // raw ANSI bytes itself).
             let _ = pty_set_xterm(&mount_id, true).await;
+            if !*mount_active_for_task.borrow() {
+                return;
+            }
 
             let term_ctor_val = js_sys::Reflect::get(&window, &JsValue::from_str("Terminal"))
                 .unwrap_or(JsValue::UNDEFINED);
@@ -348,6 +531,34 @@ pub fn XtermMount(
                     &JsValue::from_str(&selection),
                 );
             }
+            // Supply the complete ANSI palette explicitly. WebKit/xterm can
+            // otherwise fall back to a nearly monochrome palette when the
+            // surrounding app theme only defines foreground/background.
+            let ansi_palette = [
+                ("black", "#1b1b1b"),
+                ("red", "#e06c75"),
+                ("green", "#98c379"),
+                ("yellow", "#e5c07b"),
+                ("blue", "#61afef"),
+                ("magenta", "#c678dd"),
+                ("cyan", "#56b6c2"),
+                ("white", "#d7dae0"),
+                ("brightBlack", "#5c6370"),
+                ("brightRed", "#e06c75"),
+                ("brightGreen", "#98c379"),
+                ("brightYellow", "#e5c07b"),
+                ("brightBlue", "#61afef"),
+                ("brightMagenta", "#c678dd"),
+                ("brightCyan", "#56b6c2"),
+                ("brightWhite", "#ffffff"),
+            ];
+            for (name, color) in ansi_palette {
+                let _ = js_sys::Reflect::set(
+                    &theme,
+                    &JsValue::from_str(name),
+                    &JsValue::from_str(color),
+                );
+            }
 
             let options = js_sys::Object::new();
             // Font comes from the same source of truth the rest of the UI uses:
@@ -383,6 +594,14 @@ pub fn XtermMount(
                 &JsValue::from_str("cursorBlink"),
                 &JsValue::from_bool(true),
             );
+            // Be explicit for full-screen CLIs: the default is false, but
+            // WebKit/xterm integrations can inherit a stale option when a
+            // terminal is remounted.
+            let _ = js_sys::Reflect::set(
+                &options,
+                &JsValue::from_str("disableStdin"),
+                &JsValue::from_bool(false),
+            );
             let _ = js_sys::Reflect::set(
                 &options,
                 &JsValue::from_str("convertEol"),
@@ -415,6 +634,9 @@ pub fn XtermMount(
             // xterm.js. On remount after a pane swap, the flex grid may not
             // have laid out yet, so the container rect can be 0×0.
             wait_for_container_size(&container).await;
+            if !*mount_active_for_task.borrow() {
+                return;
+            }
 
             let open_fn_val = js_sys::Reflect::get(&term_val, &JsValue::from_str("open"))
                 .unwrap_or(JsValue::UNDEFINED);
@@ -429,6 +651,34 @@ pub fn XtermMount(
             web_sys::console::log_1(
                 &format!("[XtermMount] terminal opened for id={}", mount_id).into(),
             );
+
+            // xterm.js keeps keyboard input on a hidden textarea. The app root
+            // is focusable and is also the target of global shortcuts, so the
+            // active pane can otherwise render while focus remains on the
+            // root. Only the active pane gets automatic focus: focusing every
+            // pane in a grid would let the last async mount steal focus from
+            // the pane the user selected. The pointer handler below focuses
+            // whichever pane the user clicks.
+            let active_pane = store
+                .read()
+                .active_session_id
+                .as_deref()
+                .is_some_and(|id| id == mount_id.as_str());
+            let initial_focus_claimed =
+                !active_pane && initial_xterm_focus_candidate(&document, &container);
+            if active_pane {
+                schedule_xterm_focus(&window, &term_val, &mount_active_for_task, &mount_id, store);
+            } else if initial_focus_claimed {
+                // A newly-created workspace can mount its first xterm before
+                // TerminalController publishes the active pane. Focus the
+                // first visible helper only when no other helper is focused;
+                // later panes therefore cannot steal the user's keyboard.
+                // This fallback is intentionally focus-only. The controller
+                // and pointer path remain the owners of TerminalStore active
+                // state; coupling async renderer recovery to that store would
+                // let a remount race change global shortcut routing.
+                schedule_initial_xterm_focus(&window, &term_val, &mount_active_for_task);
+            }
 
             // ── Custom keyboard shortcuts (macOS) ────────────────────────────
             // xterm.js does not send distinct sequences for Shift+Enter or
@@ -556,6 +806,8 @@ pub fn XtermMount(
                 return;
             }
 
+            let listener_generation = Rc::new(RefCell::new(None));
+            let listener_owner_for_attach = listener_owner_for_task.clone();
             let unlisten = match pty_listen_raw(&mount_id, move |bytes: Vec<u8>| {
                 let text = String::from_utf8_lossy(&bytes).to_string();
                 wq_queue.borrow_mut().push(bytes);
@@ -656,6 +908,12 @@ pub fn XtermMount(
                     // cleanup signal that no longer exists.
                     if !*mount_active_for_task.borrow() {
                         u();
+                        let mid_cancel = mount_id.clone();
+                        let owner_cancel = listener_owner_for_attach.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ =
+                                pty_detach_listener(&mid_cancel, owner_cancel.as_str(), 0).await;
+                        });
                         return;
                     }
                     // A listener is now attached — tell the backend so it
@@ -667,9 +925,82 @@ pub fn XtermMount(
                     // branch. No-op if the session was never paused or doesn't
                     // exist yet on a brand-new spawn.
                     let mid_attach = mount_id.clone();
+                    let owner_attach = listener_owner_for_attach.clone();
+                    let listener_generation_for_attach = listener_generation.clone();
+                    let active_for_attach = mount_active_for_task.clone();
                     wasm_bindgen_futures::spawn_local(async move {
-                        let _ = pty_attach_listener(&mid_attach).await;
+                        // A freshly spawned PTY can become visible to the
+                        // command handler one turn after the raw listener is
+                        // registered. Retry the zero-generation response so a
+                        // start-paused session cannot remain muted forever.
+                        for attempt in 0..4 {
+                            if !*active_for_attach.borrow() {
+                                return;
+                            }
+                            match pty_attach_listener(
+                                &mid_attach,
+                                owner_attach.as_str(),
+                                reusing_existing_session,
+                            )
+                            .await
+                            {
+                                Ok(generation) if generation != 0 => {
+                                    *listener_generation_for_attach.borrow_mut() = Some(generation);
+                                    if !*active_for_attach.borrow() {
+                                        let _ = pty_detach_listener(
+                                            &mid_attach,
+                                            owner_attach.as_str(),
+                                            generation,
+                                        )
+                                        .await;
+                                    }
+                                    return;
+                                }
+                                Ok(_) if attempt < 3 => {
+                                    gloo::timers::future::TimeoutFuture::new(25).await;
+                                }
+                                Ok(_) => {
+                                    web_sys::console::warn_1(
+                                        &format!(
+                                            "XtermMount: listener attach returned no session for {}",
+                                            mid_attach
+                                        )
+                                        .into(),
+                                    );
+                                    let _ =
+                                        pty_detach_listener(&mid_attach, owner_attach.as_str(), 0)
+                                            .await;
+                                    return;
+                                }
+                                Err(error) if attempt < 3 => {
+                                    web_sys::console::warn_1(
+                                        &format!(
+                                            "XtermMount: listener attach retry {} for {}: {error:?}",
+                                            attempt + 1,
+                                            mid_attach
+                                        )
+                                        .into(),
+                                    );
+                                    gloo::timers::future::TimeoutFuture::new(25).await;
+                                }
+                                Err(error) => {
+                                    web_sys::console::error_1(
+                                        &format!(
+                                            "XtermMount: pty_attach_listener failed: {error:?}"
+                                        )
+                                        .into(),
+                                    );
+                                    let _ =
+                                        pty_detach_listener(&mid_attach, owner_attach.as_str(), 0)
+                                            .await;
+                                    return;
+                                }
+                            }
+                        }
                     });
+                    // The attach task also owns a clone, so teardown-before-
+                    // attach is safe: the task detaches its generation after
+                    // it sees the mount is inactive.
                     u
                 }
                 Err(e) => {
@@ -748,6 +1079,28 @@ pub fn XtermMount(
                 let _ = on_data_fn.call1(&term_val, on_data_closure_js.as_ref());
             }
 
+            // Re-focus the active pane after registering `onData`. This is
+            // intentionally repeated: xterm's `open()` creates and focuses
+            // its hidden textarea asynchronously in some WebKit builds, and
+            // the PTY bootstrap/restore work above can otherwise leave the
+            // document's focus on the app root. Without this, an interactive
+            // full-screen CLI (notably Oh My Pi) can render correctly but
+            // receive no ordinary keys or Ctrl-C until the focus surface is
+            // clicked.
+            if store
+                .read()
+                .active_session_id
+                .as_deref()
+                .is_some_and(|id| id == mount_id.as_str())
+            {
+                schedule_xterm_focus(&window, &term_val, &mount_active_for_task, &mount_id, store);
+            } else if initial_focus_claimed {
+                // Repeat after onData registration. WebKit can accept the
+                // native focus call during open(), then move first-responder
+                // state while PTY bootstrap/listener setup completes.
+                schedule_initial_xterm_focus(&window, &term_val, &mount_active_for_task);
+            }
+
             let pane_id_for_resize = mount_id.clone();
             let on_resize_closure =
                 wasm_bindgen::closure::Closure::wrap(Box::new(move |event: JsValue| {
@@ -786,9 +1139,17 @@ pub fn XtermMount(
 
             let mut resize_observer_holder: Option<JsValue> = None;
             let mut ro_closure_holder: Option<wasm_bindgen::closure::Closure<dyn FnMut()>> = None;
+            let mut ro_timer_holder: Option<Rc<RefCell<Option<i32>>>> = None;
             if let Some(fit_instance) = try_activate_addon(&window, "FitAddon", &term_val) {
                 // Initial fit so the terminal has correct cols/rows before any data arrives.
-                schedule_fit(&window, &fit_instance, &container, &term_val);
+                schedule_fit(
+                    &window,
+                    &fit_instance,
+                    &container,
+                    &term_val,
+                    &fit_pending_for_task,
+                    &mount_active_for_task,
+                );
                 // Publish the fit addon instance so reactive effects (the font
                 // family/size effect below) can refit after pushing option
                 // changes — a font change resizes glyph cells, so the container
@@ -798,6 +1159,8 @@ pub fn XtermMount(
                 let fit_for_ro = fit_instance.clone();
                 let container_for_ro = container.clone();
                 let term_for_ro = term_val.clone();
+                let fit_pending_for_ro = fit_pending_for_task.clone();
+                let mount_active_for_ro = mount_active_for_task.clone();
                 let ro_timer: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
                 let ro_timer_for_cb = ro_timer.clone();
                 let ro_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
@@ -808,6 +1171,8 @@ pub fn XtermMount(
                         let fit_for_cb = fit_for_ro.clone();
                         let container_for_cb = container_for_ro.clone();
                         let term_for_cb = term_for_ro.clone();
+                        let fit_pending_for_timer = fit_pending_for_ro.clone();
+                        let mount_active_for_timer = mount_active_for_ro.clone();
                         // Single-fire timer closure — once_into_js auto-frees
                         // after the timeout fires, so this no longer leaks one
                         // Closure per resize tick.
@@ -818,7 +1183,14 @@ pub fn XtermMount(
                                 // changes, no new PTY data) fit alone leaves the
                                 // canvas stale; the refresh forces a repaint
                                 // against the recomputed cell grid.
-                                schedule_fit(&win, &fit_for_cb, &container_for_cb, &term_for_cb);
+                                schedule_fit(
+                                    &win,
+                                    &fit_for_cb,
+                                    &container_for_cb,
+                                    &term_for_cb,
+                                    &fit_pending_for_timer,
+                                    &mount_active_for_timer,
+                                );
                             }
                         });
                         let handle = w.set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -852,6 +1224,7 @@ pub fn XtermMount(
                             }
                         }
                         ro_closure_holder = Some(ro_closure);
+                        ro_timer_holder = Some(ro_timer.clone());
                         resize_observer_holder = Some(observer);
                     }
                     None => {
@@ -876,6 +1249,9 @@ pub fn XtermMount(
             let term_for_vis = term_val.clone();
             let fit_ref_for_vis = fit_ref; // Signal<Option<JsValue>> is Copy
             let container_for_vis = container.clone();
+            let fit_pending_for_vis = fit_pending_for_task.clone();
+            let mount_active_for_vis = mount_active_for_task.clone();
+            let mount_active_for_pointer = mount_active_for_task.clone();
             let vis_closure =
                 wasm_bindgen::closure::Closure::wrap(Box::new(move |entries: JsValue| {
                     let Ok(arr) = entries.dyn_into::<js_sys::Array>() else {
@@ -899,6 +1275,8 @@ pub fn XtermMount(
                                     &fit_instance,
                                     &container_for_vis,
                                     &term_for_vis,
+                                    &fit_pending_for_vis,
+                                    &mount_active_for_vis,
                                 );
                             } else {
                                 // No FitAddon on record (activation failed) —
@@ -933,6 +1311,87 @@ pub fn XtermMount(
                 vis_callback_holder = Some(vis_closure);
             }
 
+            // Recover the hidden textarea after WKWebView/app focus resumes.
+            // The canvas can remain painted while WebKit has dropped the
+            // textarea's first-responder focus. Register on both window focus
+            // and document visibility/page-show events, but never steal focus
+            // from another real input control.
+            let focus_recovery_term = term_val.clone();
+            let focus_recovery_active = mount_active_for_task.clone();
+            let focus_recovery_pane = mount_id.clone();
+            let focus_recovery_store = terminal_store;
+            let focus_recovery_handler = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                if !*focus_recovery_active.borrow() {
+                    return;
+                }
+                let Some(window) = web_sys::window() else {
+                    return;
+                };
+                let Some(document) = window.document() else {
+                    return;
+                };
+                if !document_is_visible(&document) || !focus_recovery_allowed(&document) {
+                    return;
+                }
+                schedule_xterm_focus(
+                    &window,
+                    &focus_recovery_term,
+                    &focus_recovery_active,
+                    &focus_recovery_pane,
+                    focus_recovery_store,
+                );
+            })
+                as Box<dyn FnMut(web_sys::Event)>);
+            let focus_recovery_handler_js = focus_recovery_handler.into_js_value();
+            let _ = window.add_event_listener_with_callback(
+                "focus",
+                focus_recovery_handler_js.as_ref().unchecked_ref(),
+            );
+            let _ = window.add_event_listener_with_callback(
+                "pageshow",
+                focus_recovery_handler_js.as_ref().unchecked_ref(),
+            );
+            if let Some(document) = window.document() {
+                let _ = document.add_event_listener_with_callback(
+                    "visibilitychange",
+                    focus_recovery_handler_js.as_ref().unchecked_ref(),
+                );
+            }
+
+            // xterm owns the canvas/textarea subtree and WebKit may stop a
+            // bubbling pointer event before the Dioxus wrapper sees it.
+            // Register this only after all fallible mount setup above has
+            // succeeded, so a partial mount cannot leak a native listener.
+            let pointer_term = term_val.clone();
+            let pointer_pane_id = mount_id.clone();
+            let mut pointer_terminal_store = terminal_store;
+            let pointerdown_handler = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                if !*mount_active_for_pointer.borrow() {
+                    return;
+                }
+                pointer_terminal_store
+                    .write()
+                    .set_active(pointer_pane_id.clone());
+                if let Some(window) = web_sys::window() {
+                    schedule_xterm_focus(
+                        &window,
+                        &pointer_term,
+                        &mount_active_for_pointer,
+                        &pointer_pane_id,
+                        pointer_terminal_store,
+                    );
+                } else {
+                    focus_xterm(&pointer_term);
+                }
+            })
+                as Box<dyn FnMut(web_sys::Event)>);
+            let pointerdown_handler_js = pointerdown_handler.into_js_value();
+            let _ = container.add_event_listener_with_callback_and_bool(
+                "pointerdown",
+                pointerdown_handler_js.as_ref().unchecked_ref(),
+                true,
+            );
+
             cleanup.set(Some(XtermCleanup {
                 term: term_val,
                 unlisten: Some(unlisten),
@@ -940,10 +1399,17 @@ pub fn XtermMount(
                 _on_resize_closure: on_resize_closure_js,
                 _resize_observer: resize_observer_holder,
                 _ro_closure: ro_closure_holder,
+                _ro_timer: ro_timer_holder,
                 _keydown_handler: Some(keydown_handler_js),
+                _pointerdown_handler: Some(pointerdown_handler_js),
+                _pointerdown_container: Some(container.clone()),
                 input_active: Some(input_active),
                 _visibility_observer: vis_observer_holder,
                 _vis_callback: vis_callback_holder,
+                listener_generation: Some(listener_generation),
+                _focus_recovery_handler: Some(focus_recovery_handler_js),
+                _focus_recovery_window: Some(window.clone()),
+                _focus_recovery_document: window.document(),
                 _serialize_addon: serialize_addon,
             }));
         });
@@ -1015,7 +1481,9 @@ pub fn XtermMount(
     // with the persisted store).
     let term_ref_for_font = term_ref;
     let fit_ref_for_font = fit_ref;
+    let fit_pending_for_font = fit_pending.clone();
     let mount_id_for_font = pane_id.clone();
+    let mount_active_for_font = mount_active_for_drop.clone();
     use_effect(move || {
         // Subscribe to the Signals so this effect re-runs on change.
         let _fam = ui_state.read().font_family.clone();
@@ -1060,29 +1528,70 @@ pub fn XtermMount(
             if let Some(fit) = fit_ref_for_font() {
                 if let Some(doc) = window.document() {
                     if let Some(el) = doc.get_element_by_id(&mount_id_for_font) {
-                        schedule_fit(&window, &fit, &el, &term);
+                        schedule_fit(
+                            &window,
+                            &fit,
+                            &el,
+                            &term,
+                            &fit_pending_for_font,
+                            &mount_active_for_font,
+                        );
                     }
                 }
             }
         }
     });
 
+    // Focus is part of the active-pane lifecycle, not only a mount/pointer
+    // side effect. The xterm instance may finish opening after the controller
+    // selects this pane, or the user may switch back to it after a remount.
+    // Reading both signals makes this effect rerun when either condition
+    // changes, then schedule_xterm_focus performs the immediate + next-frame
+    // focus handoff against the current active-pane guard.
+    let active_focus_term = term_ref;
+    let active_focus_pane_id = pane_id.clone();
+    let active_focus_mount = mount_active_for_drop.clone();
+    let active_focus_store = terminal_store;
+    use_effect(move || {
+        let active_session_id = active_focus_store.read().active_session_id.clone();
+        let Some(term) = active_focus_term() else {
+            return;
+        };
+        if !active_pane_matches(active_session_id.as_deref(), &active_focus_pane_id) {
+            return;
+        }
+        if let Some(window) = web_sys::window() {
+            schedule_xterm_focus(
+                &window,
+                &term,
+                &active_focus_mount,
+                &active_focus_pane_id,
+                active_focus_store,
+            );
+        }
+    });
+
     let mount_id_for_drop = pane_id.clone();
+    let mount_active_for_view = mount_active_for_drop.clone();
     use_drop(move || {
         *mount_active_for_drop.borrow_mut() = false;
         if let Some(mut c) = cleanup.take() {
             if let Some(active) = c.input_active.take() {
                 *active.borrow_mut() = false;
             }
-            // Pause backend raw emission BEFORE unlistening — closes the
-            // stream-gap desync window. The backend keeps reading the PTY fd
-            // (shell doesn't block) but suppresses pty:raw events so no bytes are
-            // lost to a dead listener during the remount gap. The new mount
-            // unpauses via pty_attach_listener on re-subscribe. This must fire
-            // even if the cleanup below fails, so it's the first thing.
+            // Detach the current listener lease before unlistening. A stale
+            // teardown cannot pause a newer mount because the backend checks
+            // the generation. If attach is still in flight, that task notices
+            // `mount_active == false` and detaches its newly allocated lease.
             let mid = mount_id_for_drop.clone();
+            let owner = listener_owner.clone();
+            let generation = c
+                .listener_generation
+                .as_ref()
+                .and_then(|generation| *generation.borrow())
+                .unwrap_or(0);
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = pty_set_raw_paused(&mid, true).await;
+                let _ = pty_detach_listener(&mid, owner.as_str(), generation).await;
             });
             // Capture the live buffer BEFORE term.dispose() destroys it.
             // The next mount's reuse-session branch replays this string into
@@ -1101,12 +1610,47 @@ pub fn XtermMount(
             if let Some(unlisten) = c.unlisten.take() {
                 unlisten();
             }
+            if let Some(focus_handler) = c._focus_recovery_handler.take() {
+                if let Some(focus_window) = c._focus_recovery_window.take() {
+                    let _ = focus_window.remove_event_listener_with_callback(
+                        "focus",
+                        focus_handler.as_ref().unchecked_ref(),
+                    );
+                    let _ = focus_window.remove_event_listener_with_callback(
+                        "pageshow",
+                        focus_handler.as_ref().unchecked_ref(),
+                    );
+                }
+                if let Some(focus_document) = c._focus_recovery_document.take() {
+                    let _ = focus_document.remove_event_listener_with_callback(
+                        "visibilitychange",
+                        focus_handler.as_ref().unchecked_ref(),
+                    );
+                }
+            }
+            if let (Some(pointerdown_handler), Some(pointerdown_container)) = (
+                c._pointerdown_handler.take(),
+                c._pointerdown_container.take(),
+            ) {
+                let _ = pointerdown_container.remove_event_listener_with_callback_and_bool(
+                    "pointerdown",
+                    pointerdown_handler.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
             if let Some(observer) = c._resize_observer.take() {
                 if let Ok(disconnect_val) =
                     js_sys::Reflect::get(&observer, &JsValue::from_str("disconnect"))
                 {
                     if let Ok(disconnect_fn) = disconnect_val.dyn_into::<js_sys::Function>() {
                         let _ = disconnect_fn.call0(&observer);
+                    }
+                }
+            }
+            if let Some(timer) = c._ro_timer.take() {
+                if let Some(window) = web_sys::window() {
+                    if let Some(handle) = timer.borrow_mut().take() {
+                        window.clear_timeout_with_handle(handle);
                     }
                 }
             }
@@ -1124,6 +1668,24 @@ pub fn XtermMount(
                     let _ = dispose_fn.call0(&c.term);
                 }
             }
+        } else {
+            // The mount can be dropped before xterm setup stores its cleanup
+            // record. Cancel the generation-zero startup lease anyway so a
+            // delayed attach from this abandoned owner cannot claim a
+            // replacement mount's PTY.
+            let mid = mount_id_for_drop.clone();
+            let owner = listener_owner.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = pty_detach_listener(&mid, owner.as_str(), 0).await;
+            });
+        }
+
+        // Permanent pane closes mark the id before removing it from the
+        // workspace. Consume that marker only after this component has released
+        // its listener, observers, and xterm instance. Ordinary layout/swap
+        // remounts leave the session in the registry for reattachment.
+        if registry_for_drop.is_closing(&mount_id_for_drop) {
+            registry_for_drop.remove(&mount_id_for_drop);
         }
     });
 
@@ -1131,19 +1693,23 @@ pub fn XtermMount(
         div {
             id: "{pane_id}",
             class: "xterm-mount",
+            "data-terminal-renderer": "xterm",
+            "data-pane-id": "{pane_id}",
             style: "width: 100%; height: 100%; min-height: 0; flex: 1; background: var(--bg); position: relative; overflow: hidden; padding: 0; box-sizing: border-box;",
             onpointerdown: move |e| {
                 e.stop_propagation();
                 terminal_store.write().set_active(pane_id.clone());
-                if let Some(term) = term_ref() {
-                    // Focus the xterm.js instance.
-                    if let Ok(focus_val) = js_sys::Reflect::get(&term, &JsValue::from_str("focus")) {
-                        if let Ok(focus_fn) = focus_val.dyn_into::<js_sys::Function>() {
-                            if let Err(e) = focus_fn.call0(&term) {
-                                web_sys::console::warn_1(&format!("XtermMount: focus() failed: {e:?}").into());
-                            }
-                        }
-                    }
+                if let (Some(window), Some(term)) = (web_sys::window(), term_ref()) {
+                    // Focus the xterm.js hidden textarea. Retry on the next
+                    // frame because WebKit may finish its pointer default
+                    // action after this handler returns.
+                    schedule_xterm_focus(
+                        &window,
+                        &term,
+                        &mount_active_for_view,
+                        &pane_id,
+                        terminal_store,
+                    );
                 }
             },
         }

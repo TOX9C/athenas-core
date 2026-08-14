@@ -171,7 +171,7 @@ pub fn NotificationToast() -> Element {
             }
         });
 
-        let new_dispatcher = dispatcher.clone();
+        let new_dispatcher = dispatcher;
         if let Ok(unlisten) = tauri_bridge::listen("notifications:new", move |payload: String| {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
                 new_dispatcher.send(NotificationBusEvent::New(value));
@@ -180,7 +180,7 @@ pub fn NotificationToast() -> Element {
             listeners_for_effect.borrow_mut().push(unlisten);
         }
 
-        let update_dispatcher = dispatcher.clone();
+        let update_dispatcher = dispatcher;
         if let Ok(unlisten) =
             tauri_bridge::listen("notifications:updated", move |payload: String| {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
@@ -195,7 +195,7 @@ pub fn NotificationToast() -> Element {
             listeners_for_effect.borrow_mut().push(unlisten);
         }
 
-        let clear_dispatcher = dispatcher.clone();
+        let clear_dispatcher = dispatcher;
         if let Ok(unlisten) =
             tauri_bridge::listen("notifications:cleared", move |_payload: String| {
                 clear_dispatcher.send(NotificationBusEvent::Clear);

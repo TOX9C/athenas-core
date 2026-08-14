@@ -1,4 +1,4 @@
-use crate::components::shared::illustration::OwlMark;
+use crate::components::shared::illustration::CoreMark;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -38,10 +38,10 @@ pub fn AthenaThinkingIndicator(props: ThinkingProps) -> Element {
             class: "thinking-indicator",
             style: "display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: transparent; border-radius: var(--radius-md); border: none;",
 
-            // Brand owl — the thinking dot traces its orbital halo while Athena is streaming.
+            // Brand core — the gold bezant traces its halo while Athena is streaming.
             span {
                 style: "display: inline-flex; align-items: center; justify-content: center;",
-                OwlMark { size: Some(14) }
+                CoreMark { size: Some(14) }
             }
 
             div {

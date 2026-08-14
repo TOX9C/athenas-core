@@ -21,6 +21,74 @@ pub use agent_comms_types::{
 /// disconnects the misbehaving agent.
 pub(super) const MAX_AGENT_LINE_BYTES: usize = 65_536; // 64 KiB
 
+/// Field-level protocol limits prevent a valid line from creating oversized
+/// session metadata or log/event identifiers.
+pub(super) const MAX_AGENT_METHOD_BYTES: usize = 128;
+pub(super) const MAX_AGENT_ID_BYTES: usize = 256;
+pub(super) const MAX_AGENT_PLUGIN_ID_BYTES: usize = 256;
+const MAX_AGENT_STATUS_BYTES: usize = 32;
+const MAX_AGENT_LEVEL_BYTES: usize = 32;
+
+fn valid_optional_text(params: &serde_json::Value, key: &str, max_bytes: usize) -> bool {
+    params
+        .get(key)
+        .map(|value| {
+            value.as_str().is_some_and(|text| {
+                !text.is_empty() && text.len() <= max_bytes && !text.chars().any(|c| c.is_control())
+            })
+        })
+        .unwrap_or(true)
+}
+
+pub(super) fn validate_agent_message(message: &AgentMessage) -> Result<(), &'static str> {
+    if message.jsonrpc != "2.0" {
+        return Err("unsupported jsonrpc version");
+    }
+    if message.method.is_empty() || message.method.len() > MAX_AGENT_METHOD_BYTES {
+        return Err("method field too large");
+    }
+    if message.method.chars().any(|c| c.is_control()) {
+        return Err("method contains control characters");
+    }
+    if message.id.as_deref().is_some_and(|id| {
+        id.is_empty() || id.len() > MAX_AGENT_ID_BYTES || id.chars().any(|c| c.is_control())
+    }) {
+        return Err("id field too large or invalid");
+    }
+
+    match message.method.as_str() {
+        "initialize" => {
+            let data = message
+                .params
+                .get("data")
+                .ok_or("initialize data is missing")?;
+            if !valid_optional_text(data, "pluginId", MAX_AGENT_PLUGIN_ID_BYTES)
+                || !valid_optional_text(data, "agentId", MAX_AGENT_ID_BYTES)
+            {
+                return Err("initialize identity field too large or invalid");
+            }
+        }
+        "notifications/message"
+            if !valid_optional_text(&message.params, "agentId", MAX_AGENT_ID_BYTES)
+                || !valid_optional_text(&message.params, "level", MAX_AGENT_LEVEL_BYTES) =>
+        {
+            return Err("notification identity field too large or invalid");
+        }
+        "agents/status"
+            if !valid_optional_text(&message.params, "status", MAX_AGENT_STATUS_BYTES) =>
+        {
+            return Err("status field too large or invalid");
+        }
+        "agents/requestInput"
+            if !valid_optional_text(&message.params, "requestId", MAX_AGENT_ID_BYTES) =>
+        {
+            return Err("request ID field too large or invalid");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// How long `handle_request_input` will block waiting for the user to
 /// respond before giving up and returning a timeout error to the agent.
 /// The frontend UI typically surfaces a confirmation dialog that
@@ -73,7 +141,7 @@ impl std::fmt::Debug for AgentComms {
         f.debug_struct("AgentComms")
             .field("sessions", &"<Mutex<HashMap>>")
             .field("pending_input", &"<Mutex<HashMap>>")
-            .field("token", &self.token)
+            .field("token", &"[REDACTED]")
             .field("event_emitter", &"<Option>")
             .finish()
     }
@@ -313,33 +381,6 @@ impl AgentComms {
         self.pending_input.lock().unwrap().is_empty()
     }
 
-    #[cfg(test)]
-    pub(crate) fn inject_session(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> std::sync::mpsc::Receiver<Vec<u8>> {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
-        let session = AgentSession {
-            id: session_id.to_string(),
-            plugin_id: "test-plugin".to_string(),
-            agent_id: agent_id.to_string(),
-            connected_at: now_ms(),
-            last_activity_at: now_ms(),
-            status: SessionStatus::Active,
-        };
-        let internal = SessionInternal {
-            session,
-            sender: tx,
-            peer_addr: None,
-        };
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), internal);
-        rx
-    }
-
     /// Initialize the TCP server for agent communication.
     ///
     /// Binds to `127.0.0.1:<port>` and spawns a background thread that
@@ -391,6 +432,193 @@ impl AgentComms {
 mod tests {
     use super::*;
     use std::sync::mpsc::RecvTimeoutError;
+
+    #[test]
+    fn rejects_oversized_or_controlled_message_fields() {
+        let message = AgentMessage {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "x".repeat(MAX_AGENT_METHOD_BYTES + 1),
+            params: serde_json::Value::Null,
+        };
+        assert_eq!(
+            validate_agent_message(&message),
+            Err("method field too large")
+        );
+
+        let message = AgentMessage {
+            jsonrpc: "1.0".to_string(),
+            id: None,
+            method: "agents/heartbeat".to_string(),
+            params: serde_json::Value::Null,
+        };
+        assert_eq!(
+            validate_agent_message(&message),
+            Err("unsupported jsonrpc version")
+        );
+
+        let message = AgentMessage {
+            jsonrpc: "2.0".to_string(),
+            id: Some("request\nforged".to_string()),
+            method: "agents/heartbeat".to_string(),
+            params: serde_json::Value::Null,
+        };
+        assert_eq!(
+            validate_agent_message(&message),
+            Err("id field too large or invalid")
+        );
+
+        let message = AgentMessage {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "data": { "agentId": "a".repeat(MAX_AGENT_ID_BYTES + 1) }
+            }),
+        };
+        assert_eq!(
+            validate_agent_message(&message),
+            Err("initialize identity field too large or invalid")
+        );
+
+        let message = AgentMessage {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "agents/requestInput".to_string(),
+            params: serde_json::json!({
+                "requestId": "r".repeat(MAX_AGENT_ID_BYTES + 1)
+            }),
+        };
+        assert_eq!(
+            validate_agent_message(&message),
+            Err("request ID field too large or invalid")
+        );
+    }
+
+    #[test]
+    fn invalid_authenticated_message_returns_jsonrpc_error() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let emitter: EventEmitter = Arc::new(Mutex::new(None));
+        let token = "test-token-invalid-fields".to_string();
+
+        let sessions_t = Arc::clone(&sessions);
+        let pending_t = Arc::clone(&pending);
+        let emitter_t = Arc::clone(&emitter);
+        let token_t = token.clone();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            agent_comms_connection::handle_connection(
+                stream, sessions_t, pending_t, token_t, emitter_t,
+            );
+        });
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        let invalid = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "bad-fields",
+            "method": "initialize",
+            "params": { "data": { "token": token, "agentId": "x".repeat(MAX_AGENT_ID_BYTES + 1) } }
+        });
+        client
+            .write_all(format!("{}\n", invalid).as_bytes())
+            .unwrap();
+        client.flush().unwrap();
+
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["id"], "bad-fields");
+        assert_eq!(response["error"]["code"], -32600);
+
+        drop(reader);
+        drop(client);
+        server.join().expect("server thread panicked");
+        assert!(sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tcp_rejects_invalid_nested_fields_after_authentication() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let emitter: EventEmitter = Arc::new(Mutex::new(None));
+        let token = "test-token-nested-fields".to_string();
+
+        let sessions_t = Arc::clone(&sessions);
+        let pending_t = Arc::clone(&pending);
+        let emitter_t = Arc::clone(&emitter);
+        let token_t = token.clone();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            agent_comms_connection::handle_connection(
+                stream, sessions_t, pending_t, token_t, emitter_t,
+            );
+        });
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "init-nested",
+            "method": "initialize",
+            "params": { "data": { "token": token, "agentId": "nested-agent" } }
+        });
+        client
+            .write_all(format!("{}\n", initialize).as_bytes())
+            .unwrap();
+        client.flush().unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(&line).unwrap()["result"].is_object());
+
+        let invalid_messages = [
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "bad-status",
+                "method": "agents/status",
+                "params": { "status": "s".repeat(33) }
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "bad-level",
+                "method": "notifications/message",
+                "params": { "level": "l".repeat(33) }
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "bad-request-id",
+                "method": "agents/requestInput",
+                "params": { "requestId": "r".repeat(MAX_AGENT_ID_BYTES + 1) }
+            }),
+        ];
+
+        for message in invalid_messages {
+            client
+                .write_all(format!("{}\n", message).as_bytes())
+                .unwrap();
+            client.flush().unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(response["error"]["code"], -32600, "line: {line}");
+        }
+
+        drop(reader);
+        drop(client);
+        server.join().expect("server thread panicked");
+        assert!(sessions.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn cancel_input_request_signals_receiver() {

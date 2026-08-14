@@ -273,11 +273,9 @@ fn workspace_grid_dimension(kind: DragKind, space_id: &str) -> Option<f64> {
 /// Calculate the number of horizontal row dividers between rendered rows.
 #[cfg(test)]
 fn row_divider_count(pane_count: usize, cols: usize, _rows: usize) -> usize {
-    let actual_rows = if cols == 0 {
-        0
-    } else {
-        (pane_count + cols - 1) / cols
-    };
+    let actual_rows = std::num::NonZeroUsize::new(cols)
+        .map(|cols| pane_count.div_ceil(cols.get()))
+        .unwrap_or(0);
     actual_rows.saturating_sub(1)
 }
 

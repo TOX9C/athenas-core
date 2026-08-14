@@ -1,6 +1,6 @@
 //! Tauri commands for the mobile-mirror relay. Runtime-toggled from the
-//! Settings panel; the `relay.enabled` store key persists the on/off state
-//! across app restarts.
+//! Settings panel; the `relay.enabled` key records the last UI state, but it
+//! does not auto-start the plaintext LAN service on a normal public launch.
 //!
 //! `relay_start` builds and starts the server (idempotent if already running);
 //! `relay_stop` tears it down; `relay_status` reports running + LAN URL for
@@ -11,9 +11,7 @@ use uuid::Uuid;
 
 use crate::relay;
 use crate::state::AppState;
-use parking_lot::Mutex;
-
-static RELAY_COMMAND_LOCK: Mutex<()> = Mutex::new(());
+static RELAY_COMMAND_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Persisted store key for the relay-enabled flag.
 pub const RELAY_ENABLED_KEY: &str = "relay.enabled";
@@ -50,10 +48,11 @@ pub fn revoke_relay_token() -> Result<(), String> {
 }
 
 /// Start the relay server. Idempotent — returns the bound address if already
-/// running. Persists `relay.enabled = "true"` so the next boot auto-starts.
+/// running. Persists the UI state, but normal app startup still requires an
+/// explicit per-process user action (or the development-only autostart opt-in).
 #[tauri::command]
 pub async fn relay_start(state: State<'_, AppState>) -> Result<String, String> {
-    let _command_lock = RELAY_COMMAND_LOCK.lock();
+    let _command_lock = RELAY_COMMAND_LOCK.lock().await;
     // Clone the AppHandle out of the state under a short lock.
     let app = state
         .app_handle
@@ -102,7 +101,7 @@ pub async fn relay_start(state: State<'_, AppState>) -> Result<String, String> {
 /// `relay.enabled` and revokes the pairing token so old links cannot be reused.
 #[tauri::command]
 pub async fn relay_stop(state: State<'_, AppState>) -> Result<(), String> {
-    let _command_lock = RELAY_COMMAND_LOCK.lock();
+    let _command_lock = RELAY_COMMAND_LOCK.lock().await;
     let val = "false".to_string();
     state
         .store

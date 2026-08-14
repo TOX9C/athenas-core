@@ -80,7 +80,6 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                             let item_bg = "transparent";
                             let item_text_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
                             let id_text_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
-                            let color_bg = format!("{}22", color);
                             let pane_id_for_select = agent.pane_id.clone();
                             rsx! {
                                 button {
@@ -104,7 +103,7 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
 
                                     span {
                                         class: "badge",
-                                        style: "background: {color_bg}; color: {color};",
+                                        style: "color: {color};",
                                         "{label}"
                                     }
 

@@ -207,13 +207,16 @@ impl AssistantLogger {
         }
         inner.entries.push_back(entry.clone());
 
-        // Console logging at warn/error/critical
+        // Keep native/system logs metadata-only. The structured entry is
+        // retained for the in-app diagnostics view, but `message`, `meta`,
+        // and error text may contain prompts, paths, provider responses, or
+        // credentials and must not be forwarded to release logs.
         match level {
             LogLevel::Error | LogLevel::Critical => {
-                log::error!("[{}] {} — {}", entry.action, entry.level_as_str(), message)
+                log::error!("[assistant] action={} level={}", entry.action, entry.level_as_str())
             }
             LogLevel::Warn => {
-                log::warn!("[{}] {} — {}", entry.action, entry.level_as_str(), message)
+                log::warn!("[assistant] action={} level={}", entry.action, entry.level_as_str())
             }
             _ => {}
         }

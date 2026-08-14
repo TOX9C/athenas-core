@@ -1,4 +1,4 @@
-use super::icon::{IconBell, IconCheck, IconClose, IconOwl};
+use super::icon::{IconBell, IconCheck, IconClose, IconInfo};
 use dioxus::prelude::*;
 
 /// Toast notification type.
@@ -122,15 +122,15 @@ pub fn ToastItem(props: ToastItemProps) -> Element {
         ToastType::Warning | ToastType::NeedsInput => {
             rsx! { IconBell { size: Some(13), color: Some(color.to_string()) } }
         }
-        ToastType::Info => rsx! { IconOwl { size: Some(13), color: Some(color.to_string()) } },
+        ToastType::Info => rsx! { IconInfo { size: Some(13), color: Some(color.to_string()) } },
     };
 
     rsx! {
         div {
             class: "toast-card",
-            style: "display: flex; align-items: flex-start; gap: 11px; padding: 12px 14px; background: var(--bgSecondary); color: var(--text); min-width: 280px; max-width: 400px; pointer-events: auto; border: 1px solid var(--border); border-left: 3px solid {color}; border-radius: var(--radius-md);",
+            style: "display: flex; align-items: flex-start; gap: 11px; padding: 12px 14px; background: var(--bgSecondary); color: var(--text); min-width: 280px; max-width: 400px; pointer-events: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-lg);",
             span {
-                style: "flex-shrink: 0; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-pill); background: color-mix(in srgb, {color} 16%, transparent);",
+                style: "flex-shrink: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; color: {color};",
                 {icon}
             }
             div {

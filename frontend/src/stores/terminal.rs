@@ -277,7 +277,8 @@ impl TerminalStore {
         if id_str.starts_with("test-") {
             return;
         }
-        if let Err(e) = tauri_bridge::pty_spawn(&id_str, cwd, shell, cols, rows).await {
+        if let Err(e) = tauri_bridge::pty_spawn(&id_str, cwd, shell, cols, rows, false, None).await
+        {
             web_sys::console::warn_1(&format!("pty_spawn backend call failed: {:?}", e).into());
         }
     }
@@ -482,6 +483,10 @@ impl TerminalStore {
 #[derive(Clone)]
 pub struct TerminalRegistry {
     sessions: Rc<RefCell<HashMap<String, Signal<TerminalSession>>>>,
+    // Pane ids marked for permanent close. XtermMount consumes this marker in
+    // its drop hook, after unlisten/snapshot/dispose, so registry removal never
+    // races component teardown or a temporary remount.
+    closing: Rc<RefCell<HashSet<String>>>,
 }
 
 impl Default for TerminalRegistry {
@@ -495,6 +500,7 @@ impl TerminalRegistry {
     pub fn new() -> Self {
         Self {
             sessions: Rc::new(RefCell::new(HashMap::new())),
+            closing: Rc::new(RefCell::new(HashSet::new())),
         }
     }
 
@@ -551,9 +557,27 @@ impl TerminalRegistry {
         let guard = signal.peek();
         Some((*guard).clone())
     }
+    /// Mark a pane for permanent close. The xterm component consumes this
+    /// marker from its drop hook after native resources are disposed.
+    pub fn mark_closing(&self, id: &str) {
+        self.closing.borrow_mut().insert(id.to_string());
+    }
+
+    /// Cancel a pending close when backend teardown fails and the pane remains.
+    pub fn cancel_closing(&self, id: &str) {
+        self.closing.borrow_mut().remove(id);
+    }
+
+    /// Returns whether a pane is being permanently closed rather than
+    /// temporarily remounted during a layout/swap.
+    pub fn is_closing(&self, id: &str) -> bool {
+        self.closing.borrow().contains(id)
+    }
+
     /// Remove a session's signal (on kill / close-pane).
     pub fn remove(&self, id: &str) {
         self.sessions.borrow_mut().remove(id);
+        self.closing.borrow_mut().remove(id);
     }
 
     /// Snapshot of known pane ids (e.g. for close-fallback active selection).
@@ -605,7 +629,7 @@ mod tests {
         static PENDING_BODY:
             std::cell::RefCell<
                 Option<Box<dyn FnOnce(&TerminalRegistry)>>,
-            > = std::cell::RefCell::new(None);
+            > = const { std::cell::RefCell::new(None) };
     }
 
     /// Run `body` inside a fresh `VirtualDom` so signals attach to a live
@@ -673,6 +697,22 @@ mod tests {
             // pane-b untouched
             assert!(!r.peek_session("pane-b").unwrap().is_xterm);
             assert_eq!(r.peek_session("pane-b").unwrap().foreground_process, None,);
+        });
+    }
+
+    #[test]
+    fn closing_marker_survives_until_drop_cleanup() {
+        run_in_dom(|r| {
+            r.ensure_session("pane-a", 80, 24);
+            r.mark_closing("pane-a");
+            assert!(r.is_closing("pane-a"));
+            // A remount path can cancel a close before resources are dropped.
+            r.cancel_closing("pane-a");
+            assert!(!r.is_closing("pane-a"));
+            r.mark_closing("pane-a");
+            r.remove("pane-a");
+            assert!(!r.is_closing("pane-a"));
+            assert!(!r.contains("pane-a"));
         });
     }
 

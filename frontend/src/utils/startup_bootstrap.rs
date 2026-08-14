@@ -7,6 +7,7 @@
 use crate::stores::command::{use_command_store, CommandState};
 use crate::stores::ui::UITheme;
 use crate::stores::workspace::WorkspaceState;
+use crate::utils::font_size::{parse_persisted_font_size, persist_font_size};
 use crate::utils::settings_migration::migrate_smart_pane_titles;
 use dioxus::prelude::*;
 
@@ -79,10 +80,13 @@ pub fn use_startup_bootstrap(
                     }
                 }
                 if let Ok(font_size_str) = crate::tauri_bridge::store_get("font_size").await {
-                    if let Ok(size) = font_size_str.parse::<u8>() {
+                    if let Some(size) = parse_persisted_font_size(&font_size_str) {
                         ui.write().font_size = size;
                         let family = ui.read().font_family.clone();
                         crate::themes::apply_font_to_dom(&family, size);
+                        if font_size_str.trim() != size.to_string() {
+                            persist_font_size(size);
+                        }
                     }
                 }
                 if let Ok(agents_json) = crate::tauri_bridge::store_get("custom_agents").await {

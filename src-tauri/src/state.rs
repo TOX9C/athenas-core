@@ -30,6 +30,12 @@ pub struct TauriEventSender {
     runtime_handle: Arc<parking_lot::Mutex<Option<tokio::runtime::Handle>>>,
     output_buffer: Arc<athena_core::output_buffer::OutputBuffer>,
     agent_activity: Arc<athena_core::agent_activity::AgentActivityTracker>,
+    /// Current streamed assistant request used to scope tool-generated UI events.
+    request_context: Arc<parking_lot::Mutex<Option<(String, String)>>>,
+    /// Tool question IDs currently blocked on a response, grouped by stream request.
+    request_questions: Arc<parking_lot::Mutex<HashMap<String, Vec<String>>>>,
+    /// Requests cancelled before a blocking tool could register its question.
+    cancelled_requests: Arc<parking_lot::Mutex<HashSet<String>>>,
 }
 
 impl TauriEventSender {
@@ -50,7 +56,25 @@ impl TauriEventSender {
             runtime_handle: Arc::new(parking_lot::Mutex::new(None)),
             output_buffer,
             agent_activity,
+            request_context: Arc::new(parking_lot::Mutex::new(None)),
+            request_questions: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            cancelled_requests: Arc::new(parking_lot::Mutex::new(HashSet::new())),
         }
+    }
+
+    /// Remove a completed/failed question from both the global answer map and
+    /// its stream ownership index. Lock order matches ask_user/cancel_request.
+    fn remove_pending_question(&self, question_id: &str, stream_request_id: Option<&String>) {
+        if let Some(stream_request_id) = stream_request_id {
+            let mut questions = self.request_questions.lock();
+            if let Some(question_ids) = questions.get_mut(stream_request_id) {
+                question_ids.retain(|id| id != question_id);
+                if question_ids.is_empty() {
+                    questions.remove(stream_request_id);
+                }
+            }
+        }
+        self.pending_questions.lock().remove(question_id);
     }
 
     /// Return a clone of the cached tokio runtime handle if available,
@@ -81,17 +105,16 @@ impl ToolEventSender for TauriEventSender {
         // Surface tool-launched agents immediately rather than waiting for the
         // heartbeat's foreground-process classifier. The tracker deduplicates
         // this against any later lifecycle signal for the same pane.
-        let agent_key = if athena_core::agent_detection::is_known_agent_key(agent_type) {
-            agent_type
-        } else {
-            agent_cmd
-                .split_whitespace()
-                .find_map(|word| {
-                    let base = word.rsplit('/').next().unwrap_or(word);
-                    athena_core::agent_detection::is_known_agent_key(base).then_some(base)
-                })
-                .unwrap_or("agent")
-        };
+        let agent_key = athena_core::agent_detection::canonical_agent_key(agent_type)
+            .or_else(|| {
+                athena_core::agent_detection::AGENT_FG_NAMES
+                    .iter()
+                    .copied()
+                    .find(|key| {
+                        athena_core::agent_detection::command_contains_agent(agent_cmd, key)
+                    })
+            })
+            .unwrap_or("agent");
         self.agent_activity
             .notify_agent_started(id, agent_key, crate::commands::now_ms());
 
@@ -235,38 +258,72 @@ impl ToolEventSender for TauriEventSender {
     fn ask_user(&self, request_id: &str, question: &str, options: &[serde_json::Value]) -> String {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
 
-        {
-            let mut map = self.pending_questions.lock();
-            map.insert(request_id.to_string(), tx);
-        }
+        // Register the sender and its stream ownership while holding the same
+        // lock order used by cancel_request. This closes the cancellation
+        // window between inserting pending_questions and linking the question
+        // ID to its stream request.
+        let context = {
+            let context_guard = self.request_context.lock();
+            let context = context_guard.clone();
+            let cancelled_requests = self.cancelled_requests.lock();
+            if context.as_ref().is_some_and(|(stream_request_id, _)| {
+                cancelled_requests.contains(stream_request_id)
+            }) {
+                return "error: request cancelled".to_string();
+            }
+            drop(cancelled_requests);
+            let mut request_questions = self.request_questions.lock();
+            let mut pending_questions = self.pending_questions.lock();
+            pending_questions.insert(request_id.to_string(), tx);
+            if let Some((stream_request_id, _)) = context.as_ref() {
+                request_questions
+                    .entry(stream_request_id.clone())
+                    .or_default()
+                    .push(request_id.to_string());
+            }
+            context
+        };
 
         let handle_guard = self.app_handle.lock();
         if let Some(ref handle) = *handle_guard {
+            let context = self.request_context.lock().clone();
             let payload = serde_json::json!({
                 "requestId": request_id,
+                "request_id": context.as_ref().map(|(id, _)| id),
+                "sessionId": context.as_ref().map(|(_, session)| session),
                 "question": question,
                 "options": options,
             });
-            match serde_json::to_string(&payload) {
-                Ok(payload_str) => {
-                    if let Err(e) = handle.emit("athena:askUser", payload_str) {
-                        log::warn!("failed to emit athena:askUser event: {}", e);
-                    }
-                }
-                Err(e) => {
-                    log::error!("failed to serialize athena:askUser payload: {}", e);
-                }
+            let emit_result = match serde_json::to_string(&payload) {
+                Ok(payload_str) => handle
+                    .emit("athena:askUser", payload_str)
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            if let Err(e) = emit_result {
+                log::warn!("failed to emit athena:askUser event: {}", e);
+                self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
+                return "error: unable to show user question".to_string();
             }
         } else {
             log::error!("ask_user called but app_handle is not set");
-            self.pending_questions.lock().remove(request_id);
+            self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
             return "error: app_handle not available".to_string();
         }
         drop(handle_guard);
 
-        match rx.recv() {
-            Ok(answer) => answer,
-            Err(_) => {
+        match rx.recv_timeout(std::time::Duration::from_secs(300)) {
+            Ok(answer) => {
+                self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
+                answer
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
+                log::warn!("ask_user timed out for request_id: {}", request_id);
+                "error: user response timed out".to_string()
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
                 log::warn!(
                     "receiver channel closed for request_id: {} -- question was: {}",
                     request_id,
@@ -277,11 +334,82 @@ impl ToolEventSender for TauriEventSender {
         }
     }
 
+    fn set_request_context(&self, request_id: &str, session_id: &str) {
+        *self.request_context.lock() = Some((request_id.to_string(), session_id.to_string()));
+    }
+
+    fn clear_request_context(&self) {
+        let Some((request_id, _)) = self.request_context.lock().take() else {
+            return;
+        };
+        let question_ids = self
+            .request_questions
+            .lock()
+            .remove(&request_id)
+            .unwrap_or_default();
+        for question_id in question_ids {
+            if let Some(tx) = self.pending_questions.lock().remove(&question_id) {
+                let _ = tx.send("error: request finished".to_string());
+            }
+        }
+    }
+
+    fn request_cancelled(&self, request_id: &str) -> bool {
+        self.cancelled_requests.lock().contains(request_id)
+    }
+
+    fn finish_request(&self, request_id: &str) {
+        self.cancelled_requests.lock().remove(request_id);
+    }
+
+    fn cancel_request(&self, request_id: &str) -> bool {
+        // Hold the context guard through question cleanup. ask_user uses this
+        // same lock order, so cancellation cannot miss a just-registered
+        // blocking question.
+        let context_guard = self.request_context.lock();
+        if context_guard
+            .as_ref()
+            .is_none_or(|(active, _)| active != request_id)
+        {
+            // The stream may be cancelled while it is loading its session or
+            // provider configuration, before the executor context is set.
+            // Remember that cancellation so a later ask_user cannot block.
+            self.cancelled_requests
+                .lock()
+                .insert(request_id.to_string());
+            return false;
+        }
+
+        self.cancelled_requests
+            .lock()
+            .insert(request_id.to_string());
+        let question_ids = self
+            .request_questions
+            .lock()
+            .remove(request_id)
+            .unwrap_or_default();
+        // Wake every synchronous ask_user receiver belonging to this stream.
+        // Removing the sender from the shared map also makes late UI answers
+        // harmless: athena_user_answer will return false.
+        for question_id in question_ids {
+            if let Some(tx) = self.pending_questions.lock().remove(&question_id) {
+                let _ = tx.send("error: request cancelled".to_string());
+            }
+        }
+        // Keep the context until the stream's final cleanup. A tool may begin
+        // after cancellation has been signalled; retaining the context lets
+        // ask_user observe the cancellation tombstone instead of blocking.
+        drop(context_guard);
+        true
+    }
+
     fn plan_update(&self, plan: &ExecutionPlan) {
         let handle_guard = self.app_handle.lock();
         if let Some(ref handle) = *handle_guard {
             let payload = serde_json::json!({
-                "plan_id": plan.id,
+                "planId": plan.id,
+                "requestId": self.request_context.lock().as_ref().map(|(id, _)| id),
+                "sessionId": self.request_context.lock().as_ref().map(|(_, session)| session),
                 "goal": plan.goal,
                 "steps": plan.steps.iter().map(|s| serde_json::json!({
                     "id": s.id,
@@ -320,8 +448,11 @@ impl ToolEventSender for TauriEventSender {
     ) {
         let handle_guard = self.app_handle.lock();
         if let Some(ref handle) = *handle_guard {
+            let context = self.request_context.lock().clone();
             let payload = serde_json::json!({
                 "planId": plan_id,
+                "requestId": context.as_ref().map(|(id, _)| id),
+                "sessionId": context.as_ref().map(|(_, session)| session),
                 "overallStatus": overall_status,
                 "stepEvaluations": step_evaluations,
                 "nextAction": next_action,
@@ -411,7 +542,7 @@ pub struct AppState {
     pub rate_limiter: crate::commands::caps::RateLimiter,
 
     /// Guard to ensure the MCP background runtime is only started once.
-    pub mcp_stdio_started: Arc<AtomicBool>,
+    pub mcp_runtime_started: Arc<AtomicBool>,
     /// Signals the dedicated MCP runtime thread to stop during app shutdown.
     pub mcp_runtime_stop: Arc<AtomicBool>,
     /// Kanban backend — same `Arc<KanbanBackend>` is shared with the
@@ -563,7 +694,9 @@ impl AppState {
             kanban_backend,
             pending_questions,
             rate_limiter: crate::commands::caps::global_rate_limiter(),
-            mcp_stdio_started: Arc::new(AtomicBool::new(false)),
+            // Kept for command/API compatibility; desktop startup now owns
+            // only the TCP transport and never consumes stdin/stdout.
+            mcp_runtime_started: Arc::new(AtomicBool::new(false)),
             mcp_runtime_stop,
         }
     }
@@ -573,8 +706,23 @@ impl AppState {
     pub fn set_app_handle(&self, handle: AppHandle) {
         {
             let mut guard = self.app_handle.lock();
-            *guard = Some(handle);
+            *guard = Some(handle.clone());
         } // Drop the lock before calling wire methods that also acquire it
+
+        // Stream events are request-scoped and use one stable channel. The
+        // payload is already typed in athena-core; serialize exactly once at
+        // the IPC boundary so the frontend can ignore stale request IDs.
+        let stream_handle = handle.clone();
+        self.orchestrator.set_stream_emitter(Some(Arc::new(
+            move |event| match serde_json::to_string(&event) {
+                Ok(payload) => {
+                    if let Err(error) = stream_handle.emit("athena:stream", payload) {
+                        log::warn!("failed to emit athena stream event: {error}");
+                    }
+                }
+                Err(error) => log::warn!("failed to serialize athena stream event: {error}"),
+            },
+        )));
 
         // Wire event emitters for all services
         self.wire_notification_events();
@@ -608,28 +756,35 @@ impl AppState {
         self.start_mcp_runtime();
     }
 
-    /// Start the boot-time MCP TCP and stdio transports on a dedicated runtime.
+    /// Start the boot-time MCP TCP transport on a dedicated runtime.
+    ///
+    /// Stdio is intentionally not started from the desktop app: stdin/stdout
+    /// belong to the launched application process and are not a trusted
+    /// child-process boundary. Callers that explicitly launch a standalone MCP
+    /// subprocess may use `McpServer::init_stdio()` instead.
     ///
     /// Startup is retried while the app is alive if runtime creation or the
     /// canonical TCP bind fails. Keeping the retry loop here makes resetting a
     /// one-time guard unnecessary: a failed first attempt cannot permanently
     /// disable MCP for the rest of the process.
     fn start_mcp_runtime(&self) {
-        if self
-            .mcp_stdio_started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            != Ok(false)
+        if self.mcp_runtime_started.compare_exchange(
+            false,
+            true,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) != Ok(false)
         {
             return;
         }
 
         let mcp_server = Arc::clone(&self.mcp_server);
         let mcp_runtime_stop = Arc::clone(&self.mcp_runtime_stop);
-        let mcp_stdio_started = Arc::clone(&self.mcp_stdio_started);
+        let mcp_runtime_started = Arc::clone(&self.mcp_runtime_started);
         std::thread::spawn(move || {
             let rt = loop {
                 if mcp_runtime_stop.load(Ordering::Relaxed) {
-                    mcp_stdio_started.store(false, Ordering::SeqCst);
+                    mcp_runtime_started.store(false, Ordering::SeqCst);
                     return;
                 }
                 match tokio::runtime::Runtime::new() {
@@ -650,10 +805,7 @@ impl AppState {
                     let started = {
                         let mut server = mcp_server.lock().await;
                         match server.init(4545) {
-                            Ok(()) => {
-                                server.init_stdio();
-                                true
-                            }
+                            Ok(()) => true,
                             Err(e) => {
                                 log::error!(
                                     "Failed to start MCP TCP server on 127.0.0.1:4545: {e}; retrying"
@@ -665,11 +817,10 @@ impl AppState {
 
                     if started {
                         log::info!("MCP TCP server started on 127.0.0.1:4545");
-                        log::info!("MCP stdio server started");
 
-                        // `McpServer::init` and `init_stdio` spawn their tasks
-                        // on this runtime. Keep it alive until app shutdown;
-                        // dropping it here would abort both servers.
+                        // `McpServer::init` spawns its accept task on this
+                        // runtime. Keep it alive until app shutdown; dropping
+                        // it here would abort the TCP server.
                         while !mcp_runtime_stop.load(Ordering::Relaxed) {
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
@@ -679,7 +830,7 @@ impl AppState {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
             });
-            mcp_stdio_started.store(false, Ordering::SeqCst);
+            mcp_runtime_started.store(false, Ordering::SeqCst);
         });
     }
 
@@ -744,85 +895,83 @@ impl AppState {
                 return;
             }
         };
-        service.set_event_emitter(Box::new(
-            move |channel: &str, data: &serde_json::Value| {
-                // 1) Forward to the frontend exactly as before.
-                if let Ok(data_str) = serde_json::to_string(data) {
-                    if let Err(e) = handle.emit(channel, data_str) {
-                        log::warn!("failed to emit notification event {channel}: {e}");
-                    }
+        service.set_event_emitter(Box::new(move |channel: &str, data: &serde_json::Value| {
+            // 1) Forward to the frontend exactly as before.
+            if let Ok(data_str) = serde_json::to_string(data) {
+                if let Err(e) = handle.emit(channel, data_str) {
+                    log::warn!("failed to emit notification event {channel}: {e}");
                 }
+            }
 
-                if channel == "notifications:new" {
-                    // 2) Mirror agent-source notifications to macOS with a
-                    // per-type sound. Only "agent" source (the activity
-                    // tracker) hits the OS — generic backend/tool noise stays
-                    // in-app. The payload's `source`/`agentId` come straight
-                    // from NotificationEvent.
-                    let is_agent = data
-                        .get("source")
+            if channel == "notifications:new" {
+                // 2) Mirror agent-source notifications to macOS with a
+                // per-type sound. Only "agent" source (the activity
+                // tracker) hits the OS — generic backend/tool noise stays
+                // in-app. The payload's `source`/`agentId` come straight
+                // from NotificationEvent.
+                let is_agent = data
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == "agent")
+                    .unwrap_or(false);
+                if is_agent {
+                    let title = data
+                        .get("title")
                         .and_then(|v| v.as_str())
-                        .map(|s| s == "agent")
-                        .unwrap_or(false);
-                    if is_agent {
-                        let title = data
-                            .get("title")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Agent")
-                            .to_string();
-                        let body = data
-                            .get("message")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let ntype = data
-                            .get("type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("info")
-                            .to_string();
-                        let sound = match ntype.as_str() {
-                            "needs_input" => "Sosumi",
-                            "task_error" | "error" => "Basso",
-                            _ => "Glass",
-                        };
-                        #[cfg(target_os = "macos")]
+                        .unwrap_or("Agent")
+                        .to_string();
+                    let body = data
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let ntype = data
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("info")
+                        .to_string();
+                    let sound = match ntype.as_str() {
+                        "needs_input" => "Sosumi",
+                        "task_error" | "error" => "Basso",
+                        _ => "Glass",
+                    };
+                    #[cfg(target_os = "macos")]
+                    {
+                        use tauri_plugin_notification::NotificationExt;
+                        if let Err(e) = handle
+                            .notification()
+                            .builder()
+                            .title(title)
+                            .body(body)
+                            .sound(sound)
+                            .show()
                         {
-                            use tauri_plugin_notification::NotificationExt;
-                            if let Err(e) = handle
-                                .notification()
-                                .builder()
-                                .title(title)
-                                .body(body)
-                                .sound(sound)
-                                .show()
-                            {
-                                log::warn!("failed to show macOS notification: {e}");
-                            }
+                            log::warn!("failed to show macOS notification: {e}");
                         }
                     }
                 }
+            }
 
-                // 3) Dock badge = unread count (all sources), refreshed on
-                // every notification state change (new / mark-read /
-                // dismiss), so marking a notification read in the UI clears
-                // the badge without a restart.
-                #[cfg(target_os = "macos")]
-                if matches!(
-                    channel,
-                    "notifications:new"
-                        | "notifications:updated"
-                        | "notifications:dismissed"
-                        | "notifications:cleared"
-                ) {
-                    let unread = service_for_closure.get_unread_count();
-                    if let Some(window) = handle.get_webview_window("main") {
-                        if let Err(e) = window.set_badge_count(Some(unread as i64)) {
-                            log::warn!("failed to set dock badge: {e}");
-                        }
+            // 3) Dock badge = unread count (all sources), refreshed on
+            // every notification state change (new / mark-read /
+            // dismiss), so marking a notification read in the UI clears
+            // the badge without a restart.
+            #[cfg(target_os = "macos")]
+            if matches!(
+                channel,
+                "notifications:new"
+                    | "notifications:updated"
+                    | "notifications:dismissed"
+                    | "notifications:cleared"
+            ) {
+                let unread = service_for_closure.get_unread_count();
+                if let Some(window) = handle.get_webview_window("main") {
+                    if let Err(e) = window.set_badge_count(Some(unread as i64)) {
+                        log::warn!("failed to set dock badge: {e}");
                     }
                 }
-            },
-        ));
+            }
+        }));
     }
 
     /// Wire plan manager events to Tauri event emissions.
@@ -859,112 +1008,103 @@ impl AppState {
                 return;
             }
         };
-        service.set_event_emitter(Box::new(
-            move |channel: &str, data: &serde_json::Value| {
-                let mut data = data.clone();
-                if channel.starts_with("agents:") && data.get("paneId").is_none() {
-                    if let Some(agent_id) = data.get("agentId").and_then(|v| v.as_str()) {
-                        let pane_id = plugin_manager
-                            .get_session_by_agent_id(agent_id)
-                            .and_then(|s| s.pane_id)
-                            .or_else(|| {
-                                agent_id
-                                    .starts_with("pane")
-                                    .then(|| agent_id.to_string())
-                            });
-                        if let Some(pid) = pane_id {
-                            if let Some(obj) = data.as_object_mut() {
-                                obj.insert("paneId".into(), serde_json::Value::String(pid));
-                            }
+        service.set_event_emitter(Box::new(move |channel: &str, data: &serde_json::Value| {
+            let mut data = data.clone();
+            if channel.starts_with("agents:") && data.get("paneId").is_none() {
+                if let Some(agent_id) = data.get("agentId").and_then(|v| v.as_str()) {
+                    let pane_id = plugin_manager
+                        .get_session_by_agent_id(agent_id)
+                        .and_then(|s| s.pane_id)
+                        .or_else(|| agent_id.starts_with("pane").then(|| agent_id.to_string()));
+                    if let Some(pid) = pane_id {
+                        if let Some(obj) = data.as_object_mut() {
+                            obj.insert("paneId".into(), serde_json::Value::String(pid));
                         }
                     }
                 }
+            }
 
-                // Normalize the plugin protocol's `active` / `waiting_input`
-                // vocabulary to the frontend AgentRunStatus contract. Without
-                // this adapter, plugin activity silently falls through to Idle.
-                if channel == "agents:statusUpdate" {
-                    let status = data
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    if let Some(status) = status {
-                        let normalized = match status.as_str() {
-                            "active" | "running" => "working",
-                            "waiting_input" => "waiting_for_input",
-                            "done" | "complete" => "completed",
-                            other => other,
-                        };
-                        if normalized != status {
-                            if let Some(obj) = data.as_object_mut() {
-                                obj.insert(
-                                    "status".into(),
-                                    serde_json::Value::String(normalized.to_string()),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Plugin notifications are high-fidelity equivalents of the
-                // passive tracker notifications. Route them through the
-                // shared service so the existing frontend, macOS sound, and
-                // dock-badge paths all behave consistently.
-                if channel == "agents:notification" {
-                    let level = data
-                        .get("level")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("info");
-                    let notification_type = match level {
-                        "needs_input" | "waiting_input" => {
-                            athena_core::notification::NotificationType::NeedsInput
-                        }
-                        "error" => athena_core::notification::NotificationType::TaskError,
-                        "success" | "completed" | "done" => {
-                            athena_core::notification::NotificationType::Success
-                        }
-                        "warning" => athena_core::notification::NotificationType::Warning,
-                        _ => athena_core::notification::NotificationType::Info,
+            // Normalize the plugin protocol's `active` / `waiting_input`
+            // vocabulary to the frontend AgentRunStatus contract. Without
+            // this adapter, plugin activity silently falls through to Idle.
+            if channel == "agents:statusUpdate" {
+                let status = data
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                if let Some(status) = status {
+                    let normalized = match status.as_str() {
+                        "active" | "running" => "working",
+                        "waiting_input" => "waiting_for_input",
+                        "done" | "complete" => "completed",
+                        other => other,
                     };
-                    let pane_id = data
-                        .get("paneId")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    notification_service.push_notification(
-                        athena_core::notification::NotificationEvent {
-                            r#type: notification_type,
-                            title: data
-                                .get("title")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Agent notification")
-                                .to_string(),
-                            message: data
-                                .get("message")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            source: "agent".to_string(),
-                            agent_id: pane_id.clone(),
-                            data: Some(data.clone()),
-                            timestamp: data
-                                .get("timestamp")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or_else(crate::commands::now_ms),
-                            metadata: None,
-                            actions: None,
-                            request_id: None,
-                        },
-                    );
-                    return;
-                }
-
-                if let Ok(data_str) = serde_json::to_string(&data) {
-                    if let Err(e) = handle.emit(channel, data_str) {
-                        log::warn!("failed to emit agent_comms event {channel}: {e}");
+                    if normalized != status {
+                        if let Some(obj) = data.as_object_mut() {
+                            obj.insert(
+                                "status".into(),
+                                serde_json::Value::String(normalized.to_string()),
+                            );
+                        }
                     }
                 }
-            },
-        ));
+            }
+
+            // Plugin notifications are high-fidelity equivalents of the
+            // passive tracker notifications. Route them through the
+            // shared service so the existing frontend, macOS sound, and
+            // dock-badge paths all behave consistently.
+            if channel == "agents:notification" {
+                let level = data.get("level").and_then(|v| v.as_str()).unwrap_or("info");
+                let notification_type = match level {
+                    "needs_input" | "waiting_input" => {
+                        athena_core::notification::NotificationType::NeedsInput
+                    }
+                    "error" => athena_core::notification::NotificationType::TaskError,
+                    "success" | "completed" | "done" => {
+                        athena_core::notification::NotificationType::Success
+                    }
+                    "warning" => athena_core::notification::NotificationType::Warning,
+                    _ => athena_core::notification::NotificationType::Info,
+                };
+                let pane_id = data
+                    .get("paneId")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                notification_service.push_notification(
+                    athena_core::notification::NotificationEvent {
+                        r#type: notification_type,
+                        title: data
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Agent notification")
+                            .to_string(),
+                        message: data
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        source: "agent".to_string(),
+                        agent_id: pane_id.clone(),
+                        data: Some(data.clone()),
+                        timestamp: data
+                            .get("timestamp")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_else(crate::commands::now_ms),
+                        metadata: None,
+                        actions: None,
+                        request_id: None,
+                    },
+                );
+                return;
+            }
+
+            if let Ok(data_str) = serde_json::to_string(&data) {
+                if let Err(e) = handle.emit(channel, data_str) {
+                    log::warn!("failed to emit agent_comms event {channel}: {e}");
+                }
+            }
+        }));
     }
 
     /// Wire agent-activity events (`agent:status`) to Tauri emissions.
@@ -1037,9 +1177,13 @@ impl AppState {
                         let fg_opt = if fg == "shell" { None } else { Some(fg) };
                         // Only scrape history / tail when an agent is present
                         // (never for plain shell panes).
-                        let history = fg_opt
-                            .as_deref()
-                            .and_then(athena_core::agent_detection::scrape_agent_history);
+                        let history = fg_opt.as_deref().and_then(|agent_key| {
+                            athena_core::agent_detection::scrape_agent_history_for_cwd(
+                                agent_key,
+                                std::path::Path::new(&session.cwd),
+                                session.tty_path.as_deref(),
+                            )
+                        });
                         let tail = if fg_opt.is_some() {
                             let lines = output_buffer.get_output(sid, None);
                             Some(

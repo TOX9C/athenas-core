@@ -6,6 +6,18 @@ use crate::stores::notification::{
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 
+fn notification_type_label(notification_type: &NotificationType) -> &'static str {
+    match notification_type {
+        NotificationType::Info => "Info",
+        NotificationType::Warning => "Warning",
+        NotificationType::Error => "Error",
+        NotificationType::Success => "Success",
+        NotificationType::NeedsInput => "Needs input",
+        NotificationType::TaskComplete => "Complete",
+        NotificationType::TaskError => "Task error",
+    }
+}
+
 #[component]
 pub fn NotificationPanel() -> Element {
     let mut notifications = use_notification_store();
@@ -34,11 +46,11 @@ pub fn NotificationPanel() -> Element {
     rsx! {
         div {
             class: "notification-panel pane-astrolabe-mark",
-            style: "display: flex; flex-direction: column; height: 100%; background: var(--bgSecondary); color: var(--text); border: var(--border);",
+            style: "display: flex; flex-direction: column; height: 100%; background: var(--bgSecondary); color: var(--text); border: 1px solid var(--border);",
 
             // Header
             div {
-                style: "padding: 12px 14px; border-bottom: var(--border); background: var(--bgSecondary); display: flex; align-items: center; gap: 8px;",
+                style: "padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); display: flex; align-items: center; gap: 8px;",
                 span {
                     style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--accent); letter-spacing: 0.04em;",
                     "Alerts"
@@ -46,7 +58,7 @@ pub fn NotificationPanel() -> Element {
                 if unread_count > 0 {
                     span {
                         class: "badge",
-                        style: "background: var(--accentSubtle); color: var(--accent);",
+                        style: "color: var(--accent);",
                         "{unread_count}"
                     }
                 }
@@ -57,7 +69,7 @@ pub fn NotificationPanel() -> Element {
 
             // Filter tabs — segmented
             div {
-                style: "display: flex; padding: 8px 12px; border-bottom: var(--border);",
+                style: "display: flex; padding: 8px 12px; border-bottom: 1px solid var(--border);",
 
                 div {
                     class: "segmented",
@@ -96,10 +108,11 @@ pub fn NotificationPanel() -> Element {
                         {
                             let type_color = match &n.r#type {
                                 NotificationType::Error | NotificationType::TaskError => "var(--error)",
-                                NotificationType::Warning => "var(--warning)",
+                                NotificationType::Warning | NotificationType::NeedsInput => "var(--warning)",
                                 NotificationType::Success | NotificationType::TaskComplete => "var(--success)",
                                 _ => "var(--accentTeal)",
                             };
+                            let type_label = notification_type_label(&n.r#type);
                             let n_id = n.id.clone();
                             let n_title = n.title.clone();
                             let n_msg = n.message.clone();
@@ -118,7 +131,7 @@ pub fn NotificationPanel() -> Element {
                                 div {
                                     key: "{n_id}",
                                     class: "lit-sweep",
-                                    style: "padding: 10px 12px; border-bottom: var(--border); opacity: {opacity}; display: flex; align-items: flex-start; gap: 8px; {unread_rule}",
+                                    style: "padding: 10px 12px; border-bottom: 1px solid var(--border); opacity: {opacity}; display: flex; align-items: flex-start; gap: 8px; {unread_rule}",
                                     onclick: {
                                         let id = n_id.clone();
                                         move |_| {
@@ -128,9 +141,12 @@ pub fn NotificationPanel() -> Element {
                                         }
                                     },
 
-                                    // Type dot
-                                    div {
-                                        style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {type_color}; flex-shrink: 0; margin-top: 4px;",
+                                    // Type label. The semantic word replaces the
+                                    // colored marker stack used previously.
+                                    span {
+                                        class: "status-label",
+                                        style: "width: 64px; flex-shrink: 0; color: {type_color};",
+                                        "{type_label}"
                                     }
 
                                     // Text content
@@ -172,7 +188,7 @@ pub fn NotificationPanel() -> Element {
 
             // Actions
             div {
-                style: "display: flex; gap: 8px; padding: 8px 12px; border-top: var(--border);",
+                style: "display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border);",
                 button {
                     class: "btn-ghost btn-sm",
                     onclick: move |_| {

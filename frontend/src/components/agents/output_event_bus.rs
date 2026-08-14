@@ -17,6 +17,10 @@ use std::rc::Rc;
 mod output_bus_event;
 use output_bus_event::OutputBusEvent;
 
+#[path = "swarm_status_sync.rs"]
+mod swarm_status_sync;
+use swarm_status_sync::{PaneGenerationGuard, SwarmStatusSync, SwarmStatusUpdate};
+
 /// Output event bus component - renders nothing, handles IPC events.
 ///
 /// Wires Tauri push events to the agent status and agent output stores:
@@ -50,29 +54,47 @@ pub fn OutputEventBus() -> Element {
     // must never summarize).
     let ui_state = use_ui_store();
     let workspace = use_workspace_store();
+    let swarm_state = crate::stores::swarm::use_swarm_store();
     let mut mounted = use_signal(|| false);
 
     let unlistens: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
         use_hook(|| Rc::new(RefCell::new(Vec::new())));
 
+    // Serialize durable swarm writes so a slower earlier IPC call cannot finish
+    // after a newer status and leave the persisted state stale.
+    let swarm_writer = use_coroutine(|mut rx: UnboundedReceiver<SwarmStatusUpdate>| async move {
+        while let Ok(update) = rx.recv().await {
+            let _ = crate::tauri_bridge::swarm_update_agent(
+                &update.dir,
+                &update.agent_id,
+                Some(update.status),
+                update.last_action.as_deref(),
+                None,
+            )
+            .await;
+        }
+    });
+
     // Dispatcher coroutine: receives parsed events from the Tauri listen
     // callbacks and performs all signal writes inside the reactive runtime.
     let dispatcher = use_coroutine(move |mut rx: UnboundedReceiver<OutputBusEvent>| {
-        // Clone the non-`Copy` registry capture in the OUTER closure
-        // scope (before `async move`), so the async block owns a fresh
-        // clone and the `FnMut` outer closure never moves the render-top
-        // capture out twice. `Signal`s are `Copy`, so the store/status
-        // captures below don't need this treatment.
+        // Clone the registry capture in the OUTER closure scope (before
+        // `async move`), so the async block owns a fresh clone and the `FnMut`
+        // outer closure never moves the render-top capture out twice.
         let terminal_registry = terminal_registry.clone();
+        let swarm_writer = swarm_writer;
         async move {
             let mut agent_status = agent_status;
             let mut agent_output = agent_output;
             let mut notifications = notifications;
             let mut terminal_store = terminal_store;
+            let swarm_state = swarm_state;
             // (pane_id, session_id) pairs already LLM-summarized — moved here
             // from the removed `AgentInfoPoller` so a session change triggers
             // exactly one title call per pane per session.
             let mut summarized_pairs: HashSet<(String, String)> = HashSet::new();
+            let mut swarm_sync = SwarmStatusSync::default();
+            let mut pane_generation_guard = PaneGenerationGuard::default();
             while let Ok(event) = rx.recv().await {
                 match event {
                     OutputBusEvent::AgentStatus {
@@ -85,12 +107,38 @@ pub fn OutputEventBus() -> Element {
                         task_title,
                         session_id,
                         raw_prompt,
+                        generation,
                     } => {
+                        if !pane_generation_guard.accepts(&pane_id, generation) {
+                            continue;
+                        }
+                        let stale_generation = generation.is_some_and(|incoming| {
+                            agent_status
+                                .read()
+                                .statuses
+                                .iter()
+                                .find(|(id, _)| id == &pane_id)
+                                .and_then(|(_, current)| current.generation)
+                                .is_some_and(|current| current != incoming)
+                        });
+                        if stale_generation {
+                            continue;
+                        }
+                        // Reopen only after the event has passed both the
+                        // retired-pane guard and the currently-live generation
+                        // check. A rejected intermediate-generation event must
+                        // never clear the tombstone for a later generationless
+                        // stale event.
+                        if generation.is_some() {
+                            pane_generation_guard.reopen(&pane_id);
+                        }
+
                         agent_status.write().update_status(
                             &pane_id,
                             AgentStatusUpdate {
-                                status: Some(status),
-                                message,
+                                generation,
+                                status: Some(status.clone()),
+                                message: message.clone(),
                                 progress,
                             },
                             now,
@@ -127,6 +175,49 @@ pub fn OutputEventBus() -> Element {
                             session_id.clone(),
                             raw_prompt.clone(),
                         );
+
+                        // Persist live status for panes that belong to the
+                        // active mission. The backend maps by pane id, so a
+                        // status event from an unrelated terminal is ignored
+                        // without an extra mission-specific event channel.
+                        let swarm_dir = {
+                            let state = workspace.read();
+                            state.active_space_id.as_ref().and_then(|id| {
+                                state
+                                    .spaces
+                                    .iter()
+                                    .find(|space| &space.id == id)
+                                    .map(|space| space.dir.clone())
+                            })
+                        };
+                        let swarm_agent_id =
+                            swarm_state.read().active_swarm.as_ref().and_then(|swarm| {
+                                swarm
+                                    .agents
+                                    .iter()
+                                    .find(|agent| agent.pane_id == pane_id)
+                                    .map(|agent| agent.id.clone())
+                            });
+                        if let (Some(dir), Some(agent_id)) = (swarm_dir, swarm_agent_id) {
+                            let persisted_status = match status {
+                                AgentRunStatus::Thinking => "thinking",
+                                AgentRunStatus::Working => "writing",
+                                AgentRunStatus::WaitingForInput => "waiting",
+                                AgentRunStatus::Completed => "done",
+                                AgentRunStatus::Error => "blocked",
+                                AgentRunStatus::Disconnected => "stalled",
+                                _ => "idle",
+                            };
+                            let update = SwarmStatusUpdate {
+                                dir,
+                                agent_id,
+                                status: persisted_status,
+                                last_action: message.clone(),
+                            };
+                            if swarm_sync.should_send(&pane_id, update.clone(), now) {
+                                swarm_writer.send(update);
+                            }
+                        }
 
                         // LLM title summarization on session change (moved
                         // from `AgentInfoPoller`). Only real agent panes get
@@ -192,16 +283,66 @@ pub fn OutputEventBus() -> Element {
                             }
                         }
                     }
-                    OutputBusEvent::TerminalExit { pane_id, now } => {
-                        agent_status.write().update_status(
-                            pane_id,
-                            AgentStatusUpdate {
-                                status: Some(AgentRunStatus::Disconnected),
-                                message: Some("PTY exited".to_string()),
-                                progress: None,
-                            },
-                            now,
-                        );
+                    OutputBusEvent::TerminalExit {
+                        pane_id,
+                        generation,
+                    } => {
+                        // `terminal:exit` is the authoritative lifecycle
+                        // boundary. Ignore an old PTY's exit after a pane id
+                        // has already been reused by a newer generation.
+                        let is_current = agent_status
+                            .read()
+                            .statuses
+                            .iter()
+                            .find(|(id, _)| id == &pane_id)
+                            .map(|(_, status)| match (generation, status.generation) {
+                                // A generation-bearing exit is safe to apply
+                                // only when the pane still has that exact PTY
+                                // generation. Never let a late old exit stall
+                                // a newly reused pane.
+                                (Some(event_generation), Some(current_generation)) => {
+                                    event_generation == current_generation
+                                }
+                                (Some(_), None) => false,
+                                // Legacy exit events without a generation can
+                                // still retire the current pane status.
+                                (None, _) => true,
+                            })
+                            .unwrap_or(generation.is_none());
+                        if is_current {
+                            agent_status.write().remove_status(&pane_id);
+                        }
+                        if !is_current {
+                            continue;
+                        }
+                        pane_generation_guard.retire(&pane_id, generation);
+                        swarm_sync.remove(&pane_id);
+                        let swarm_dir = {
+                            let state = workspace.read();
+                            state.active_space_id.as_ref().and_then(|id| {
+                                state
+                                    .spaces
+                                    .iter()
+                                    .find(|space| &space.id == id)
+                                    .map(|space| space.dir.clone())
+                            })
+                        };
+                        let swarm_agent_id =
+                            swarm_state.read().active_swarm.as_ref().and_then(|swarm| {
+                                swarm
+                                    .agents
+                                    .iter()
+                                    .find(|agent| agent.pane_id == pane_id)
+                                    .map(|agent| agent.id.clone())
+                            });
+                        if let (Some(dir), Some(agent_id)) = (swarm_dir, swarm_agent_id) {
+                            swarm_writer.send(SwarmStatusUpdate {
+                                dir,
+                                agent_id,
+                                status: "stalled",
+                                last_action: Some("Terminal exited".to_string()),
+                            });
+                        }
                     }
                     OutputBusEvent::TerminalData {
                         session_id,
@@ -212,10 +353,45 @@ pub fn OutputEventBus() -> Element {
                             .on_data(&terminal_registry, &session_id, &payload);
                     }
                     OutputBusEvent::AgentConnected { pane_id, now } => {
+                        // A generationless connection cannot prove that it is
+                        // newer than a retired PTY. Do not let a delayed
+                        // connection event clear the tombstone or recreate a
+                        // status entry for a pane that has already exited.
+                        if !pane_generation_guard.accepts(&pane_id, None) {
+                            continue;
+                        }
                         agent_status.write().connect_agent(pane_id, now);
                     }
                     OutputBusEvent::AgentDisconnected { pane_id, now } => {
+                        pane_generation_guard.retire(&pane_id, None);
                         agent_status.write().disconnect_agent(&pane_id, now);
+                        swarm_sync.remove(&pane_id);
+                        let swarm_dir = {
+                            let state = workspace.read();
+                            state.active_space_id.as_ref().and_then(|id| {
+                                state
+                                    .spaces
+                                    .iter()
+                                    .find(|space| &space.id == id)
+                                    .map(|space| space.dir.clone())
+                            })
+                        };
+                        let swarm_agent_id =
+                            swarm_state.read().active_swarm.as_ref().and_then(|swarm| {
+                                swarm
+                                    .agents
+                                    .iter()
+                                    .find(|agent| agent.pane_id == pane_id)
+                                    .map(|agent| agent.id.clone())
+                            });
+                        if let (Some(dir), Some(agent_id)) = (swarm_dir, swarm_agent_id) {
+                            swarm_writer.send(SwarmStatusUpdate {
+                                dir,
+                                agent_id,
+                                status: "stalled",
+                                last_action: Some("Agent disconnected".to_string()),
+                            });
+                        }
                     }
                     OutputBusEvent::AgentStatusUpdate {
                         pane_id,
@@ -223,15 +399,57 @@ pub fn OutputEventBus() -> Element {
                         message,
                         now,
                     } => {
+                        if !pane_generation_guard.accepts(&pane_id, None) {
+                            continue;
+                        }
                         agent_status.write().update_status(
-                            pane_id,
+                            &pane_id,
                             AgentStatusUpdate {
-                                status: Some(status),
-                                message,
+                                generation: None,
+                                status: Some(status.clone()),
+                                message: message.clone(),
                                 progress: None,
                             },
                             now,
                         );
+                        let persisted_status = match status {
+                            AgentRunStatus::Thinking => "thinking",
+                            AgentRunStatus::Working => "writing",
+                            AgentRunStatus::WaitingForInput => "waiting",
+                            AgentRunStatus::Completed => "done",
+                            AgentRunStatus::Error => "blocked",
+                            AgentRunStatus::Disconnected => "stalled",
+                            _ => "idle",
+                        };
+                        let swarm_dir = {
+                            let state = workspace.read();
+                            state.active_space_id.as_ref().and_then(|id| {
+                                state
+                                    .spaces
+                                    .iter()
+                                    .find(|space| &space.id == id)
+                                    .map(|space| space.dir.clone())
+                            })
+                        };
+                        let swarm_agent_id =
+                            swarm_state.read().active_swarm.as_ref().and_then(|swarm| {
+                                swarm
+                                    .agents
+                                    .iter()
+                                    .find(|agent| agent.pane_id == pane_id)
+                                    .map(|agent| agent.id.clone())
+                            });
+                        if let (Some(dir), Some(agent_id)) = (swarm_dir, swarm_agent_id) {
+                            let update = SwarmStatusUpdate {
+                                dir,
+                                agent_id,
+                                status: persisted_status,
+                                last_action: message.clone(),
+                            };
+                            if swarm_sync.should_send(&pane_id, update.clone(), now) {
+                                swarm_writer.send(update);
+                            }
+                        }
                     }
                     OutputBusEvent::InputRequested {
                         pane_id,
@@ -260,8 +478,8 @@ pub fn OutputEventBus() -> Element {
                         };
                         add_notification(&mut notifications, notif);
                     }
-                    OutputBusEvent::OutputLine(line) => {
-                        agent_output.write().append_line(line);
+                    OutputBusEvent::OutputBatch { pane_id, lines } => {
+                        agent_output.write().append_batch(&pane_id, lines);
                     }
                     OutputBusEvent::PaneRegistered {
                         pane_id,
@@ -354,6 +572,7 @@ pub fn OutputEventBus() -> Element {
                     .map(|s| s.to_string());
 
                 let now = js_sys::Date::now() as i64;
+                let generation = val.get("generation").and_then(|v| v.as_u64());
                 dispatcher.send(OutputBusEvent::AgentStatus {
                     pane_id,
                     status: status_enum,
@@ -364,6 +583,7 @@ pub fn OutputEventBus() -> Element {
                     task_title,
                     session_id,
                     raw_prompt,
+                    generation,
                 });
             }
         }) {
@@ -384,8 +604,13 @@ pub fn OutputEventBus() -> Element {
             };
 
             if !pane_id.is_empty() {
-                let now = js_sys::Date::now() as i64;
-                dispatcher.send(OutputBusEvent::TerminalExit { pane_id, now });
+                let generation = serde_json::from_str::<serde_json::Value>(&payload)
+                    .ok()
+                    .and_then(|value| value.get("generation").and_then(|v| v.as_u64()));
+                dispatcher.send(OutputBusEvent::TerminalExit {
+                    pane_id,
+                    generation,
+                });
             }
         }) {
             exit_unlistens.borrow_mut().push(u);
@@ -529,33 +754,43 @@ pub fn OutputEventBus() -> Element {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                if let Some(lines) = val.get("lines").and_then(|v| v.as_array()) {
-                    for line_val in lines {
-                        let text = line_val
-                            .get("text")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let line_num = line_val
-                            .get("lineNum")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as usize;
-                        let timestamp = line_val
-                            .get("timestamp")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
+                if !pane_id.is_empty() {
+                    let batch = val
+                        .get("lines")
+                        .and_then(|v| v.as_array())
+                        .map(|lines| {
+                            lines
+                                .iter()
+                                .map(|line_val| {
+                                    let text = line_val
+                                        .get("text")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    crate::stores::agent_output::OutputLine {
+                                        pane_id: pane_id.clone(),
+                                        line_num: line_val
+                                            .get("lineNum")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0)
+                                            as usize,
+                                        timestamp: line_val
+                                            .get("timestamp")
+                                            .and_then(|v| v.as_i64())
+                                            .unwrap_or(0),
+                                        is_stderr: is_stderr_like(&text),
+                                        text,
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
 
-                        if !pane_id.is_empty() {
-                            let is_stderr = is_stderr_like(&text);
-                            let line = crate::stores::agent_output::OutputLine {
-                                pane_id: pane_id.clone(),
-                                line_num,
-                                timestamp,
-                                text,
-                                is_stderr,
-                            };
-                            dispatcher.send(OutputBusEvent::OutputLine(line));
-                        }
+                    if !batch.is_empty() {
+                        dispatcher.send(OutputBusEvent::OutputBatch {
+                            pane_id,
+                            lines: batch,
+                        });
                     }
                 }
             }

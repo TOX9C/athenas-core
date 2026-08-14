@@ -7,6 +7,10 @@ pub struct ModalProps {
     pub on_close: EventHandler<()>,
     #[props(default = 480)]
     pub width: u32,
+    /// Compact dialogs size to their content instead of inheriting the tall
+    /// settings-modal footprint.
+    #[props(default = false)]
+    pub compact: bool,
     pub children: Element,
     #[props(default)]
     pub footer: Option<Element>,
@@ -15,6 +19,11 @@ pub struct ModalProps {
 #[component]
 pub fn Modal(props: ModalProps) -> Element {
     let width_str = format!("{}px", props.width);
+    let height_style = if props.compact {
+        "height: auto; max-height: 70vh;"
+    } else {
+        "height: 82vh;"
+    };
     let on_close = props.on_close;
 
     rsx! {
@@ -40,8 +49,8 @@ pub fn Modal(props: ModalProps) -> Element {
                 }
             },
             div {
-                class: "modal-container modal-card",
-                style: "background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); width: {width_str}; max-width: 90vw; height: 82vh; display: flex; flex-direction: column; overflow: hidden;",
+                class: if props.compact { "modal-container modal-card is-compact" } else { "modal-container modal-card" },
+                style: "background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); width: {width_str}; max-width: 90vw; {height_style} display: flex; flex-direction: column; overflow: hidden;",
                 onclick: move |e| e.stop_propagation(),
 
                 // Header

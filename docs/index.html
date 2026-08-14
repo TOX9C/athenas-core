@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Athena's Core — A native IDE for AI-assisted development</title>
+    <title>Athena's Core — Native AI-assisted IDE</title>
     <meta
       name="description"
       content="A native desktop workspace for AI-assisted software development. Multi-pane terminal, AI chat, task management, and multi-agent orchestration — one ~15MB Rust + Tauri binary, no Electron."
@@ -13,32 +13,32 @@
     <meta property="og:title" content="Athena's Core" />
     <meta
       property="og:description"
-      content="A native IDE for AI-assisted software development. Rust + Tauri 2, ~15MB."
+      content="A native IDE for AI-assisted software development. Rust + Tauri 2, ~15MB. No Electron."
     />
-    <meta property="og:image" content="./assets/athenas-core-ad-poster.jpg" />
+    <meta property="og:image" content="./assets/icon-512.png" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <!-- ── Masthead ────────────────────────────────────────────────── -->
-    <nav class="masthead">
-      <div class="container masthead-inner">
-        <a class="sigil" href="#top" aria-label="Athena's Core home">
+    <!-- ── Nav ─────────────────────────────────────────── -->
+    <nav class="nav reveal">
+      <div class="nav-inner">
+        <a class="brand" href="#top" aria-label="Athena's Core home">
           <img src="./assets/icon-128.png" alt="" />
-          <span class="sigil-name">Athena&rsquo;s Core</span>
+          <span>Athena&rsquo;s Core</span>
         </a>
-        <ul class="nav-rails">
-          <li><a href="#gallery">Gallery</a></li>
+        <ul class="nav-links">
+          <li><a href="#features">Features</a></li>
           <li><a href="#architecture">Architecture</a></li>
-          <li><a href="#install">Build</a></li>
+          <li><a href="#install">Get Started</a></li>
           <li>
             <a
-              class="nav-mark"
+              class="nav-cta"
               href="https://github.com/TOX9C/athenas-core"
               target="_blank"
               rel="noopener"
-              >Source&nbsp;&rarr;</a
+              >GitHub&rarr;</a
             >
           </li>
         </ul>
@@ -46,195 +46,238 @@
     </nav>
 
     <main id="top">
-      <!-- ── Title plate ─────────────────────────────────────────────── -->
-      <header class="titleplate container reveal">
-        <p class="tick">Rust &middot; Tauri 2 &middot; Dioxus WASM</p>
-        <h1 class="work">
-          A native IDE where<br />
-          <em>Athena</em> thinks beside&nbsp;you.
-        </h1>
-        <div class="work-rule" aria-hidden="true"></div>
-        <p class="stand-first">
-          One workspace for the multi-pane terminal, the conversation, the task
-          board, and the agent swarm that runs them. A compact
-          <span class="num">~15&thinsp;MB</span> Rust + Tauri binary &mdash;
-          no Electron, no bundled Chromium, no Node runtime.
-        </p>
-        <div class="plate-ctas">
-          <a class="btn btn-gold" href="#install">
-            Build from source
-            <span class="arrow">&rarr;</span>
-          </a>
-          <a
-            class="btn btn-quiet"
-            href="https://github.com/TOX9C/athenas-core"
-            target="_blank"
-            rel="noopener"
-            >View the source</a
-          >
-        </div>
-        <p class="imprint">
-          <span>macOS</span>
-          <span class="dot">&middot;</span>
-          <span>Linux</span>
-          <span class="dot">&middot;</span>
-          <span>Windows</span>
-          <span class="imprint-sep"></span>
-          <span class="num">95</span> IPC commands
-          <span class="dim">/</span>
-          <span class="num">85+</span> components
-          <span class="dim">/</span>
-          <span class="num">16</span> themes
-        </p>
-      </header>
-
-      <!-- ── The artifact: video on a warm-black plinth ─────────────── -->
-      <section class="plinth" id="showcase">
-        <div class="container plinth-inner reveal">
-          <div class="plinth-stage">
-            <div class="artifact">
-              <video
-                id="advideo"
-                poster="./assets/athenas-core-ad-poster.jpg"
-                muted
-                loop
-                playsinline
-                preload="metadata"
+      <!-- ── Hero ────────────────────────────────────────── -->
+      <section class="hero reveal">
+        <div class="container hero-inner">
+          <div class="hero-text">
+            <p class="eyebrow">Rust &middot; Tauri 2 &middot; Dioxus WASM</p>
+            <h1>
+              A native IDE where<br />
+              <span class="accent">Athena</span> thinks beside you.
+            </h1>
+            <p class="lead">
+              One workspace for the terminal, the conversation, the task board,
+              and the agent swarm that runs them. A compact
+              <strong>~15&thinsp;MB</strong> Rust + Tauri binary &mdash; no
+              Electron, no bundled Chromium, no Node runtime.
+            </p>
+            <div class="hero-ctas">
+              <a class="btn btn-primary" href="#install">
+                Build from source
+                <span class="arrow">&rarr;</span>
+              </a>
+              <a
+                class="btn btn-ghost"
+                href="https://github.com/TOX9C/athenas-core"
+                target="_blank"
+                rel="noopener"
+                >View source</a
               >
-                <source src="./assets/athenas-core-ad.mp4" type="video/mp4" />
-                <img
-                  src="./assets/athenas-core-ad.gif"
-                  alt="Athena's Core — 75-second product showcase"
-                />
-              </video>
-              <button class="play" id="play" aria-label="Play product showcase">
-                <svg viewBox="0 0 100 100" aria-hidden="true">
-                  <polygon points="42,28 76,50 42,72" />
-                </svg>
-              </button>
+            </div>
+            <div class="hero-stats">
+              <div class="stat">
+                <span class="stat-num">~15</span>
+                <span class="stat-label">MB binary</span>
+              </div>
+              <div class="stat">
+                <span class="stat-num">95</span>
+                <span class="stat-label">IPC commands</span>
+              </div>
+              <div class="stat">
+                <span class="stat-num">85+</span>
+                <span class="stat-label">components</span>
+              </div>
+              <div class="stat">
+                <span class="stat-num">16</span>
+                <span class="stat-label">themes</span>
+              </div>
             </div>
           </div>
-          <p class="placard-caption">
-            <span class="caption-label">Showcase</span>
-            <span class="caption-body">
-              75-second walkthrough &mdash; workspace, chat, swarm, kanban,
-              palette, themes.
-              <a href="./assets/athenas-core-ad.mp4" download
-                >&darr;&nbsp;1080p MP4</a
-              >
-            </span>
-          </p>
-        </div>
-      </section>
 
-      <!-- ── Gallery ───────────────────────────────────────────────── -->
-      <section class="plate" id="gallery">
-        <div class="container">
-          <div class="plate-head">
-            <p class="tick">The collection</p>
-            <h2 class="plate-title">
-              Six native instruments,<br />
-              under one roof.
-            </h2>
-            <p class="plate-lead">
-              Not a bundle of plugins bolted onto a vendor editor. Each layer is
-              written in Rust, aware of the others, and built for the work
-              &mdash; not for the screenshot.
-            </p>
-          </div>
-
-          <ol class="cases">
-            <li class="case case--keystone">
-              <div class="case-no">i</div>
-              <div class="case-body">
-                <h3>Multi-pane terminal</h3>
-                <p class="case-stand">
-                  A grid of native PTY sessions &mdash; 1&times;1 up to 4&times;4
-                  &mdash; with full ANSI/VT100 emulation and 24-bit true color.
-                  Smart shell tracking for zsh, bash, and fish via
-                  <code>OSC&nbsp;633</code>.
-                </p>
-                <div class="spec-tags">
-                  <span>VT100</span><span>true-color</span><span>OSC 633</span><span>PTY</span>
+          <!-- ── CSS App Mockup ────────────────────────────── -->
+          <div class="mockup" aria-hidden="true">
+            <div class="mockup-chrome">
+              <span class="mockup-dot red"></span>
+              <span class="mockup-dot yellow"></span>
+              <span class="mockup-dot green"></span>
+              <span class="mockup-title">Athena&rsquo;s Core</span>
+              <span class="mockup-sidebar-tabs">
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+            </div>
+            <div class="mockup-body">
+              <!-- sidebar -->
+              <div class="mockup-sidebar">
+                <span class="mockup-sb-item active"></span>
+                <span class="mockup-sb-item"></span>
+                <span class="mockup-sb-item"></span>
+                <span class="mockup-sb-item"></span>
+                <span class="mockup-sb-item"></span>
+                <div class="mockup-sb-spacer"></div>
+                <span class="mockup-sb-icon"></span>
+                <span class="mockup-sb-icon"></span>
+              </div>
+              <!-- terminal + chat split -->
+              <div class="mockup-content">
+                <div class="mockup-panes">
+                  <div class="mockup-pane">
+                    <div class="mockup-pane-head">zsh</div>
+                    <div class="mockup-terminal">
+                      <span class="term-row"><span class="term-prompt">$</span> cargo build --release</span>
+                      <span class="term-row muted">   Compiling athena-core v0.3.0</span>
+                      <span class="term-row muted">   Compiling athena-terminal v0.3.0</span>
+                      <span class="term-row ok">   Finished release [optimized]</span>
+                      <span class="term-row"><span class="term-prompt">$</span> <span class="term-cursor"></span></span>
+                    </div>
+                  </div>
+                  <div class="mockup-pane">
+                    <div class="mockup-pane-head">athena</div>
+                    <div class="mockup-chat">
+                      <span class="chat-bubble user">Refactor the PTY module</span>
+                      <span class="chat-bubble ai"
+                        >Analyzing workspace&hellip; 3 files depend on
+                        <code>pty.rs</code>. Ready to extract a trait?</span>
+                      <span class="chat-bubble user">Yes, draft the trait.</span>
+                      <span class="chat-typing">
+                        <span></span><span></span><span></span>
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </li>
-
-            <li class="case">
-              <div class="case-no">ii</div>
-              <div class="case-body">
-                <h3>Workspace-aware chat</h3>
-                <p class="case-stand">
-                  <strong>Anthropic Claude</strong>, OpenAI, NVIDIA NIM, or local
-                  models via LM Studio. Every message carries a live snapshot of
-                  your workspace, agents, and active plans. Tool calls, image
-                  attach, inline agent spawning.
-                </p>
-              </div>
-            </li>
-
-            <li class="case">
-              <div class="case-no">iii</div>
-              <div class="case-body">
-                <h3>Swarm coordination</h3>
-                <p class="case-stand">
-                  Launch teams &mdash; <strong>Coordinator</strong>, Builder,
-                  Scout, Reviewer &mdash; on a shared mailbox bus. Status in
-                  real time, state persisted to disk, stalled agents
-                  auto-detected.
-                </p>
-              </div>
-            </li>
-
-            <li class="case">
-              <div class="case-no">iv</div>
-              <div class="case-body">
-                <h3>Kanban tasks</h3>
-                <p class="case-stand">
-                  Four columns, per-workspace isolation, agent assignments. A
-                  task placed on a card becomes the agent&rsquo;s next move.
-                </p>
-              </div>
-            </li>
-
-            <li class="case">
-              <div class="case-no">v</div>
-              <div class="case-body">
-                <h3>Plugin system</h3>
-                <p class="case-stand">
-                  Extend with JSON manifests. Capability scoping, per-agent
-                  plugin sessions with lifecycle tracking, an event bus,
-                  security validation against rules.
-                </p>
-              </div>
-            </li>
-
-            <li class="case case--annex">
-              <div class="case-no">vi</div>
-              <div class="case-body">
-                <h3>The rest of the workshop</h3>
-                <p class="case-stand">
-                  Embedded browser panel. Seven notification types &mdash; 500
-                  stored. <code>&#8984;K</code> command palette with fuzzy,
-                  recent-first surfacing. Sixteen curated themes, system
-                  auto-detect, live font preview.
-                </p>
-              </div>
-            </li>
-          </ol>
+            </div>
+          </div>
         </div>
       </section>
 
-      <!-- ── Architecture ────────────────────────────────────────────── -->
-      <section class="plate hall--rule" id="architecture">
-        <div class="container">
-          <div class="plate-head">
-            <p class="tick">The foundation</p>
-            <h2 class="plate-title">Native where it counts.</h2>
-          </div>
+      <!-- ── Marquee strip ─────────────────────────────── -->
+      <section class="marquee" aria-hidden="true">
+        <div class="marquee-track">
+          <span>Multi-pane terminal</span><span>&middot;</span>
+          <span>AI chat with workspace context</span><span>&middot;</span>
+          <span>Agent swarm coordination</span><span>&middot;</span>
+          <span>Kanban task board</span><span>&middot;</span>
+          <span>Plugin system</span><span>&middot;</span>
+          <span>Command palette</span><span>&middot;</span>
+          <span>16 themes</span><span>&middot;</span>
+          <span>Embedded browser</span><span>&middot;</span>
+          <span>Mobile companion</span><span>&middot;</span>
+          <span>Multi-pane terminal</span><span>&middot;</span>
+          <span>AI chat with workspace context</span><span>&middot;</span>
+          <span>Agent swarm coordination</span><span>&middot;</span>
+          <span>Kanban task board</span><span>&middot;</span>
+          <span>Plugin system</span><span>&middot;</span>
+        </div>
+      </section>
 
-          <div class="folios">
-            <div class="folio folio--prose">
+      <!-- ── Features ──────────────────────────────────── -->
+      <section class="section reveal" id="features">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow">Features</p>
+            <h2>Everything you need,<br />nothing you don&rsquo;t.</h2>
+          </div>
+          <div class="feature-grid">
+            <!-- 1 -->
+            <div class="feature-card">
+              <div class="feature-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+                </svg>
+              </div>
+              <h3>Multi-pane terminal</h3>
+              <p>
+                A grid of native PTY sessions &mdash; 1&times;1 up to 4&times;4
+                &mdash; with full ANSI/VT100 emulation and 24-bit true color.
+                Smart shell tracking via <code>OSC&nbsp;633</code>.
+              </p>
+            </div>
+            <!-- 2 -->
+            <div class="feature-card">
+              <div class="feature-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                </svg>
+              </div>
+              <h3>Workspace-aware AI chat</h3>
+              <p>
+                Anthropic Claude, OpenAI, NVIDIA NIM, or local models via LM
+                Studio. Every message carries a live snapshot of your workspace,
+                agents, and plans. Tool calls, image attach, inline agent
+                spawning.
+              </p>
+            </div>
+            <!-- 3 -->
+            <div class="feature-card">
+              <div class="feature-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-7h-6M7 12H1m17.5-6.5l-4.2 4.2M9.7 14.3l-4.2 4.2m14 0l-4.2-4.2M9.7 9.7L5.5 5.5"/>
+                </svg>
+              </div>
+              <h3>Agent swarm</h3>
+              <p>
+                Launch teams &mdash; Coordinator, Builder, Scout, Reviewer &mdash;
+                on a shared mailbox bus. Real-time status, state persisted to
+                disk, stalled agents auto-detected.
+              </p>
+            </div>
+            <!-- 4 -->
+            <div class="feature-card">
+              <div class="feature-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="3" width="6" height="18" rx="1"/><rect x="10" y="3" width="6" height="9" rx="1"/><rect x="17" y="3" width="4" height="13" rx="1"/>
+                </svg>
+              </div>
+              <h3>Kanban task board</h3>
+              <p>
+                Four columns, per-workspace isolation, agent assignments. A task
+                placed on a card becomes the agent&rsquo;s next move.
+              </p>
+            </div>
+            <!-- 5 -->
+            <div class="feature-card">
+              <div class="feature-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v12M3 9h6m6 0h6m-6 0v12"/><circle cx="12" cy="15" r="2"/>
+                </svg>
+              </div>
+              <h3>Plugin system</h3>
+              <p>
+                Extend with JSON manifests. Capability scoping, per-agent plugin
+                sessions with lifecycle tracking, an event bus, security
+                validation against rules.
+              </p>
+            </div>
+            <!-- 6 -->
+            <div class="feature-card">
+              <div class="feature-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/><path d="M12 16v-4m0-4h.01"/>
+                </svg>
+              </div>
+              <h3>And the rest</h3>
+              <p>
+                <code>&#8984;K</code> command palette with fuzzy search.
+                Embedded browser panel. Seven notification types, 500 stored.
+                Sixteen themes, system auto-detect, live font preview.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Architecture ──────────────────────────────── -->
+      <section class="section section--alt reveal" id="architecture">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow">Architecture</p>
+            <h2>Native where it counts.</h2>
+          </div>
+          <div class="arch-layout">
+            <div class="arch-prose">
               <p>
                 The backend is a <strong>Tauri 2</strong> binary &mdash; a tiny
                 app shell and <span class="num">95</span> typed IPC commands.
@@ -246,70 +289,66 @@
                 a footprint measured in single-digit megabytes, memory a
                 fraction of an Electron app doing the same work.
               </p>
-              <p class="folio-code">
-                <span class="dim">$</span>&nbsp;cargo tauri build
-                <span class="dim rem">&nbsp;&nbsp;# one binary &middot; three platforms</span>
-              </p>
+              <div class="arch-code">
+                <span class="arch-code-prompt">$</span>&nbsp;cargo tauri build
+                <span class="arch-code-comment">&nbsp;&nbsp;# one binary &middot; three platforms</span>
+              </div>
             </div>
-
-            <ul class="specimen">
+            <ul class="arch-list">
               <li>
-                <span class="sp-name">src-tauri</span>
-                <span class="sp-role">app shell &middot; 95 IPC</span>
+                <span class="arch-name">src-tauri</span>
+                <span class="arch-role">app shell &middot; 95 IPC</span>
               </li>
               <li>
-                <span class="sp-name">athena-frontend</span>
-                <span class="sp-role">Dioxus WASM &middot; 85+ components</span>
+                <span class="arch-name">athena-frontend</span>
+                <span class="arch-role">Dioxus WASM &middot; 85+ parts</span>
               </li>
               <li>
-                <span class="sp-name">athena-core</span>
-                <span class="sp-role">LLM &middot; MCP &middot; agent comms</span>
+                <span class="arch-name">athena-core</span>
+                <span class="arch-role">LLM &middot; MCP &middot; agents</span>
               </li>
               <li>
-                <span class="sp-name">athena-terminal</span>
-                <span class="sp-role">PTY &middot; ANSI/VT100 emulator</span>
+                <span class="arch-name">athena-terminal</span>
+                <span class="arch-role">PTY &middot; ANSI/VT100</span>
               </li>
               <li>
-                <span class="sp-name">athena-store</span>
-                <span class="sp-role">KV + session store (SQLite)</span>
+                <span class="arch-name">athena-store</span>
+                <span class="arch-role">KV + session (SQLite)</span>
               </li>
               <li>
-                <span class="sp-name">athena-fs</span>
-                <span class="sp-role">filesystem &middot; path protection</span>
+                <span class="arch-name">athena-fs</span>
+                <span class="arch-role">filesystem &middot; path guard</span>
               </li>
               <li>
-                <span class="sp-name">athena-browser</span>
-                <span class="sp-role">embedded webview</span>
+                <span class="arch-name">athena-browser</span>
+                <span class="arch-role">embedded webview</span>
               </li>
               <li>
-                <span class="sp-name">athena-plugins</span>
-                <span class="sp-role">manifest &middot; security validation</span>
+                <span class="arch-name">athena-plugins</span>
+                <span class="arch-role">manifest &middot; security</span>
               </li>
             </ul>
           </div>
         </div>
       </section>
 
-      <!-- ── Build ──────────────────────────────────────────────────── -->
-      <section class="plate hall--rule" id="install">
+      <!-- ── Get Started / Build ───────────────────────── -->
+      <section class="section reveal" id="install">
         <div class="container">
-          <div class="plate-head">
-            <p class="tick">Erect it</p>
-            <h2 class="plate-title">Build it from source.</h2>
-            <p class="plate-lead">
-              Athena&rsquo;s Core runs on macOS, Linux, and Windows. Clone,
-              build the frontend, run the Tauri binary.
+          <div class="section-head">
+            <p class="eyebrow">Get Started</p>
+            <h2>Build it from source.</h2>
+            <p class="section-lead">
+              Athena&rsquo;s Core runs on macOS, Linux, and Windows. Clone, build
+              the frontend, run the Tauri binary.
             </p>
           </div>
-
-          <div class="specimen--code">
-            <div class="code-head">
-              <span class="dot-cluster" aria-hidden="true">
-                <span></span><span></span><span></span>
-              </span>
-              <span class="code-label">shell &mdash; quick start</span>
+          <div class="code-block">
+            <div class="code-block-head">
+              <span class="dot-cluster"><span></span><span></span><span></span></span>
+              <span class="code-block-label">shell &mdash; quick start</span>
             </div>
-<pre><span class="c"># Clone the repository</span>
+            <pre><span class="c"># Clone the repository</span>
 git clone https://github.com/TOX9C/athenas-core.git
 <span class="c">cd</span> athenas-core
 
@@ -325,7 +364,6 @@ cargo tauri dev
 <span class="c"># Full release build</span>
 bash frontend/build-dist.sh <span class="f">&&</span> cargo tauri build</pre>
           </div>
-
           <p class="releases">
             Prerequisites: Rust 1.82+, Node 18+, Tauri CLI, Dioxus CLI.
             <span class="dot">&middot;</span>
@@ -333,68 +371,54 @@ bash frontend/build-dist.sh <span class="f">&&</span> cargo tauri build</pre>
             <span class="dot">&middot;</span>
             <a href="https://github.com/TOX9C/athenas-core/releases" target="_blank" rel="noopener">Releases&nbsp;&rarr;</a>
           </p>
+
+          <!-- ── Platform badges ─────────────────────────── -->
+          <div class="platforms">
+            <span class="platform-badge">macOS</span>
+            <span class="platform-badge">Linux</span>
+            <span class="platform-badge">Windows</span>
+          </div>
         </div>
       </section>
     </main>
 
-    <!-- ── Colophon ─────────────────────────────────────────────────── -->
-    <footer class="colophon">
-      <div class="container colophon-inner">
-        <a class="sigil" href="#top" aria-label="Athena's Core home">
+    <!-- ── Footer ─────────────────────────────────────── -->
+    <footer class="footer">
+      <div class="container footer-inner">
+        <a class="brand" href="#top" aria-label="Athena's Core home">
           <img src="./assets/icon-128.png" alt="" />
-          <span class="sigil-name">Athena&rsquo;s Core</span>
+          <span>Athena&rsquo;s Core</span>
         </a>
-        <ul class="footer-rails">
-          <li><a href="#gallery">Gallery</a></li>
+        <ul class="footer-links">
+          <li><a href="#features">Features</a></li>
           <li><a href="#architecture">Architecture</a></li>
-          <li><a href="#install">Build</a></li>
-          <li><a href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">Source</a></li>
+          <li><a href="#install">Get Started</a></li>
+          <li><a href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">GitHub</a></li>
           <li><a href="https://github.com/TOX9C/athenas-core/releases" target="_blank" rel="noopener">Releases</a></li>
         </ul>
-        <p class="colophon-line">Proprietary &middot; All rights reserved</p>
+        <p class="footer-copy">Proprietary &middot; All rights reserved</p>
       </div>
     </footer>
 
+    <!-- ── Scroll reveal ─────────────────────────────── -->
     <script>
-      // Autoplay the hero showcase when it scrolls into view, pause when it leaves.
       (function () {
-        var video = document.getElementById('advideo');
-        var frame = document.querySelector('.artifact');
-        var playBtn = document.getElementById('play');
-        if (!video || !frame) return;
-
-        var prefersReduced =
-          window.matchMedia &&
+        var prefersReduced = window.matchMedia &&
           window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-        function hidePlay() {
-          if (playBtn) playBtn.style.display = 'none';
+        var reveals = document.querySelectorAll('.reveal');
+        if (prefersReduced || !('IntersectionObserver' in window)) {
+          reveals.forEach(function (el) { el.classList.add('visible'); });
+          return;
         }
-        video.addEventListener('play', hidePlay, { once: true });
-        playBtn &&
-          playBtn.addEventListener('click', function () {
-            video.play().catch(function () {});
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            if (e.isIntersecting) {
+              e.target.classList.add('visible');
+              io.unobserve(e.target);
+            }
           });
-
-        if (prefersReduced) return;
-
-        if ('IntersectionObserver' in window) {
-          var io = new IntersectionObserver(
-            function (entries) {
-              entries.forEach(function (e) {
-                if (e.isIntersecting) {
-                  video.play().catch(function () {});
-                } else {
-                  video.pause();
-                }
-              });
-            },
-            { threshold: 0.45 }
-          );
-          io.observe(frame);
-        } else {
-          video.play().catch(function () {});
-        }
+        }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+        reveals.forEach(function (el) { io.observe(el); });
       })();
     </script>
   </body>

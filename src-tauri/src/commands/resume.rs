@@ -145,13 +145,14 @@ pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize
     // hit the deadline. The PTY read loops populate the buffer on the shared
     // runtime.
     let step_ms = 150u64;
-    let mut elapsed = 0u64;
+    let started = tokio::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(wait_ms);
     let mut found: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut found_cmds: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    while elapsed < wait_ms && found.len() < agent_sessions.len() {
-        tokio::time::sleep(std::time::Duration::from_millis(step_ms)).await;
-        elapsed += step_ms;
+    while tokio::time::Instant::now() < deadline && found.len() < agent_sessions.len() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::sleep(std::time::Duration::from_millis(step_ms).min(remaining)).await;
         for id in &agent_sessions {
             if found.contains_key(id) {
                 continue;

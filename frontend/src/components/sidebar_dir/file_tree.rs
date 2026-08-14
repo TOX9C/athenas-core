@@ -203,8 +203,10 @@ pub fn FileTree() -> Element {
                     ui_for_open.write().right_sidebar_open = true;
                     panel_for_open.write().open_right_panel(RightPanel::Editor);
                 }
-                Err(e) => {
-                    log::warn!("Failed to read file {}: {:?}", file_path, e);
+                Err(_e) => {
+                    // Paths and provider/OS error text may disclose private
+                    // workspace details; keep native logs metadata-only.
+                    log::warn!("Failed to read file from the active workspace");
                 }
             }
         });

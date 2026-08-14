@@ -1,8 +1,8 @@
 //! Plugin registration, lifecycle, listing, and configuration operations.
 
 use super::{
-    build_registry_info, now_millis, validate_plugin_manifest, PluginEntry, PluginError,
-    PluginInfo, PluginManager, PluginManifest, PluginStatus,
+    build_registry_info, now_millis, validate_plugin_config, validate_plugin_manifest, PluginEntry,
+    PluginError, PluginInfo, PluginManager, PluginManifest, PluginStatus,
 };
 use std::collections::HashMap;
 
@@ -60,13 +60,31 @@ impl PluginManager {
             .get(plugin_id)
             .map(|e| e.status == PluginStatus::Enabled)
             .ok_or_else(|| PluginError::PluginNotFound(plugin_id.to_string()))?;
+        let removed_sessions: Vec<(String, String)> = inner
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.plugin_id == plugin_id)
+            .map(|(id, session)| (id.clone(), session.agent_id.clone()))
+            .collect();
 
+        for (session_id, _) in &removed_sessions {
+            inner.sessions.remove(session_id);
+            for subscribers in inner.event_subscriptions.values_mut() {
+                subscribers.remove(session_id);
+            }
+            inner
+                .pending_messages
+                .retain(|_, message| &message.session_id != session_id);
+        }
         inner.plugins.remove(plugin_id);
 
         let registry_info = build_registry_info(&inner);
 
         drop(inner);
 
+        for (session_id, agent_id) in removed_sessions {
+            self.callbacks.on_session_removed(&session_id, &agent_id);
+        }
         if was_enabled {
             self.callbacks.on_plugin_disabled(plugin_id);
         }
@@ -124,11 +142,29 @@ impl PluginManager {
 
         let was_enabled = entry.status == PluginStatus::Enabled;
         entry.status = PluginStatus::Disabled;
+        let removed_sessions: Vec<(String, String)> = inner
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.plugin_id == plugin_id)
+            .map(|(id, session)| (id.clone(), session.agent_id.clone()))
+            .collect();
+        for (session_id, _) in &removed_sessions {
+            inner.sessions.remove(session_id);
+            for subscribers in inner.event_subscriptions.values_mut() {
+                subscribers.remove(session_id);
+            }
+            inner
+                .pending_messages
+                .retain(|_, message| &message.session_id != session_id);
+        }
 
         let registry_info = build_registry_info(&inner);
 
         drop(inner);
 
+        for (session_id, agent_id) in removed_sessions {
+            self.callbacks.on_session_removed(&session_id, &agent_id);
+        }
         if was_enabled {
             self.callbacks.on_plugin_disabled(plugin_id);
             self.emit_event(
@@ -237,24 +273,44 @@ impl PluginManager {
     ) -> Result<(), PluginError> {
         let mut inner = self.inner.lock()?;
 
+        if serde_json::to_vec(config)
+            .map(|bytes| bytes.len() > super::MAX_PLUGIN_CONFIG_BYTES)
+            .unwrap_or(true)
+        {
+            return Err(PluginError::LimitExceeded(
+                "plugin configuration exceeds 256 KiB".to_string(),
+            ));
+        }
         let entry = inner
             .plugins
             .get_mut(plugin_id)
             .ok_or_else(|| PluginError::PluginNotFound(plugin_id.to_string()))?;
 
-        // Merge: existing config is the base, new config overwrites.
-        match (&mut entry.config, config) {
-            (serde_json::Value::Object(ref mut existing), serde_json::Value::Object(ref new)) => {
+        // Merge into a candidate first, then enforce the size bound on the
+        // complete stored value (not only on the incoming fragment).
+        let mut merged_config = entry.config.clone();
+        match (&mut merged_config, config) {
+            (serde_json::Value::Object(existing), serde_json::Value::Object(new)) => {
                 for (key, value) in new {
                     existing.insert(key.clone(), value.clone());
                 }
             }
             (_, new_config) => {
-                entry.config = new_config.clone();
+                merged_config = new_config.clone();
             }
         }
-
-        let merged_config = entry.config.clone();
+        let merged_size = serde_json::to_vec(&merged_config)
+            .map(|bytes| bytes.len())
+            .unwrap_or(usize::MAX);
+        if merged_size > super::MAX_PLUGIN_CONFIG_BYTES {
+            return Err(PluginError::LimitExceeded(
+                "plugin configuration exceeds 256 KiB".to_string(),
+            ));
+        }
+        if let Some(schema) = entry.manifest.config.as_ref() {
+            validate_plugin_config(&schema.schema, &merged_config)?;
+        }
+        entry.config = merged_config.clone();
 
         let registry_info = build_registry_info(&inner);
 

@@ -2,6 +2,7 @@ use crate::types::{ChatSession, ImageRef, SessionListItem, SessionMessage};
 use base64::Engine as _;
 use serde_json;
 use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
@@ -132,7 +133,7 @@ impl SessionStore {
         // Only write if the file doesn't already exist — dedup at the FS level.
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             if !path_clone.exists() {
-                std::fs::write(&path_clone, &buffer)?;
+                write_file_durable(&path_clone, &buffer, false)?;
             }
             Ok(())
         })
@@ -196,7 +197,7 @@ impl SessionStore {
         let json = serde_json::to_string_pretty(&session)?;
         let path = self.session_path(&session.id);
         let path_clone = path.clone();
-        tokio::task::spawn_blocking(move || std::fs::write(&path_clone, json))
+        tokio::task::spawn_blocking(move || write_file_durable(&path_clone, json.as_bytes(), true))
             .await
             .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
         Ok(session)
@@ -243,7 +244,7 @@ impl SessionStore {
         let json = serde_json::to_string_pretty(&session)?;
         let path = self.session_path(id);
         let path_clone = path.clone();
-        tokio::task::spawn_blocking(move || std::fs::write(&path_clone, json))
+        tokio::task::spawn_blocking(move || write_file_durable(&path_clone, json.as_bytes(), true))
             .await
             .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
         Ok(Some(session))
@@ -406,10 +407,57 @@ impl SessionStore {
     }
 }
 
+/// Persist session/image bytes through a unique same-directory temporary file.
+/// The file is synced before rename and the parent directory is synced on Unix,
+/// so a successful write is durable on the supported macOS release target.
+/// For content-addressed images, an existing destination is accepted so racing
+/// deduplicating writers do not fail.
+fn write_file_durable(
+    path: &std::path::Path,
+    content: &[u8],
+    replace_existing: bool,
+) -> Result<(), std::io::Error> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("session.json"));
+    let temp_path = parent.join(format!(".{name}.tmp-{}", Uuid::new_v4()));
+
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        drop(file);
+        match std::fs::rename(&temp_path, path) {
+            Ok(()) => Ok(()),
+            Err(error)
+                if !replace_existing && error.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                let _ = std::fs::remove_file(&temp_path);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result?;
+
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine as _;
 
     /// Build a SessionStore rooted in a fresh temp directory. Each test gets
     /// an isolated images directory, so file counts are deterministic.

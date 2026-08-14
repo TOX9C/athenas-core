@@ -3,6 +3,7 @@
 use dioxus::prelude::*;
 
 use crate::components::settings::settings_modal::Toggle;
+use crate::components::shared::icon::IconStar;
 use crate::stores::ui::use_ui_store;
 
 /// Per-type agent notification toggles, persisted under the KV key
@@ -315,23 +316,24 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
                 div {
                     style: "display: flex; align-items: center; gap: 8px; flex-wrap: wrap;",
                     span {
-                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--accent); background: var(--accentSubtle); padding: 3px 10px; border-radius: var(--radius-sm); border: 1px solid var(--accent);",
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--accent); background: var(--bgTertiary); padding: 3px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);",
                         "{alias}"
                     }
                     if props.agent.is_claude {
                         span {
                             class: "badge",
-                            style: "background: var(--accentSubtle); color: var(--accent); border: 1px solid var(--accent); font-size: var(--text-2xs); padding: 2px 8px;",
+                            style: "color: var(--accent);",
                             title: "Treated as Claude for resume + running detection",
                             "Claude"
                         }
                     }
                     if props.agent.priority {
                         span {
-                            class: "badge",
-                            style: "background: var(--accent); color: var(--bg); border: 1px solid var(--accent); font-weight: 700; font-size: var(--text-2xs); padding: 2px 8px;",
+                            class: "status-label",
+                            style: "color: var(--accent);",
                             title: "Default option in the resume banner",
-                            "★ Priority"
+                            IconStar { size: Some(10), color: Some("currentColor".to_string()) }
+                            "Priority"
                         }
                     }
                 }

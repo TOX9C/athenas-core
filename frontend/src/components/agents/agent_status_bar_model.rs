@@ -94,6 +94,7 @@ mod tests {
     fn status_conversion_preserves_progress_and_message() {
         let status = AgentStatus {
             pane_id: "pane-1".to_string(),
+            generation: Some(1),
             status: AgentRunStatus::Working,
             message: Some("Building".to_string()),
             progress: Some(AgentProgress {

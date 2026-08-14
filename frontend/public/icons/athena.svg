@@ -1,6 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
   <rect width="192" height="192" rx="42" fill="#0b0b0c"/>
-  <circle cx="96" cy="96" r="58" fill="none" stroke="#c9a24b" stroke-width="6"/>
-  <path d="M68 77c0-17 11-27 28-27s28 10 28 27c0 9-4 16-11 21l-17 13v17" fill="none" stroke="#c9a24b" stroke-width="7" stroke-linecap="round"/>
-  <circle cx="96" cy="143" r="4" fill="#c9a24b"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c22"/>
+      <stop offset="1" stop-color="#09090b"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="42" fill="url(#bg)"/>
+  <!-- Hexagonal core frame (the crystalline "core" mark — no triangles) -->
+  <path d="M96 28 L154.88 62 L154.88 130 L96 164 L37.12 130 L37.12 62 Z"
+        fill="#d0a94f" fill-opacity="0.08" stroke="#d0a94f" stroke-opacity="0.86" stroke-width="8.4"
+        stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- Quiet inner ring -->
+  <path d="M96 52.8 L133.44 74.4 L133.44 117.6 L96 139.2 L58.56 117.6 L58.56 74.4 Z"
+        fill="none" stroke="#d0a94f" stroke-opacity="0.4" stroke-width="4"
+        stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- Gold core bezant -->
+  <path d="M96 74.4 L110 96 L96 117.6 L82 96 Z" fill="#ebce7c"/>
 </svg>

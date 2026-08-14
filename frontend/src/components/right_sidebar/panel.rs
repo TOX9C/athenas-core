@@ -2,7 +2,7 @@ use super::browser_panel::RightBrowserPanel;
 use super::editor_panel::RightEditorPanel;
 use super::skills_panel::SkillsPanel;
 use crate::components::athena::athena_panel::{AthenaPanel, AthenaPanelMode};
-use crate::components::shared::icon::{IconColumn, IconFile, IconGlobe, IconTerminal};
+use crate::components::shared::icon::{IconFile, IconGlobe, IconKanban, IconTerminal};
 use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
 use crate::stores::ui::{use_ui_store, Panel};
 use dioxus::prelude::*;
@@ -37,7 +37,7 @@ pub fn RightSidebar() -> Element {
     rsx! {
         div {
             class: "pane-astrolabe-mark",
-            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bgSecondary); border: 1px solid var(--border); border-left: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden;",
+            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bgSecondary); border: 1px solid var(--border); border-left: 1px solid var(--border); border-radius: 0; overflow: hidden;",
 
             // Tab bar
             div {
@@ -87,7 +87,7 @@ pub fn RightSidebar() -> Element {
                         let should_be_open = panel_state.write().toggle_right_panel(RightPanel::Skills, sidebar_open);
                         ui_state.write().right_sidebar_open = should_be_open;
                     },
-                    IconColumn { size: Some(13), color: Some("currentColor".to_string()) }
+                    IconKanban { size: Some(13), color: Some("currentColor".to_string()) }
                     "Skills"
                 }
             }

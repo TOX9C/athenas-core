@@ -1,256 +1,178 @@
 # Plugin Development Guide
 
-This guide covers how to build plugins for Athena's Core using the Model Context Protocol (MCP).
+This guide describes the current Athena's Core plugin contract. Plugins are **trusted developer integrations**: they are not sandboxed, and a plugin process can access anything allowed to the user account that launches it. Only install plugin code you trust.
 
 ## Architecture
 
-Athena plugins communicate via MCP, which provides a standardized interface for AI agents and tools. The architecture supports two transport modes:
+The canonical external integration path is:
 
-1. **Stdio** — Plugin runs as a child process, communicates over stdin/stdout
-2. **WebSocket** — Plugin connects to Athena's WebSocket server at `ws://localhost:<port>`
+```text
+Claude Code / OpenCode
+        │ stdio
+        ▼
+  bin/mcp-proxy.js
+        │ authenticated TCP
+        ▼
+Rust McpServer on 127.0.0.1:4545
+        │
+        ▼
+Athena's Core backend and workspace
+```
 
-## Plugin Manifest
+The Node MCP package is an optional compatibility facade. New integrations should use the bundled proxy configuration rather than inventing a second listener or connecting directly to the legacy agent-comms port (`4546`).
 
-Every plugin requires a manifest describing its identity, permissions, and entry point:
+The native plugin manager stores manifests, validates them before registration, tracks plugin sessions, scopes capabilities, and forwards plugin events. It does not execute arbitrary plugin code inside the renderer.
 
-```typescript
-interface PluginManifest {
-  id: string // Unique identifier (e.g., 'com.example.my-plugin')
-  name: string // Human-readable name
-  version: string // Semver version
-  description: string // What the plugin does
-  author: string // Author name
-  entryPoint: string // Path to the plugin entry script
-  permissions: PluginPermission[] // Required permissions
-  mcpConfig?: {
-    // MCP server configuration (optional)
-    command: string // Command to start the MCP server
-    args: string[] // Arguments for the command
-    env?: Record<string, string> // Environment variables
+## Manifest format
+
+The authoritative Rust type is `athena_plugins::PluginManifest`, serialized with camelCase field names:
+
+```json
+{
+  "id": "com.example.workspace-tools",
+  "name": "Workspace Tools",
+  "version": "1.0.0",
+  "description": "Tools for the local workspace.",
+  "author": "Example Team",
+  "permissions": ["file_access", "notifications"],
+  "mcpConfig": {
+    "command": "node",
+    "args": ["dist/server.js"],
+    "env": { "NODE_ENV": "production" }
+  },
+  "minAthenaVersion": "0.3.0",
+  "capabilities": ["notifications", "status", "file_access"],
+  "tools": [],
+  "subscribesTo": ["notification", "status_update"],
+  "config": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["safe", "fast"] }
+      },
+      "required": ["mode"],
+      "additionalProperties": false
+    },
+    "defaults": { "mode": "safe" }
+  },
+  "install": {
+    "type": "mcp_server",
+    "command": "node",
+    "args": ["dist/server.js"],
+    "env": { "NODE_ENV": "production" }
   }
 }
 ```
 
-## Creating an MCP Plugin
+`mcpConfig` is the runtime MCP connection description. `install` describes the supported installation method and is one of:
 
-### 1. Set Up the Project
-
-```bash
-mkdir my-athena-plugin && cd my-athena-plugin
-npm init -y
-npm install @modelcontextprotocol/sdk zod
+```json
+{"type": "builtin"}
+{"type": "mcp_server", "command": "node", "args": [], "env": {}}
+{"type": "hook", "script": "scripts/setup.sh"}
 ```
 
-### 2. Implement the MCP Server
+There is no `entryPoint` field in the native manifest. Use `install` and/or `mcpConfig` instead.
 
-```typescript
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+### Capabilities and agent types
+
+The capability enum is:
+
+- `notifications`
+- `status`
+- `tasks`
+- `agentControl`
+- `userInput`
+- `file_access`
+- `swarm`
+
+Supported agent types are `claude`, `codex`, `opencode`, `gemini`, `qwen`, `aider`, `cursor`, `freebuff`, `omp`, `custom`, and `shell`.
+
+A session receives only the intersection of its agent's safe defaults, the plugin manifest's declared capabilities, and the requested capabilities. Requesting extra capabilities does not elevate a session.
+
+## Validation and limits
+
+Manifests are rejected before registration when they violate security or resource rules:
+
+- Plugin IDs are non-empty, at most 128 bytes, and contain only ASCII letters, digits, `-`, `_`, or `.`.
+- Name, author, and description have bounded lengths.
+- MCP commands must be a whitelisted bare executable (`node`, `python`, `python3`, `ruby`, `cargo`, `sh`, `bash`, `zsh`, `npx`, `deno`, `uv`, `uvx`, or `pipx`). Absolute paths and path separators are rejected.
+- Hook scripts must be relative paths without `..` traversal or shell metacharacters.
+- Plugin and event configuration payloads are limited to 256 KiB.
+- Plugin configuration schemas use a bounded supported JSON-Schema subset: `type`, `properties`, `required`, `additionalProperties`, `items`, `enum`, `const`, string length, and numeric bounds.
+- Unsupported schema keywords and malformed schema shapes are rejected rather than silently ignored.
+- Schema nesting is limited to 64 levels.
+- Configuration defaults are validated against their schema before the manifest is accepted.
+- `PATH` and `HOME` cannot be overridden through MCP environment maps.
+
+The configuration validator supports boolean schemas and rejects tuple-style `items`, unsupported combinators, malformed types, duplicate required names, non-finite numeric bounds, and inverted min/max ranges.
+
+## MCP server implementation
+
+A plugin MCP process should keep stdout reserved for the transport protocol. Send diagnostics to stderr or a local logger. A minimal Node server can use the MCP SDK:
+
+```ts
+import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { z } from 'zod'
 
-const server = new McpServer({
-  name: 'my-plugin',
-  version: '1.0.0',
-})
-
-// Register a tool
-server.tool(
-  'my_custom_tool',
-  'Does something custom',
-  { input: z.string().describe('The input to process') },
-  async ({ input }) => {
-    return {
-      content: [{ type: 'text', text: `Processed: ${input}` }],
-    }
-  },
+const server = new Server(
+  { name: 'workspace-tools', version: '1.0.0' },
+  { capabilities: { tools: {} } },
 )
 
-// Start the server
-const transport = new StdioServerTransport()
-await server.connect(transport)
+// Register tools using the SDK's current tool registration API.
+// Keep schemas narrow and validate all arguments again in the implementation.
+
+await server.connect(new StdioServerTransport())
 ```
 
-### 3. Register with Athena
+For Athena's bundled integrations, prefer the generated setup scripts in `plugins/claude-code-athena` and `plugins/opencode-athena`. They install the `athena` entry that launches `bin/mcp-proxy.js`; do not hard-code a direct unauthenticated TCP connection.
 
-In the Athena renderer (or via IPC):
+## Plugin manager API
 
-```typescript
-await window.athena.plugins.register({
-  id: 'com.example.my-plugin',
-  name: 'My Plugin',
-  version: '1.0.0',
-  description: 'Custom plugin for Athena',
-  author: 'Developer',
-  entryPoint: './index.js',
-  permissions: ['notifications'],
-  mcpConfig: {
-    command: 'node',
-    args: ['./dist/index.js'],
-  },
-})
+The native manager exposes these Tauri operations to the frontend/plugin host. The current ID-only unregister/subscribe/message commands are compatibility operations for trusted in-process callers; they do not authenticate a remote caller. The manager also provides owner-aware internal methods that atomically verify a session's stored plugin ID, but the supplied `plugin_id` must come from an authenticated host context before those methods can serve as a security boundary.
 
-await window.athena.plugins.enable('com.example.my-plugin')
+- `plugin_host_discover_plugins`
+- `plugin_host_setup_plugin`
+- `plugin_host_remove_plugin`
+- `plugin_host_register_session`
+- `plugin_host_unregister_session`
+- `plugin_host_subscribe`
+- `plugin_host_send_message`
+- `plugin_get_config`
+- `plugin_set_config`
+- `plugin_enable`
+- `plugin_disable`
+- `plugin_set_error`
+
+The low-level `plugin_register` command accepts an ID, name, and version and creates a minimal manifest for trusted internal callers. It is not a replacement for loading and validating a complete manifest from disk.
+
+Configuration updates merge object values into the existing plugin configuration, then validate the complete merged value against the manifest schema. A rejected update leaves the previous configuration unchanged.
+
+## Events and sessions
+
+Plugin sessions carry a plugin ID, agent ID, optional pane ID, agent type, status, and scoped capabilities. Session status values are `active`, `idle`, `waitingInput`, or `disconnected`.
+
+Plugin event types include notifications, status updates, task completion/errors, input requests/responses, agent connect/exit/stall, progress, artifacts, control commands, registry changes, plugin errors, and output forwarding.
+
+When an event crosses from agent/session state into the renderer, consumers should use the explicit `paneId`/`sessionId` fields rather than guessing from display labels.
+
+## Testing checklist
+
+Before distributing a plugin:
+
+1. Validate the manifest with the native plugin manager.
+2. Test registration, enable/disable, session cleanup, and re-registration after disable.
+3. Test invalid configuration values, unknown properties, oversized payloads, and invalid defaults.
+4. Test malformed MCP requests and authentication failures.
+5. Confirm the plugin never logs API keys, bearer tokens, prompts, or raw workspace contents.
+6. Run the repository checks:
+
+```bash
+cargo test -p athena-plugins
+npm run check:plugin-integration
+npm run check:tauri-permissions
+npm run check:release-privacy
 ```
 
-## Available MCP Tools
-
-When your plugin runs as an MCP server inside Athena, it can call these Athena-provided tools:
-
-### `notify`
-
-Send a notification to the user.
-
-```typescript
-server.tool('notify', 'Send notification', {
-  type: z.enum(['info', 'warning', 'error', 'success']),
-  title: z.string(),
-  message: z.string(),
-  priority: z.enum(['low', 'normal', 'high', 'critical']),
-}, async (params) => { ... })
-```
-
-### `request_input`
-
-Prompt the user for input.
-
-```typescript
-{
-  prompt: string
-  defaultResponse?: string
-  timeout?: number  // ms
-}
-```
-
-### `update_status`
-
-Update an agent's status.
-
-```typescript
-{
-  agentId: string
-  status: AgentStatus  // 'running' | 'idle' | 'error' | 'waiting' | 'done' | 'blocked' | 'stalled'
-  message?: string
-  progress?: number  // 0-1
-}
-```
-
-### `report_error`
-
-Report an error from an agent.
-
-```typescript
-{
-  agentId: string
-  error: string
-  stack?: string
-  code?: string | number
-  recoverable: boolean
-}
-```
-
-### `report_completion`
-
-Report task completion.
-
-```typescript
-{
-  agentId: string
-  summary: string
-  artifacts?: string[]
-  metrics?: Record<string, number>
-  duration?: number
-}
-```
-
-### `create_tasks`
-
-Create new tasks.
-
-```typescript
-{
-  tasks: Array<{ title: string; description?: string }>
-}
-```
-
-### `get_next_task`
-
-Get the next pending task.
-
-```typescript
-{
-  agentId?: string  // Filter by agent
-}
-```
-
-### `update_task_status`
-
-Update a task's status.
-
-```typescript
-{
-  taskId: string
-  status: string
-}
-```
-
-## Available MCP Resources
-
-Athena exposes these resources for plugins to read:
-
-### `athena://state`
-
-Full application state: active space, spaces, theme, agents, tasks.
-
-### `athena://agents`
-
-List of all agent states (id, type, status, cwd, etc.).
-
-### `athena://tasks`
-
-List of all tasks (id, title, status, description).
-
-## Testing Your Plugin
-
-### Unit Tests
-
-Use vitest for testing:
-
-```typescript
-import { describe, it, expect } from 'vitest'
-
-describe('my plugin', () => {
-  it('should process input', async () => {
-    const result = await processInput('test')
-    expect(result).toContain('Processed')
-  })
-})
-```
-
-### Integration Tests
-
-Test your plugin against Athena's MCP server:
-
-```typescript
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-
-const transport = new StdioClientTransport({
-  command: 'node',
-  args: ['./dist/index.js'],
-})
-
-const client = new Client({ name: 'test-client', version: '1.0.0' })
-await client.connect(transport)
-
-const tools = await client.listTools()
-expect(tools.tools.length).toBeGreaterThan(0)
-```
-
-## Best Practices
-
-1. **Declare minimal permissions** — Only request what you need
-2. **Handle errors gracefully** — Use `report_error` with `recoverable: true` for transient issues
-3. **Report progress** — Use `update_status` with `progress` for long-running operations
-4. **Clean up resources** — Close connections and stop processes on disable
-5. **Use meaningful IDs** — Prefix plugin IDs with your domain (e.g., `com.example.plugin-name`)
-6. **Version your plugin** — Follow semver; breaking changes require major version bumps
+For a release, also complete the packaged artifact and trust-model review in `docs/release/SECURITY_REVIEW.md` and `docs/release/PLUGIN_TRUST_POLICY.md`.

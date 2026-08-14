@@ -23,9 +23,17 @@ uuid = { version = "1.15", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 path-clean = "1.0"
+url = "2.5"
 
 # Dev profile keeps the default "unwind" panic strategy for useful
-# stack traces during debugging.
+# stack traces during debugging. This is explicit (not just a comment)
+# because wasm32-unknown-unknown's *target* default is still `abort`
+# even though the host targets default to `unwind`. If the WASM frontend
+# is ever built in dev (e.g. `dx build` without `--release`), `abort`
+# would skip RefCell-guard unwinding and re-introduce the poisoned-cell
+# freeze described under [profile.release].
+[profile.dev]
+panic = "unwind"
 
 [profile.dev.package.dioxus-web]
 # Workaround: Dioxus devtools try to open a WebSocket for hot-reload,

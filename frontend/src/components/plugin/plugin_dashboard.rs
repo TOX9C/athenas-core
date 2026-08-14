@@ -61,22 +61,9 @@ pub fn PluginDashboard() -> Element {
     rsx! {
         div {
             class: "plugin-dashboard pane-astrolabe-mark",
-            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto; overflow-x: hidden; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md);",
-
-            // Section header
-            div {
-                style: "display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border);",
-                h2 {
-                    style: "margin: 0; font-family: var(--font-display); font-size: var(--text-sm); font-weight: 600; letter-spacing: 0.04em; color: var(--accent);",
-                    "Plugins"
-                }
-                if !plugins.is_empty() {
-                    span {
-                        class: "badge",
-                        "{plugins.len()}"
-                    }
-                }
-            }
+            // The sidebar is already the section surface. Keep the plugin list
+            // flush with it instead of nesting a rounded panel inside it.
+            style: "display: flex; flex-direction: column; height: 100%; flex: 1; overflow-y: auto; overflow-x: hidden; background: transparent; border: none; border-radius: 0;",
 
             // Plugin cards
             if plugins.is_empty() {

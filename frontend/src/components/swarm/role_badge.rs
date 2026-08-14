@@ -17,11 +17,8 @@ pub fn SwarmRoleBadge(props: SwarmRoleBadgeProps) -> Element {
 
     rsx! {
         span {
-            class: "badge",
-            style: "display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-2xs); padding: 2px 8px; background: color-mix(in srgb, {color} 14%, transparent); color: {color}; border: 1px solid color-mix(in srgb, {color} 38%, transparent); border-radius: var(--radius-pill); font-weight: 600; letter-spacing: 0.02em; text-transform: capitalize;",
-            span {
-                style: "width: 5px; height: 5px; border-radius: 50%; background: {color}; flex-shrink: 0;",
-            }
+            class: "status-label",
+            style: "color: {color}; text-transform: capitalize;",
             "{label}"
         }
     }

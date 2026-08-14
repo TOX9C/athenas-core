@@ -1,5 +1,8 @@
 use super::shortcuts_ref::ShortcutsRef;
 use super::theme_picker::ThemePicker;
+use crate::components::shared::icon::{
+    IconAgents, IconAthena, IconInfo, IconKeyboard, IconSettings, IconSmartphone, IconTune,
+};
 use crate::components::shared::modal::Modal;
 use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
@@ -16,6 +19,20 @@ pub(crate) use settings_controls::{GroupLabel, Toggle};
 #[path = "settings_sections.rs"]
 mod settings_sections;
 use settings_sections::{AboutSettings, AthenaSettings, GeneralSettings, MobileMirrorSettings};
+
+/// Icon for a settings section, shown in the floating index (replaces the
+/// former unicode glyph set).
+fn section_glyph(idx: usize) -> Element {
+    match idx {
+        0 => rsx! { IconSettings { size: Some(13), color: Some("currentColor".to_string()) } },
+        1 => rsx! { IconAthena { size: Some(13), color: Some("currentColor".to_string()) } },
+        2 => rsx! { IconAgents { size: Some(13), color: Some("currentColor".to_string()) } },
+        3 => rsx! { IconTune { size: Some(13), color: Some("currentColor".to_string()) } },
+        4 => rsx! { IconKeyboard { size: Some(13), color: Some("currentColor".to_string()) } },
+        5 => rsx! { IconInfo { size: Some(13), color: Some("currentColor".to_string()) } },
+        _ => rsx! { IconSmartphone { size: Some(13), color: Some("currentColor".to_string()) } },
+    }
+}
 
 /* =============================================================
 SettingsContent – the codex of settings (seven sections + floating index)
@@ -151,8 +168,8 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "I",
             title: "General",
-            epigraph: "The forge — where the type is struck.",
-            intro: Some("Configure your Athena environment — type, size, pane titles."),
+            epigraph: "Tune the essentials — type, size, appearance.",
+            intro: Some("Configure your environment — type, size, pane titles."),
             id: "s-i",
             GeneralSettings {}
         }
@@ -161,7 +178,7 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "II",
             title: "Athena",
-            epigraph: "The oracle — to whom the questions are put.",
+            epigraph: "Configure your model provider.",
             intro: Some("Configure your LLM provider. Works with any OpenAI-compatible API or Anthropic."),
             id: "s-ii",
             AthenaSettings {}
@@ -171,7 +188,7 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "III",
             title: "Agents",
-            epigraph: "The order — those who act on your behalf.",
+            epigraph: "Manage the agents that work for you.",
             intro: Some("Manage custom agents with aliases and commands that launch them."),
             id: "s-iii",
             AgentsSettings {}
@@ -181,8 +198,8 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "IV",
             title: "Themes",
-            epigraph: "The aspect — how the temple catches the light.",
-            intro: Some("Choose a color scheme for your Athena environment."),
+            epigraph: "Choose how the workspace looks.",
+            intro: Some("Choose a color scheme for your environment."),
             id: "s-iv",
             ThemePicker {}
         }
@@ -191,8 +208,8 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "V",
             title: "Shortcuts",
-            epigraph: "The craft — the gestures by which the hand moves.",
-            intro: Some("Quick reference for the most common keyboard shortcuts in Athena."),
+            epigraph: "The keys that move you through the app.",
+            intro: Some("Quick reference for the most common keyboard shortcuts."),
             id: "s-v",
             ShortcutsRef {}
         }
@@ -201,7 +218,7 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "VI",
             title: "About",
-            epigraph: "The keystone — the temple knows itself.",
+            epigraph: "Version, updates, and privacy.",
             intro: Some(""),
             id: "s-vi",
             AboutSettings {}
@@ -211,7 +228,7 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "VII",
             title: "Mobile Mirror",
-            epigraph: "The reflection — the temple seen from afar.",
+            epigraph: "Mirror your desktop to a phone on your LAN.",
             intro: Some("Mirror this desktop to your phone over the local network."),
             id: "s-vii",
             MobileMirrorSettings {}
@@ -228,13 +245,6 @@ pub fn SettingsContent() -> Element {
         section_vii,
     ];
     let numerals: [&'static str; 7] = ["I", "II", "III", "IV", "V", "VI", "VII"];
-    let glyphs: [&'static str; 7] = [
-        "\u{2699}", "\u{03A6}", "\u{232C}", "\u{25D1}", "\u{2318}", "\u{0398}", "\u{231A}",
-    ];
-    // U+2699 GEAR, U+03A6 PHI, U+232C BENZENE, U+25D1 CIRCLE WITH LEFT
-    // HALF BLACK, U+2318 PLACE OF INTEREST SIGN, U+0398 GREEK CAPITAL
-    // THETA, U+231A WATCH (relay / mobile mirror).
-    // Glyphs render via Unicode in --font-display (Cormorant).
 
     rsx! {
         div {
@@ -245,16 +255,17 @@ pub fn SettingsContent() -> Element {
             div {
                 style: "display: flex; align-items: center; gap: 12px; padding: 18px 24px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
                 span {
-                    style: "width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--accent); display: inline-flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-display); font-size: 18px; box-shadow: 0 0 10px var(--accentSubtle), inset 0 0 6px var(--accentSubtle);",
-                    "\u{0398}"
+                    class: "seal-mark",
+                    style: "opacity: 0.95;",
+                    IconAthena { size: Some(22), color: Some("var(--accent)".to_string()) }
                 }
                 span {
                     style: "font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--accent); letter-spacing: 0.03em;",
-                    "Codex of Settings"
+                    "Settings"
                 }
                 span {
                     style: "margin-left: auto; color: var(--textDim); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;",
-                    "Bronze Relief \u{2022} ✦"
+                    "Workspace preferences"
                 }
             }
 
@@ -277,7 +288,8 @@ pub fn SettingsContent() -> Element {
                                 2 => "s-iii",
                                 3 => "s-iv",
                                 4 => "s-v",
-                                _ => "s-vi",
+                                5 => "s-vi",
+                                _ => "s-vii",
                             };
                             let section_id_for_click = section_id.to_string();
                             rsx! {
@@ -297,7 +309,7 @@ pub fn SettingsContent() -> Element {
                                         }
                                     },
                                     span { "{numerals[idx]}" }
-                                    span { class: "glyph", "{glyphs[idx]}" }
+                                    span { class: "glyph", {section_glyph(idx)} }
                                 }
                             }
                         }
@@ -345,7 +357,7 @@ pub fn SettingsModal(props: SettingsModalProps) -> Element {
 }
 
 /* =============================================================
-Codex of Settings — shared presentation primitives
+Settings — shared presentation primitives
 ============================================================= */
 
 #[derive(Props, Clone, PartialEq)]
@@ -354,7 +366,7 @@ struct CodexSectionProps {
     numeral: &'static str,
     /// Title text shown next to the numeral in --text + --font-display.
     title: &'static str,
-    /// Short italic Cormorant line aligned to the right of the header.
+    /// Short muted line aligned to the right of the header.
     epigraph: &'static str,
     /// Optional intro line under the rule (--textMuted, --text-base).
     intro: Option<&'static str>,

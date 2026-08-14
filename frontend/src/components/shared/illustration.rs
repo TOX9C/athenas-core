@@ -3,14 +3,13 @@ use dioxus::prelude::*;
 mod illustration_art;
 
 use illustration_art::{
-    illo_amphora, illo_constellation, illo_helmet, illo_laurel_wreath, illo_owl_branch,
-    illo_scroll, illo_sleeping_owl, illo_temple,
+    illo_agents, illo_files, illo_kanban, illo_notifications, illo_plugins, illo_sessions,
+    illo_swarm, illo_workspace,
 };
 
-// ────────────────── Empty-state line-art illustrations ──────────────────
-// Larger, two-tone compositions in a black-figure / engraved style. Most
-// strokes use --textDim; a single highlight stroke uses --accent so the art
-// carries the gold identity. Rendered inside `EmptyState`.
+// ────────────────── Empty-state illustrations ──────────────────
+// Inline SVG motifs inherit the active theme surface instead of introducing an
+// opaque generated-image canvas into the empty state.
 
 /// Which illustration an empty state should show.
 #[derive(Clone, Copy, PartialEq)]
@@ -26,16 +25,21 @@ pub enum EmptyArt {
     Generic,
 }
 
+/// Theme-aware line-art illustration for an empty state.
+///
+/// The motifs use the active `--bg`, `--textDim`, and `--accent` tokens
+/// directly, so they remain native to every theme and never expose a generated
+/// image's background.
 fn art_for(kind: EmptyArt) -> Element {
     match kind {
-        EmptyArt::Workspace | EmptyArt::Generic => illo_owl_branch(),
-        EmptyArt::Sessions => illo_scroll(),
-        EmptyArt::Kanban => illo_temple(),
-        EmptyArt::Swarm => illo_constellation(),
-        EmptyArt::Notifications => illo_sleeping_owl(),
-        EmptyArt::Plugins => illo_laurel_wreath(),
-        EmptyArt::Files => illo_amphora(),
-        EmptyArt::Agents => illo_helmet(),
+        EmptyArt::Workspace | EmptyArt::Generic => illo_workspace(),
+        EmptyArt::Sessions => illo_sessions(),
+        EmptyArt::Kanban => illo_kanban(),
+        EmptyArt::Swarm => illo_swarm(),
+        EmptyArt::Notifications => illo_notifications(),
+        EmptyArt::Plugins => illo_plugins(),
+        EmptyArt::Files => illo_files(),
+        EmptyArt::Agents => illo_agents(),
     }
 }
 
@@ -49,13 +53,12 @@ pub fn EmptyState(
 ) -> Element {
     rsx! {
         div {
-            // Outer container: flex centering, clips overflow; NO animation here.
+            class: if kind == EmptyArt::Swarm { "empty-state swarm-empty-state" } else { "empty-state" },
             style: "flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden;",
-            // Inner wrapper: the actual entrance animation (avoids transform on the flex-stretching element that triggers parent scrollbar flash).
             div {
                 class: "animate-rise",
                 style: "display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 32px; text-align: center;",
-                div { style: "opacity: 0.9;", {art_for(kind)} }
+                div { class: "empty-state-art", aria_hidden: "true", {art_for(kind)} }
                 div { style: "display: flex; flex-direction: column; gap: 6px; align-items: center;",
                     div {
                         style: "font-family: var(--font-display); font-size: 22px; font-weight: 600; color: var(--text); letter-spacing: 0.01em;",
@@ -71,46 +74,28 @@ pub fn EmptyState(
     }
 }
 
-/// Brand owl mark — gold, for welcome / chat / thinking. `size` in px.
-/// Drawn inside a faint engraved ring with the Θ halo (gold-leaf theta bar +
-/// dot) behind the owl — the observatory's sighting disc. The `orbit-glow`
-/// class is applied by the *caller* (lib.rs welcome plaque); this renders the
-/// mark itself, ring-framed.
+/// Brand mark for welcome / chat / thinking. `size` is in px.
+/// A crystalline core: hexagonal frame, quiet inner ring, and a solid gold
+/// diamond bezant. Pure geometry — no triangles — legible from 14px to 52px.
 #[component]
-pub fn OwlMark(size: Option<u16>) -> Element {
+pub fn CoreMark(size: Option<u16>) -> Element {
     let s = size.unwrap_or(20);
     let sz = format!("{s}px");
+    const MARK_FRAME: &str = "M12 3.5 L19.36 7.75 L19.36 16.25 L12 20.5 L4.64 16.25 L4.64 7.75 Z";
+    const MARK_RING: &str = "M12 6.6 L16.68 9.3 L16.68 14.7 L12 17.4 L7.32 14.7 L7.32 9.3 Z";
+    const MARK_CORE: &str = "M12 9.3 L13.75 12 L12 14.7 L10.25 12 Z";
     rsx! {
         svg {
             view_box: "0 0 24 24",
             fill: "none",
+            "aria-hidden": "true",
             stroke: "var(--accent)",
-            stroke_width: "1.4",
             stroke_linecap: "round",
             stroke_linejoin: "round",
             style: "width: {sz}; height: {sz}; display: inline-block; vertical-align: middle;",
-            // engraved outer sighting ring
-            circle { cx: "12", cy: "12", r: "11", stroke: "var(--accent)", stroke_opacity: "0.35", stroke_width: "1" }
-            // inner almucantar guide ring
-            circle { cx: "12", cy: "12", r: "8.5", stroke: "var(--accent)", stroke_opacity: "0.2", stroke_width: "1" }
-            // Θ halo — faint gold-leaf theta bar behind the owl
-            path { d: "M3.5 12 H20.5", stroke: "var(--goldLeaf)", stroke_width: "1", stroke_opacity: "0.4" }
-            // lapis degree-tick at the crown
-            path { d: "M12 0.6 V2", stroke: "var(--accentLapis)", stroke_width: "1", stroke_opacity: "0.7" }
-            // body / facial disc
-            path { d: "M12 3.4c-4.2 0-7.2 3-7.2 7.2v2.4a7.2 7.2 0 0 0 14.4 0v-2.4c0-4.2-3-7.2-7.2-7.2z" }
-            // brows that rise into ear tufts
-            path { d: "M6.7 9.4c-.4-2.4.5-4.1 2-4.4 1.1.8 1.4 2.2 1.1 3.6" }
-            path { d: "M17.3 9.4c.4-2.4-.5-4.1-2-4.4-1.1.8-1.4 2.2-1.1 3.6" }
-            // eyes + pupils (pupils gold-leaf lit, matching the engraved Owl icon)
-            circle { cx: "9", cy: "10.8", r: "2.4" }
-            circle { cx: "15", cy: "10.8", r: "2.4" }
-            circle { cx: "9", cy: "10.8", r: "0.85", fill: "var(--goldLeaf)", stroke: "none" }
-            circle { cx: "15", cy: "10.8", r: "0.85", fill: "var(--goldLeaf)", stroke: "none" }
-            // beak
-            path { d: "M12 12.6l-1.1 1.8h2.2z" }
-            // talons
-            path { d: "M9.8 20.7v1.4M12 21.1v1.4M14.2 20.7v1.4" }
+            path { d: "{MARK_FRAME}", fill: "var(--accent)", fill_opacity: "0.07", stroke: "var(--accent)", stroke_opacity: "0.85", stroke_width: "1.05" }
+            path { d: "{MARK_RING}", stroke: "var(--accent)", stroke_opacity: "0.38", stroke_width: "0.5" }
+            path { d: "{MARK_CORE}", fill: "var(--accent)", stroke: "none" }
         }
     }
 }

@@ -72,6 +72,8 @@ cp -f "$SCRIPT_DIR/public/manifest.webmanifest" "$DIST_DIR/manifest.webmanifest"
 cp -f "$SCRIPT_DIR/public/sw.js" "$DIST_DIR/sw.js"
 rm -rf "$DIST_DIR/icons"
 cp -r "$SCRIPT_DIR/public/icons" "$DIST_DIR/icons"
+rm -rf "$DIST_DIR/art"
+cp -r "$SCRIPT_DIR/public/art" "$DIST_DIR/art"
 
 # Create stable-name aliases for hashed filenames BEFORE checking entry path.
 # Dioxus release builds output to assets/ with hashes; debug builds to wasm/ without.

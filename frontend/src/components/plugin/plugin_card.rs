@@ -88,11 +88,9 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
             // Status
             div {
                 style: "display: flex; align-items: center; gap: 6px;",
-                div {
-                    style: "width: 6px; height: 6px; border-radius: var(--radius-pill); background: {status_color}; flex-shrink: 0;",
-                }
                 span {
-                    style: "font-size: var(--text-2xs); padding: 1px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, {status_color} 12%, transparent); border: 1px solid color-mix(in srgb, {status_color} 32%, transparent); color: {status_color}; font-weight: 500;",
+                    class: "status-label",
+                    style: "color: {status_color};",
                     "{status_label}"
                 }
             }
@@ -100,7 +98,7 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
             // Error display
             if let Some(err) = &props.plugin.error {
                 div {
-                    style: "font-size: var(--text-2xs); padding: 6px 10px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--error) 12%, transparent); color: var(--error); border: 1px solid color-mix(in srgb, var(--error) 32%, transparent);",
+                    style: "font-size: var(--text-2xs); padding: 6px 10px; border-radius: var(--radius-sm); background: var(--bgTertiary); color: var(--error); border: 1px solid var(--border);",
                     "{err}"
                 }
             }

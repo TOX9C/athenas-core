@@ -121,6 +121,13 @@ fn validate_data_size(data: &[u8], label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Return the generated shell hooks when the selected shell supports OSC 633.
+/// The terminal crate loads this through the shell's startup mechanism, never by
+/// typing the script into the interactive PTY (which would echo the definitions).
+fn shell_integration_script(shell: &str) -> Option<String> {
+    athena_core::shell_integration::get_shell_integration_script(shell).ok()
+}
+
 /// Return the default shell path for the current platform.
 #[tauri::command]
 pub fn pty_default_shell() -> String {
@@ -139,6 +146,8 @@ pub fn pty_default_shell() -> String {
 /// After spawning, starts a background tokio task that reads PTY output
 /// and emits `terminal:data` events to the frontend.
 #[tauri::command]
+// Keep the PTY lifecycle handshake explicit at this Tauri wire boundary.
+#[allow(clippy::too_many_arguments)]
 pub async fn pty_spawn(
     state: State<'_, AppState>,
     id: String,
@@ -146,36 +155,39 @@ pub async fn pty_spawn(
     shell: String,
     cols: Option<u16>,
     rows: Option<u16>,
+    start_paused: Option<bool>,
+    listener_owner: Option<String>,
 ) -> Result<(), String> {
     let cols = cols.unwrap_or(80);
     let rows = rows.unwrap_or(24);
     log::info!(
-        "pty_spawn requested: id={} cwd={} shell={} cols={} rows={}",
+        "pty_spawn requested: session={} cols={} rows={}",
         id,
-        cwd,
-        shell,
         cols,
         rows
     );
     // Validate caller-supplied values before touching the session manager.
-    validate_session_id(&id).map_err(|e| {
-        log::warn!("pty_spawn rejected (bad id): {}", e);
-        e
-    })?;
-    let validated_shell = validate_shell(&shell).map_err(|e| {
-        log::warn!("pty_spawn rejected (bad shell '{}'): {}", shell, e);
-        e
-    })?;
+    validate_session_id(&id).inspect_err(|e| log::warn!("pty_spawn rejected (bad id): {}", e))?;
+    let validated_shell = validate_shell(&shell)
+        .inspect_err(|_| log::warn!("pty_spawn rejected: invalid shell input"))?;
     let validated_cwd = validate_cwd(&state.store, &cwd).map_err(|e| {
-        log::warn!("pty_spawn rejected (bad cwd '{}'): {}", cwd, e);
+        log::warn!("pty_spawn rejected: invalid workspace cwd");
         e.to_string()
     })?;
     let shell_str = validated_shell.to_string_lossy().to_string();
     let cwd_str = validated_cwd.to_string_lossy().to_string();
 
+    let integration_script = shell_integration_script(&shell_str);
     let session_manager = state.session_manager.lock().await;
     let session_result = session_manager
-        .spawn(id.clone(), &shell_str, &cwd_str, cols, rows)
+        .spawn_with_startup_script(
+            id.clone(),
+            &shell_str,
+            &cwd_str,
+            cols,
+            rows,
+            integration_script.as_deref(),
+        )
         .await;
     drop(session_manager);
 
@@ -187,8 +199,14 @@ pub async fn pty_spawn(
             // SessionManager::spawn returns an existing Arc for duplicate IDs.
             // Start exactly one reader for that session; a second reader would
             // race the first on the same PTY and duplicate/split shell echoes.
+            // A newly claimed reader may start paused so a mobile/xterm mount
+            // can install its raw listener before the first screen is emitted.
+            let claimed_reader = session.try_claim_read_loop();
+            if claimed_reader && start_paused.unwrap_or(false) {
+                session.begin_startup_pause(listener_owner);
+            }
             if let Some(handle) = app_handle {
-                if session.try_claim_read_loop() {
+                if claimed_reader {
                     let session_id_for_loop = id.clone();
                     let output_buffer = std::sync::Arc::clone(&state.output_buffer);
                     let tracker = std::sync::Arc::clone(&state.agent_activity);
@@ -205,13 +223,15 @@ pub async fn pty_spawn(
                 } else {
                     log::debug!("pty_spawn: read loop already running for session {}", id);
                 }
+            } else if claimed_reader {
+                // There is no reader to release this claim. A later spawn with
+                // an app handle must be allowed to start the loop.
+                session.release_read_loop();
             }
 
             log::info!(
-                "PTY session spawned: id={} cwd={} shell={} cols={} rows={}",
+                "PTY session spawned: session={} cols={} rows={}",
                 id,
-                cwd,
-                shell,
                 cols,
                 rows
             );
@@ -219,13 +239,10 @@ pub async fn pty_spawn(
         }
         Err(e) => {
             log::error!(
-                "Failed to spawn PTY session: id={} cwd={} shell={} cols={} rows={} error={}",
+                "Failed to spawn PTY session: session={} cols={} rows={}",
                 id,
-                cwd,
-                shell,
                 cols,
-                rows,
-                e
+                rows
             );
             Err(e.to_string())
         }
@@ -392,6 +409,10 @@ pub(crate) async fn pty_read_loop(
             result = session.read_bytes(&mut read_buf) => {
                 match result {
                     Ok(0) => {
+                        // Check the startup lease even while the shell is idle;
+                        // otherwise a failed listener attach could remain
+                        // muted forever without a successful PTY read.
+                        let _ = session.expire_startup_pause();
                         // `Ok(0)` on a non-blocking fd means no data is
                         // available (EAGAIN) — a lull in output. Flush any
                         // pending coalesced data so the frontend gets prompt
@@ -406,6 +427,7 @@ pub(crate) async fn pty_read_loop(
                     }
                     Ok(n) => n,
                     Err(e) => {
+                        let _ = session.expire_startup_pause();
                         // Flush any pending data before handling the error
                         // so the frontend doesn't lose the tail of output.
                         if !coalesce_buf.is_empty()
@@ -426,6 +448,9 @@ pub(crate) async fn pty_read_loop(
             }
 
             _ = flush_interval.tick() => {
+                // Timer-based flush: also owns the startup-pause safety check
+                // so recovery does not depend on PTY output activity.
+                let _ = session.expire_startup_pause();
                 // Timer-based flush: guarantees the frontend receives data
                 if !coalesce_buf.is_empty()
                     && !session.raw_paused.load(std::sync::atomic::Ordering::Relaxed)
@@ -477,13 +502,21 @@ pub(crate) async fn pty_read_loop(
         // case we skip the structured event entirely.
         // For xterm.js sessions, we still parse (to keep VTE state fresh)
         // but skip emitting `terminal:data` — xterm.js parses raw ANSI itself.
-        match session.parse_bytes(&read_buf[..n]).await {
-            Ok(Some(update)) => {
+        match session.parse_bytes_with_responses(&read_buf[..n]).await {
+            Ok((Some(update), responses)) => {
                 if !did_emit_ready {
                     did_emit_ready = true;
                     session.mark_ready().await;
                 }
-
+                for response in responses {
+                    if let Err(error) = session.write(&response).await {
+                        log::debug!(
+                            "pty_read_loop[{}]: DSR response write failed: {}",
+                            session_id,
+                            error
+                        );
+                    }
+                }
                 // Skip cell-delta emission for xterm sessions — they have their
                 // own ANSI parser and do not consume `terminal:data` events.
                 if session.is_xterm.load(std::sync::atomic::Ordering::Relaxed) {
@@ -514,7 +547,21 @@ pub(crate) async fn pty_read_loop(
                     }
                 }
             }
-            Ok(None) => {}
+            Ok((None, responses)) => {
+                if !did_emit_ready {
+                    did_emit_ready = true;
+                    session.mark_ready().await;
+                }
+                for response in responses {
+                    if let Err(error) = session.write(&response).await {
+                        log::debug!(
+                            "pty_read_loop[{}]: DSR response write failed: {}",
+                            session_id,
+                            error
+                        );
+                    }
+                }
+            }
             Err(e) => {
                 log::warn!("PTY parse error for {}: {}", session_id, e);
             }
@@ -531,13 +578,14 @@ pub(crate) async fn pty_read_loop(
         // ~10k lines, far more than any swap window (typically <300ms).
         // If we flushed while paused, the bytes would hit a dead listener
         // and be lost — the exact desync we're fixing.
+        let _ = session.expire_startup_pause();
         let now_paused = session
             .raw_paused
             .load(std::sync::atomic::Ordering::Relaxed);
         if now_paused {
             // Self-heal: detect the true → false transition on a *later*
             // iteration (the flag is cleared by the remount's
-            // `pty_set_raw_paused(id, false)` or `pty_attach_listener` from
+            // `pty_attach_listener` from
             // another task). On the first iteration where we observe it
             // cleared, flush everything accumulated while paused as a single
             // burst — exactly the behavior the remount expects. This decouples
@@ -616,7 +664,11 @@ pub(crate) async fn pty_read_loop(
         tracker.remove_pane_if_generation(&session_id, registration_generation);
     }
 
-    if let Err(e) = app_handle.emit("terminal:exit", session_id) {
+    let exit_payload = serde_json::json!({
+        "paneId": session_id,
+        "generation": registration_generation,
+    });
+    if let Err(e) = app_handle.emit("terminal:exit", exit_payload.to_string()) {
         log::warn!("Failed to emit terminal:exit event: {}", e);
     }
     // This is the final lifecycle operation: a later spawn can now replace
@@ -964,6 +1016,8 @@ pub(crate) async fn session_foreground_label(
 /// Spawn a new PTY session with the agent command to execute after startup.
 /// The `agent_cmd` is executed in the shell after the PTY is set up.
 #[tauri::command]
+// Keep the PTY lifecycle handshake explicit at this Tauri wire boundary.
+#[allow(clippy::too_many_arguments)]
 pub async fn pty_spawn_agent(
     state: State<'_, AppState>,
     id: String,
@@ -972,30 +1026,36 @@ pub async fn pty_spawn_agent(
     agent_cmd: String,
     cols: Option<u16>,
     rows: Option<u16>,
+    start_paused: Option<bool>,
+    listener_owner: Option<String>,
 ) -> Result<(), String> {
     let cols = cols.unwrap_or(80);
     let rows = rows.unwrap_or(24);
     // Validate caller-supplied values (same gates as pty_spawn) plus bound the
     // agent command payload before it is written to the PTY.
-    validate_session_id(&id).map_err(|e| {
-        log::warn!("pty_spawn_agent rejected (bad id): {}", e);
-        e
-    })?;
-    let validated_shell = validate_shell(&shell).map_err(|e| {
-        log::warn!("pty_spawn_agent rejected (bad shell '{}'): {}", shell, e);
-        e
-    })?;
+    validate_session_id(&id)
+        .inspect_err(|e| log::warn!("pty_spawn_agent rejected (bad id): {}", e))?;
+    let validated_shell = validate_shell(&shell)
+        .inspect_err(|_| log::warn!("pty_spawn_agent rejected: invalid shell input"))?;
     let validated_cwd = validate_cwd(&state.store, &cwd).map_err(|e| {
-        log::warn!("pty_spawn_agent rejected (bad cwd '{}'): {}", cwd, e);
+        log::warn!("pty_spawn_agent rejected: invalid workspace cwd");
         e.to_string()
     })?;
     validate_data_size(agent_cmd.as_bytes(), "agent_cmd")?;
     let shell_str = validated_shell.to_string_lossy().to_string();
     let cwd_str = validated_cwd.to_string_lossy().to_string();
 
+    let integration_script = shell_integration_script(&shell_str);
     let session_manager = state.session_manager.lock().await;
     let session_result = session_manager
-        .spawn(id.clone(), &shell_str, &cwd_str, cols, rows)
+        .spawn_with_startup_script(
+            id.clone(),
+            &shell_str,
+            &cwd_str,
+            cols,
+            rows,
+            integration_script.as_deref(),
+        )
         .await;
     drop(session_manager);
 
@@ -1010,6 +1070,13 @@ pub async fn pty_spawn_agent(
             // execute the same command twice in the same shell.
             let claimed_reader = session.try_claim_read_loop();
             if claimed_reader {
+                // Hold raw output until the xterm listener has subscribed.
+                // Agent CLIs render immediately during startup; without this
+                // handshake their first screen is lost before the frontend can
+                // mount the terminal, producing a blank or half-painted pane.
+                if start_paused.unwrap_or(false) {
+                    session.begin_startup_pause(listener_owner.clone());
+                }
                 if let Err(e) = session.write(agent_cmd.as_bytes()).await {
                     session.release_read_loop();
                     log::error!("Failed to write agent command to PTY: {}", e);
@@ -1019,12 +1086,10 @@ pub async fn pty_spawn_agent(
                 log::debug!("pty_spawn_agent: session {} already initialized", id);
             }
 
-            let agent_key = agent_cmd
-                .split_whitespace()
-                .find_map(|word| {
-                    let base = word.rsplit('/').next().unwrap_or(word);
-                    athena_core::agent_detection::is_known_agent_key(base).then_some(base)
-                })
+            let agent_key = athena_core::agent_detection::AGENT_FG_NAMES
+                .iter()
+                .copied()
+                .find(|key| athena_core::agent_detection::command_contains_agent(&agent_cmd, key))
                 .unwrap_or("agent");
             state
                 .agent_activity
@@ -1086,31 +1151,6 @@ pub async fn pty_set_xterm(
     }
 }
 
-/// Pause/resume raw `pty:raw` event emission for a session.
-///
-/// When paused, the read loop keeps reading from the PTY fd (so the shell
-/// process doesn't block on a full pipe) but suppresses `pty:raw` event
-/// emission. Accumulated bytes are flushed as a single burst when the flag
-/// is cleared. Used by the xterm.js remount path to close the stream-gap
-/// desync during pane swaps.
-#[tauri::command]
-pub async fn pty_set_raw_paused(
-    state: State<'_, AppState>,
-    id: String,
-    paused: bool,
-) -> Result<(), String> {
-    let sm = state.session_manager.lock().await;
-    if let Some(session) = sm.get_session(&id).await {
-        session
-            .raw_paused
-            .store(paused, std::sync::atomic::Ordering::Relaxed);
-        log::debug!("pty_set_raw_paused: {} -> {}", id, paused);
-        Ok(())
-    } else {
-        Err(format!("Session {} not found", id))
-    }
-}
-
 /// Signal that a frontend listener has (re)subscribed to `pty:raw` for `id`.
 ///
 /// This is the explicit "someone is listening again" handshake, called by the
@@ -1120,24 +1160,63 @@ pub async fn pty_set_raw_paused(
 /// flush itself runs in the read loop, not here — `coalesce_buf` is owned by
 /// the read task, so the flag is the only IPC needed.
 ///
-/// Belt-and-suspenders: the remount path also calls `pty_set_raw_paused(id,
-/// false)` directly. This command exists so a session revived by *any* path
-/// (not just the remount branch) self-heals — closing the stuck-paused gap
-/// where a pane is dropped without remount and later re-shown. If the session
-/// was never paused, this is a no-op store(false) the loop already observed.
 #[tauri::command]
-pub async fn pty_attach_listener(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub async fn pty_attach_listener(
+    state: State<'_, AppState>,
+    id: String,
+    owner: String,
+    replace_current: Option<bool>,
+) -> Result<String, String> {
     validate_session_id(&id)?;
     let sm = state.session_manager.lock().await;
     if let Some(session) = sm.get_session(&id).await {
-        session
-            .raw_paused
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        log::debug!("pty_attach_listener: {} unpaused (listener attached)", id);
-        Ok(())
+        let generation = session
+            .attach_listener(owner, replace_current.unwrap_or(false))
+            .ok_or_else(|| "a newer listener is already attached".to_string())?;
+        log::debug!(
+            "pty_attach_listener: {} unpaused (listener generation {})",
+            id,
+            generation
+        );
+        Ok(generation.to_string())
     } else {
-        // Session may not exist yet on a brand-new spawn — not an error,
-        // a fresh session starts unpaused regardless.
-        Ok(())
+        // Session may not exist yet on a brand-new spawn. Return generation 0;
+        // the frontend retries after the spawn/read-loop boundary.
+        Ok("0".to_string())
+    }
+}
+
+/// Detach one frontend raw-output listener generation.
+///
+/// Only the currently active generation may pause raw output. This makes
+/// teardown ordering safe when a pane remounts while the old attach/detach IPC
+/// calls are still in flight.
+#[tauri::command]
+pub async fn pty_detach_listener(
+    state: State<'_, AppState>,
+    id: String,
+    owner: String,
+    generation: String,
+) -> Result<bool, String> {
+    validate_session_id(&id)?;
+    let generation = generation
+        .parse::<u64>()
+        .map_err(|_| "invalid listener generation".to_string())?;
+    let sm = state.session_manager.lock().await;
+    if let Some(session) = sm.get_session(&id).await {
+        let paused = if generation == 0 {
+            session.cancel_startup_pause(&owner)
+        } else {
+            session.detach_listener(&owner, generation)
+        };
+        log::debug!(
+            "pty_detach_listener: {} generation {} {}",
+            id,
+            generation,
+            if paused { "paused" } else { "stale" }
+        );
+        Ok(paused)
+    } else {
+        Ok(false)
     }
 }

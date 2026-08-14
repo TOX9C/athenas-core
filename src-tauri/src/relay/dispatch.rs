@@ -87,6 +87,18 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let out = commands::athena_chat(state, message).await?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
+        "athena_chat_stream" => {
+            let message = opts.req::<String>("message")?;
+            let session_id = opts.req::<String>("session_id")?;
+            let request_id = opts.req::<String>("request_id")?;
+            let out = commands::athena_chat_stream(state, message, session_id, request_id).await?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
+        "athena_cancel_stream" => {
+            let request_id = opts.req::<String>("request_id")?;
+            let out = commands::athena_cancel_stream(state, request_id)?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
         "athena_chat_with_session" => {
             let message = opts.req::<String>("message")?;
             let session_id = opts.req::<String>("session_id")?;
@@ -456,7 +468,19 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let shell = opts.req::<String>("shell")?;
             let cols = opts.opt::<Option<u16>>("cols")?;
             let rows = opts.opt::<Option<u16>>("rows")?;
-            commands::pty_spawn(state, id, cwd, shell, cols, rows).await?;
+            let start_paused = opts.opt::<Option<bool>>("start_paused")?;
+            let listener_owner = opts.opt::<Option<String>>("listener_owner")?;
+            commands::pty_spawn(
+                state,
+                id,
+                cwd,
+                shell,
+                cols,
+                rows,
+                start_paused,
+                listener_owner,
+            )
+            .await?;
             Ok(Value::Null)
         }
         "pty_write" => {
@@ -518,7 +542,20 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let agent_cmd = opts.req::<String>("agent_cmd")?;
             let cols = opts.opt::<Option<u16>>("cols")?;
             let rows = opts.opt::<Option<u16>>("rows")?;
-            commands::pty_spawn_agent(state, id, cwd, shell, agent_cmd, cols, rows).await?;
+            let start_paused = opts.opt::<Option<bool>>("start_paused")?;
+            let listener_owner = opts.opt::<Option<String>>("listener_owner")?;
+            commands::pty_spawn_agent(
+                state,
+                id,
+                cwd,
+                shell,
+                agent_cmd,
+                cols,
+                rows,
+                start_paused,
+                listener_owner,
+            )
+            .await?;
             Ok(Value::Null)
         }
         "pty_set_xterm" => {
@@ -527,16 +564,19 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             commands::pty_set_xterm(state, id, is_xterm).await?;
             Ok(Value::Null)
         }
-        "pty_set_raw_paused" => {
-            let id = opts.req::<String>("id")?;
-            let paused = opts.req::<bool>("paused")?;
-            commands::pty_set_raw_paused(state, id, paused).await?;
-            Ok(Value::Null)
-        }
         "pty_attach_listener" => {
             let id = opts.req::<String>("id")?;
-            commands::pty_attach_listener(state, id).await?;
-            Ok(Value::Null)
+            let owner = opts.req::<String>("owner")?;
+            let replace_current = opts.opt::<Option<bool>>("replace_current")?;
+            let out = commands::pty_attach_listener(state, id, owner, replace_current).await?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
+        "pty_detach_listener" => {
+            let id = opts.req::<String>("id")?;
+            let owner = opts.req::<String>("owner")?;
+            let generation = opts.req::<String>("generation")?;
+            let out = commands::pty_detach_listener(state, id, owner, generation).await?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "search_code" => {
             let pattern = opts.req::<String>("pattern")?;
@@ -644,9 +684,65 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let out = commands::test_llm_api_key(state)?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
+        "swarm_create" => {
+            let dir = opts.req::<String>("dir")?;
+            let swarm_state = opts.req::<String>("swarm_state")?;
+            let out = commands::swarm_create(state, dir, swarm_state).await?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
         "swarm_read_state" => {
             let dir = opts.req::<String>("dir")?;
             let out = commands::swarm_read_state(state, dir).await?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
+        "swarm_start_watch" => {
+            let dir = opts.req::<String>("dir")?;
+            commands::swarm_start_watch(state, dir).await?;
+            Ok(Value::Null)
+        }
+        "swarm_stop_watch" => {
+            let dir = opts.req::<String>("dir")?;
+            commands::swarm_stop_watch(state, dir)?;
+            Ok(Value::Null)
+        }
+        "swarm_update_agent" => {
+            let dir = opts.req::<String>("dir")?;
+            let agent_id = opts.req::<String>("agent_id")?;
+            let status = opts.opt::<Option<String>>("status")?;
+            let last_action = opts.opt::<Option<String>>("last_action")?;
+            let current_task = opts.opt::<Option<Option<String>>>("current_task")?;
+            let out = commands::swarm_update_agent(
+                state,
+                dir,
+                agent_id,
+                status,
+                last_action,
+                current_task,
+            )
+            .await?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
+        "swarm_set_status" => {
+            let dir = opts.req::<String>("dir")?;
+            let status = opts.req::<String>("status")?;
+            let out = commands::swarm_set_status(state, dir, status).await?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
+        "swarm_create_task" => {
+            let dir = opts.req::<String>("dir")?;
+            let title = opts.req::<String>("title")?;
+            let description = opts.req::<String>("description")?;
+            let assigned_agent_id = opts.req::<String>("assigned_agent_id")?;
+            let out =
+                commands::swarm_create_task(state, dir, title, description, assigned_agent_id)
+                    .await?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
+        "swarm_update_task" => {
+            let dir = opts.req::<String>("dir")?;
+            let task_id = opts.req::<String>("task_id")?;
+            let status = opts.req::<String>("status")?;
+            let out = commands::swarm_update_task(state, dir, task_id, status).await?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "swarm_send_message" => {
@@ -717,6 +813,8 @@ pub fn command_allowed(cmd: &str) -> bool {
         "agents_list"
             | "agent_get_status"
             | "athena_chat"
+            | "athena_chat_stream"
+            | "athena_cancel_stream"
             | "fs_read_file"
             | "fs_write_file"
             | "pty_write"
@@ -724,8 +822,8 @@ pub fn command_allowed(cmd: &str) -> bool {
             | "pty_resize"
             | "pty_kill"
             | "pty_set_xterm"
-            | "pty_set_raw_paused"
             | "pty_attach_listener"
+            | "pty_detach_listener"
             | "store_set"
             | "agent_comms_sessions"
             | "kanban_get_tasks"
@@ -816,13 +914,15 @@ mod tests {
             "output_buffer_get",
             "pty_write",
             "pty_set_xterm",
-            "pty_set_raw_paused",
             "pty_attach_listener",
             "athena_chat",
             "fs_read_file",
             "fs_write_file",
         ] {
-            assert!(command_allowed(command), "expected mobile command: {command}");
+            assert!(
+                command_allowed(command),
+                "expected mobile command: {command}"
+            );
         }
     }
 
@@ -846,15 +946,30 @@ mod tests {
     }
 
     #[test]
-    fn mobile_allowlist_rejects_secrets_and_desktop_controls() {
+    fn mobile_allowlist_rejects_secrets_desktop_controls_and_browser() {
+        // Browser child-WebView commands stay desktop-only. Exposing them over
+        // the LAN would let a paired phone create arbitrary native webviews,
+        // move them over the desktop window, or drive a different URL policy
+        // than the local UI. The dispatch arms remain available for the desktop
+        // relay plumbing, but this allowlist is the security gate.
         for command in [
             "store_api_key",
             "clear_api_key",
             "window_close",
             "fs_show_open_dialog",
             "plugin_set_config",
+            "browser_show",
+            "browser_hide",
+            "browser_navigate",
+            "browser_back",
+            "browser_forward",
+            "browser_reload",
+            "browser_set_bounds",
         ] {
-            assert!(!command_allowed(command), "unexpected mobile command: {command}");
+            assert!(
+                !command_allowed(command),
+                "unexpected mobile command: {command}"
+            );
         }
     }
 

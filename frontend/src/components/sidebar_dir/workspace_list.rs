@@ -37,7 +37,10 @@ pub fn WorkspaceList() -> Element {
                         let space_id = space.id.clone();
                         let space_id_close = space.id.clone();
                         let space_name = space.name.clone();
-                        // Live agent counts: [working][total][attention].
+                        // Live agent counts. The sidebar only surfaces non-zero
+                        // working and attention indicators; total is kept by the
+                        // helper for presence detection but is intentionally not
+                        // rendered as a redundant badge.
                         let counts: SpaceCounts =
                             count_space_agents(&space.panes, &agent_status.read().statuses);
 
@@ -45,7 +48,7 @@ pub fn WorkspaceList() -> Element {
                             div {
                                 key: "{space_id}",
                                 class: "workspace-row",
-                                style: "display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; background: {bg}; transition: background var(--dur-fast) var(--ease);",
+                                style: "display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 0; cursor: pointer; background: {bg}; transition: background var(--dur-fast) var(--ease);",
                                 onclick: move |_| {
                                     workspace_state.write().set_active_space(&space_id);
                                 },
@@ -65,24 +68,14 @@ pub fn WorkspaceList() -> Element {
                                     "{space_name}"
                                 }
 
-                                // Agent count badges — working LEFT of total,
-                                // attention rightmost (amber, pulsing).
                                 if counts.working > 0 {
                                     span {
                                         class: "badge",
                                         style: "color: var(--accent);",
                                         title: "{counts.working} agent(s) working",
+                                        "aria-label": "Agents working",
                                         span { class: "status-dot is-working" }
                                         "{counts.working}"
-                                    }
-                                }
-
-                                if counts.total > 0 {
-                                    span {
-                                        class: "badge",
-                                        style: "color: var(--textDim);",
-                                        title: "{counts.total} agent(s)",
-                                        "{counts.total}"
                                     }
                                 }
 

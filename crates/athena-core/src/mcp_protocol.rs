@@ -109,9 +109,15 @@ pub struct ToolDefinition {
     pub input_schema: ToolSchema,
 }
 
-/// Build the standard set of MCP tools exposed by the Athena orchestrator.
+/// Build the MCP tools that are executable through the external transport.
+///
+/// The historical protocol also contained agent-reporting tools that belong to
+/// the dedicated agent-comms channel, not this request/response executor. They
+/// are intentionally omitted here until they have a real MCP implementation;
+/// advertising a tool that returns a placeholder is worse than a smaller,
+/// accurate discovery result.
 pub fn get_tools() -> Vec<ToolDefinition> {
-    vec![
+    let tools = vec![
         ToolDefinition {
             name: "create_tasks".into(),
             description: "Add new tasks to the Kanban board.".into(),
@@ -162,10 +168,9 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                 type_: "object".into(),
                 properties: serde_json::json!({
                     "count": { "type": "number" },
-                    "cwd": { "type": "string" },
                     "instruction": { "type": "string" }
                 }),
-                required: Some(vec!["count".into(), "cwd".into()]),
+                required: Some(vec!["count".into()]),
             },
         },
         ToolDefinition {
@@ -298,7 +303,55 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                 required: Some(vec!["pattern".into(), "path".into()]),
             },
         },
-    ]
+    ];
+
+    let mut exposed: Vec<_> = tools
+        .into_iter()
+        .filter(|tool| {
+            matches!(
+                tool.name.as_str(),
+                "create_tasks"
+                    | "get_next_task"
+                    | "update_task_status"
+                    | "spawn_agents"
+                    | "get_output"
+                    | "list_agent_panes"
+                    | "code_search"
+                    | "search_files"
+            )
+        })
+        .collect();
+
+    // Keep the canonical executor schema as the source of truth for the
+    // modern names. The legacy aliases above remain for existing clients.
+    for tool in crate::tool_schema::orchestrator_tools() {
+        let input_schema = tool.input_schema;
+        exposed.push(ToolDefinition {
+            name: tool.name,
+            description: tool.description,
+            input_schema: ToolSchema {
+                type_: input_schema
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("object")
+                    .to_string(),
+                properties: input_schema
+                    .get("properties")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+                required: input_schema.get("required").and_then(|value| {
+                    value.as_array().map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string))
+                            .collect()
+                    })
+                }),
+            },
+        });
+    }
+
+    exposed
 }
 
 // ---------------------------------------------------------------------------

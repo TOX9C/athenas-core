@@ -78,7 +78,7 @@ fn enqueue_input(
                 *draining.borrow_mut() = false;
                 return;
             }
-        
+
             let next = queue.borrow_mut().pop_front();
             let Some(data) = next else {
                 *draining.borrow_mut() = false;
@@ -93,14 +93,21 @@ fn enqueue_input(
     });
 }
 
+/// Owns the JavaScript callbacks and observer resources for one mobile
+/// terminal mount. The underscore-prefixed callback fields are intentionally
+/// retained even though Rust never reads them: xterm.js stores the callbacks
+/// as JS references, but this struct is the lifetime root that guarantees they
+/// remain callable until `term.dispose()` and observer disconnect complete.
 struct MobileXtermCleanup {
     term: JsValue,
     unlisten: Option<Box<dyn FnOnce()>>,
-    on_data: JsValue,
-    on_resize: JsValue,
+    _on_data: JsValue,
+    _on_resize: JsValue,
     resize_observer: Option<JsValue>,
-    resize_callback: Option<Closure<dyn FnMut()>>,
-    active: Rc<RefCell<bool>>,
+    /// Keep the ResizeObserver callback rooted for as long as the observer
+    /// is connected; dropping it early would silently disable resize handling.
+    _resize_callback: Option<Closure<dyn FnMut()>>,
+    listener_generation: Option<Rc<RefCell<Option<u64>>>>,
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -115,6 +122,9 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
     let mount_id = format!("mobile-xterm-{}", pane_id);
     let cwd = props.cwd.clone();
     let pane_id_for_drop = pane_id.clone();
+    let listener_owner: Rc<String> =
+        use_hook(|| Rc::new(format!("mobile:{}", js_sys::Math::random())));
+    let listener_owner_for_effect = listener_owner.clone();
     let mount_id_for_effect = mount_id.clone();
     let mut cleanup = use_signal(|| Option::<MobileXtermCleanup>::None);
     let mounted = use_hook(|| Rc::new(RefCell::new(false)));
@@ -153,6 +163,7 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
         let container_for_task = container.clone();
         let mut cleanup = cleanup;
 
+        let listener_owner_for_task = listener_owner_for_effect.clone();
         wasm_bindgen_futures::spawn_local(async move {
             if !*active_for_task.borrow() {
                 return;
@@ -169,6 +180,8 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                     &shell,
                     100,
                     28,
+                    true,
+                    Some(listener_owner_for_task.as_str()),
                 )
                 .await
                 {
@@ -196,25 +209,24 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                 })
                 .filter(|text| !text.is_empty());
 
-            // Stop the PTY read loop from emitting while the xterm listener is
-            // installed. The attach call below resumes it after the snapshot
-            // is written, closing the bootstrap gap without polling.
-            // The relay exposes these lifecycle commands as part of the
-            // authenticated xterm attachment handshake. If either call fails,
-            // do not leave the PTY paused.
-            if tauri_bridge::pty_set_raw_paused(&pane_id_for_task, true).await.is_err()
-                || tauri_bridge::pty_set_xterm(&pane_id_for_task, true).await.is_err()
+            // Mark the session xterm-managed before installing the raw
+            // listener. Listener output is resumed by the generation lease
+            // immediately after subscription; unlike the old unscoped pause
+            // command, teardown cannot pause a newer mobile mount.
+            if tauri_bridge::pty_set_xterm(&pane_id_for_task, true)
+                .await
+                .is_ok()
             {
-                let _ = tauri_bridge::pty_set_raw_paused(&pane_id_for_task, false).await;
+                // continue with terminal setup
+            } else {
                 return;
             }
 
-            let Some(term_ctor) = js_sys::Reflect::get(
-                &window_for_task,
-                &JsValue::from_str("Terminal"),
-            )
-            .ok()
-            .and_then(|value| value.dyn_into::<js_sys::Function>().ok()) else {
+            let Some(term_ctor) =
+                js_sys::Reflect::get(&window_for_task, &JsValue::from_str("Terminal"))
+                    .ok()
+                    .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+            else {
                 web_sys::console::error_1(&"[mobile xterm] Terminal global missing".into());
                 return;
             };
@@ -226,7 +238,10 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             set("cursorBlink", JsValue::from_bool(true));
             set("convertEol", JsValue::from_bool(false));
             set("scrollback", JsValue::from_f64(10000.0));
-            set("fontFamily", JsValue::from_str("'JetBrains Mono', monospace"));
+            set(
+                "fontFamily",
+                JsValue::from_str("'JetBrains Mono', monospace"),
+            );
             set("fontSize", JsValue::from_f64(13.0));
             set("theme", {
                 let theme = js_sys::Object::new();
@@ -275,30 +290,100 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             }
 
             if !*active_for_task.borrow() {
+                let pane_for_cancel = pane_id_for_task.clone();
+                let owner_for_cancel = listener_owner_for_task.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = tauri_bridge::pty_detach_listener(
+                        &pane_for_cancel,
+                        owner_for_cancel.as_str(),
+                        0,
+                    )
+                    .await;
+                });
                 return;
             }
 
             let term_for_output = term.clone();
             let active_for_output = active_for_task.clone();
-            let unlisten = match tauri_bridge::pty_listen_raw(
-                &pane_id_for_task,
-                move |bytes: Vec<u8>| {
+            let unlisten =
+                match tauri_bridge::pty_listen_raw(&pane_id_for_task, move |bytes: Vec<u8>| {
                     if *active_for_output.borrow() {
                         write_bytes(&term_for_output, &bytes);
                     }
-                },
-            ) {
-                Ok(unlisten) => unlisten,
-                Err(error) => {
-                    web_sys::console::error_1(
-                        &format!("[mobile xterm] raw listener failed: {error}").into(),
-                    );
-                    return;
-                }
-            };
+                }) {
+                    Ok(unlisten) => unlisten,
+                    Err(error) => {
+                        web_sys::console::error_1(
+                            &format!("[mobile xterm] raw listener failed: {error}").into(),
+                        );
+                        let pane_for_cancel = pane_id_for_task.clone();
+                        let owner_for_cancel = listener_owner_for_task.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ = tauri_bridge::pty_detach_listener(
+                                &pane_for_cancel,
+                                owner_for_cancel.as_str(),
+                                0,
+                            )
+                            .await;
+                        });
+                        return;
+                    }
+                };
+            let listener_generation = Rc::new(RefCell::new(None));
+            let listener_owner_for_attach = listener_owner_for_task.clone();
             let pane_for_attach = pane_id_for_task.clone();
+            let generation_for_attach = listener_generation.clone();
+            let active_for_attach = active_for_task.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = tauri_bridge::pty_attach_listener(&pane_for_attach).await;
+                for attempt in 0..4 {
+                    if !*active_for_attach.borrow() {
+                        return;
+                    }
+                    match tauri_bridge::pty_attach_listener(
+                        &pane_for_attach,
+                        listener_owner_for_attach.as_str(),
+                        has_session,
+                    )
+                    .await
+                    {
+                        Ok(generation) if generation != 0 => {
+                            *generation_for_attach.borrow_mut() = Some(generation);
+                            if !*active_for_attach.borrow() {
+                                let _ = tauri_bridge::pty_detach_listener(
+                                    &pane_for_attach,
+                                    listener_owner_for_attach.as_str(),
+                                    generation,
+                                )
+                                .await;
+                            }
+                            return;
+                        }
+                        Ok(_) if attempt < 3 => {
+                            gloo::timers::future::TimeoutFuture::new(25).await;
+                        }
+                        Ok(_) => {
+                            let _ = tauri_bridge::pty_detach_listener(
+                                &pane_for_attach,
+                                listener_owner_for_attach.as_str(),
+                                0,
+                            )
+                            .await;
+                            return;
+                        }
+                        Err(_) if attempt < 3 => {
+                            gloo::timers::future::TimeoutFuture::new(25).await;
+                        }
+                        Err(_) => {
+                            let _ = tauri_bridge::pty_detach_listener(
+                                &pane_for_attach,
+                                listener_owner_for_attach.as_str(),
+                                0,
+                            )
+                            .await;
+                            return;
+                        }
+                    }
+                }
             });
 
             let input_queue = Rc::new(RefCell::new(VecDeque::<String>::new()));
@@ -349,19 +434,23 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             let mut resize_callback = None;
             if let Some(addon) = fit_addon {
                 let fit_for_resize = addon.clone();
-                let callback = Closure::wrap(Box::new(move || fit(&fit_for_resize)) as Box<dyn FnMut()>);
-                let observer = js_sys::Reflect::get(
-                    &window_for_task,
-                    &JsValue::from_str("ResizeObserver"),
-                )
-                .ok()
-                .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
-                .and_then(|ctor| {
-                    js_sys::Reflect::construct(&ctor, &js_sys::Array::of1(callback.as_ref())).ok()
-                });
+                let callback =
+                    Closure::wrap(Box::new(move || fit(&fit_for_resize)) as Box<dyn FnMut()>);
+                let observer =
+                    js_sys::Reflect::get(&window_for_task, &JsValue::from_str("ResizeObserver"))
+                        .ok()
+                        .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+                        .and_then(|ctor| {
+                            js_sys::Reflect::construct(
+                                &ctor,
+                                &js_sys::Array::of1(callback.as_ref()),
+                            )
+                            .ok()
+                        });
                 if let Some(observer) = observer {
-                    if let Ok(observe) = js_sys::Reflect::get(&observer, &JsValue::from_str("observe"))
-                        .and_then(|value| value.dyn_into::<js_sys::Function>())
+                    if let Ok(observe) =
+                        js_sys::Reflect::get(&observer, &JsValue::from_str("observe"))
+                            .and_then(|value| value.dyn_into::<js_sys::Function>())
                     {
                         let _ = observe.call1(&observer, container_for_task.as_ref());
                         resize_observer = Some(observer);
@@ -373,30 +462,41 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             cleanup.set(Some(MobileXtermCleanup {
                 term,
                 unlisten: Some(unlisten),
-                on_data: on_data_js,
-                on_resize: on_resize_js,
+                _on_data: on_data_js,
+                _on_resize: on_resize_js,
                 resize_observer,
-                resize_callback,
-                active: active_for_task,
+                _resize_callback: resize_callback,
+                listener_generation: Some(listener_generation),
             }));
         });
     });
 
     use_drop(move || {
         *active_for_drop.borrow_mut() = false;
-        let pane_for_pause = pane_id_for_drop.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            // Pause before removing the listener. A following mount performs
-            // the attach handshake after it has installed its listener.
-            let _ = tauri_bridge::pty_set_raw_paused(&pane_for_pause, true).await;
-        });
         if let Some(mut mounted) = cleanup.take() {
+            let generation = mounted
+                .listener_generation
+                .as_ref()
+                .and_then(|generation| *generation.borrow())
+                .unwrap_or(0);
+            let pane_for_detach = pane_id_for_drop.clone();
+            let owner_for_detach = listener_owner.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = tauri_bridge::pty_detach_listener(
+                    &pane_for_detach,
+                    owner_for_detach.as_str(),
+                    generation,
+                )
+                .await;
+            });
+
             if let Some(unlisten) = mounted.unlisten.take() {
                 unlisten();
             }
             if let Some(observer) = mounted.resize_observer.take() {
-                if let Ok(disconnect) = js_sys::Reflect::get(&observer, &JsValue::from_str("disconnect"))
-                    .and_then(|value| value.dyn_into::<js_sys::Function>())
+                if let Ok(disconnect) =
+                    js_sys::Reflect::get(&observer, &JsValue::from_str("disconnect"))
+                        .and_then(|value| value.dyn_into::<js_sys::Function>())
                 {
                     let _ = disconnect.call0(&observer);
                 }
@@ -406,6 +506,20 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             {
                 let _ = dispose.call0(&mounted.term);
             }
+        } else {
+            // The mount may be dropped before xterm setup stores cleanup.
+            // Cancel the generation-zero startup lease so a delayed attach
+            // from this abandoned owner cannot claim a replacement PTY.
+            let pane_for_cancel = pane_id_for_drop.clone();
+            let owner_for_cancel = listener_owner.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = tauri_bridge::pty_detach_listener(
+                    &pane_for_cancel,
+                    owner_for_cancel.as_str(),
+                    0,
+                )
+                .await;
+            });
         }
     });
 

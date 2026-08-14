@@ -123,5 +123,7 @@ async fn mcp_requires_initialize_before_tool_call() {
     assert_eq!(err.code, -32600, "Expected error -32600 on new connection");
     assert!(err.message.contains("Unauthenticated"));
 
+    server.request_shutdown();
+    assert!(server.wait_for_tcp_shutdown().await);
     server.shutdown();
 }

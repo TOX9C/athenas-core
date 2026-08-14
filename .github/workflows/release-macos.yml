@@ -1,0 +1,211 @@
+name: macOS Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the verified DMG to the GitHub release'
+        required: true
+        default: false
+        type: boolean
+      version:
+        description: 'Version to build for a manual dispatch (for example 0.3.0)'
+        required: true
+        default: '0.3.0'
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+  APPLE_ID: ${{ secrets.APPLE_ID }}
+  APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+  APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+jobs:
+  release:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout release revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --version 0.7.9 --locked
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version 2.11.1 --locked
+
+      - name: Install Cargo audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release identity
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            test "$(git describe --tags --exact-match)" = "${GITHUB_REF_NAME}"
+            expected_version="${GITHUB_REF_NAME#v}"
+          else
+            expected_version="${{ inputs.version }}"
+            if [ "${{ inputs.publish }}" = "true" ]; then
+              test "$(git describe --tags --exact-match)" = "v${expected_version}"
+            fi
+          fi
+          test -n "$expected_version"
+          printf 'RELEASE_VERSION=%s\n' "$expected_version" >> "$GITHUB_ENV"
+          RELEASE_VERSION="$expected_version" node scripts/check-release-identity.mjs
+          node - <<'NODE'
+          const fs = require('node:fs')
+          const expected = process.env.RELEASE_VERSION
+          const packageVersion = require('./package.json').version
+          const tauriVersion = require('./src-tauri/tauri.conf.json').version
+          const cargoVersions = [
+            fs.readFileSync('./frontend/Cargo.toml', 'utf8'),
+            fs.readFileSync('./src-tauri/Cargo.toml', 'utf8'),
+          ].map(text => text.match(/^version\s*=\s*"([^"]+)"/m)?.[1])
+          if ([packageVersion, tauriVersion, ...cargoVersions].some(version => version !== expected)) {
+            throw new Error(`release version mismatch: expected ${expected}`)
+          }
+          NODE
+
+      - name: Run release checks
+        run: |
+          cargo check --workspace
+          cargo audit
+          # Informational warnings are captured, but compiler/command failures
+          # remain blocking. The generated baseline is uploaded with the run.
+          node scripts/run-clippy-baseline.mjs
+          rustfmt --edition 2021 --check crates/athena-core/src/mcp_transport.rs
+          bash frontend/build-dist.sh
+          npm test
+          npm run test:mcp
+          npm run test:release-scripts
+          npm run check:release-identity
+          npm run check:release-docs
+          npm run lint
+          npm audit --omit=dev --audit-level=high
+          node scripts/check-tauri-command-drift.mjs
+          node scripts/check-tauri-permission-drift.mjs
+          node scripts/check-plugin-integration.mjs
+          cargo test --workspace --exclude athenas-core
+
+      - name: Require signing credentials for release publication
+        if: ${{ github.event_name == 'push' && env.APPLE_SIGNING_IDENTITY == '' }}
+        run: |
+          echo 'Refusing to process a public tag without Apple signing credentials.' >&2
+          exit 1
+
+      - name: Build unsigned DMG for internal workflow dispatch only
+        if: ${{ github.event_name == 'workflow_dispatch' && env.APPLE_SIGNING_IDENTITY == '' }}
+        run: cargo tauri build --bundles dmg
+
+      - name: Build signed, notarized, and stapled DMG
+        if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_CERTIFICATE"
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
+
+          keychain_path="$RUNNER_TEMP/build.keychain-db"
+          certificate_path="$RUNNER_TEMP/certificate.p12"
+          previous_keychain=$(security default-keychain | tr -d '"')
+          cleanup() {
+            if [ -n "$previous_keychain" ]; then
+              security default-keychain -s "$previous_keychain" >/dev/null 2>&1 || true
+            fi
+            security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+            rm -f "$certificate_path"
+          }
+          trap cleanup EXIT
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$RUNNER_TEMP" "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          security unlock-keychain -p "$RUNNER_TEMP" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$RUNNER_TEMP" "$keychain_path"
+          identities=$(security find-identity -v -p codesigning "$keychain_path")
+          printf '%s\n' "$identities"
+          printf '%s\n' "$identities" | grep -F "\"$APPLE_SIGNING_IDENTITY\"" >/dev/null
+
+          # Tauri uses APPLE_SIGNING_IDENTITY for Developer ID signing and
+          # APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID for notarytool submission
+          # and stapling. Keep this in one build step so the exact artifact
+          # later verified is the notarized artifact produced by Tauri.
+          cargo tauri build --bundles dmg
+
+      - name: Locate DMG
+        id: artifact
+        run: |
+          dmg=$(find target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -n "$dmg"
+          echo "path=$dmg" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$dmg")" >> "$GITHUB_OUTPUT"
+
+      - name: Verify DMG integrity and checksum
+        run: |
+          expected="Athena's Core_${RELEASE_VERSION}_aarch64.dmg"
+          shasum -a 256 "${{ steps.artifact.outputs.path }}" > "${{ steps.artifact.outputs.path }}.sha256"
+          node scripts/verify-macos-artifact.mjs \
+            --artifact "${{ steps.artifact.outputs.path }}" \
+            --expected-name "$expected" \
+            --sha256 "${{ steps.artifact.outputs.path }}.sha256"
+
+      - name: Verify signed artifact
+        if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          expected="Athena's Core_${RELEASE_VERSION}_aarch64.dmg"
+          node scripts/verify-macos-artifact.mjs \
+            --artifact "${{ steps.artifact.outputs.path }}" \
+            --expected-name "$expected" \
+            --sha256 "${{ steps.artifact.outputs.path }}.sha256" \
+            --require-signing \
+            --require-notarization
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: athena-macos-${{ github.ref_name }}
+          path: |
+            clippy-baseline.log
+            ${{ steps.artifact.outputs.path }}
+            ${{ steps.artifact.outputs.path }}.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        # Never publish an unsigned DMG. Unsigned tag builds remain available
+        # as CI artifacts for internal testing, but public distribution requires
+        # the signing/notarization branch above to have run successfully.
+        if: ${{ env.APPLE_SIGNING_IDENTITY != '' && (github.event_name == 'push' || inputs.publish == true) }}
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
+          files: |
+            ${{ steps.artifact.outputs.path }}
+            ${{ steps.artifact.outputs.path }}.sha256

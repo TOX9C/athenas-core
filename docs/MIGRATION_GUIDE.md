@@ -8,21 +8,21 @@ The Tauri app reads from the **same data directory** as the Electron app. No man
 
 ### Data Directory Locations
 
-| Platform | Path |
-|----------|------|
-| macOS | `~/Library/Application Support/athenas-core/` |
-| Linux | `~/.config/athenas-core/` |
-| Windows | `%APPDATA%\athenas-core\` |
+| Platform | Path                                          |
+| -------- | --------------------------------------------- |
+| macOS    | `~/Library/Application Support/athenas-core/` |
+| Linux    | `~/.config/athenas-core/`                     |
+| Windows  | `%APPDATA%\athenas-core\`                     |
 
 ### What Migrates Automatically
 
-| Data Type | Format | Compatibility |
-|-----------|--------|---------------|
-| Settings (theme, provider, API key) | `config.json` (electron-store) | ✅ Full — `KeyValueStore` reads the same JSON format |
-| Chat sessions | `sessions/` directory | ✅ Full — `SessionStore` uses the same file structure |
-| Kanban tasks | `tasks/` in store | ✅ Full — stored in the same key-value format |
-| Plugin configurations | `plugins/` in store | ✅ Full — same plugin manifest format |
-| Swarm state | `.swarm/` directory | ✅ Full — file-based message passing is unchanged |
+| Data Type                           | Format                         | Compatibility                                         |
+| ----------------------------------- | ------------------------------ | ----------------------------------------------------- |
+| Settings (theme, provider, API key) | `config.json` (electron-store) | ✅ Full — `KeyValueStore` reads the same JSON format  |
+| Chat sessions                       | `sessions/` directory          | ✅ Full — `SessionStore` uses the same file structure |
+| Kanban tasks                        | `tasks/` in store              | ✅ Full — stored in the same key-value format         |
+| Plugin configurations               | `plugins/` in store            | ✅ Full — same plugin manifest format                 |
+| Swarm state                         | `.swarm/` directory            | ✅ Full — file-based message passing is unchanged     |
 
 ### API Key Migration
 
@@ -40,61 +40,61 @@ You can manually verify your key was stored securely:
 
 ## Feature Parity Matrix
 
-| Feature | Electron | Tauri | Notes |
-|---------|----------|-------|-------|
-| Terminal (PTY) | ✅ | ✅ | Same `node-pty` → `portable-pty` behavior |
-| Athena AI Chat | ✅ | ✅ | Multi-provider (Anthropic, OpenAI, NVIDIA, LM Studio) |
-| MCP Server | ✅ | ✅ | Port 4545, same 14 tools |
-| Agent Comms | ✅ | ✅ | Port 4546, same protocol |
-| Kanban Board | ✅ | ✅ | Full task management via MCP |
-| Swarm | ✅ | ✅ | File-based multi-agent coordination |
-| Plugin System | ✅ | ✅ | Event bus, session management |
-| Notifications | ✅ | ✅ | Bell, panel, toast |
-| Command Palette | ✅ | ✅ | Same shortcuts |
-| Settings | ✅ | ✅ | Theme picker, provider config |
-| File Tree | ✅ | ✅ | With directory listing |
-| Workspace Tabs | ✅ | ✅ | Multi-space support |
-| Status Bar | ✅ | ✅ | Workspace, pane count, theme |
-| Keyboard Shortcuts | ✅ | ⚠️ | Core shortcuts work; see "Known Differences" |
-| Editor Panel | ✅ Syntax highlighting | ⚠️ Read-only text view | Syntax highlighting coming in Phase 3 |
-| Browser Panel | ✅ Embedded webview | ⚠️ Toolbar works, iframe pending | Embedded browser coming in Phase 3 |
-| Window Controls | ✅ | ✅ | macOS traffic lights, Windows controls |
-| Auto-update | ✅ | ✅ | Via `tauri-plugin-updater` |
-| Right Sidebar | ✅ | ✅ | Details, Browser, Output, Assistant tabs |
-| Sidebar Sections | ✅ | ✅ | Spaces, Files, Agents, Plugins |
-| Theme System | ✅ 7+ themes | ⚠️ Theme definitions exist | CSS variable switching in progress |
-| Font Selection | ✅ | ⚠️ | Font picker coming in Phase 2 |
+| Feature            | Electron                  | Tauri                      | Notes                                                                                                  |
+| ------------------ | ------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Terminal (PTY)     | ✅                        | ✅                         | Same `node-pty` → `portable-pty` behavior                                                              |
+| Athena AI Chat     | ✅                        | ✅                         | Multi-provider (Anthropic, OpenAI, NVIDIA, LM Studio)                                                  |
+| MCP Server         | ✅                        | ✅                         | Port 4545, executor-backed tools plus legacy aliases; clients should use `tools/list` for the live set |
+| Agent Comms        | ✅                        | ✅                         | Port 4546, same protocol                                                                               |
+| Kanban Board       | ✅                        | ✅                         | Full task management via MCP                                                                           |
+| Swarm              | ✅                        | ✅                         | File-based multi-agent coordination                                                                    |
+| Plugin System      | ✅                        | ✅                         | Event bus, session management                                                                          |
+| Notifications      | ✅                        | ✅                         | Bell, panel, toast                                                                                     |
+| Command Palette    | ✅                        | ✅                         | Same shortcuts                                                                                         |
+| Settings           | ✅                        | ✅                         | Theme picker, provider config                                                                          |
+| File Tree          | ✅                        | ✅                         | With directory listing                                                                                 |
+| Workspace Tabs     | ✅                        | ✅                         | Multi-space support                                                                                    |
+| Status Bar         | ✅                        | ✅                         | Workspace, pane count, theme                                                                           |
+| Keyboard Shortcuts | ✅                        | ⚠️                         | Core shortcuts work; see "Known Differences"                                                           |
+| Editor Panel       | ✅ Syntax highlighting    | ⚠️ Read-only text view     | Syntax highlighting coming in Phase 3                                                                  |
+| Browser Panel      | ✅ Embedded child webview | ✅ Native child WebView    | Uses an HTTP(S)-only Tauri child WebView; toolbar and native page state are synchronized               |
+| Window Controls    | ✅                        | ✅                         | macOS traffic lights, Windows controls                                                                 |
+| Auto-update        | ✅                        | ⚠️ Deferred                | No in-app updater is shipped; use the signed DMG/manual update runbook                                 |
+| Right Sidebar      | ✅                        | ✅                         | Details, Browser, Output, Assistant tabs                                                               |
+| Sidebar Sections   | ✅                        | ✅                         | Spaces, Files, Agents, Plugins                                                                         |
+| Theme System       | ✅ 7+ themes              | ⚠️ Theme definitions exist | CSS variable switching in progress                                                                     |
+| Font Selection     | ✅                        | ⚠️                         | Font picker coming in Phase 2                                                                          |
 
 ## Known Differences
 
 ### Keyboard Shortcuts
 
-| Shortcut | Electron | Tauri | Status |
-|----------|----------|-------|--------|
-| Cmd+T | New workspace | New workspace | ✅ |
-| Cmd+K | Command palette | Command palette | ✅ |
-| Cmd+J | Toggle Athena | Toggle Athena | ✅ |
-| Cmd+B | Toggle sidebar | Toggle sidebar | ✅ |
-| Cmd+Shift+P | Command palette | Command palette | ✅ |
-| Cmd+Shift+S | Settings | Settings | ✅ |
-| Cmd+1-4 | Switch panel | Switch panel | ✅ |
-| Cmd+W | Close tab | Close tab | ⚠️ Implemented |
-| Cmd+P | Quick open | Command palette | ⚠️ Opens palette |
-| Cmd+E | Toggle editor | Toggle editor | ⚠️ Implemented |
-| Cmd+\ | Toggle right sidebar | Toggle right sidebar | ⚠️ Implemented |
-| Cmd+Shift+R | Reset layout | Reset layout | ⚠️ Implemented |
-| Cmd+, | Settings | Settings | ⚠️ Implemented |
-| Escape | Close modals | Close modals | ✅ |
-| Cmd+1-9 | Switch workspace | Switch workspace 1-4 | ⚠️ Only 1-4 |
+| Shortcut    | Electron             | Tauri                | Status           |
+| ----------- | -------------------- | -------------------- | ---------------- |
+| Cmd+T       | New workspace        | New workspace        | ✅               |
+| Cmd+K       | Command palette      | Command palette      | ✅               |
+| Cmd+J       | Toggle Athena        | Toggle Athena        | ✅               |
+| Cmd+B       | Toggle sidebar       | Toggle sidebar       | ✅               |
+| Cmd+Shift+P | Command palette      | Command palette      | ✅               |
+| Cmd+Shift+S | Settings             | Settings             | ✅               |
+| Cmd+1-4     | Switch panel         | Switch panel         | ✅               |
+| Cmd+W       | Close tab            | Close tab            | ⚠️ Implemented   |
+| Cmd+P       | Quick open           | Command palette      | ⚠️ Opens palette |
+| Cmd+E       | Toggle editor        | Toggle editor        | ⚠️ Implemented   |
+| Cmd+\       | Toggle right sidebar | Toggle right sidebar | ⚠️ Implemented   |
+| Cmd+Shift+R | Reset layout         | Reset layout         | ⚠️ Implemented   |
+| Cmd+,       | Settings             | Settings             | ⚠️ Implemented   |
+| Escape      | Close modals         | Close modals         | ✅               |
+| Cmd+1-9     | Switch workspace     | Switch workspace 1-4 | ⚠️ Only 1-4      |
 
 ### Performance Differences
 
-| Metric | Electron | Tauri | Improvement |
-|--------|----------|-------|-------------|
-| Binary size | ~150MB | ~15MB | 10x smaller |
-| Memory at idle | ~400MB | ~200MB | 2x less |
-| Startup time | ~3s | ~1s | 3x faster |
-| PTY throughput | Good | Excellent | Native Rust |
+| Metric         | Electron | Tauri     | Improvement |
+| -------------- | -------- | --------- | ----------- |
+| Binary size    | ~150MB   | ~15MB     | 10x smaller |
+| Memory at idle | ~400MB   | ~200MB    | 2x less     |
+| Startup time   | ~3s      | ~1s       | 3x faster   |
+| PTY throughput | Good     | Excellent | Native Rust |
 
 ### UI Differences
 
@@ -109,6 +109,7 @@ You can manually verify your key was stored securely:
 **Symptom:** The app crashes immediately on launch.
 
 **Solutions:**
+
 1. Check that Rust runtime dependencies are installed (WebView2 on Windows, WebKitGTK on Linux)
 2. Delete the config file and restart — corrupted settings can cause crashes:
    ```bash
@@ -123,6 +124,7 @@ You can manually verify your key was stored securely:
 **Symptom:** Terminal panes show but no shell prompt appears.
 
 **Solutions:**
+
 1. Check your default shell is installed: `echo $SHELL`
 2. Try setting an explicit shell in Settings
 3. Check terminal logs: `log::info!` output goes to the system console
@@ -132,6 +134,7 @@ You can manually verify your key was stored securely:
 **Symptom:** Sending a message shows no response or an error.
 
 **Solutions:**
+
 1. Verify your API key is set in Settings
 2. Check the provider is correctly selected
 3. For LM Studio: ensure LM Studio is running on the configured URL
@@ -142,6 +145,7 @@ You can manually verify your key was stored securely:
 **Symptom:** Agents cannot connect to the MCP server.
 
 **Solutions:**
+
 1. Verify port 4545 is not in use: `lsof -i :4545`
 2. Check the MCP token matches between the app and agent
 3. Ensure the agent is connecting to `127.0.0.1:4545` (not `localhost` which may resolve to IPv6)
@@ -151,6 +155,7 @@ You can manually verify your key was stored securely:
 **Symptom:** Settings reset after closing and reopening the app.
 
 **Solutions:**
+
 1. Check write permissions on the data directory
 2. Verify the `KeyValueStore` is writing to the correct path
 3. Check for errors in the system console
@@ -160,6 +165,7 @@ You can manually verify your key was stored securely:
 **Symptom:** A plugin that worked in Electron doesn't appear.
 
 **Solutions:**
+
 1. Plugin manifests must be valid JSON — check for syntax errors
 2. Plugin directories are scanned at startup — restart the app after adding plugins
 3. Check plugin logs in the system console
@@ -169,6 +175,7 @@ You can manually verify your key was stored securely:
 **Symptom:** The app doesn't see your existing settings/sessions.
 
 **Solutions:**
+
 1. Verify the data directory path matches the Electron app's path
 2. Tauri uses the same `app.getPath('userData')` equivalent as Electron
 3. If you used a custom data directory in Electron, set the `ATHENA_DATA_DIR` environment variable

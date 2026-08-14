@@ -13,8 +13,10 @@
 //! it builds a dedicated tokio runtime, binds `0.0.0.0:8787`, and stores the
 //! runtime + a shutdown signal in a process-global [`RelayState`]. Dropping the
 //! [`RelayHandle`] stops the server (cancels the accept loop, drops the
-//! runtime, frees the port). On app boot, `main.rs` reads the persisted
-//! `relay.enabled` key and auto-starts if it was left on.
+//! runtime, frees the port). On app boot, persisted state is not sufficient to
+//! auto-start this experimental plaintext service; `main.rs` requires the
+//! explicit debug-build-only `ATHENA_RELAY_AUTOSTART=1` opt-in; release
+//! binaries compile relay autostart out.
 
 mod discovery;
 mod dispatch;
@@ -194,7 +196,7 @@ pub fn start(app: AppHandle, dist_dir: String, token: String) -> Result<SocketAd
         .spawn(move || {
             runtime_handle.block_on(async {
                 let serve = axum::serve(bound, router);
-                let _ = tokio::select! {
+                tokio::select! {
                     res = serve => {
                         if let Err(e) = res {
                             log::error!("[relay] server error: {e}");
@@ -301,22 +303,6 @@ pub fn status() -> RelayStatus {
     }
 }
 
-/// Print the LAN URL + an ASCII QR code so a phone can scan it directly.
-#[cfg(test)]
-mod tests {
-    use super::qr_svg_base64;
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-
-    #[test]
-    fn qr_payload_is_a_decodable_svg_for_pairing_url() {
-        let encoded = qr_svg_base64("http://127.0.0.1:8787/mobile.html?mobile=1#token=test").unwrap();
-        let svg = String::from_utf8(STANDARD.decode(encoded).unwrap()).unwrap();
-        assert!(svg.starts_with("<?xml") || svg.starts_with("<svg"));
-        assert!(svg.contains("<path") || svg.contains("<rect"));
-    }
-}
-
 fn print_relay_url(addr: SocketAddr) {
     match local_ip_address::local_ip() {
         Ok(lan_ip) => {
@@ -353,5 +339,21 @@ fn print_relay_url(addr: SocketAddr) {
                 addr.port()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::qr_svg_base64;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+
+    #[test]
+    fn qr_payload_is_a_decodable_svg_for_pairing_url() {
+        let encoded =
+            qr_svg_base64("http://127.0.0.1:8787/mobile.html?mobile=1#token=test").unwrap();
+        let svg = String::from_utf8(STANDARD.decode(encoded).unwrap()).unwrap();
+        assert!(svg.starts_with("<?xml") || svg.starts_with("<svg"));
+        assert!(svg.contains("<path") || svg.contains("<rect"));
     }
 }

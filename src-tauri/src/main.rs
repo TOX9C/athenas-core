@@ -10,9 +10,21 @@ use commands::*;
 use std::sync::Arc;
 use tauri::Manager;
 
+#[cfg(debug_assertions)]
+fn relay_autostart_requested() -> bool {
+    std::env::var("ATHENA_RELAY_AUTOSTART")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+#[cfg(not(debug_assertions))]
+fn relay_autostart_requested() -> bool {
+    false
+}
+
 fn main() {
     let app_state = state::AppState::new();
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Debug)
@@ -21,7 +33,11 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_notification::init());
+        .plugin(tauri_plugin_notification::init())
+        // Save/restore the main window's size, position, and maximized
+        // state across relaunches. Saved state overrides the window
+        // config's static width/height/maximized values on launch.
+        .plugin(tauri_plugin_window_state::Builder::default().build());
 
     // WebDriver automation — debug builds only, and only when explicitly
     // requested via TAURI_WEBVIEW_AUTOMATION (set by the `tauri-wd` e2e runner).
@@ -33,9 +49,11 @@ fn main() {
     // it behind the env var keeps normal `cargo tauri dev` runs crash-free while
     // preserving e2e, which launches the app with the var set.
     #[cfg(debug_assertions)]
-    if std::env::var("TAURI_WEBVIEW_AUTOMATION").is_ok() {
-        builder = builder.plugin(tauri_plugin_webdriver_automation::init());
-    }
+    let builder = if std::env::var("TAURI_WEBVIEW_AUTOMATION").is_ok() {
+        builder.plugin(tauri_plugin_webdriver_automation::init())
+    } else {
+        builder
+    };
 
     let app = builder
         .manage(app_state)
@@ -81,8 +99,8 @@ fn main() {
             pty_spawn_agent,
             pty_default_shell,
             pty_set_xterm,
-            pty_set_raw_paused,
             pty_attach_listener,
+            pty_detach_listener,
             pty_foreground_process,
             pty_agent_info,
             // Trusted workspace roots
@@ -91,6 +109,8 @@ fn main() {
             workspace_list_trusted_roots,
             // Athena / LLM
             athena_chat,
+            athena_chat_stream,
+            athena_cancel_stream,
             athena_chat_with_session,
             athena_chat_with_images,
             summarize_agent_title,
@@ -138,7 +158,14 @@ fn main() {
             mcp_broadcast,
             mcp_tools,
             // Swarm
+            swarm_create,
             swarm_read_state,
+            swarm_start_watch,
+            swarm_stop_watch,
+            swarm_update_agent,
+            swarm_set_status,
+            swarm_create_task,
+            swarm_update_task,
             swarm_send_message,
             swarm_read_mailbox,
             // Shell integration
@@ -208,16 +235,21 @@ fn main() {
         state.set_app_handle(app.handle().clone());
         state.wire_pty_events();
 
-        // Auto-start only after the AppHandle is installed and all event
-        // emitters are wired. This prevents a phone from connecting during
-        // setup and invoking against partially initialized state.
-        let enabled = state
+        // Mobile Mirror is an experimental plaintext LAN service and must
+        // never silently reopen merely because it was enabled in an earlier
+        // session. Settings activation remains explicit per process launch.
+        // An operator may opt into boot auto-start for a trusted development
+        // environment with ATHENA_RELAY_AUTOSTART=1; public builds leave this
+        // unset, so the relay is fail-closed by default.
+        let persisted_enabled = state
             .store
             .get::<String>(crate::commands::RELAY_ENABLED_KEY)
             .ok()
             .flatten()
             .map(|v| v == "true")
             .unwrap_or(false);
+        let explicit_autostart = relay_autostart_requested();
+        let enabled = persisted_enabled && explicit_autostart;
         if enabled {
             let resource = app
                 .path()
@@ -237,6 +269,8 @@ fn main() {
                 }
                 Err(e) => log::error!("[relay] failed to load relay token: {e}"),
             }
+        } else if persisted_enabled {
+            log::info!("[relay] persisted enable found, but explicit ATHENA_RELAY_AUTOSTART=1 is required; skipping auto-start");
         } else {
             log::debug!("[relay] relay.enabled not set — skipping auto-start");
         }
@@ -245,7 +279,22 @@ fn main() {
     app.run(|app_handle, event| {
         match event {
             tauri::RunEvent::Ready => {
-                // Real-time file persistence — no load needed
+                // The window-state plugin restores the saved geometry before
+                // this point (in its `on_window_ready` hook). Guard against the
+                // "lost window" failure: if the saved position was on a display
+                // that is no longer connected (external monitor unplugged,
+                // resolution changed), the plugin's one-corner intersection
+                // test can still restore a mostly off-screen window. Re-center
+                // it once the OS has applied the restored frame.
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            WINDOW_OFFSCREEN_CHECK_DELAY_MS,
+                        ))
+                        .await;
+                        ensure_window_on_screen(&window);
+                    });
+                }
             }
             tauri::RunEvent::ExitRequested { api: _, .. } => {
                 log::info!("Exit requested -- initiating graceful shutdown");
@@ -255,6 +304,10 @@ fn main() {
                 relay::stop();
 
                 let state = app_handle.state::<state::AppState>();
+                // Close native browser children before the main window/runtime
+                // tears down. This keeps the model and Tauri registry aligned
+                // even when the app exits without a browser hide command.
+                shutdown_browser_children(&state);
 
                 // Stop the dedicated MCP runtime and signal the TCP server
                 // before attempting the synchronous cleanup lock. This keeps
@@ -315,6 +368,7 @@ fn main() {
                 // `ExitRequested` ran, so `shutdown_all` has not killed them).
                 relay::stop();
                 let state = app_handle.state::<state::AppState>();
+                shutdown_browser_children(&state);
                 state
                     .mcp_runtime_stop
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -331,8 +385,115 @@ fn main() {
     });
 }
 
+/// Minimum fraction of the window area that must land on a connected display
+/// before the restored geometry is accepted. Windows below this are
+/// re-centered. 25% keeps legitimate layouts — a window tucked partway off a
+/// small laptop screen, or one straddling two monitors — while catching
+/// windows stranded on a disconnected display.
+const MIN_VISIBLE_WINDOW_FRACTION: f64 = 0.25;
+
+/// How long after the event loop starts we wait before measuring the restored
+/// window frame. The window-state plugin applies the geometry synchronously
+/// before `RunEvent::Ready`, but macOS can defer the frame change until the
+/// window server round-trips, so we let it settle first.
+const WINDOW_OFFSCREEN_CHECK_DELAY_MS: u64 = 200;
+
+/// Post-restore guard for the window-state plugin: the plugin only restores a
+/// saved position if *one corner* of the window intersects a connected monitor
+/// (see `MonitorExt::intersects` in tauri-plugin-window-state). After an
+/// external display is unplugged, a window saved there can therefore restore
+/// with just a sliver on-screen. If less than [`MIN_VISIBLE_WINDOW_FRACTION`]
+/// of the window is visible across all monitors, re-center it on the primary
+/// display. Best-effort and idempotent — never blocks startup or fails hard.
+/// The area heuristic is deliberately simple: a window whose titlebar is
+/// entirely off-screen but whose body is > 25% visible won't be rescued (rare,
+/// and still grabbable via Mission Control), while the common unplugged-
+/// display cases are caught.
+fn ensure_window_on_screen(window: &tauri::WebviewWindow) {
+    // A maximized or fullscreen window fills a monitor, so it can never be
+    // stranded off-screen. Skip the geometry work entirely.
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+
+    let Ok(pos) = window.outer_position() else {
+        log::warn!("[window] off-screen check: no outer position available");
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        log::warn!("[window] off-screen check: no outer size available");
+        return;
+    };
+    if size.width == 0 || size.height == 0 {
+        return;
+    }
+
+    let win_l = pos.x as i64;
+    let win_t = pos.y as i64;
+    let win_r = win_l + size.width as i64;
+    let win_b = win_t + size.height as i64;
+
+    let monitors = match window.available_monitors() {
+        Ok(monitors) => monitors
+            .iter()
+            .map(|m| {
+                let m_pos = m.position();
+                let m_size = m.size();
+                (
+                    m_pos.x as i64,
+                    m_pos.y as i64,
+                    m_pos.x as i64 + m_size.width as i64,
+                    m_pos.y as i64 + m_size.height as i64,
+                )
+            })
+            .collect::<Vec<_>>(),
+        Err(e) => {
+            log::warn!("[window] off-screen check: failed to query monitors: {e}");
+            return;
+        }
+    };
+
+    let fraction = visible_fraction((win_l, win_t, win_r, win_b), &monitors);
+    if fraction < MIN_VISIBLE_WINDOW_FRACTION {
+        log::warn!(
+            "[window] restored position is off-screen ({:.0}% visible) — re-centering",
+            fraction * 100.0
+        );
+        if let Err(e) = window.center() {
+            log::warn!("[window] failed to re-center window: {e}");
+        }
+    }
+}
+
+/// Fraction of a window frame (physical px, `(left, top, right, bottom)`) that
+/// intersects the given monitors (each `(left, top, right, bottom)`). With
+/// non-overlapping monitors this is the exact union fraction; overlapping
+/// (e.g. mirrored) displays sum intersections, which only makes the rescue
+/// heuristic less aggressive — acceptable for an off-screen guard.
+fn visible_fraction(window: (i64, i64, i64, i64), monitors: &[(i64, i64, i64, i64)]) -> f64 {
+    let (win_l, win_t, win_r, win_b) = window;
+    let window_area = ((win_r - win_l).max(0) * (win_b - win_t).max(0)) as f64;
+    if window_area == 0.0 {
+        return 0.0;
+    }
+    let visible: i64 = monitors
+        .iter()
+        .map(|&(m_l, m_t, m_r, m_b)| {
+            let w = (win_r.min(m_r) - win_l.max(m_l)).max(0);
+            let h = (win_b.min(m_b) - win_t.max(m_t)).max(0);
+            w * h
+        })
+        .sum();
+    visible as f64 / window_area
+}
+
 static RESUME_CAPTURE_DONE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+/// Keep macOS Cmd+Q responsive while still allowing fast agent exit handlers
+/// to print and persist a resume id. The exit callback runs on Tauri's main
+/// thread, so joining a worker beyond this budget makes the whole app appear
+/// frozen with a spinning cursor.
+const EXIT_RESUME_CAPTURE_BUDGET_MS: u64 = 800;
 
 /// Type `/exit` into every live PTY on app exit, scan each pane's output for the
 /// agent's `--resume` line, and persist it into the `workspaces` store so the
@@ -365,7 +526,8 @@ fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
             };
             rt.block_on(async {
                 let state = app_handle.state::<state::AppState>();
-                let n = commands::capture_resume_ids_on_exit(&state, 4000).await;
+                let n = commands::capture_resume_ids_on_exit(&state, EXIT_RESUME_CAPTURE_BUDGET_MS)
+                    .await;
                 log::info!("resume capture on exit: persisted {n} resume id(s)");
             });
         });
@@ -374,5 +536,73 @@ fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
             let _ = w.join();
         }
         Err(e) => log::error!("resume capture: failed to spawn worker thread: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod window_geometry_tests {
+    use super::visible_fraction;
+
+    // A single built-in display: 0,0 → 1920×1080 (physical px).
+    const PRIMARY: (i64, i64, i64, i64) = (0, 0, 1920, 1080);
+
+    fn fraction(window: (i64, i64, i64, i64), monitors: &[(i64, i64, i64, i64)]) -> f64 {
+        visible_fraction(window, monitors)
+    }
+
+    #[test]
+    fn fully_inside_primary_is_fully_visible() {
+        assert!((fraction((200, 100, 1600, 1000), &[PRIMARY]) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sliver_after_monitor_unplugged_is_rescued() {
+        // Saved on a second monitor to the right (x=1800, width 1400); that
+        // display is gone, so only a 120px sliver overlaps the built-in screen.
+        // This is the case the plugin's one-corner test accepts and we must
+        // re-center (< 25% visible).
+        let f = fraction((1800, 100, 3200, 1000), &[PRIMARY]);
+        assert!(f < 0.25, "expected < 0.25, got {f}");
+    }
+
+    #[test]
+    fn fully_offscreen_is_rescued() {
+        let f = fraction((2560, 100, 3960, 1000), &[PRIMARY]);
+        assert!(f.abs() < 1e-9);
+        assert!(f < 0.25);
+    }
+
+    #[test]
+    fn half_offscreen_is_kept() {
+        // Deliberately half off the right edge (e.g. two windows side by side
+        // on a small screen): 50% visible is above the threshold — no rescue.
+        let f = fraction((960, 0, 2880, 1080), &[PRIMARY]);
+        assert!((f - 0.5).abs() < 1e-9, "expected 0.5, got {f}");
+        assert!(f >= 0.25);
+    }
+
+    #[test]
+    fn titlebar_tucked_above_screen_is_kept() {
+        // macOS commonly keeps a window whose titlebar is tucked just off the
+        // top edge (-30px): 96% visible — no rescue.
+        let f = fraction((100, -30, 1500, 870), &[PRIMARY]);
+        assert!(f >= 0.25, "expected >= 0.25, got {f}");
+    }
+
+    #[test]
+    fn window_on_connected_second_monitor_is_fully_visible() {
+        let monitors = [PRIMARY, (1920, 0, 3840, 1080)];
+        assert!((fraction((2000, 100, 3400, 1000), &monitors) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn window_straddling_two_connected_monitors_is_fully_visible() {
+        let monitors = [PRIMARY, (1920, 0, 3840, 1080)];
+        assert!((fraction((1800, 100, 3400, 1000), &monitors) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zero_area_window_is_zero() {
+        assert!(fraction((100, 100, 100, 100), &[PRIMARY]).abs() < 1e-9);
     }
 }

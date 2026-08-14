@@ -140,6 +140,58 @@ async fn test_set_marks_dirty_but_does_not_write() {
 }
 
 #[tokio::test]
+async fn test_repeated_flush_replaces_atomically_without_temp_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.json");
+    let store = KeyValueStore::with_path_sync(path.clone()).unwrap();
+
+    for value in ["first", "second", "third"] {
+        store.set("value", &value.to_string()).await.unwrap();
+        store.flush_if_dirty().await.unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(parsed.get("value").and_then(|v| v.as_str()), Some(value));
+    }
+
+    let leftovers = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp-"))
+        .collect::<Vec<_>>();
+    assert!(
+        leftovers.is_empty(),
+        "temporary files leaked: {leftovers:?}"
+    );
+}
+
+#[test]
+fn test_set_sync_failure_keeps_dirty_state_for_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.json");
+    let store = KeyValueStore::with_path_sync(path.clone()).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    let result = store.set_sync("key", &"value".to_string());
+    assert!(result.is_err());
+    assert!(store.is_dirty(), "failed sync write must remain retryable");
+}
+
+#[test]
+fn test_delete_sync_failure_keeps_dirty_state_for_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.json");
+    let store = KeyValueStore::with_path_sync(path.clone()).unwrap();
+    store.set_sync("key", &"value".to_string()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    let result = store.delete_sync("key");
+    assert!(result.is_err());
+    assert!(store.is_dirty(), "failed sync delete must remain retryable");
+}
+
+#[tokio::test]
 async fn test_flush_if_dirty_clears_dirty_flag() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store.json");

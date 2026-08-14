@@ -23,7 +23,7 @@ pub fn SkillsPanel() -> Element {
     rsx! {
         div {
             class: "pane-astrolabe-mark",
-            style: "display: flex; flex-direction: column; height: 100%; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden;",
+            style: "display: flex; flex-direction: column; height: 100%; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 0; overflow: hidden;",
 
             // Header
             div {
@@ -94,7 +94,10 @@ pub fn SkillsPanel() -> Element {
                                         class: "icon-btn",
                                         title: "Copy skill name",
                                         onclick: move |_| {
-                                            let window = web_sys::window().unwrap();
+                                            let Some(window) = web_sys::window() else {
+                                                web_sys::console::warn_1(&"[SkillsPanel] window unavailable while copying skill".into());
+                                                return;
+                                            };
                                             if let Ok(nav) = Reflect::get(&window, &wasm_bindgen::JsValue::from_str("navigator")) {
                                                 if let Ok(cb) = Reflect::get(&nav, &wasm_bindgen::JsValue::from_str("clipboard")) {
                                                     if let Ok(write_text) = Reflect::get(&cb, &wasm_bindgen::JsValue::from_str("writeText")) {

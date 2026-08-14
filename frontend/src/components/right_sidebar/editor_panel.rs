@@ -35,7 +35,7 @@ pub fn RightEditorPanel() -> Element {
     rsx! {
         div {
             class: "pane-astrolabe-mark",
-            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text); overflow: hidden;",
+            style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 0; color: var(--text); overflow: hidden;",
 
             if editor_state.read().open_files.is_empty() {
                 EmptyState {

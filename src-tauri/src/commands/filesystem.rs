@@ -1,8 +1,79 @@
 use super::{caps, validate_path, validate_path_exists, CommandError};
 use crate::state::AppState;
 use base64::Engine;
+use std::io::Write;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
+
+/// Atomically replace a file without following a planted temporary-file symlink.
+///
+/// The destination has already been validated by the command boundary. This
+/// helper closes the separate temporary-file race by creating the temporary
+/// entry with `create_new` and writing through the opened handle, rather than
+/// using `fs::write` on a predictable path.
+fn write_file_atomic(path: &std::path::Path, content: &[u8]) -> Result<(), std::io::Error> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let temp_path = parent.join(format!(".tmp-write-{}", uuid::Uuid::new_v4()));
+
+    let write_result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(content)?;
+        file.flush()?;
+        std::fs::rename(&temp_path, path)
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    write_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_file_atomic;
+    use std::fs;
+
+    #[test]
+    fn atomic_write_replaces_target_without_leaving_temp_files() {
+        let root = std::env::temp_dir().join(format!("athena-fs-command-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("target.txt");
+        fs::write(&target, "old").unwrap();
+
+        write_file_atomic(&target, b"new").unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_replaces_destination_symlink_instead_of_following_it() {
+        let root = std::env::temp_dir().join(format!("athena-fs-link-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let outside = root.join("outside.txt");
+        let target = root.join("target.txt");
+        fs::write(&outside, "must remain").unwrap();
+        std::os::unix::fs::symlink(&outside, &target).unwrap();
+
+        write_file_atomic(&target, b"inside").unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "inside");
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "must remain");
+        assert!(!fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
 
 /// Read the contents of a file as UTF-8 text.
 #[tauri::command]
@@ -96,16 +167,7 @@ pub async fn fs_write_file(
     let validated_clone = validated.clone();
     let content_clone = content.clone();
     tokio::task::spawn_blocking(move || {
-        // Atomic write: write to a temp file in the same directory, then rename.
-        let temp_path = match validated_clone.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => {
-                parent.join(format!(".tmp-write-{}", uuid::Uuid::new_v4()))
-            }
-            _ => std::env::temp_dir().join(format!(".tmp-write-{}", uuid::Uuid::new_v4())),
-        };
-        std::fs::write(&temp_path, content_clone)
-            .map_err(|e| CommandError::Internal(e.to_string()))?;
-        std::fs::rename(&temp_path, &validated_clone)
+        write_file_atomic(&validated_clone, content_clone.as_bytes())
             .map_err(|e| CommandError::Internal(e.to_string()))
     })
     .await

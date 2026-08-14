@@ -52,6 +52,8 @@ pub enum ToolExecutorError {
     Notification(String),
     #[error("Missing required parameter: {0}")]
     MissingParam(String),
+    #[error("Request cancelled")]
+    Cancelled,
     #[error("Lock poisoned")]
     LockPoisoned,
     #[error("Path traversal blocked: {0}")]
@@ -92,6 +94,25 @@ pub trait ToolEventSender: Send + Sync {
 
     /// Ask the user a question (returns the answer).
     fn ask_user(&self, request_id: &str, question: &str, options: &[serde_json::Value]) -> String;
+
+    /// Associate tool-generated UI events with the current assistant request.
+    fn set_request_context(&self, _request_id: &str, _session_id: &str) {}
+
+    /// Clear the current assistant request context.
+    fn clear_request_context(&self) {}
+
+    /// Return whether a request was cancelled before a tool began.
+    fn request_cancelled(&self, _request_id: &str) -> bool {
+        false
+    }
+
+    /// Forget cancellation tombstones once a request has fully unwound.
+    fn finish_request(&self, _request_id: &str) {}
+
+    /// Cancel pending UI interactions belonging to an assistant request.
+    fn cancel_request(&self, _request_id: &str) -> bool {
+        false
+    }
 
     /// Send a plan update event.
     fn plan_update(&self, plan: &ExecutionPlan);
@@ -160,6 +181,34 @@ impl ToolExecutor {
         self
     }
 
+    /// Associate tool-generated UI events with a streamed assistant request.
+    pub fn set_request_context(&self, request_id: &str, session_id: &str) {
+        self.event_sender
+            .set_request_context(request_id, session_id);
+    }
+
+    pub fn clear_request_context(&self) {
+        self.event_sender.clear_request_context();
+    }
+
+    pub fn cancel_request(&self, request_id: &str) -> bool {
+        self.event_sender.cancel_request(request_id)
+    }
+
+    pub fn request_cancelled(&self, request_id: &str) -> bool {
+        self.event_sender.request_cancelled(request_id)
+    }
+
+    pub fn finish_request(&self, request_id: &str) {
+        self.event_sender.finish_request(request_id);
+    }
+
+    /// Clone the event sender for cancellation paths that must not wait for
+    /// the executor mutex (for example while a blocking ask_user call holds it).
+    pub(crate) fn event_sender_handle(&self) -> Arc<dyn ToolEventSender> {
+        Arc::clone(&self.event_sender)
+    }
+
     /// Execute a tool call by name with the given arguments.
     pub fn execute_tool_call(
         &self,
@@ -191,6 +240,25 @@ impl ToolExecutor {
             "workspace_switch" => self.workspace_switch(args),
             _ => Err(ToolExecutorError::UnknownTool(name.to_string())),
         }
+    }
+
+    /// Execute one streamed tool while its request/session context is held
+    /// exclusively by this executor. The context is cleared before the mutex
+    /// is released, so concurrent legacy/MCP calls cannot inherit stream IDs.
+    pub fn execute_tool_call_with_context(
+        &self,
+        name: &str,
+        args: &ToolInput,
+        request_id: &str,
+        session_id: &str,
+    ) -> Result<ToolCallResult, ToolExecutorError> {
+        if self.request_cancelled(request_id) {
+            return Err(ToolExecutorError::Cancelled);
+        }
+        self.set_request_context(request_id, session_id);
+        let result = self.execute_tool_call(name, args);
+        self.clear_request_context();
+        result
     }
 
     // -- Individual tool implementations ------------------------------------

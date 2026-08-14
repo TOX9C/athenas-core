@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "test": "wdio run wdio.conf.mjs",
-    "test:headed": "WDIO_HEADED=1 wdio run wdio.conf.mjs"
+    "test:headed": "WDIO_HEADED=1 wdio run wdio.conf.mjs",
+    "test:soak": "SOAK_ITERATIONS=${SOAK_ITERATIONS:-10} wdio run wdio.conf.mjs --spec test/specs/release-soak.e2e.mjs",
+    "test:metrics": "wdio run wdio.conf.mjs --spec test/specs/perf-metrics.mjs"
   },
   "devDependencies": {
     "@wdio/cli": "^9",

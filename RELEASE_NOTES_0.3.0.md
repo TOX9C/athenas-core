@@ -1,6 +1,6 @@
 # Athena's Core — Beta Release v0.3.0
 
-Thank you for testing Athena's Core! This is a private beta — please don't share this build publicly.
+Thank you for testing Athena's Core! This is a private beta — please don't share this build publicly. It is not a public-launch artifact: it is unsigned, has no in-app updater, and Mobile Mirror remains experimental and intended only for a trusted LAN.
 
 ---
 
@@ -54,9 +54,11 @@ Please test these areas and report **anything** that feels broken, confusing, or
 
 ### ⚠️ App may freeze after clicking around (WASM crash)
 
+This failure mode is mitigated by a JavaScript watchdog and Dioxus subtree boundaries, but it is not considered closed until the exact macOS release artifact passes the stability soak in `docs/release/MACOS_TEST_MATRIX.md`.
+
 This is the **#1 issue we're tracking**. The app uses a web-based UI layer (Dioxus/WASM) that can crash inside macOS's WebView. You'll see the app window freeze or go blank — the backend keeps running, but the UI stops responding.
 
-**If it happens:** quit the app (⌘Q) and relaunch. Your workspace state isn't lost — it recenters on the last open directory.
+**If it happens:** the WebView watchdog now detects a stalled WASM heartbeat and attempts one automatic reload. If the runtime remains unhealthy after that reload, use the on-screen **Reload interface** action; quit and relaunch with ⌘Q only as a last resort. Your workspace state isn't lost — it recenters on the last open directory.
 
 **What helps us:** note what you clicked right before the freeze. Was it a button? A tab switch? A modal? That helps us narrow down the trigger.
 
@@ -82,7 +84,7 @@ Screenshots or screen recordings are hugely helpful if the app is in a broken st
 
 - **Release:** v0.3.0 (beta)
 - **Platform:** macOS (Apple Silicon / arm64)
-- **Date:** July 2025
+- **Date:** August 2026
 
 ---
 

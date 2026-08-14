@@ -33,7 +33,9 @@ enum AnsiState {
 
 impl Default for AnsiStripper {
     fn default() -> Self {
-        Self { state: AnsiState::Text }
+        Self {
+            state: AnsiState::Text,
+        }
     }
 }
 
@@ -134,7 +136,7 @@ pub fn extract_resume_id(text: &str) -> Option<(String, String)> {
                 let candidate = (match_start, pattern[..pattern.len() - 1].to_string(), id);
                 if last_match
                     .as_ref()
-                    .map_or(true, |(previous_start, _, _)| match_start >= *previous_start)
+                    .is_none_or(|(previous_start, _, _)| match_start >= *previous_start)
                 {
                     last_match = Some(candidate);
                 }

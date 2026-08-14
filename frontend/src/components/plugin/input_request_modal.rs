@@ -64,15 +64,13 @@ pub fn InputRequestModal() -> Element {
                 // Agent info
                 div {
                     style: "display: flex; align-items: center; gap: 8px;",
-                    div {
-                        style: "width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--accent); flex-shrink: 0;",
-                    }
                     span {
                         style: "font-size: var(--text-sm); font-weight: 600; color: var(--text); font-family: var(--font-ui);",
                         "Agent"
                     }
                     span {
-                        style: "font-size: var(--text-2xs); padding: 1px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--warning) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warning) 32%, transparent); color: var(--warning); font-weight: 500;",
+                        class: "status-label",
+                        style: "color: var(--warning);",
                         "Needs Input"
                     }
                 }

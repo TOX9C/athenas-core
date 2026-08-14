@@ -16,7 +16,7 @@
 //! `Panel::Browser == ui_state.panel` flag is the single source of truth for
 //! which one is mounted, so only one surface exists at a time (see `panel.rs`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use dioxus::prelude::*;
@@ -37,12 +37,41 @@ pub const BROWSER_ID: &str = "sidebar-browser";
 const DEFAULT_URL: &str = "https://www.google.com";
 /// DOM id of the placeholder the native webview is overlaid on.
 const VIEWPORT_ID: &str = "browser-surface-viewport";
+const LOAD_TIMEOUT_MS: i32 = 15_000;
+
+#[derive(Clone, Copy)]
+struct BrowserBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+struct BoundsDispatch {
+    latest: Option<BrowserBounds>,
+    request_in_flight: bool,
+}
+
+struct SurfaceLease {
+    next_generation: u64,
+    active_generation: Option<u64>,
+    park_timer: Option<i32>,
+}
 
 thread_local! {
-    /// Pending "park the webview off-screen" timeout. A short delay lets a
-    /// surface that is *relocating* (sidebar → main area) cancel the park its
-    /// predecessor scheduled, so the webview never blanks during a move.
-    static PARK_TIMER: RefCell<Option<i32>> = const { RefCell::new(None) };
+    /// Latest-only bounds state prevents resize bursts from applying stale
+    /// rectangles after a newer IPC request has already been measured.
+    static BOUNDS_DISPATCH: RefCell<BoundsDispatch> = const { RefCell::new(BoundsDispatch {
+        latest: None,
+        request_in_flight: false,
+    }) };
+    /// A generation lease prevents an old surface's drop hook from parking a
+    /// newly mounted surface during sidebar/main-area relocation.
+    static SURFACE_LEASE: RefCell<SurfaceLease> = const { RefCell::new(SurfaceLease {
+        next_generation: 0,
+        active_generation: None,
+        park_timer: None,
+    }) };
 }
 
 /// Holds JS resources that must be released when the surface unmounts.
@@ -64,14 +93,101 @@ fn push_bounds_now() {
         return;
     };
     let rect = el.get_bounding_client_rect();
-    let (x, y, w, h) = (rect.left(), rect.top(), rect.width(), rect.height());
+    let bounds = BrowserBounds {
+        x: rect.left(),
+        y: rect.top(),
+        width: rect.width(),
+        height: rect.height(),
+    };
     // Skip degenerate rects (panel not laid out yet / hidden).
-    if w <= 1.0 || h <= 1.0 {
+    if bounds.width <= 1.0 || bounds.height <= 1.0 {
         return;
     }
+    enqueue_bounds(bounds);
+}
+
+fn send_bounds(bounds: BrowserBounds) {
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = tauri_bridge::browser_set_bounds(BROWSER_ID, x, y, w, h).await;
+        let _ = tauri_bridge::browser_set_bounds(
+            BROWSER_ID,
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+        )
+        .await;
+
+        let next = BOUNDS_DISPATCH.with(|dispatch| {
+            let mut dispatch = dispatch.borrow_mut();
+            dispatch.request_in_flight = false;
+            dispatch.latest.take()
+        });
+        if let Some(next) = next {
+            BOUNDS_DISPATCH.with(|dispatch| {
+                dispatch.borrow_mut().request_in_flight = true;
+            });
+            send_bounds(next);
+        }
     });
+}
+
+fn enqueue_bounds(bounds: BrowserBounds) {
+    let next = BOUNDS_DISPATCH.with(|dispatch| {
+        let mut dispatch = dispatch.borrow_mut();
+        dispatch.latest = Some(bounds);
+        if dispatch.request_in_flight {
+            None
+        } else {
+            dispatch.request_in_flight = true;
+            dispatch.latest.take()
+        }
+    });
+    if let Some(next) = next {
+        send_bounds(next);
+    }
+}
+
+fn clear_pending_bounds() {
+    BOUNDS_DISPATCH.with(|dispatch| {
+        dispatch.borrow_mut().latest = None;
+    });
+}
+
+fn clear_load_timeout(timeout: &Rc<RefCell<Option<i32>>>) {
+    if let Some(timer) = timeout.borrow_mut().take() {
+        if let Some(window) = web_sys::window() {
+            window.clear_timeout_with_handle(timer);
+        }
+    }
+}
+
+fn schedule_load_timeout(
+    timeout: Rc<RefCell<Option<i32>>>,
+    active_generation: Rc<Cell<u64>>,
+    generation: u64,
+    mut loading: Signal<bool>,
+    mut browser_error: Signal<Option<String>>,
+) {
+    clear_load_timeout(&timeout);
+    let timeout_for_callback = timeout.clone();
+    let callback = Closure::once_into_js(move || {
+        *timeout_for_callback.borrow_mut() = None;
+        if active_generation.get() != generation {
+            return;
+        }
+        loading.set(false);
+        browser_error.set(Some(
+            "The page did not finish loading. Check the URL or retry.".to_string(),
+        ));
+    });
+    if let Some(window) = web_sys::window() {
+        if let Ok(timer) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            callback.as_ref().unchecked_ref(),
+            LOAD_TIMEOUT_MS,
+        ) {
+            *timeout.borrow_mut() = Some(timer);
+        }
+    }
 }
 
 /// Measure on the next animation frame (after layout has settled).
@@ -91,35 +207,58 @@ fn park_offscreen() {
     });
 }
 
-/// Cancel any pending off-screen park (called when a surface mounts).
-fn cancel_park() {
-    PARK_TIMER.with(|t| {
-        if let Some(id) = t.borrow_mut().take() {
-            if let Some(w) = web_sys::window() {
-                w.clear_timeout_with_handle(id);
+/// Start a new surface lease and cancel a park scheduled by a predecessor.
+fn begin_surface() -> u64 {
+    let generation = SURFACE_LEASE.with(|lease| {
+        let mut lease = lease.borrow_mut();
+        if let Some(timer) = lease.park_timer.take() {
+            if let Some(window) = web_sys::window() {
+                window.clear_timeout_with_handle(timer);
             }
         }
+        lease.next_generation = lease.next_generation.wrapping_add(1);
+        lease.active_generation = Some(lease.next_generation);
+        lease.next_generation
     });
+    generation
 }
 
-/// Schedule an off-screen park shortly after a surface unmounts. A mounting
-/// surface cancels it, so relocation never hides the webview.
-fn request_park() {
+/// Schedule an off-screen park only if this exact surface is still the active
+/// lease. An old surface dropping after a new surface mounts becomes a no-op.
+fn request_park(generation: u64) {
     let Some(window) = web_sys::window() else {
         return;
     };
-    cancel_park();
+    let should_schedule = SURFACE_LEASE.with(|lease| {
+        let mut lease = lease.borrow_mut();
+        if lease.active_generation != Some(generation) {
+            return false;
+        }
+        lease.active_generation = None;
+        if let Some(timer) = lease.park_timer.take() {
+            window.clear_timeout_with_handle(timer);
+        }
+        true
+    });
+    if !should_schedule {
+        return;
+    }
+
     let cb = Closure::once_into_js(move || {
-        PARK_TIMER.with(|t| {
-            *t.borrow_mut() = None;
+        let should_park = SURFACE_LEASE.with(|lease| {
+            let mut lease = lease.borrow_mut();
+            lease.park_timer = None;
+            lease.active_generation.is_none() && lease.next_generation == generation
         });
-        park_offscreen();
+        if should_park {
+            park_offscreen();
+        }
     });
     if let Ok(id) = window
         .set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 80)
     {
-        PARK_TIMER.with(|t| {
-            *t.borrow_mut() = Some(id);
+        SURFACE_LEASE.with(|lease| {
+            lease.borrow_mut().park_timer = Some(id);
         });
     }
 }
@@ -130,11 +269,24 @@ fn request_park() {
 pub fn BrowserSurface(expanded: bool) -> Element {
     let url = use_signal(|| DEFAULT_URL.to_string());
     let mut url_input = use_signal(|| DEFAULT_URL.to_string());
+    let page_title = use_signal(String::new);
+    let mut loading = use_signal(|| true);
+    let mut can_go_back = use_signal(|| false);
+    let mut can_go_forward = use_signal(|| false);
+    let mut browser_error = use_signal(|| None::<String>);
+    let load_timeout = use_hook(|| Rc::new(RefCell::new(None::<i32>)));
+    let active_load_generation = use_hook(|| Rc::new(Cell::new(0u64)));
     let mut ui_state = use_ui_store();
     let mut panel_state = use_panel_manager_store();
     let mut cleanup: Signal<Option<SurfaceCleanup>> = use_signal(|| None);
     let initialized = use_hook(|| Rc::new(RefCell::new(false)));
+    let surface_generation = use_hook(|| Rc::new(RefCell::new(None::<u64>)));
+    let browser_unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
+        use_hook(|| Rc::new(RefCell::new(Vec::new())));
     let mut show_quick_menu = use_signal(|| false);
+    let clickaway_listener: Rc<
+        RefCell<Option<(web_sys::Window, Closure<dyn FnMut(web_sys::MouseEvent)>)>>,
+    > = use_hook(|| Rc::new(RefCell::new(None)));
 
     let quick_urls: Vec<(&str, &str)> = vec![
         ("Google", "https://www.google.com"),
@@ -155,6 +307,10 @@ pub fn BrowserSurface(expanded: bool) -> Element {
     // ── Mount once: create the webview, observe size, listen for resize ──────
     {
         let initialized = initialized.clone();
+        let surface_generation_for_mount = surface_generation.clone();
+        let load_timeout_for_mount = load_timeout.clone();
+        let active_generation_for_mount = active_load_generation.clone();
+        let browser_unlisteners_for_mount = browser_unlisteners.clone();
         let start_url = url();
         use_effect(move || {
             if *initialized.borrow() {
@@ -162,17 +318,173 @@ pub fn BrowserSurface(expanded: bool) -> Element {
             }
             *initialized.borrow_mut() = true;
 
-            // A surface is appearing — cancel any park a predecessor scheduled.
-            cancel_park();
+            // A surface is appearing — acquire a new lease before the
+            // predecessor's drop hook can park the shared native WebView.
+            let generation = begin_surface();
+            *surface_generation_for_mount.borrow_mut() = Some(generation);
 
             let Some(window) = web_sys::window() else {
                 return;
             };
 
+            // Keep native page state synchronized with the toolbar. These
+            // listeners are emitted by BrowserManager after Tauri's native
+            // child-WebView callbacks observe redirects, clicked links, titles,
+            // and load completion.
+            let event_id = BROWSER_ID.to_string();
+            let mut url_for_event = url;
+            let mut input_for_event = url_input;
+            let url_listener = tauri_bridge::listen("browser:urlChange", move |payload| {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                    return;
+                };
+                if value.get("id").and_then(|v| v.as_str()) != Some(event_id.as_str()) {
+                    return;
+                }
+                if let Some(next_url) = value.get("url").and_then(|v| v.as_str()) {
+                    url_for_event.set(next_url.to_string());
+                    input_for_event.set(next_url.to_string());
+                }
+            });
+            if let Ok(unlisten) = url_listener {
+                browser_unlisteners_for_mount.borrow_mut().push(unlisten);
+            }
+
+            let event_id = BROWSER_ID.to_string();
+            let mut title_for_event = page_title;
+            let title_listener = tauri_bridge::listen("browser:titleChange", move |payload| {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                    return;
+                };
+                if value.get("id").and_then(|v| v.as_str()) != Some(event_id.as_str()) {
+                    return;
+                }
+                title_for_event.set(
+                    value
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            });
+            if let Ok(unlisten) = title_listener {
+                browser_unlisteners_for_mount.borrow_mut().push(unlisten);
+            }
+
+            let event_id = BROWSER_ID.to_string();
+            let mut loading_for_status = loading;
+            let mut browser_error_for_status = browser_error;
+            let load_timeout_for_status = load_timeout_for_mount.clone();
+            let active_generation_for_status = active_generation_for_mount.clone();
+            let status_listener = tauri_bridge::listen("browser:statusChange", move |payload| {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                    return;
+                };
+                if value.get("id").and_then(|v| v.as_str()) != Some(event_id.as_str()) {
+                    return;
+                }
+                let generation = value
+                    .get("generation")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
+                if generation < active_generation_for_status.get() {
+                    return;
+                }
+                active_generation_for_status.set(generation);
+                let status = value.get("status").and_then(|v| v.as_str());
+                loading_for_status.set(status == Some("loading"));
+                match status {
+                    Some("loading") => schedule_load_timeout(
+                        load_timeout_for_status.clone(),
+                        active_generation_for_status.clone(),
+                        generation,
+                        loading_for_status,
+                        browser_error_for_status,
+                    ),
+                    Some("failed") => {
+                        clear_load_timeout(&load_timeout_for_status);
+                        browser_error_for_status.set(Some("The page failed to load.".to_string()));
+                    }
+                    _ => {
+                        clear_load_timeout(&load_timeout_for_status);
+                        browser_error_for_status.set(None);
+                    }
+                }
+                can_go_back.set(
+                    value
+                        .get("canGoBack")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                );
+                can_go_forward.set(
+                    value
+                        .get("canGoForward")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                );
+            });
+            if let Ok(unlisten) = status_listener {
+                browser_unlisteners_for_mount.borrow_mut().push(unlisten);
+            }
+
             // Create (idempotent) the child webview, then position it.
             let create_url = start_url.clone();
+            let mut url_after_show = url;
+            let mut input_after_show = url_input;
+            let mut title_after_show = page_title;
+            let mut loading_after_show = loading;
+            let mut can_go_back_after_show = can_go_back;
+            let mut can_go_forward_after_show = can_go_forward;
+            let mut browser_error_after_show = browser_error;
+            let active_generation_after_show = active_load_generation.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = tauri_bridge::browser_show(BROWSER_ID, &create_url).await;
+                match tauri_bridge::browser_show(BROWSER_ID, &create_url).await {
+                    Ok(value) => {
+                        // `browser_show` returns the existing model snapshot
+                        // on remount, so docking never resets the toolbar to
+                        // the default URL while the native page is preserved.
+                        if let Some(snapshot) = value.as_string() {
+                            if let Ok(panel) = serde_json::from_str::<serde_json::Value>(&snapshot)
+                            {
+                                if let Some(next_url) =
+                                    panel.get("current_url").and_then(|v| v.as_str())
+                                {
+                                    url_after_show.set(next_url.to_string());
+                                    input_after_show.set(next_url.to_string());
+                                }
+                                if let Some(title) = panel.get("title").and_then(|v| v.as_str()) {
+                                    title_after_show.set(title.to_string());
+                                }
+                                loading_after_show.set(
+                                    panel.get("loading_state").and_then(|v| v.as_str())
+                                        == Some("Loading"),
+                                );
+                                can_go_back_after_show.set(
+                                    panel
+                                        .get("can_go_back")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false),
+                                );
+                                can_go_forward_after_show.set(
+                                    panel
+                                        .get("can_go_forward")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false),
+                                );
+                                if let Some(generation) =
+                                    panel.get("generation").and_then(|v| v.as_u64())
+                                {
+                                    active_generation_after_show.set(generation);
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("Unable to open browser: {error:?}");
+                        browser_error_after_show.set(Some(message.clone()));
+                        web_sys::console::error_1(&JsValue::from_str(&message));
+                    }
+                }
                 schedule_push_bounds();
             });
 
@@ -246,16 +558,30 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     .remove_event_listener_with_callback("resize", cl.as_ref().unchecked_ref());
             }
         }
-        request_park();
+        for unlisten in browser_unlisteners.borrow_mut().drain(..) {
+            unlisten();
+        }
+        clear_pending_bounds();
+        clear_load_timeout(&load_timeout);
+        if let Some(generation) = surface_generation.borrow_mut().take() {
+            request_park(generation);
+        }
     });
 
     // ── Click-away for the quick-links dropdown ───────────────────────────────
-    // While the menu is open, listen for any mousedown; if it lands outside the
-    // popover, close the menu. The listener is registered when the menu opens and
-    // removed when it closes (or the surface unmounts) so it never leaks.
+    // Keep the listener in a component-owned slot so toggling the menu removes
+    // the previous closure before installing a new one. Cleanup is registered
+    // at the component level, never from inside an effect callback.
     {
         let mut menu = show_quick_menu;
+        let listener_slot = clickaway_listener.clone();
         use_effect(move || {
+            if let Some((window, callback)) = listener_slot.borrow_mut().take() {
+                let _ = window.remove_event_listener_with_callback(
+                    "mousedown",
+                    callback.as_ref().unchecked_ref(),
+                );
+            }
             if !menu() {
                 return;
             }
@@ -292,16 +618,18 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                 }));
             let _ =
                 window.add_event_listener_with_callback("mousedown", cb.as_ref().unchecked_ref());
-            // Keep the closure alive for the effect's duration and remove the
-            // listener when the effect re-runs (menu toggled) or unmounts.
-            let window_for_cleanup = window.clone();
-            let cleanup_cb = cb;
-            use_drop(move || {
-                let _ = window_for_cleanup.remove_event_listener_with_callback(
+            *listener_slot.borrow_mut() = Some((window, cb));
+        });
+    }
+    {
+        let listener_slot = clickaway_listener.clone();
+        use_drop(move || {
+            if let Some((window, callback)) = listener_slot.borrow_mut().take() {
+                let _ = window.remove_event_listener_with_callback(
                     "mousedown",
-                    cleanup_cb.as_ref().unchecked_ref(),
+                    callback.as_ref().unchecked_ref(),
                 );
-            });
+            }
         });
     }
 
@@ -314,7 +642,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
     rsx! {
         div {
             class: "pane-astrolabe-mark",
-            style: "display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden;",
+            style: "display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 0; overflow: hidden;",
 
             // ── Toolbar ──────────────────────────────────────────────────────
             div {
@@ -323,12 +651,21 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                 button {
                     class: "icon-btn lit-sweep",
                     title: "Back",
+                    disabled: !can_go_back(),
                     onclick: move |_| {
                         let mut url_clone = url;
                         wasm_bindgen_futures::spawn_local(async move {
                             match tauri_bridge::browser_back(BROWSER_ID).await {
-                                Ok(new_url) => url_clone.set(new_url),
-                                Err(e) => web_sys::console::warn_1(&JsValue::from_str(&format!("Back: {:?}", e))),
+                                Ok(new_url) => {
+                                    browser_error.set(None);
+                                    url_clone.set(new_url.clone());
+                                    loading.set(true);
+                                },
+                                Err(e) => {
+                                    let message = format!("Back navigation failed: {e:?}");
+                                    browser_error.set(Some(message.clone()));
+                                    web_sys::console::warn_1(&JsValue::from_str(&message));
+                                },
                             }
                         });
                     },
@@ -338,12 +675,21 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                 button {
                     class: "icon-btn lit-sweep",
                     title: "Forward",
+                    disabled: !can_go_forward(),
                     onclick: move |_| {
                         let mut url_clone = url;
                         wasm_bindgen_futures::spawn_local(async move {
                             match tauri_bridge::browser_forward(BROWSER_ID).await {
-                                Ok(new_url) => url_clone.set(new_url),
-                                Err(e) => web_sys::console::warn_1(&JsValue::from_str(&format!("Forward: {:?}", e))),
+                                Ok(new_url) => {
+                                    browser_error.set(None);
+                                    url_clone.set(new_url.clone());
+                                    loading.set(true);
+                                },
+                                Err(e) => {
+                                    let message = format!("Forward navigation failed: {e:?}");
+                                    browser_error.set(Some(message.clone()));
+                                    web_sys::console::warn_1(&JsValue::from_str(&message));
+                                },
                             }
                         });
                     },
@@ -354,8 +700,16 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     class: "icon-btn lit-sweep",
                     title: "Reload",
                     onclick: move |_| {
+                        loading.set(true);
                         wasm_bindgen_futures::spawn_local(async move {
-                            let _ = tauri_bridge::browser_reload(BROWSER_ID).await;
+                            match tauri_bridge::browser_reload(BROWSER_ID).await {
+                                Ok(_) => browser_error.set(None),
+                                Err(error) => {
+                                    let message = format!("Reload failed: {error:?}");
+                                    browser_error.set(Some(message.clone()));
+                                    web_sys::console::warn_1(&JsValue::from_str(&message));
+                                }
+                            }
                         });
                     },
                     IconRefresh { size: Some(16), color: Some("currentColor".to_string()) }
@@ -375,16 +729,34 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                                 wasm_bindgen_futures::spawn_local(async move {
                                     match tauri_bridge::browser_navigate(BROWSER_ID, &trimmed).await {
                                         Ok(_) => {
+                                            browser_error.set(None);
                                             url_clone.set(trimmed.clone());
                                             input_clone.set(trimmed);
+                                            loading.set(true);
                                         }
-                                        Err(e) => web_sys::console::error_1(&JsValue::from_str(&format!("Navigate: {:?}", e))),
+                                        Err(e) => {
+                                            let message = format!("Navigation failed: {e:?}");
+                                            browser_error.set(Some(message.clone()));
+                                            web_sys::console::error_1(&JsValue::from_str(&message));
+                                        }
                                     }
                                 });
                             }
                         }
                     },
                     placeholder: "Enter URL or search..."
+                }
+
+                if loading() {
+                    span {
+                        style: "font-size: 10px; color: var(--accent); white-space: nowrap;",
+                        "Loading…"
+                    }
+                } else if !page_title().is_empty() {
+                    span {
+                        style: "max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--textMuted);",
+                        "{page_title}"
+                    }
                 }
 
                 // Expand / dock toggle
@@ -407,6 +779,13 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     } else {
                         IconFullscreen { size: Some(16), color: Some("currentColor".to_string()) }
                     }
+                }
+            }
+
+            if let Some(error) = browser_error() {
+                div {
+                    style: "padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--danger, #d66); font-size: 11px;",
+                    "{error}"
                 }
             }
 
@@ -475,6 +854,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                                             Ok(_) => {
                                                 url_clone.set(target.clone());
                                                 input_clone.set(target);
+                                                loading.set(true);
                                             }
                                             Err(e) => web_sys::console::error_1(&JsValue::from_str(&format!("Navigate: {:?}", e))),
                                         }
@@ -500,6 +880,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                                             Ok(_) => {
                                                 url_clone.set(target.clone());
                                                 input_clone.set(target);
+                                                loading.set(true);
                                             }
                                             Err(e) => web_sys::console::error_1(&JsValue::from_str(&format!("Navigate: {:?}", e))),
                                         }

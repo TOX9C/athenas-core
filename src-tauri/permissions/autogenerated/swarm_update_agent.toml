@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-swarm-update-agent"
+description = "Enables the swarm_update_agent command without any pre-configured scope."
+commands.allow = ["swarm_update_agent"]
+
+[[permission]]
+identifier = "deny-swarm-update-agent"
+description = "Denies the swarm_update_agent command without any pre-configured scope."
+commands.deny = ["swarm_update_agent"]

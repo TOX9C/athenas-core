@@ -1,6 +1,8 @@
 //! Browser and xterm.js helpers shared by the mount lifecycle.
 
 use crate::stores::terminal::TerminalSession;
+use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -151,17 +153,38 @@ pub(crate) fn schedule_fit(
     fit_instance: &JsValue,
     container: &web_sys::Element,
     term_val: &JsValue,
+    pending: &Rc<RefCell<bool>>,
+    active: &Rc<RefCell<bool>>,
 ) {
+    // ResizeObserver, font updates, visibility restoration, and pane swaps can
+    // all request a fit in the same frame. Keep one RAF in flight so xterm does
+    // not resize/repaint repeatedly while WebKit is still settling flex layout.
+    if !*active.borrow() || *pending.borrow() {
+        return;
+    }
+    *pending.borrow_mut() = true;
+
     let fit_for_raf = fit_instance.clone();
     let container_for_raf = container.clone();
     let term_for_raf = term_val.clone();
+    let pending_for_raf = pending.clone();
+    let active_for_raf = active.clone();
     // RAF callbacks fire exactly once, so use once_into_js which auto-frees
-    // the closure after invocation. The previous Closure::wrap + forget()
-    // leaked one closure per call (per resize tick).
+    // the closure after invocation. Clear the coalescing marker before fitting
+    // so a ResizeObserver notification caused by the fit can schedule the next
+    // settled frame rather than being lost.
     let raf_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
-        call_fit(&fit_for_raf, &container_for_raf, &term_for_raf);
+        *pending_for_raf.borrow_mut() = false;
+        if *active_for_raf.borrow() {
+            call_fit(&fit_for_raf, &container_for_raf, &term_for_raf);
+        }
     });
-    let _ = window.request_animation_frame(raf_closure.as_ref().unchecked_ref());
+    if window
+        .request_animation_frame(raf_closure.as_ref().unchecked_ref())
+        .is_err()
+    {
+        *pending.borrow_mut() = false;
+    }
 }
 
 // `debounced_fit` was deleted: it was dead code (never called) and leaked a
@@ -211,11 +234,37 @@ pub(crate) fn force_redraw(term_val: &JsValue) {
 // so the container rect can be 0×0. Polling with RAF gives the browser a
 // chance to reflow. Capped at ~300ms to avoid hanging indefinitely.
 // ---------------------------------------------------------------------------
+#[inline]
+pub(crate) fn is_container_sized(width: f64, height: f64) -> bool {
+    width > 0.0 && height > 0.0
+}
+
+const CONTAINER_SIZE_RETRIES: usize = 15;
+
+enum ContainerSizePoll {
+    Ready,
+    Retry,
+    Exhausted,
+}
+
+#[inline]
+fn poll_container_size(width: f64, height: f64, attempt: usize) -> ContainerSizePoll {
+    if is_container_sized(width, height) {
+        ContainerSizePoll::Ready
+    } else if attempt + 1 < CONTAINER_SIZE_RETRIES {
+        ContainerSizePoll::Retry
+    } else {
+        ContainerSizePoll::Exhausted
+    }
+}
+
 pub(crate) async fn wait_for_container_size(container: &web_sys::Element) {
-    for _ in 0..15 {
+    for attempt in 0..CONTAINER_SIZE_RETRIES {
         let rect = container.get_bounding_client_rect();
-        if rect.width() > 0.0 && rect.height() > 0.0 {
-            return;
+        match poll_container_size(rect.width(), rect.height(), attempt) {
+            ContainerSizePoll::Ready => return,
+            ContainerSizePoll::Exhausted => break,
+            ContainerSizePoll::Retry => {}
         }
         // Yield to the browser so it can process the layout task queue.
         let window = match web_sys::window() {
@@ -232,6 +281,51 @@ pub(crate) async fn wait_for_container_size(container: &web_sys::Element) {
     web_sys::console::warn_1(
         &"[XtermMount] container still 0-sized after 15 frames; proceeding anyway".into(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_container_sized, poll_container_size, ContainerSizePoll, CONTAINER_SIZE_RETRIES,
+    };
+
+    #[test]
+    fn container_size_retry_budget_is_bounded() {
+        assert_eq!(CONTAINER_SIZE_RETRIES, 15);
+    }
+
+    #[test]
+    fn container_size_poll_stops_on_first_sized_layout() {
+        assert!(matches!(
+            poll_container_size(100.0, 40.0, 0),
+            ContainerSizePoll::Ready
+        ));
+    }
+
+    #[test]
+    fn container_size_poll_retries_before_the_budget_is_exhausted() {
+        assert!(matches!(
+            poll_container_size(0.0, 0.0, CONTAINER_SIZE_RETRIES - 2),
+            ContainerSizePoll::Retry
+        ));
+    }
+
+    #[test]
+    fn container_size_poll_allows_bounded_fallback_after_the_last_attempt() {
+        assert!(matches!(
+            poll_container_size(0.0, 0.0, CONTAINER_SIZE_RETRIES - 1),
+            ContainerSizePoll::Exhausted
+        ));
+    }
+
+    #[test]
+    fn container_is_sized_only_when_both_dimensions_are_positive() {
+        assert!(is_container_sized(1.0, 1.0));
+        assert!(!is_container_sized(0.0, 100.0));
+        assert!(!is_container_sized(100.0, 0.0));
+        assert!(!is_container_sized(-1.0, 100.0));
+        assert!(!is_container_sized(100.0, -1.0));
+    }
 }
 
 // scan_for_resume_id has been replaced by ResumeScanner in utils::resume_scanner.

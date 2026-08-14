@@ -4,7 +4,9 @@
 //! whose forwarded payload is pushed back to the phone over a writer task.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -13,7 +15,14 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use tauri::{EventId, Listener, Manager};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
+
+pub const MAX_RELAY_CONNECTIONS: usize = 8;
+const MAX_RELAY_FRAMES_PER_WINDOW: usize = 240;
+const RELAY_FRAME_WINDOW: Duration = Duration::from_secs(10);
+const MAX_RELAY_FRAME_BYTES: usize = 64 * 1024;
+const RELAY_WRITER_QUEUE: usize = 1024;
+static ACTIVE_RELAY_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 
 use super::dispatch;
 use super::RelayCtx;
@@ -31,8 +40,11 @@ pub async fn handle_upgrade(
     if !auth_subprotocol_matches(&headers, &expected_protocol) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let Some(connection_guard) = try_acquire_connection() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
     ws.protocols([expected_protocol])
-        .on_upgrade(move |socket| session_loop(socket, ctx))
+        .on_upgrade(move |socket| session_loop(socket, ctx, connection_guard))
 }
 
 /// One connected phone session. Reads frames, dispatches `invoke` messages,
@@ -49,20 +61,26 @@ pub async fn handle_upgrade(
 ///     returned `EventId` is stored keyed by the shim-assigned listener id.
 ///   - `unlisten` removes the registered `EventId`. On disconnect we drop
 ///     every registered listener so no dangling callbacks outlive the phone.
-async fn session_loop(socket: WebSocket, ctx: RelayCtx) {
+async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnectionGuard) {
     log::info!("[relay] ws session opened");
 
     let app = ctx.app_handle.clone();
     let (mut sink, mut stream) = socket.split();
-    // Event callbacks run outside this async session task. An unbounded
-    // sender lets them enqueue raw PTY frames without blocking/panicking in a
-    // Tokio runtime; the dedicated writer remains the only socket writer.
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    // Event callbacks run outside this async session task. The bounded queue
+    // prevents a slow phone from turning terminal output into unbounded memory
+    // growth; event frames are dropped when the phone cannot keep up.
+    let (tx, mut rx) = mpsc::channel::<String>(RELAY_WRITER_QUEUE);
+    let overloaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let overload_notify = Arc::new(Notify::new());
+    let writer_overload_notify = Arc::clone(&overload_notify);
+    let mut frame_window_started = Instant::now();
+    let mut frames_in_window = 0usize;
 
     // Writer task: drains the mpsc channel and pushes frames to the sink.
     let writer = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
             if sink.send(Message::Text(frame)).await.is_err() {
+                writer_overload_notify.notify_one();
                 break;
             }
         }
@@ -81,11 +99,24 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx) {
     // alongside the connection's own spawned ids. The pairing token remains
     // the trust boundary for this read/write surface.
     let owned_pane_ids: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-    let workspace_pane_ids: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(
-        workspace_pane_ids(&app),
-    ));
+    let workspace_pane_ids: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(workspace_pane_ids(&app)));
 
-    while let Some(frame) = stream.next().await {
+    loop {
+        let frame = tokio::select! {
+            _ = overload_notify.notified() => {
+                log::warn!("[relay] closing slow client after writer backpressure");
+                break;
+            }
+            frame = stream.next() => match frame {
+                Some(frame) => frame,
+                None => break,
+            },
+        };
+        if overloaded.load(Ordering::Acquire) {
+            log::warn!("[relay] closing slow client after writer backpressure");
+            break;
+        }
         let frame = match frame {
             Ok(f) => f,
             Err(e) => {
@@ -103,7 +134,7 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx) {
             _ => continue,
         };
 
-        if text.len() > 64 * 1024 {
+        if text.len() > MAX_RELAY_FRAME_BYTES {
             log::warn!("[relay] oversized ws frame rejected");
             break;
         }
@@ -115,6 +146,16 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx) {
                 continue;
             }
         };
+
+        if frame_window_started.elapsed() >= RELAY_FRAME_WINDOW {
+            frame_window_started = Instant::now();
+            frames_in_window = 0;
+        }
+        frames_in_window += 1;
+        if frames_in_window > MAX_RELAY_FRAMES_PER_WINDOW {
+            log::warn!("[relay] websocket frame-rate limit exceeded");
+            break;
+        }
 
         let kind = msg.get("t").and_then(|t| t.as_str()).unwrap_or("");
         match kind {
@@ -179,7 +220,10 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx) {
                 } else {
                     serde_json::json!({ "t": "resp", "id": id, "ok": false, "error": value })
                 };
-                let _ = tx.send(resp.to_string());
+                if tx.try_send(resp.to_string()).is_err() {
+                    log::warn!("[relay] response queue full; closing slow client");
+                    break;
+                }
             }
             "listen" => {
                 let lid = msg
@@ -206,6 +250,8 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx) {
                 }
                 log::debug!("[relay] listen register: {event} ({lid})");
                 let tx_clone = tx.clone();
+                let overloaded_for_event = Arc::clone(&overloaded);
+                let event_overload_notify = Arc::clone(&overload_notify);
                 let event_name = event.clone();
                 let app_for_listen = app.clone();
                 let owned_for_filter = Arc::clone(&owned_pane_ids);
@@ -226,29 +272,30 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx) {
                     // for every desktop pane, a paired phone only receives
                     // output/exit events for panes IT spawned via pty_spawn.
                     if is_terminal_stream {
-                        // terminal:exit is emitted as a bare session id string
-                        // (pty.rs:619); the others carry JSON objects whose
-                        // pane id is at "paneId" or "sessionId".
-                        let owns = if event_name == "terminal:exit" {
-                            let id = payload.trim().trim_matches('"');
-                            owned_for_filter.lock().contains(id)
-                                || workspace_for_filter.lock().contains(id)
-                        } else {
-                            serde_json::from_str::<serde_json::Value>(&payload)
-                                .ok()
-                                .and_then(|v| {
-                                    v.get("paneId")
-                                        .or_else(|| v.get("sessionId"))
-                                        .or_else(|| v.get("session_id"))
-                                        .and_then(|id| id.as_str())
-                                        .map(|s| s.to_string())
-                                })
-                                .map(|id| {
-                                    owned_for_filter.lock().contains(&id)
-                                        || workspace_for_filter.lock().contains(&id)
-                                })
-                                .unwrap_or(false)
-                        };
+                        // terminal:exit carries {paneId,generation}; the
+                        // other terminal events carry JSON objects whose pane
+                        // id is at "paneId" or "sessionId".
+                        let owns = serde_json::from_str::<serde_json::Value>(&payload)
+                            .ok()
+                            .and_then(|v| {
+                                v.get("paneId")
+                                    .or_else(|| v.get("sessionId"))
+                                    .or_else(|| v.get("session_id"))
+                                    .and_then(|id| id.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .or_else(|| {
+                                // Backward compatibility for older desktop
+                                // emitters that sent the pane id as a JSON
+                                // string rather than an object.
+                                (event_name == "terminal:exit")
+                                    .then(|| payload.trim().trim_matches('"').to_string())
+                            })
+                            .map(|id| {
+                                owned_for_filter.lock().contains(&id)
+                                    || workspace_for_filter.lock().contains(&id)
+                            })
+                            .unwrap_or(false);
                         if !owns {
                             return;
                         }
@@ -261,7 +308,13 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx) {
                     // Terminal bytes are stateful: never drop a frame or call
                     // blocking_send from a runtime callback. The unbounded
                     // sender is consumed by the dedicated socket writer.
-                    let _ = tx_clone.send(out.to_string());
+                    if tx_clone.try_send(out.to_string()).is_err() {
+                        // Do not keep a stateful terminal stream alive after a
+                        // frame is dropped. The reader observes this flag and
+                        // closes the slow client on its next turn.
+                        overloaded_for_event.store(true, Ordering::Release);
+                        event_overload_notify.notify_one();
+                    }
                 });
                 if let Some(previous) = listeners.lock().insert(lid, eid) {
                     // Re-registering the same shim listener id must not leave
@@ -301,6 +354,23 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx) {
     let _ = writer.await;
 
     log::info!("[relay] ws session ended");
+}
+
+struct RelayConnectionGuard;
+
+fn try_acquire_connection() -> Option<RelayConnectionGuard> {
+    ACTIVE_RELAY_CONNECTIONS
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_RELAY_CONNECTIONS).then_some(count + 1)
+        })
+        .ok()
+        .map(|_| RelayConnectionGuard)
+}
+
+impl Drop for RelayConnectionGuard {
+    fn drop(&mut self) {
+        ACTIVE_RELAY_CONNECTIONS.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn auth_subprotocol_matches(headers: &HeaderMap, expected: &str) -> bool {
@@ -357,6 +427,7 @@ fn event_allowed(event: &str) -> bool {
             | "plugin:error"
             | "plugin:event"
             | "swarm:stateChange"
+            | "athena:stream"
             | "athena:askUser"
             | "athena:planUpdate"
             | "athena:planEvaluated"
@@ -383,7 +454,10 @@ mod tests {
         );
         assert!(auth_subprotocol_matches(&headers, "athena-relay.secret"));
         assert!(!auth_subprotocol_matches(&headers, "athena-relay.other"));
-        assert!(!auth_subprotocol_matches(&HeaderMap::new(), "athena-relay.secret"));
+        assert!(!auth_subprotocol_matches(
+            &HeaderMap::new(),
+            "athena-relay.secret"
+        ));
     }
 
     #[test]

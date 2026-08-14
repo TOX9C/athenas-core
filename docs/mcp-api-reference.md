@@ -36,13 +36,19 @@ interface ServerConfig {
 }
 ```
 
-The Tauri app starts the Rust TCP listener on `127.0.0.1:4545` during backend initialization. If that port is temporarily occupied, boot retries the bind until shutdown. Direct stdio mode remains available when the Rust server is launched as a subprocess; the Node SDK server is a separate optional package, not the desktop backend's canonical transport.
+The Tauri app starts the Rust TCP listener on `127.0.0.1:4545` during backend initialization. If that port is temporarily occupied, boot retries the bind until shutdown. The Rust implementation also has a testable line-delimited stdio loop for trusted child-process use. The Node SDK server is a separate optional package, not the desktop backend's canonical transport.
+
+## External tool discovery
+
+`tools/list` is generated from the Rust executor-backed surface. It includes the legacy aliases used by existing clients (`create_tasks`, `get_next_task`, `update_task_status`, `spawn_agents`, `get_output`, `list_agent_panes`, `code_search`, and `search_files`) plus the canonical executor names such as `kanban_create_task`, `fs_read_file`, `read_agent_output`, and `workspace_list`.
+
+Tools that previously returned placeholder responses (`request_input`, `notify`, `status_update`, `athena_forward_output`, `send_message_to_agent`, and `read_agent_messages`) are not advertised by the desktop Rust MCP server until they have a real executor-backed implementation. Existing agent lifecycle/status communication uses the separate agent-comms channel. This is an intentional discovery compatibility change: clients should use the returned `tools/list` result rather than assuming the historical registry.
 
 ## Tools
 
-### `notify`
+### `notify` (not advertised by desktop Rust MCP)
 
-Send a notification to the Athena user interface.
+The historical notification contract is retained here for protocol reference. The desktop Rust MCP server does not advertise this tool; use the agent-comms channel or the optional Node MCP package for notification features.
 
 **Parameters:**
 
@@ -59,9 +65,9 @@ Send a notification to the Athena user interface.
 
 ---
 
-### `request_input`
+### `request_input` (not advertised by desktop Rust MCP)
 
-Prompt the user for text input. Blocks until the user responds or timeout.
+The historical blocking-input contract is retained here for protocol reference. The desktop Rust MCP server does not advertise this tool until a real executor-backed UI flow is available.
 
 **Parameters:**
 
@@ -84,9 +90,9 @@ interface InputResponse {
 
 ---
 
-### `update_status`
+### `update_status` (not advertised by desktop Rust MCP)
 
-Update the status of an agent in Athena.
+The historical status contract is retained here for protocol reference. The desktop Rust MCP server does not advertise this tool; agent lifecycle/status updates use the separate agent-comms channel.
 
 **Parameters:**
 
@@ -104,9 +110,9 @@ Update the status of an agent in Athena.
 
 ---
 
-### `report_error`
+### `report_error` (not advertised by desktop Rust MCP)
 
-Report an error from an agent.
+The historical error-reporting contract is retained here for protocol reference. The desktop Rust MCP server does not advertise this tool.
 
 **Parameters:**
 
@@ -123,9 +129,9 @@ Report an error from an agent.
 
 ---
 
-### `report_completion`
+### `report_completion` (not advertised by desktop Rust MCP)
 
-Report that an agent has completed its task.
+The historical completion-reporting contract is retained here for protocol reference. The desktop Rust MCP server does not advertise this tool.
 
 **Parameters:**
 
@@ -147,9 +153,10 @@ Create new tasks in Athena's task system.
 
 **Parameters:**
 
-| Field   | Type                                             | Required | Description     |
-| ------- | ------------------------------------------------ | -------- | --------------- |
-| `tasks` | `Array<{ title: string; description?: string }>` | Yes      | Tasks to create |
+| Field     | Type                                             | Required | Description                   |
+| --------- | ------------------------------------------------ | -------- | ----------------------------- |
+| `spaceId` | `string`                                         | Yes      | Workspace receiving the tasks |
+| `tasks`   | `Array<{ title: string; description?: string }>` | Yes      | Tasks to create               |
 
 **Response:** `{ success: boolean, taskIds: string[] }`
 
@@ -161,9 +168,9 @@ Get the next pending task for an agent to work on.
 
 **Parameters:**
 
-| Field     | Type     | Required | Description                |
-| --------- | -------- | -------- | -------------------------- |
-| `agentId` | `string` | No       | Filter by agent assignment |
+| Field | Type | Required | Description                                     |
+| ----- | ---- | -------- | ----------------------------------------------- |
+| —     | —    | No       | Uses the active workspace's next available task |
 
 **Response:** `{ task: TaskState | null }`
 
@@ -226,9 +233,9 @@ Returns "No agent panes with captured output." if none exist.
 
 ---
 
-### `athena_forward_output`
+### `athena_forward_output` (not advertised by desktop Rust MCP)
 
-Forward output from a pane to a plugin for real-time processing.
+The historical output-forwarding contract is retained here for protocol reference. The desktop Rust MCP server does not advertise this tool; output forwarding uses the plugin/agent-comms integration.
 
 **Parameters:**
 
@@ -317,7 +324,7 @@ ATHENA_MCP_HOST=127.0.0.1 ATHENA_MCP_PORT=4545 \
 
 ### Stdio
 
-The Rust MCP server also communicates over stdin/stdout using JSON-RPC 2.0 when Athena is launched directly as a subprocess. The Tauri `mcp_init(port)` command ensures the Rust TCP listener is active on the requested port: it is idempotent for the active port and returns a conflict error for a different port while another listener is running. TCP shutdown signals the accept loop, interrupts active client reads, and waits for the listener generation to drop before releasing the port for reuse.
+The Rust MCP server also communicates over stdin/stdout using JSON-RPC 2.0 in an explicitly launched trusted child-process context. Stdio uses the same executor-backed tool router as TCP, but intentionally skips TCP token authentication because process ownership is the trust boundary. The desktop Tauri process starts only the TCP transport; it does not consume the app's own stdin/stdout. The `mcp_init(port)` command ensures the Rust TCP listener is active on the requested port: it is idempotent for the active port and returns a conflict error for a different port while another listener is running. TCP shutdown signals the accept loop, interrupts active client reads, and waits for the listener generation to drop before releasing the port for reuse.
 
 ```bash
 # Direct subprocess mode, when the Rust MCP server is launched by the client

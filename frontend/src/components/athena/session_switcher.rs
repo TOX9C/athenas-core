@@ -8,6 +8,14 @@ async fn do_load_session(
     session_id: &str,
     athena_state: &mut Signal<crate::stores::athena::AthenaState>,
 ) -> Result<(), String> {
+    // Cancel the previous turn before replacing the visible conversation.
+    // This closes the race where late chunks from session A could land in
+    // session B after a user switches chats.
+    let previous_request = athena_state.read().active_request_id.clone();
+    if let Some(request_id) = previous_request {
+        let _ = tauri_bridge::athena_cancel_stream(&request_id).await;
+        athena_state.write().invalidate_active_request();
+    }
     match tauri_bridge::session_get(session_id).await {
         Ok(json) => {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
@@ -139,10 +147,15 @@ pub fn SessionSwitcher() -> Element {
                         button {
                             class: "btn-secondary btn-sm",
                             style: "width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--text); font-family: var(--font-ui); font-size: var(--text-xs); cursor: pointer; transition: all var(--dur-fast) var(--ease);",
-                            onclick: move |_| {
-                                let mut athena = athena_state;
-                                spawn(async move {
-                                    match tauri_bridge::session_create(Some("New Chat")).await {
+                            onclick: move |_| {                                                let mut athena = athena_state;
+                                                spawn(async move {
+                                                    let request_id = athena.read().active_request_id.clone();
+                                                    if let Some(request_id) = request_id {
+                                                        let _ = tauri_bridge::athena_cancel_stream(&request_id).await;
+                                                        athena.write().invalidate_active_request();
+                                                    }
+                                                    match tauri_bridge::session_create(Some("New Chat")).await {
+
                                         Ok(json) => {
                                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
                                                 if let Some(real_id) = val.get("id").and_then(|v| v.as_str()) {

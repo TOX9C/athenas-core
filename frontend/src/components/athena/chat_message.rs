@@ -1,5 +1,5 @@
 use super::content_block::ContentBlockRenderer;
-use crate::components::shared::illustration::OwlMark;
+use crate::components::shared::illustration::CoreMark;
 use crate::stores::athena::{AthenaMessage, MessageRole};
 use dioxus::prelude::*;
 
@@ -22,19 +22,20 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
         "var(--text)"
     };
 
-    let body_border = if is_error {
-        "1px solid var(--error)"
+    let (plaque_bg, body_border, plaque_shadow) = if is_error {
+        ("rgba(235, 145, 19, 0.10)", "1px solid var(--error)", "none")
+    } else if is_user {
+        (
+            "var(--accentSubtle)",
+            "1px solid color-mix(in srgb, var(--accent) 28%, var(--border))",
+            "none",
+        )
     } else {
-        "none"
-    };
-
-    // Flat-quiet: messages read as text in a column, not as a stack of frosted
-    // boxes. Errors keep a solid warning-tinted fill so the failure reads
-    // clearly; everything else is transparent.
-    let (plaque_bg, plaque_shadow) = if is_error {
-        ("rgba(235, 145, 19, 0.10)", "none")
-    } else {
-        ("transparent", "none")
+        (
+            "var(--bgSecondary)",
+            "1px solid var(--border)",
+            "var(--shadow-sm)",
+        )
     };
 
     // Avatar: flat disc; Athena side carries the lit-sweep hover affordance.
@@ -57,7 +58,7 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
             class: "chat-message",
             style: "display: flex; align-items: flex-start; gap: 10px; align-self: {align}; max-width: 90%; padding: 8px 0;",
 
-            // Avatar — frost-light plaque with lit-sweep on Athena side.
+            // Avatar — a quiet identity mark for each speaker.
             div {
                 class: "{avatar_class}",
                 style: "width: 28px; height: 28px; border-radius: 50%; background: var(--bgTertiary); border: 1px solid var(--border); box-shadow: {avatar_glow}; display: flex; align-items: center; justify-content: center; flex-shrink: 0;",
@@ -67,7 +68,7 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
                         "U"
                     }
                 } else {
-                    OwlMark { size: Some(18) }
+                    CoreMark { size: Some(18) }
                 }
             }
 
@@ -88,7 +89,8 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
                     }
                 }
 
-                // Content — frost-light plaque body.
+                // Content — each message gets a readable surface so the chat
+                // remains legible against the surrounding panel.
                 div {
                     style: "padding: 12px 16px; background: {plaque_bg}; color: {content_color}; border: 1px solid {body_border}; border-radius: var(--radius-md); box-shadow: {plaque_shadow}; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;",
 

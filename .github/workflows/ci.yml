@@ -47,8 +47,23 @@ jobs:
       - name: Check Tauri command registry
         run: node scripts/check-tauri-command-drift.mjs
 
+      - name: Check Tauri permission registry
+        run: node scripts/check-tauri-permission-drift.mjs
+
       - name: Check plugin integration surface
         run: npm run check:plugin-integration
+
+      - name: Check Tauri security configuration
+        run: npm run check:tauri-security
+
+      - name: Check release privacy invariants
+        run: npm run check:release-privacy
+
+      - name: Check release identity
+        run: npm run check:release-identity
+
+      - name: Check release documentation
+        run: npm run check:release-docs
 
       - name: JavaScript and TypeScript tests
         run: npm test
@@ -61,6 +76,12 @@ jobs:
 
       - name: cargo check
         run: cargo check --workspace
+
+      - name: Install Cargo audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Cargo advisory audit
+        run: cargo audit
 
       - name: cargo clippy
         run: cargo clippy --workspace

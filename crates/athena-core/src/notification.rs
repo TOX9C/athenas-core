@@ -196,7 +196,8 @@ impl NotificationService {
             emitter(channel, data);
             return;
         }
-        log::debug!("[notification] {} -> {}", channel, data);
+        // Notification payloads may contain user prompts, paths, or agent output.
+        log::debug!("[notification] event emitted on channel {channel}");
     }
 
     fn now() -> u64 {

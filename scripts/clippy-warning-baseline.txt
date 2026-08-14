@@ -1,0 +1,14 @@
+# Reviewed baseline as of 2026-08-08. Format: clippy-code|primary-file.
+clippy::await_holding_lock|src-tauri/src/commands/relay.rs
+clippy::bool_comparison|frontend/src/components/mobile.rs
+clippy::clone_on_copy|frontend/src/components/notifications/notification_toast.rs
+clippy::double_ended_iterator_last|crates/athena-core/src/agent_activity.rs
+clippy::empty_line_after_doc_comments|crates/athena-core/src/orchestrator.rs
+clippy::let_unit_value|src-tauri/src/relay/mod.rs
+clippy::manual_contains|crates/athena-core/src/agent_detection.rs
+clippy::map_flatten|crates/athena-core/src/agent_detection.rs
+clippy::needless_borrows_for_generic_args|crates/athena-core/src/agent_detection.rs
+clippy::should_implement_trait|crates/athena-core/src/agent_activity.rs
+clippy::too_many_arguments|crates/athena-core/src/mcp_transport.rs
+clippy::type_complexity|crates/athena-core/src/agent_activity.rs
+clippy::unnecessary_map_or|crates/athena-resume-scanner/src/lib.rs

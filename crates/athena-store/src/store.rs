@@ -1,7 +1,9 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -31,8 +33,10 @@ pub enum StoreError {
 /// condition.
 pub struct KeyValueStore {
     path: Option<PathBuf>,
-    data: parking_lot::Mutex<std::collections::HashMap<String, serde_json::Value>>,
-    dirty: AtomicBool,
+    data: Arc<parking_lot::Mutex<std::collections::HashMap<String, serde_json::Value>>>,
+    dirty: Arc<AtomicBool>,
+    revision: Arc<AtomicU64>,
+    persist_lock: Arc<parking_lot::Mutex<()>>,
 }
 
 impl KeyValueStore {
@@ -48,8 +52,10 @@ impl KeyValueStore {
     pub fn new_empty() -> Self {
         Self {
             path: None, // truly in-memory, no persistence
-            data: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            dirty: AtomicBool::new(false),
+            data: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+            dirty: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+            persist_lock: Arc::new(parking_lot::Mutex::new(())),
         }
     }
 
@@ -75,8 +81,10 @@ impl KeyValueStore {
         };
         Ok(Self {
             path: Some(path),
-            data: parking_lot::Mutex::new(data),
-            dirty: AtomicBool::new(false),
+            data: Arc::new(parking_lot::Mutex::new(data)),
+            dirty: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+            persist_lock: Arc::new(parking_lot::Mutex::new(())),
         })
     }
 
@@ -95,8 +103,10 @@ impl KeyValueStore {
         };
         Ok(Self {
             path: Some(path),
-            data: parking_lot::Mutex::new(data),
-            dirty: AtomicBool::new(false),
+            data: Arc::new(parking_lot::Mutex::new(data)),
+            dirty: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+            persist_lock: Arc::new(parking_lot::Mutex::new(())),
         })
     }
 
@@ -121,8 +131,10 @@ impl KeyValueStore {
         };
         Ok(Self {
             path: Some(path),
-            data: parking_lot::Mutex::new(data),
-            dirty: AtomicBool::new(false),
+            data: Arc::new(parking_lot::Mutex::new(data)),
+            dirty: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+            persist_lock: Arc::new(parking_lot::Mutex::new(())),
         })
     }
 
@@ -174,25 +186,25 @@ impl KeyValueStore {
     /// updates the in-memory map and returns `Ok(())` without touching disk.
     pub fn set_sync<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
-        let json = {
+        let _persist_guard = self.persist_lock.lock();
+        {
             let mut map = self.data.lock();
             map.insert(key.to_string(), json_value);
-            serde_json::to_string_pretty(&*map)?
-        };
-        let path = match &self.path {
-            Some(p) => p,
-            None => {
-                // In-memory fallback: update the in-memory state and clear the
-                // dirty flag (no on-disk file to flush). Data lives until drop.
-                self.dirty.store(false, Ordering::SeqCst);
-                return Ok(());
-            }
-        };
-        let tmp_path = path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, json.as_bytes())?;
-        std::fs::rename(&tmp_path, path)?;
-        // In-memory state matches disk; clear any pending dirty bit.
-        self.dirty.store(false, Ordering::SeqCst);
+        }
+        self.revision.fetch_add(1, Ordering::SeqCst);
+        self.dirty.store(true, Ordering::SeqCst);
+        if self.path.is_none() {
+            self.dirty.store(false, Ordering::SeqCst);
+            return Ok(());
+        }
+        self.dirty.store(true, Ordering::SeqCst);
+        let persisted_revision = self.revision.load(Ordering::SeqCst);
+        self.persist_snapshot_locked()?;
+        if self.revision.load(Ordering::SeqCst) == persisted_revision {
+            self.dirty.store(false, Ordering::SeqCst);
+        } else {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -202,22 +214,25 @@ impl KeyValueStore {
     /// For an in-memory fallback store, this removes the key from the in-memory
     /// map and returns `Ok(())` without touching disk.
     pub fn delete_sync(&self, key: &str) -> Result<(), StoreError> {
-        let json = {
+        let _persist_guard = self.persist_lock.lock();
+        {
             let mut map = self.data.lock();
             map.remove(key);
-            serde_json::to_string_pretty(&*map)?
-        };
-        let path = match &self.path {
-            Some(p) => p,
-            None => {
-                self.dirty.store(false, Ordering::SeqCst);
-                return Ok(());
-            }
-        };
-        let tmp_path = path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, json.as_bytes())?;
-        std::fs::rename(&tmp_path, path)?;
-        self.dirty.store(false, Ordering::SeqCst);
+        }
+        self.revision.fetch_add(1, Ordering::SeqCst);
+        self.dirty.store(true, Ordering::SeqCst);
+        if self.path.is_none() {
+            self.dirty.store(false, Ordering::SeqCst);
+            return Ok(());
+        }
+        self.dirty.store(true, Ordering::SeqCst);
+        let persisted_revision = self.revision.load(Ordering::SeqCst);
+        self.persist_snapshot_locked()?;
+        if self.revision.load(Ordering::SeqCst) == persisted_revision {
+            self.dirty.store(false, Ordering::SeqCst);
+        } else {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -236,18 +251,13 @@ impl KeyValueStore {
     /// Mark the store as having pending writes. Cheap atomic flag — safe to
     /// call on every mutation.
     fn mark_dirty(&self) {
+        self.revision.fetch_add(1, Ordering::SeqCst);
         self.dirty.store(true, Ordering::SeqCst);
     }
 
     /// Returns `true` if there are pending writes that have not been flushed.
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(Ordering::SeqCst)
-    }
-
-    /// Atomically check the dirty flag and clear it. Returns `true` if a flush
-    /// is required (caller should invoke `persist`).
-    fn take_dirty(&self) -> bool {
-        self.dirty.swap(false, Ordering::SeqCst)
     }
 
     /// If the store is dirty, write the in-memory state to disk and clear the
@@ -264,34 +274,113 @@ impl KeyValueStore {
             self.dirty.store(false, Ordering::SeqCst);
             return Ok(());
         }
-        if !self.take_dirty() {
+        if !self.dirty.load(Ordering::SeqCst) {
             return Ok(());
         }
-        self.persist().await
+        let store = self.clone_for_persistence();
+        tokio::task::spawn_blocking(move || store.persist_snapshot())
+            .await
+            .map_err(|e| StoreError::Generic(e.to_string()))??;
+        Ok(())
     }
 
-    /// Persist the current in-memory state to disk unconditionally.
-    /// Used by `flush_if_dirty` and `Drop`; rarely needed by callers.
-    /// For an in-memory fallback store, returns `Ok(())` without writing.
-    async fn persist(&self) -> Result<(), StoreError> {
+    fn clone_for_persistence(&self) -> PersistenceHandle {
+        PersistenceHandle {
+            path: self.path.clone(),
+            data: Arc::clone(&self.data),
+            dirty: Arc::clone(&self.dirty),
+            revision: Arc::clone(&self.revision),
+            persist_lock: Arc::clone(&self.persist_lock),
+        }
+    }
+
+    fn persist_snapshot_locked(&self) -> Result<(), StoreError> {
         let path = match &self.path {
-            Some(p) => p.clone(),
-            None => return Ok(()),
+            Some(path) => path.clone(),
+            None => {
+                self.dirty.store(false, Ordering::SeqCst);
+                return Ok(());
+            }
         };
+        let revision = self.revision.load(Ordering::SeqCst);
         let json = {
             let map = self.data.lock();
             serde_json::to_string_pretty(&*map)?
         };
-        let tmp_path = path.with_extension("json.tmp");
-        tokio::task::spawn_blocking(move || {
-            std::fs::write(&tmp_path, json.as_bytes())?;
-            std::fs::rename(&tmp_path, &path)?;
-            Ok::<_, StoreError>(())
-        })
-        .await
-        .map_err(|e| StoreError::Generic(e.to_string()))??;
+        atomic_write(&path, json.as_bytes())?;
+        if self.revision.load(Ordering::SeqCst) == revision {
+            self.dirty.store(false, Ordering::SeqCst);
+        } else {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
+}
+
+struct PersistenceHandle {
+    path: Option<PathBuf>,
+    data: Arc<parking_lot::Mutex<std::collections::HashMap<String, serde_json::Value>>>,
+    dirty: Arc<AtomicBool>,
+    revision: Arc<AtomicU64>,
+    persist_lock: Arc<parking_lot::Mutex<()>>,
+}
+
+impl PersistenceHandle {
+    fn persist_snapshot(self) -> Result<(), StoreError> {
+        let _persist_guard = self.persist_lock.lock();
+        let path = match self.path {
+            Some(path) => path,
+            None => {
+                self.dirty.store(false, Ordering::SeqCst);
+                return Ok(());
+            }
+        };
+        let revision = self.revision.load(Ordering::SeqCst);
+        let json = {
+            let map = self.data.lock();
+            serde_json::to_string_pretty(&*map)?
+        };
+        atomic_write(&path, json.as_bytes())?;
+        if self.revision.load(Ordering::SeqCst) == revision {
+            self.dirty.store(false, Ordering::SeqCst);
+        } else {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+}
+
+/// Write a complete snapshot to a unique same-directory temporary file, sync
+/// the file, atomically replace the destination, and sync the directory entry
+/// where supported. The temporary path is removed on failure.
+fn atomic_write(path: &Path, content: &[u8]) -> Result<(), StoreError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("store.json"));
+    let temp_path = parent.join(format!(".{name}.tmp-{}", uuid::Uuid::new_v4()));
+
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp_path, path)?;
+        #[cfg(unix)]
+        {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        Ok::<(), std::io::Error>(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result.map_err(StoreError::from)
 }
 
 /// On drop, attempt a best-effort synchronous flush if dirty. This protects
@@ -309,24 +398,9 @@ impl Drop for KeyValueStore {
         if !self.dirty.load(Ordering::SeqCst) {
             return;
         }
-        let path = match &self.path {
-            Some(p) => p.clone(),
-            None => return,
-        };
-        let json = match serde_json::to_string_pretty(&*self.data.lock()) {
-            Ok(j) => j,
-            Err(e) => {
-                eprintln!("KeyValueStore drop: failed to serialize: {e}");
-                return;
-            }
-        };
-        let tmp_path = path.with_extension("json.tmp");
-        if let Err(e) = std::fs::write(&tmp_path, json.as_bytes()) {
-            eprintln!("KeyValueStore drop: write failed: {e}");
-            return;
-        }
-        if let Err(e) = std::fs::rename(&tmp_path, &path) {
-            eprintln!("KeyValueStore drop: rename failed: {e}");
+        let handle = self.clone_for_persistence();
+        if let Err(e) = handle.persist_snapshot() {
+            eprintln!("KeyValueStore drop: durable flush failed: {e}");
         }
     }
 }

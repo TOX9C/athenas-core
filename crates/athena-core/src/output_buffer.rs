@@ -146,7 +146,8 @@ impl OutputBuffer {
         if let Some(ref emitter) = maybe_emitter {
             emitter(channel, data);
         } else {
-            log::debug!("[output-buffer] {} -> {}", channel, data);
+            // Terminal output can contain credentials or private source text.
+            log::debug!("[output-buffer] event emitted on channel {channel}");
         }
     }
 

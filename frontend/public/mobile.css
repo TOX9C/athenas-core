@@ -86,7 +86,7 @@ button {
   justify-content: center;
   border: 1px solid var(--accent);
   border-radius: 50%;
-  font-size: 15px;
+  box-shadow: 0 0 10px var(--accentSubtle);
 }
 .mobile-topbar-right {
   display: inline-flex;
@@ -136,10 +136,16 @@ button {
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--textMuted);
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    transform 110ms var(--ease);
 }
 .mobile-icon-button:active,
 .mobile-nav-item:active,
 .mobile-space-card:active,
+.mobile-pane-tab:active,
 .mobile-primary-button:active,
 .mobile-ghost-button:active {
   transform: scale(0.98);
@@ -148,6 +154,7 @@ button {
 .mobile-icon-button:focus-visible {
   border-color: var(--border);
   color: var(--accent);
+  background-color: var(--bgHover);
   outline: none;
 }
 .mobile-accent-icon-button {
@@ -336,7 +343,12 @@ button {
   transition:
     border-color var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease),
-    background var(--dur-fast) var(--ease);
+    background var(--dur-fast) var(--ease),
+    transform 110ms var(--ease);
+}
+.mobile-pane-tab:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .mobile-pane-tab.is-active {
   border-color: var(--accent);
@@ -642,6 +654,7 @@ button {
   inset: 0;
   background: rgba(0, 0, 0, 0.66);
   pointer-events: auto;
+  animation: scrim-in var(--dur) var(--ease) both;
 }
 .mobile-drawer {
   position: absolute;
@@ -701,11 +714,22 @@ button {
   color: var(--textMuted);
   font-size: 14px;
   text-align: left;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    transform 110ms var(--ease);
+}
+.mobile-nav-item:hover {
+  background: var(--bgHover);
 }
 .mobile-nav-item.is-active {
   border-color: var(--accentSubtle);
   background: var(--accentSubtle);
   color: var(--accent);
+}
+.mobile-nav-item.is-active:hover {
+  background: var(--accentSubtle);
 }
 .mobile-drawer-footer {
   display: flex;
@@ -747,10 +771,56 @@ button {
   border-radius: 18px;
   background: var(--bgSecondary);
   box-shadow: var(--shadow-lg);
+  animation: mobile-modal-rise var(--dur) var(--ease) both;
 }
 .mobile-modal-card input {
   min-height: 44px;
   padding: 0 12px;
+}
+
+/* ── Micro-interaction language (mirrors the desktop pass) ─────────────────
+   Screen mounts rise in, cards reveal on hover with a gold hairline, and
+   every interactive control shares the same spring press. */
+@keyframes mobile-screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes mobile-modal-rise {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Each screen plays the entrance on mount (screens mount/unmount on switch). */
+.mobile-screen {
+  animation: mobile-screen-in var(--dur-slow) var(--ease) both;
+}
+
+/* Workspace cards — hover lifts the surface, active card keeps its gold. */
+.mobile-space-card:hover {
+  border-color: var(--accentSubtle);
+  background: var(--bgHover);
+}
+.mobile-space-card.is-active:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accentSubtle) 35%, var(--bgSecondary));
+}
+
+/* Ghost button — quiet hover reveal. */
+.mobile-ghost-button:hover {
+  border-color: var(--accentSubtle);
+  background: var(--bgHover);
 }
 
 @media (min-width: 700px) {
@@ -771,12 +841,16 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mobile-drawer {
+  .mobile-drawer,
+  .mobile-drawer-backdrop,
+  .mobile-modal-card,
+  .mobile-screen {
     animation: none;
   }
   .mobile-icon-button,
   .mobile-nav-item,
   .mobile-space-card,
+  .mobile-pane-tab,
   .mobile-primary-button,
   .mobile-ghost-button {
     transition: none;

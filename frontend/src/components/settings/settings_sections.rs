@@ -1,8 +1,10 @@
 //! Settings section components for General, Athena, and About.
 
 use super::{FontDropdown, GroupLabel, LabeledField, SizeStepper, Toggle};
+use crate::components::shared::icon::{IconCheck, IconClose};
 use crate::stores::athena::use_athena_store;
 use crate::stores::ui::use_ui_store;
+use crate::utils::font_size::persist_font_size;
 use dioxus::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -43,9 +45,7 @@ pub(super) fn GeneralSettings() -> Element {
                     let fam = ui_state.read().font_family.clone();
                     ui_state.write().font_size = val;
                     crate::themes::apply_font_to_dom(&fam, val);
-                    wasm_bindgen_futures::spawn_local(async move {
-                        let _ = crate::tauri_bridge::store_set("font_size", &val.to_string()).await;
-                    });
+                    persist_font_size(val);
                 }
             }
         }
@@ -304,19 +304,21 @@ pub(super) fn AthenaSettings() -> Element {
                     save_error.set(String::new());
                     do_save();
                 },
-                "Save ↵"
+                "Save"
             }
             match save_status() {
                 Some(true) => rsx! {
                     span {
                         style: "display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--success); font-weight: 500;",
-                        "✓ Saved"
+                        IconCheck { size: Some(13), color: Some("var(--success)".to_string()) }
+                        "Saved"
                     }
                 },
                 Some(false) => rsx! {
                     span {
                         style: "display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--error); font-weight: 500;",
-                        "✕ Save failed — see notification"
+                        IconClose { size: Some(12), color: Some("var(--error)".to_string()) }
+                        "Save failed — see notification"
                     }
                 },
                 None => rsx! {},
@@ -372,8 +374,10 @@ struct RelayStatus {
 
 async fn copy_to_clipboard(text: String) -> Result<(), ()> {
     let window = web_sys::window().ok_or(())?;
-    let navigator = js_sys::Reflect::get(&window, &JsValue::from_str("navigator")).map_err(|_| ())?;
-    let clipboard = js_sys::Reflect::get(&navigator, &JsValue::from_str("clipboard")).map_err(|_| ())?;
+    let navigator =
+        js_sys::Reflect::get(&window, &JsValue::from_str("navigator")).map_err(|_| ())?;
+    let clipboard =
+        js_sys::Reflect::get(&navigator, &JsValue::from_str("clipboard")).map_err(|_| ())?;
     let write_text = js_sys::Reflect::get(&clipboard, &JsValue::from_str("writeText"))
         .map_err(|_| ())?
         .dyn_into::<js_sys::Function>()
