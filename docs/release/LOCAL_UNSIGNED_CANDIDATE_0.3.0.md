@@ -1,6 +1,6 @@
 # Local Unsigned Candidate Evidence — 0.3.0
 
-**Status:** Internal build evidence only — not distributable
+**Status:** Beta distribution candidate — unsigned/not notarized; install via right-click → Open (see [`BETA_INSTALL_INSTRUCTIONS.md`](./BETA_INSTALL_INSTRUCTIONS.md))
 
 ## Build
 
@@ -20,7 +20,7 @@ Minimum macOS: 13.0
 - Mach-O: arm64.
 - Bundle version: `0.3.0`.
 - Bundle identifier: `com.athena.core`.
-- SHA-256 for the rebuilt local candidate: `946781fd5b5d33e88d75a1e74c379198f13deab695c56cf90eb5de620afbf98d`.
+- SHA-256 for the rebuilt local candidate (2026-08-14): `b3f19c85c5ac1083d11366e1a6b4a4e112acaa85477b7c6b677d863f94d90148`.
 
 ## Renderer smoke evidence
 

@@ -118,15 +118,15 @@ See [`MACOS_SIGNING_SETUP.md`](./MACOS_SIGNING_SETUP.md) for the credential-safe
 - [x] Production entitlements are explicitly empty in `src-tauri/entitlements.plist`; final signed-artifact entitlement review remains open.
 - [x] App is built from a clean tagged revision: tag `v0.3.0` = commit `88aec08d` = HEAD; all app/release code is committed. Unrelated ad-project files (`.hyperframes/ad/`) remain uncommitted but are not part of the app build.
 - [ ] App bundle is Developer ID signed.
-- [ ] Unsigned local DMG is created successfully; local evidence is recorded below, but signed/notarized DMG remains blocked on Apple credentials.
+- [x] Unsigned local DMG is created successfully; signed/notarized DMG remains deferred (owner chose the free beta path).
 - [ ] Notarization succeeds.
 - [ ] Ticket is stapled.
 - [ ] `codesign --verify --deep --strict --verbose=2` passes.
 - [ ] `spctl --assess --type execute --verbose` passes.
 - [ ] `xcrun stapler validate` passes.
-- [ ] Local unsigned DMG passes `hdiutil verify`; evidence: `docs/release/LOCAL_UNSIGNED_CANDIDATE_0.3.0.md` and `target/release/bundle/dmg/Athena's Core_0.3.0_aarch64.dmg`.
+- [x] Local unsigned DMG passes `hdiutil verify`; evidence: `docs/release/LOCAL_UNSIGNED_CANDIDATE_0.3.0.md` and `target/release/bundle/dmg/Athena's Core_0.3.0_aarch64.dmg`.
 - [x] Local verifier can require exactly one `.app` and an arm64-capable executable (`--require-app --require-arm64`); negative architecture coverage is exercised by `scripts/test-verify-macos-artifact.mjs`.
-- [ ] Local unsigned DMG checksum generated; observed candidate hash `946781fd5b5d33e88d75a1e74c379198f13deab695c56cf90eb5de620afbf98d`; publication checksum remains pending signed artifact. See `LOCAL_UNSIGNED_CANDIDATE_0.3.0.md`.
+- [x] Local unsigned DMG checksum generated (2026-08-14): `b3f19c85c5ac1083d11366e1a6b4a4e112acaa85477b7c6b677d863f94d90148`; publication checksum remains pending signed artifact. See `LOCAL_UNSIGNED_CANDIDATE_0.3.0.md`.
 - [ ] Clean Apple Silicon Mac installs from the published DMG.
 - [ ] Clean Mac launches from Finder without right-click/Open workaround.
 - [ ] Uninstall/reinstall behavior is documented and tested.

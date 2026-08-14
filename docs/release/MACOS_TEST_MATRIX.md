@@ -108,6 +108,13 @@ pre-artifact baseline; they do **not** satisfy the clean-machine or packaged-soa
 | 10-cycle lifecycle soak (panel switch / modal open / pane mount) | ✅ PASS, 0 errors | `e2e-tests/test/specs/release-soak.e2e.mjs`, `SOAK_ITERATIONS=10` |
 | 12-pane geometry: non-overlapping, responsive, survives relayout | ✅ PASS           | `e2e-tests/test/specs/pane-scaling-10plus.e2e.mjs`                |
 
+### Packaged (ad-hoc) informal soak — 2026-08-14
+
+The release owner used the packaged (ad-hoc-signed) app on the development Mac for ~8–9 hours of
+real use (panes, terminals, panels, modals, agents) with no freeze, crash, or dead control
+reported. This is informal usage evidence on the ad-hoc artifact, **not** a substitute for the
+structured 4–8 hour packaged soak on a clean machine, which remains pending the signed artifact.
+
 **Not covered here (require the signed artifact / a clean Mac / a human):**
 clean install, upgrade migration, Gatekeeper acceptance, Finder launch, notarization checks,
 4–8h packaged soak, VoiceOver/a11y, and abuse soak of the packaged MCP/Agent-Comms/relay surfaces.
