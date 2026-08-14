@@ -20,6 +20,15 @@ Post-update evidence:
 
 - [x] Repository `npm ci --ignore-scripts` succeeds.
 - [x] `npm audit --omit=dev --audit-level=high` reports zero vulnerabilities.
+
+> **Dev-only advisories (explicit, not silently waived):** the full `npm audit`
+> (including `devDependencies`) reports **9 high-severity** findings, all via
+> `extract-zip` (GHSA-jmr9-qjv8-65gv, unvalidated symlink path traversal) reached
+> only through the WebdriverIO E2E tooling. These are **not** shipped in the DMG
+> (dev-only), which is why the production gate above is green. The "0
+> vulnerabilities" claim therefore holds **only with `--omit=dev`**; the dev
+> advisory set should be tracked and re-audited separately from the production gate.
+
 - [x] `npm test` passes: 27 tests.
 - [x] `npm run test:mcp` passes: 144 tests.
 - [x] `npm run test:release-scripts` passes.

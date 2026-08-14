@@ -105,7 +105,7 @@ jobs:
           node scripts/check-tauri-command-drift.mjs
           node scripts/check-tauri-permission-drift.mjs
           node scripts/check-plugin-integration.mjs
-          cargo test --workspace --exclude athenas-core
+          cargo test --workspace
 
       - name: Require signing credentials for release publication
         if: ${{ github.event_name == 'push' && env.APPLE_SIGNING_IDENTITY == '' }}
