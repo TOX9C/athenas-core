@@ -19,7 +19,7 @@ Use this checklist for every release candidate. A checked item must link to evid
 - [ ] Lockfiles are present and intentional.
 - [x] High-severity npm and Cargo vulnerability audits are run in CI and recorded in `docs/release/DEPENDENCY_AUDIT.md`; residual unmaintained/unsound/yanked dependency warnings remain a separate supply-chain review item.
 - [ ] Generated artifacts are not accidentally included.
-- [ ] Stale docs do not claim unavailable updater/platform features.
+- [x] Stale docs do not claim unavailable updater/platform features; README and ARCHITECTURE corrected to macOS-only with no in-app updater.
 
 ## Automated verification
 
@@ -43,6 +43,7 @@ Record the repository baseline before enforcing clean gates. At the current base
 - [x] `node scripts/check-plugin-integration.mjs` — passed (2026-08-14).
 - [ ] Dependency maintenance/unsoundness disposition recorded in `docs/release/DEPENDENCY_DISPOSITION_0.3.0.md`; verification evidence (`nm` and WASM symbol checks) attached to the release-candidate report.
 - [x] `git diff --check` — clean (2026-08-14).
+- [x] Workflow matrix executed end-to-end by the author on Apple Silicon (2026-08-14); no independent human reviewer available — recorded as solo author-executed + AI-assisted review (P1-9).
 
 > **2026-08-14 regression fixed:** `cargo test --workspace` previously hung on
 > `mcp::mcp_integration_tests::stdio_loop_uses_the_configured_tool_executor`.
@@ -91,7 +92,7 @@ Record the repository baseline before enforcing clean gates. At the current base
 - [x] Plugin API docs now match the Rust manifest/validation/runtime contract; owner-aware session operations are atomic and covered by cross-plugin isolation tests. Legacy ID-only IPC cleanup remains trusted-internal compatibility surface, not a claim of end-to-end caller authentication.
 - [x] MCP and Agent Comms loopback/authentication/limits reviewed with malformed-input and oversized-line regression coverage; packaged abuse soak remains open.
 - [ ] Browser URL/navigation policy reviewed.
-- [x] Mobile Mirror is excluded from public-launch guarantees, disabled by default, and normal startup requires explicit per-process activation; token/revocation, event filtering, and command allowlist implementation checks pass. Full LAN threat-model approval remains external.
+- [x] Mobile Mirror is excluded from public-launch guarantees, disabled by default, and normal startup requires explicit per-process activation; token/revocation, event filtering, and command allowlist implementation checks pass. Non-autostart verified on the running packaged (ad-hoc) artifact 2026-08-14: no relay persistence, no autostart without explicit `ATHENA_RELAY_AUTOSTART=1`. Full LAN threat-model approval remains external.
 - [ ] Secret/log/session/diagnostic redaction verified; release privacy invariants now guard the audited native log paths, but full release-build and diagnostic-export review remains open.
 - [ ] No high-severity security finding remains.
 - [ ] `SECURITY_REVIEW.md` is signed by the reviewer.
@@ -115,7 +116,7 @@ Record the repository baseline before enforcing clean gates. At the current base
 See [`MACOS_SIGNING_SETUP.md`](./MACOS_SIGNING_SETUP.md) for the credential-safe Developer ID and notarization setup.
 
 - [x] Production entitlements are explicitly empty in `src-tauri/entitlements.plist`; final signed-artifact entitlement review remains open.
-- [ ] App is built from a clean tagged revision.
+- [x] App is built from a clean tagged revision: tag `v0.3.0` = commit `88aec08d` = HEAD; all app/release code is committed. Unrelated ad-project files (`.hyperframes/ad/`) remain uncommitted but are not part of the app build.
 - [ ] App bundle is Developer ID signed.
 - [ ] Unsigned local DMG is created successfully; local evidence is recorded below, but signed/notarized DMG remains blocked on Apple credentials.
 - [ ] Notarization succeeds.

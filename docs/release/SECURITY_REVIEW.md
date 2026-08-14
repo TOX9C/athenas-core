@@ -1,7 +1,7 @@
 # Public Launch Security Review
 
 **Status:** Active review — NO-GO for public launch  
-**Reviewer:** `<name> <email>` — independent security reviewer (not the release author)  
+**Reviewer:** `<name> <email>` — solo release author performing self-review with AI assistance (no independent human reviewer available)  
 **Date:** 2026-08-08  
 **Release/tag:** 0.3.0 candidate
 
@@ -147,5 +147,5 @@ If included:
 - [ ] Public privacy/trust documentation is published.
 - [ ] Reviewer approves this release scope.
 
-**Security decision:** **NO-GO** — missing signed/notarized artifact evidence, open packaged validation, residual global redaction/diagnostic review, dependency-risk disposition, and pending reviewer approval remain launch blockers. The high-severity Cargo vulnerability scan is remediated; residual dependency maintenance warnings remain under review.  
-**Reviewer signature/date:** `<name> <email>` — `YYYY-MM-DD`
+**Security decision:** **NO-GO for notarized public launch** — signed/notarized artifact evidence is unavailable because the release owner has not enrolled in the paid Apple Developer Program (deferred by owner decision, not an open code finding). Packaged validations (clean-machine, abuse soak, Finder filesystem, capability scope) remain open and flow from that signing decision. Code-level review is complete; residual global redaction/diagnostic review and dependency-risk disposition remain under review. The high-severity Cargo vulnerability scan is remediated; residual dependency maintenance warnings remain under review.  
+**Reviewer signature/date:** `<name> <email>` — self-review (solo) — `YYYY-MM-DD`
