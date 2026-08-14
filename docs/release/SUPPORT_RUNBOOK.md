@@ -1,6 +1,6 @@
 # Public Launch Support Runbook
 
-**Owner:** `<name> <email>` — support/communications owner
+**Owner:** TOX9C — support/communications owner
 
 ## Support intake
 

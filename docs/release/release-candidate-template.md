@@ -2,7 +2,7 @@
 
 **Candidate tag/commit:**  
 **Build date:**  
-**Release owner:**  
+**Release owner:** TOX9C
 **Supported platform:** macOS / Apple Silicon / other:  
 **Scope:**  
 **Artifact URL:**  
@@ -12,7 +12,7 @@
 
 **Decision:** GO / NO-GO / CONDITIONAL  
 **Conditions:**  
-**Approvers:**
+**Approvers:** TOX9C (solo)
 
 ## Gate status
 

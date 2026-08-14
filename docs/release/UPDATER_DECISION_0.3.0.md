@@ -27,12 +27,12 @@ owners, a tested emergency hotfix path, and a tested user communication path.
 
 ## Required owners
 
-| Role                       | Owner            | Notes                                                                                          |
-| -------------------------- | ---------------- | ---------------------------------------------------------------------------------------------- |
-| Manual-delivery owner      | `<name> <email>` | Publishes signed DMG + checksum + release notes; responsible for the official release channel. |
-| Emergency hotfix owner     | `<name> <email>` | On call for P0/P1 incidents; can publish a hotfix release within SLA.                          |
-| Communication owner        | `<name> <email>` | Owns the user-facing communication path for outages, hotfixes, and rollback announcements.     |
-| Certificate rotation owner | `<name> <email>` | Owns Developer ID certificate rotation procedure per `MACOS_SIGNING_SETUP.md`.                 |
+| Role                       | Owner | Notes                                                                                          |
+| -------------------------- | ----- | ---------------------------------------------------------------------------------------------- |
+| Manual-delivery owner      | TOX9C | Publishes signed DMG + checksum + release notes; responsible for the official release channel. |
+| Emergency hotfix owner     | TOX9C | On call for P0/P1 incidents; can publish a hotfix release within SLA.                          |
+| Communication owner        | TOX9C | Owns the user-facing communication path for outages, hotfixes, and rollback announcements.     |
+| Certificate rotation owner | TOX9C | Owns Developer ID certificate rotation procedure per `MACOS_SIGNING_SETUP.md`.                 |
 
 ## Required pre-launch evidence
 

@@ -1,7 +1,7 @@
 # Incident Response and Rollback
 
-**Owner:** `<name> <email>` — release owner  
-**Escalation contact:** `<name> <email>` — incident owner (on call for P0/P1)  
+**Owner:** TOX9C — release owner  
+**Escalation contact:** TOX9C — incident owner (on call for P0/P1)  
 **Release channel:** Official signed GitHub release plus documented support channel
 
 Use this runbook for crashes, freezes, data loss, security issues, bad updates, provider failures, or compromised release artifacts.
