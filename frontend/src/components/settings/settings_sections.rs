@@ -680,7 +680,7 @@ Tab: About
 pub(super) fn AboutSettings() -> Element {
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 36px 20px; color: var(--textDim); max-width: 620px; margin: 0 auto;",
+            style: "display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 36px 20px 20px; color: var(--textDim); max-width: 620px; margin: 0 auto;",
             span {
                 style: "width: 54px; height: 54px; border-radius: 50%; border: 1px solid var(--accent); display: inline-flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-display); font-size: 32px; box-shadow: 0 0 18px var(--accentSubtle), inset 0 0 10px var(--accentSubtle); margin-bottom: 16px;",
                 "\u{0398}"
@@ -696,6 +696,57 @@ pub(super) fn AboutSettings() -> Element {
             div {
                 style: "font-family: var(--font-display); font-style: italic; color: var(--textDim); font-size: 13px; margin-top: 14px; max-width: 380px; text-align: center; line-height: 1.6;",
                 "AI-powered software orchestration and development environment. Built with Tauri, Dioxus, and a lot of coffee."
+            }
+        }
+
+        // ── Support the Developer ──
+        div {
+            style: "max-width: 620px; margin: 0 auto; padding: 0 20px 36px;",
+            div {
+                style: "border-top: 1px solid var(--border); padding-top: 28px; margin-top: 8px;",
+                div {
+                    style: "font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--accent); margin-bottom: 6px;",
+                    "Support the Developer"
+                }
+                p {
+                    style: "font-family: var(--font-display); font-style: italic; color: var(--textDim); font-size: 12px; line-height: 1.6; margin-bottom: 20px;",
+                    "Athena\'s Core is free and open source (MIT). If it saves you time, donations are appreciated."
+                }
+                // Crypto addresses
+                div {
+                    style: "display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px;",
+                    div {
+                        style: "display: flex; flex-direction: column; gap: 3px;",
+                        span { style: "font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);", "BTC" }
+                        code { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); background: var(--bgSecondary); border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; word-break: break-all; display: block;", "bc1qn8ehwc7rxlpgvljztr5k6npqf307xq00dqatf8" }
+                    }
+                    div {
+                        style: "display: flex; flex-direction: column; gap: 3px;",
+                        span { style: "font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);", "ETH / USDT / USDC (ERC-20)" }
+                        code { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); background: var(--bgSecondary); border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; word-break: break-all; display: block;", "0x4260456e1dbdc880d69d75949726953215a93586" }
+                    }
+                    div {
+                        style: "display: flex; flex-direction: column; gap: 3px;",
+                        span { style: "font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);", "USDT (TRC-20)" }
+                        code { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); background: var(--bgSecondary); border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; word-break: break-all; display: block;", "TSBUpAreTjmUscbUbf4L1wkX1fvvJvSRGW" }
+                    }
+                }
+                // Links
+                div {
+                    style: "display: flex; gap: 12px; flex-wrap: wrap;",
+                    a {
+                        href: "https://tox9c.github.io/athenas-core/#support",
+                        target: "_blank",
+                        style: "font-family: var(--font-mono); font-size: 11px; color: var(--accent); border: 1px solid var(--border); border-radius: 4px; padding: 6px 12px; text-decoration: none;",
+                        "Donate online \u{2192}"
+                    }
+                    a {
+                        href: "https://github.com/TOX9C/athenas-core",
+                        target: "_blank",
+                        style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); border: 1px solid var(--border); border-radius: 4px; padding: 6px 12px; text-decoration: none;",
+                        "Star on GitHub \u{2192}"
+                    }
+                }
             }
         }
     }

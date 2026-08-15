@@ -269,4 +269,26 @@ Before public distribution, review the [Privacy Notice](docs/release/PRIVACY_NOT
 
 ## License
 
-Proprietary - All rights reserved.
+Athena's Core is released under the [MIT License](LICENSE). You're free to use, modify, and distribute it.
+
+---
+
+## Support the Developer
+
+Athena's Core is free and open source. If it saves you time or you just want to support a solo developer, donations are appreciated.
+
+**Crypto:**
+
+| Coin | Network | Address |
+|------|---------|---------|
+| BTC | Bitcoin | `bc1qn8ehwc7rxlpgvljztr5k6npqf307xq00dqatf8` |
+| ETH / USDT / USDC | ERC-20 | `0x4260456e1dbdc880d69d75949726953215a93586` |
+| USDT | TRC-20 | `TSBUpAreTjmUscbUbf4L1wkX1fvvJvSRGW` |
+
+**Donate online (card or crypto):** https://nowpayments.io/donation/tox9c
+
+**Other ways to help:**
+- ⭐ Star the repo on [GitHub](https://github.com/TOX9C/athenas-core)
+- Share it with friends or on social media
+- Report bugs and suggest features in [Issues](https://github.com/TOX9C/athenas-core/issues)
+- Contribute code via Pull Requests

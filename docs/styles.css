@@ -740,3 +740,90 @@ h2 {
     transition: none;
   }
 }
+
+
+/* ── Support / Donate ─────────────────────────────────────── */
+
+.support-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+}
+@media (max-width: 880px) { .support-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) { .support-grid { grid-template-columns: 1fr; } }
+
+.support-card {
+  padding: 28px;
+  background: var(--bg-card);
+  border: 1px solid var(--hair);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition:
+    border-color var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+.support-card:hover {
+  border-color: var(--hair-gold);
+  transform: translateY(-2px);
+}
+
+.support-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--gold-dim);
+  color: var(--gold);
+}
+.support-icon svg { width: 22px; height: 22px; }
+
+.support-card h3 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+.support-card p {
+  color: var(--ink-muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.crypto-addresses {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.crypto-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.crypto-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.crypto-row code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-muted);
+  background: var(--bg-deep);
+  border: 1px solid var(--hair);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+  cursor: pointer;
+  transition: border-color var(--dur-f) var(--ease);
+}
+.crypto-row code:hover {
+  border-color: var(--hair-gold);
+  color: var(--ink);
+}
