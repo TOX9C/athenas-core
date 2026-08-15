@@ -88,33 +88,14 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace
 
-  # The workspace test suite runs in its own job on a fresh runner. The
-  # test-profile compile (parallel rustc + the final link of the
-  # webkit-linked test binaries) used to peak memory over the 7GB VM limit
-  # at the end of the combined job, and the hypervisor terminated the VM
-  # mid-step — the recurring "The runner has received a shutdown signal"
-  # cancellation that struck right as `cargo test` finished. A dedicated
-  # job gives the compile its own full memory budget, and
-  # CARGO_BUILD_JOBS=2 caps the peak so parallel rustc + the linker stay
-  # comfortably under it.
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev build-essential curl wget libssl-dev ripgrep
-
       - name: cargo test
+        # The test-profile compile (parallel rustc + the final link of the
+        # webkit-linked test binaries) used to peak memory over the 7GB VM
+        # limit at the end of this job, and the hypervisor terminated the
+        # VM mid-step — the recurring "The runner has received a shutdown
+        # signal" cancellation that struck right as `cargo test` finished.
+        # CARGO_BUILD_JOBS=2 caps the peak so parallel rustc + the linker
+        # stay comfortably under the limit.
         env:
           CARGO_BUILD_JOBS: 2
         run: cargo test --workspace
