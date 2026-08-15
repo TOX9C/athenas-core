@@ -117,6 +117,7 @@ fn main() {
             athena_clear_context,
             athena_set_session_context,
             athena_user_answer,
+            llm_list_models,
             // Output buffer / capture
             output_buffer_append,
             output_buffer_get,
@@ -298,6 +299,11 @@ fn main() {
             }
             tauri::RunEvent::ExitRequested { api: _, .. } => {
                 log::info!("Exit requested -- initiating graceful shutdown");
+                log::info!("[resume-debug] RunEvent::ExitRequested received; capturing resume hints before PTY shutdown");
+                // Some Tauri/macOS paths deliver ExitRequested before Exit.
+                // Capture while the PTYs are still alive; the Exit handler is
+                // an idempotent fallback for platforms that skip this event.
+                capture_resume_on_exit(app_handle);
 
                 // Stop the mobile-mirror relay first so the port is
                 // released before the runtime tears down. Idempotent.
@@ -340,6 +346,7 @@ fn main() {
                     if let Ok(rt) = tokio::runtime::Handle::try_current() {
                         if let Ok(manager) = sm.try_lock() {
                             rt.block_on(manager.shutdown_all());
+                            log::info!("[resume-debug] ExitRequested PTY shutdown completed");
                         } else {
                             log::warn!(
                                 "session_manager lock contended during exit; PTYs may be orphaned"
@@ -361,11 +368,11 @@ fn main() {
                 log::info!("Graceful shutdown complete");
             }
             tauri::RunEvent::Exit => {
-                // On macOS, Cmd+Q fires `Exit` (NOT `ExitRequested`), so this is
-                // the reliable last chance to let live agents print their
-                // `<cli> --resume <id>` line and persist it before the process
-                // dies. The PTYs are still alive here (on macOS no
-                // `ExitRequested` ran, so `shutdown_all` has not killed them).
+                // ExitRequested captures first when that event is delivered;
+                // this remains an idempotent fallback for paths that deliver
+                // only Exit. The PTYs are still alive when neither earlier
+                // shutdown path has run.
+                log::info!("[resume-debug] RunEvent::Exit received; invoking idempotent capture fallback");
                 relay::stop();
                 let state = app_handle.state::<state::AppState>();
                 shutdown_browser_children(&state);
@@ -508,8 +515,13 @@ const EXIT_RESUME_CAPTURE_BUDGET_MS: u64 = 800;
 fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
     use std::sync::atomic::Ordering;
     if RESUME_CAPTURE_DONE.swap(true, Ordering::SeqCst) {
+        log::debug!("[resume-debug] capture skipped: already completed in this process");
         return;
     }
+    log::info!(
+        "[resume-debug] capture worker starting with budget={}ms",
+        EXIT_RESUME_CAPTURE_BUDGET_MS
+    );
     let app_handle = app_handle.clone();
     let worker = std::thread::Builder::new()
         .name("athena-resume-capture".to_string())
@@ -528,12 +540,14 @@ fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
                 let state = app_handle.state::<state::AppState>();
                 let n = commands::capture_resume_ids_on_exit(&state, EXIT_RESUME_CAPTURE_BUDGET_MS)
                     .await;
-                log::info!("resume capture on exit: persisted {n} resume id(s)");
+                log::info!("[resume-debug] capture worker finished; persisted {n} resume id(s)");
             });
         });
     match worker {
         Ok(w) => {
-            let _ = w.join();
+            if let Err(e) = w.join() {
+                log::error!("[resume-debug] capture worker panicked: {e:?}");
+            }
         }
         Err(e) => log::error!("resume capture: failed to spawn worker thread: {e}"),
     }

@@ -35,23 +35,23 @@ pub fn get_agent_command(
     }
 }
 
-/// Build the resume command for an agent that supports session resumption.
+/// Build the resume/continuation command for an agent that supports session
+/// restoration.
 ///
-/// Returns `None` for agents that do not support `--resume` (Custom, Shell,
-/// and the v1 detection-driven roster). The returned string has NO trailing
-/// newline — callers decide whether to execute it (append `\n`) or merely
-/// display it.
+/// Returns `None` for agents whose resume protocol is not known (Qwen, Aider,
+/// Cursor, Custom, and Shell). The returned string has NO trailing newline —
+/// callers decide whether to execute it (append `\n`) or merely display it.
 pub fn get_agent_resume_command(agent_type: &AgentType, resume_id: &str) -> Option<String> {
     match agent_type {
         AgentType::Claude => Some(format!("claude --resume {}", resume_id)),
         AgentType::Codex => Some(format!("codex --resume {}", resume_id)),
         AgentType::Opencode => Some(format!("opencode --resume {}", resume_id)),
         AgentType::Gemini => Some(format!("gemini --resume {}", resume_id)),
+        AgentType::Freebuff => Some(format!("freebuff --continue {}", resume_id)),
+        AgentType::Omp => Some(format!("omp --resume {}", resume_id)),
         AgentType::Qwen
         | AgentType::Aider
         | AgentType::Cursor
-        | AgentType::Freebuff
-        | AgentType::Omp
         | AgentType::Custom
         | AgentType::Shell => None,
     }
@@ -197,6 +197,18 @@ mod tests {
             Some("my-agent --interactive".to_string())
         );
         assert_eq!(get_agent_command(&AgentType::Custom, None, false), None);
+    }
+
+    #[test]
+    fn resume_commands_cover_freebuff_and_omp() {
+        assert_eq!(
+            get_agent_resume_command(&AgentType::Freebuff, "2026-08-15T11-30-56.357Z"),
+            Some("freebuff --continue 2026-08-15T11-30-56.357Z".to_string())
+        );
+        assert_eq!(
+            get_agent_resume_command(&AgentType::Omp, "019ff77f-fadb-7000-b51d-b7b38c9cb0eb"),
+            Some("omp --resume 019ff77f-fadb-7000-b51d-b7b38c9cb0eb".to_string())
+        );
     }
 
     #[test]

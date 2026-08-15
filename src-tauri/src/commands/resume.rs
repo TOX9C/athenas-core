@@ -19,13 +19,31 @@ pub(crate) fn merge_resume_ids_into_workspaces(
     ids: &std::collections::HashMap<String, String>,
     cmds: &std::collections::HashMap<String, String>,
 ) -> Result<usize, String> {
+    log::info!(
+        "[resume-debug] merge requested: {} pane id(s), {} command(s)",
+        ids.len(),
+        cmds.len()
+    );
     if ids.is_empty() {
+        log::info!("[resume-debug] merge skipped: no captured ids");
         return Ok(0);
     }
     let json = match store.get::<String>("workspaces") {
-        Ok(Some(j)) if !j.trim().is_empty() => j,
-        Ok(_) => return Ok(0), // no workspace persisted yet — nothing to merge into
-        Err(e) => return Err(e.to_string()),
+        Ok(Some(j)) if !j.trim().is_empty() => {
+            log::info!(
+                "[resume-debug] merge loaded workspaces store ({} bytes)",
+                j.len()
+            );
+            j
+        }
+        Ok(_) => {
+            log::warn!("[resume-debug] merge found no persisted workspaces key");
+            return Ok(0);
+        }
+        Err(e) => {
+            log::error!("[resume-debug] merge could not read workspaces store: {e}");
+            return Err(e.to_string());
+        }
     };
     let mut root: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
 
@@ -44,6 +62,12 @@ pub(crate) fn merge_resume_ids_into_workspaces(
                 let Some(resume_id) = ids.get(&pane_id) else {
                     continue;
                 };
+                log::info!(
+                    "[resume-debug] merge matched pane={} resume_id_len={} command_present={}",
+                    pane_id,
+                    resume_id.len(),
+                    cmds.contains_key(&pane_id)
+                );
                 if let Some(obj) = pane.as_object_mut() {
                     obj.insert(
                         "resume_id".into(),
@@ -69,6 +93,9 @@ pub(crate) fn merge_resume_ids_into_workspaces(
         store
             .set_sync("workspaces", &out)
             .map_err(|e| e.to_string())?;
+        log::info!("[resume-debug] merge persisted {} pane(s)", updated);
+    } else {
+        log::warn!("[resume-debug] merge captured ids but matched no persisted panes");
     }
     Ok(updated)
 }
@@ -88,11 +115,18 @@ pub(crate) fn merge_resume_ids_into_workspaces(
 /// feeding the output buffer with the agents' exit output (see
 /// `capture_resume_on_exit` in main.rs).
 pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize {
+    log::info!("[resume-debug] capture begin wait_ms={wait_ms}");
     let all_sessions = {
         let sm = state.session_manager.lock().await;
         sm.list_sessions().await
     };
+    log::info!(
+        "[resume-debug] capture discovered {} live PTY session(s): {:?}",
+        all_sessions.len(),
+        all_sessions
+    );
     if all_sessions.is_empty() {
+        log::warn!("[resume-debug] capture stopped: no live PTY sessions");
         return 0;
     }
 
@@ -107,11 +141,24 @@ pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize
             match sm.get_session(id).await {
                 Some(s) => {
                     let label = session_foreground_label(&s).await;
-                    if AGENT_FG_NAMES.contains(&label.as_str()) {
+                    let is_agent = AGENT_FG_NAMES.contains(&label.as_str());
+                    log::info!(
+                        "[resume-debug] classify pane={} foreground={} is_agent={}",
+                        id,
+                        label,
+                        is_agent
+                    );
+                    if is_agent {
                         agents.push(id.clone());
                     }
                 }
-                None => continue,
+                None => {
+                    log::warn!(
+                        "[resume-debug] classify pane={} missing from session manager",
+                        id
+                    );
+                    continue;
+                }
             }
         }
         agents
@@ -119,15 +166,14 @@ pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize
 
     if agent_sessions.is_empty() {
         log::info!(
-            "capture_resume_ids_on_exit: {} live session(s), none are agents — nothing to do",
+            "[resume-debug] capture stopped: {} live session(s), none classified as agents",
             all_sessions.len()
         );
         return 0;
     }
 
     log::info!(
-        "capture_resume_ids_on_exit: {} live session(s), {} agent(s) — nudging with /exit",
-        all_sessions.len(),
+        "[resume-debug] capture nudging {} agent pane(s) with /exit",
         agent_sessions.len()
     );
 
@@ -135,8 +181,9 @@ pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize
     {
         let sm = state.session_manager.lock().await;
         for id in &agent_sessions {
-            if let Err(e) = sm.write(id, b"/exit\r").await {
-                log::warn!("capture_resume_ids_on_exit: write to {} failed: {}", id, e);
+            match sm.write(id, b"/exit\r").await {
+                Ok(bytes) => log::info!("[resume-debug] sent /exit to pane={} bytes={bytes}", id),
+                Err(e) => log::warn!("[resume-debug] /exit write failed pane={} error={e}", id),
             }
         }
     }
@@ -150,7 +197,11 @@ pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize
     let mut found: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut found_cmds: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    let mut logged_output = std::collections::HashSet::new();
+    let mut logged_hint_output = std::collections::HashSet::new();
+    let mut poll_count = 0u32;
     while tokio::time::Instant::now() < deadline && found.len() < agent_sessions.len() {
+        poll_count += 1;
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         tokio::time::sleep(std::time::Duration::from_millis(step_ms).min(remaining)).await;
         for id in &agent_sessions {
@@ -161,16 +212,42 @@ pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize
             if lines.is_empty() {
                 continue;
             }
+            if logged_output.insert(id.clone()) {
+                log::info!(
+                    "[resume-debug] output observed pane={} lines={} chars={}",
+                    id,
+                    lines.len(),
+                    lines.iter().map(|line| line.text.len()).sum::<usize>()
+                );
+            }
             let text: String = lines
                 .iter()
                 .map(|l| l.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
+            let lower = text.to_ascii_lowercase();
+            if (lower.contains("freebuff") || lower.contains("omp"))
+                && (lower.contains("resume") || lower.contains("continue"))
+                && logged_hint_output.insert(id.clone())
+            {
+                log::info!(
+                    "[resume-debug] hint-like output observed pane={} chars={} has_freebuff={} has_omp={} has_resume={} has_continue={}",
+                    id,
+                    text.len(),
+                    lower.contains("freebuff"),
+                    lower.contains("omp"),
+                    lower.contains("resume"),
+                    lower.contains("continue")
+                );
+            }
             if let Some((prefix, rid)) = athena_core::resume_scanner::scan_text_for_resume_id(&text)
             {
                 log::info!(
-                    "capture_resume_ids_on_exit: captured resume id for pane {}",
-                    id
+                    "[resume-debug] scanner matched pane={} prefix={} resume_id_len={} output_chars={}",
+                    id,
+                    prefix,
+                    rid.len(),
+                    text.len()
                 );
                 let cmd = format!("{} {}", prefix, rid);
                 found_cmds.insert(id.clone(), cmd);
@@ -180,27 +257,35 @@ pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize
     }
 
     if found.is_empty() {
-        log::info!("capture_resume_ids_on_exit: no resume ids captured");
+        log::warn!(
+            "[resume-debug] scanner found no resume ids after {} poll(s); output_seen_for={:?} hint_like_output_for={:?}",
+            poll_count,
+            logged_output,
+            logged_hint_output
+        );
         return 0;
     }
+
+    log::info!(
+        "[resume-debug] scanner captured {} of {} agent pane(s)",
+        found.len(),
+        agent_sessions.len()
+    );
 
     match merge_resume_ids_into_workspaces(&state.store, &found, &found_cmds) {
         Ok(n) => {
             if let Err(e) = state.store.flush_if_dirty().await {
-                log::error!("capture_resume_ids_on_exit: KV flush failed: {}", e);
+                log::error!("[resume-debug] KV flush failed: {}", e);
             }
             log::info!(
-                "capture_resume_ids_on_exit: merged {} resume id(s) into {} pane(s)",
+                "[resume-debug] capture merge completed: {} resume id(s) into {} pane(s)",
                 found.len(),
                 n
             );
             n
         }
         Err(e) => {
-            log::error!(
-                "capture_resume_ids_on_exit: merge into workspaces failed: {}",
-                e
-            );
+            log::error!("[resume-debug] capture merge into workspaces failed: {}", e);
             0
         }
     }

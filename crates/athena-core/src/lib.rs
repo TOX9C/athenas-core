@@ -2,6 +2,7 @@ pub mod agent_activity;
 pub mod agent_comms;
 pub mod agent_detection;
 pub mod kanban;
+pub mod llm_models;
 pub mod mcp;
 pub mod notification;
 pub mod orchestrator;

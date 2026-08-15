@@ -32,6 +32,10 @@ pub struct AthenaState {
     pub is_loading: bool,
     pub is_streaming: bool,
     pub streaming_status: Option<String>,
+    /// Rolling trace of streaming status messages, newest last. Appended on
+    /// each distinct `status` event and reset per request; rendered as the
+    /// expandable agent trace in the thinking indicator.
+    pub streaming_trace: Vec<String>,
     /// Request ID currently allowed to mutate this conversation. Late events
     /// from cancelled or superseded turns are ignored.
     pub active_request_id: Option<String>,
@@ -71,6 +75,7 @@ impl AthenaState {
             is_loading: false,
             is_streaming: false,
             streaming_status: None,
+            streaming_trace: Vec::new(),
             active_request_id: None,
             error: None,
             model: DEFAULT_MODEL.to_string(),
@@ -113,7 +118,14 @@ impl AthenaState {
     }
 
     pub fn set_streaming_status(&mut self, status: Option<String>) {
-        self.streaming_status = status;
+        self.streaming_status = status.clone();
+        // Keep a distinct-status history for the thinking trace so the UI can
+        // show where the agent has been, not just where it is now.
+        if let Some(s) = status {
+            if self.streaming_trace.last().map(String::as_str) != Some(s.as_str()) {
+                self.streaming_trace.push(s);
+            }
+        }
     }
 
     pub fn begin_stream(&mut self, request_id: String) {
@@ -121,6 +133,7 @@ impl AthenaState {
         self.is_loading = true;
         self.is_streaming = true;
         self.streaming_status = Some("Connecting…".to_string());
+        self.streaming_trace = vec!["Connecting…".to_string()];
         self.error = None;
     }
 
@@ -154,6 +167,7 @@ impl AthenaState {
         self.is_loading = false;
         self.is_streaming = false;
         self.streaming_status = None;
+        self.streaming_trace.clear();
     }
 
     /// Invalidate an active request before loading another session. A late
@@ -163,6 +177,7 @@ impl AthenaState {
         self.is_loading = false;
         self.is_streaming = false;
         self.streaming_status = None;
+        self.streaming_trace.clear();
         request_id
     }
 
@@ -174,6 +189,7 @@ impl AthenaState {
         self.is_loading = false;
         self.is_streaming = false;
         self.streaming_status = None;
+        self.streaming_trace.clear();
         if !cancelled {
             self.error = Some(message.clone());
             if let Some(last) = self.messages.back_mut() {

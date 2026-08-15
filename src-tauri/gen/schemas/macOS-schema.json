@@ -621,6 +621,12 @@
           "markdownDescription": "Enables the kanban_update_task command without any pre-configured scope."
         },
         {
+          "description": "Enables the llm_list_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-llm-list-models",
+          "markdownDescription": "Enables the llm_list_models command without any pre-configured scope."
+        },
+        {
           "description": "Enables the mcp_broadcast command without any pre-configured scope.",
           "type": "string",
           "const": "allow-mcp-broadcast",
@@ -1417,6 +1423,12 @@
           "type": "string",
           "const": "deny-kanban-update-task",
           "markdownDescription": "Denies the kanban_update_task command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the llm_list_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-llm-list-models",
+          "markdownDescription": "Denies the llm_list_models command without any pre-configured scope."
         },
         {
           "description": "Denies the mcp_broadcast command without any pre-configured scope.",

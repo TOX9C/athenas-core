@@ -37,6 +37,7 @@ Built with Rust and Tauri 2, Athena's Core delivers native performance with a mo
 Athena is your workspace-aware AI assistant, powered by multiple LLM providers. It understands your entire workspace, sees active agents, monitors execution plans, and can interact with your codebase.
 
 - **Multi-provider support**: Connect to Anthropic Claude, OpenAI, NVIDIA NIM, or local models via LM Studio
+- **Provider presets**: Pick a provider in Settings → Athena (OpenAI, Anthropic, NVIDIA NIM, LM Studio, or any custom OpenAI-compatible endpoint); the base URL auto-fills and the available models can be fetched from the provider's `/models` endpoint
 - **Workspace context**: Every conversation includes a live snapshot of your workspace, agents, and active plans
 - **Image support**: Attach screenshots or diagrams directly into chat messages
 - **Tool calling**: Athena can spawn agents, run commands, search your codebase, and manage tasks automatically
@@ -226,7 +227,7 @@ cargo test --workspace -- --nocapture
 
 | Crate             | Purpose                                             |
 | ----------------- | --------------------------------------------------- |
-| `src-tauri`       | Tauri binary, 133 IPC commands, app shell           |
+| `src-tauri`       | Tauri binary, 134 IPC commands, app shell           |
 | `athena-frontend` | Dioxus web frontend, 85+ components, 15 stores      |
 | `athena-core`     | LLM orchestrator, MCP server, agent comms, search   |
 | `athena-terminal` | PTY session manager with ANSI/VT100 emulator        |

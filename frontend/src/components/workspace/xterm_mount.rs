@@ -21,9 +21,9 @@ use wasm_bindgen::JsCast;
 #[path = "xterm_helpers.rs"]
 mod xterm_helpers;
 use xterm_helpers::{
-    force_redraw, read_css_var, restore_term_from_session, schedule_fit, serialize_buffer,
-    try_activate_addon, try_activate_web_links_addon, wait_for_container_size, write_bytes_to_term,
-    write_str_to_term,
+    force_redraw, is_valid_terminal_dimensions, read_css_var, restore_term_from_session,
+    schedule_fit, serialize_buffer, try_activate_addon, try_activate_web_links_addon,
+    wait_for_container_size, wait_for_font_ready, write_bytes_to_term, write_str_to_term,
 };
 
 /// Default scrollback buffer size for xterm.js sessions.
@@ -213,6 +213,71 @@ fn enqueue_pty_input(
             };
             if let Err(e) = pty_write(&pane_id, &data).await {
                 web_sys::console::error_1(&format!("XtermMount: pty_write failed: {:?}", e).into());
+            }
+        }
+    });
+}
+
+/// Latest-only PTY resize state. xterm can emit several resize events while
+/// a divider is dragged; keep the newest dimensions and serialize backend
+/// requests so an older async IPC call cannot overtake a newer one.
+#[derive(Default)]
+struct PendingPtyResize {
+    latest: Option<(u16, u16)>,
+    scheduled: bool,
+}
+
+fn enqueue_pty_resize(
+    state: &Rc<RefCell<PendingPtyResize>>,
+    active: &Rc<RefCell<bool>>,
+    pane_id: &str,
+    cols: u16,
+    rows: u16,
+) {
+    if !is_valid_terminal_dimensions(cols, rows) || !*active.borrow() {
+        return;
+    }
+
+    state.borrow_mut().latest = Some((cols, rows));
+    if state.borrow().scheduled {
+        return;
+    }
+    state.borrow_mut().scheduled = true;
+
+    let state_for_task = state.clone();
+    let active_for_task = active.clone();
+    let pane_id_for_task = pane_id.to_string();
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            // Coalesce the burst generated during a drag/reflow into the
+            // dimensions that remain current after one browser frame.
+            gloo::timers::future::TimeoutFuture::new(16).await;
+            if !*active_for_task.borrow() {
+                let mut pending = state_for_task.borrow_mut();
+                pending.latest = None;
+                pending.scheduled = false;
+                return;
+            }
+
+            let next = state_for_task.borrow_mut().latest.take();
+            let Some((cols, rows)) = next else {
+                state_for_task.borrow_mut().scheduled = false;
+                return;
+            };
+
+            if let Err(error) = pty_resize(&pane_id_for_task, cols, rows).await {
+                web_sys::console::warn_1(
+                    &format!(
+                        "XtermMount: pty_resize failed for {} ({}x{}): {:?}",
+                        pane_id_for_task, cols, rows, error
+                    )
+                    .into(),
+                );
+            }
+
+            if state_for_task.borrow().latest.is_none() {
+                state_for_task.borrow_mut().scheduled = false;
+                return;
             }
         }
     });
@@ -499,6 +564,26 @@ pub fn XtermMount(
                 return;
             }
 
+            // xterm measures its cell geometry from the configured font. Do
+            // not construct/open it while the browser is still using fallback
+            // font metrics; a later font swap would leave FitAddon's columns,
+            // rows, and canvas glyph positions inconsistent.
+            let saved_font = read_css_var(&window, "--fontFamily");
+            let font_family_val = if saved_font.is_empty() {
+                "'JetBrains Mono', monospace".to_string()
+            } else {
+                saved_font
+            };
+            let saved_size = read_css_var(&window, "--fontSize");
+            let font_size_val = saved_size
+                .trim_end_matches("px")
+                .parse::<f64>()
+                .unwrap_or(14.0);
+            wait_for_font_ready(&window, &font_family_val, font_size_val).await;
+            if !*mount_active_for_task.borrow() {
+                return;
+            }
+
             let term_ctor_val = js_sys::Reflect::get(&window, &JsValue::from_str("Terminal"))
                 .unwrap_or(JsValue::UNDEFINED);
             let Ok(term_ctor) = term_ctor_val.dyn_into::<js_sys::Function>() else {
@@ -577,17 +662,6 @@ pub fn XtermMount(
             // must be fed options.fontFamily / fontSize explicitly (a hardcoded
             // value here would freeze the terminal on JetBrains Mono @ 14 and
             // ignore the Settings font picker + size slider entirely).
-            let saved_font = read_css_var(&window, "--fontFamily");
-            let font_family_val = if saved_font.is_empty() {
-                "'JetBrains Mono', monospace".to_string()
-            } else {
-                saved_font
-            };
-            let saved_size = read_css_var(&window, "--fontSize");
-            let font_size_val = saved_size
-                .trim_end_matches("px")
-                .parse::<f64>()
-                .unwrap_or(14.0);
             let _ = js_sys::Reflect::set(
                 &options,
                 &JsValue::from_str("fontFamily"),
@@ -819,6 +893,23 @@ pub fn XtermMount(
             let listener_owner_for_attach = listener_owner_for_task.clone();
             let unlisten = match pty_listen_raw(&mount_id, move |bytes: Vec<u8>| {
                 let text = String::from_utf8_lossy(&bytes).to_string();
+                let lower = text.to_ascii_lowercase();
+                if (lower.contains("freebuff") || lower.contains("omp"))
+                    && (lower.contains("resume") || lower.contains("continue"))
+                {
+                    web_sys::console::log_1(
+                        &format!(
+                            "[resume-debug] hint-like PTY output pane={} bytes={} has_freebuff={} has_omp={} has_resume={} has_continue={}",
+                            mount_id_for_scan,
+                            bytes.len(),
+                            lower.contains("freebuff"),
+                            lower.contains("omp"),
+                            lower.contains("resume"),
+                            lower.contains("continue")
+                        )
+                        .into(),
+                    );
+                }
                 wq_queue.borrow_mut().push(bytes);
                 if !*wq_scheduled.borrow() {
                     *wq_scheduled.borrow_mut() = true;
@@ -857,8 +948,13 @@ pub fn XtermMount(
                     });
                 }
                 if let Some((prefix, id)) = resume_scanner.feed(&text) {
-                    // Reconstruct the full command for Shell→manual-claude case
-                    let full_cmd = format!("{} {};", prefix, &id);
+                    // Reconstruct the full command for any harness or
+                    // manually-run agent. Keep the persisted command identical
+                    // to the line the harness printed. The backend
+                    // shutdown-capture path uses
+                    // the same no-semicolon form; adding shell syntax here
+                    // would make Copy/Resume differ between the two paths.
+                    let full_cmd = format!("{} {}", prefix, &id);
                     web_sys::console::log_1(
                         &format!(
                             "[XtermMount] capture resume id={} cmd={} for pane={}",
@@ -906,6 +1002,14 @@ pub fn XtermMount(
                                     }
                                 }
                             });
+                        } else {
+                            web_sys::console::warn_1(
+                                &format!(
+                                    "[resume-debug] scanner matched pane={} but workspace pane was not found",
+                                    mid
+                                )
+                                .into(),
+                            );
                         }
                     });
                 }
@@ -1111,22 +1215,31 @@ pub fn XtermMount(
             }
 
             let pane_id_for_resize = mount_id.clone();
+            let resize_state_for_handler = Rc::new(RefCell::new(PendingPtyResize::default()));
+            let resize_active = mount_active_for_task.clone();
             let on_resize_closure =
                 wasm_bindgen::closure::Closure::wrap(Box::new(move |event: JsValue| {
-                    let cols = js_sys::Reflect::get(&event, &JsValue::from_str("cols"))
+                    let Some(cols) = js_sys::Reflect::get(&event, &JsValue::from_str("cols"))
                         .ok()
                         .and_then(|v| v.as_f64())
                         .map(|n| n as u16)
-                        .unwrap_or(80);
-                    let rows = js_sys::Reflect::get(&event, &JsValue::from_str("rows"))
+                    else {
+                        return;
+                    };
+                    let Some(rows) = js_sys::Reflect::get(&event, &JsValue::from_str("rows"))
                         .ok()
                         .and_then(|v| v.as_f64())
                         .map(|n| n as u16)
-                        .unwrap_or(24);
-                    let pane_id = pane_id_for_resize.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        let _ = pty_resize(&pane_id, cols, rows).await;
-                    });
+                    else {
+                        return;
+                    };
+                    enqueue_pty_resize(
+                        &resize_state_for_handler,
+                        &resize_active,
+                        &pane_id_for_resize,
+                        cols,
+                        rows,
+                    );
                 }) as Box<dyn FnMut(JsValue)>);
             let on_resize_closure_js = on_resize_closure.into_js_value();
             if let Some(on_resize_fn) =
@@ -1164,7 +1277,9 @@ pub fn XtermMount(
                 wasm_bindgen_futures::spawn_local(async move {
                     let _ = browser_navigate(BROWSER_ID, &uri).await;
                 });
-            }) as Box<dyn FnMut(JsValue, String)>);
+            })
+                as Box<dyn FnMut(JsValue, String)>);
+
             let web_links_handler_js = web_links_handler.into_js_value();
             let web_links_addon =
                 try_activate_web_links_addon(&window, &term_val, &web_links_handler_js);

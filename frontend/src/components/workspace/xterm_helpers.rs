@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
 
 pub(crate) fn read_css_var(window: &web_sys::Window, name: &str) -> String {
     let Some(doc_el) = window.document().and_then(|d| d.document_element()) else {
@@ -149,14 +150,12 @@ pub(crate) fn restore_term_from_session(term_val: &JsValue, session: &TerminalSe
     write_str_to_term(term_val, &snapshot);
 }
 
-// fit() recomputes cols/rows from the container rect, but on a pure geometry
-// change with no new PTY bytes flowing the CanvasAddon does not always emit a
-// full repaint frame — leaving the canvas showing stale glyph geometry (the
-// "blank until resize" symptom after a pane drag-swap, since Dioxus only moves
-// the keyed node and changes its flex weight, no remount, no new data).
-// Forcing refresh(0, rows-1) with rows read *after* fit() in the same rAF tick
-// repaints the whole row range against the fresh cell grid.
-pub(crate) fn call_fit(fit_instance: &JsValue, container: &web_sys::Element, term_val: &JsValue) {
+// FitAddon recomputes xterm's rows/columns from the container and the
+// renderer's measured cell dimensions. Repainting in the same callback is
+// unsafe in WebKit: CanvasAddon may still be applying the new canvas size.
+// Keep this function focused on fitting; `schedule_fit` performs the repaint
+// on the following animation frame.
+pub(crate) fn call_fit(fit_instance: &JsValue, container: &web_sys::Element, _term_val: &JsValue) {
     let rect = container.get_bounding_client_rect();
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
@@ -168,10 +167,6 @@ pub(crate) fn call_fit(fit_instance: &JsValue, container: &web_sys::Element, ter
         return;
     };
     let _ = fit_fn.call0(fit_instance);
-
-    // Refresh must follow fit (not precede it) and read rows *after* fit so the
-    // row range matches the new cell grid. Same rAF tick — no deferral.
-    refresh_full(term_val);
 }
 
 pub(crate) fn schedule_fit(
@@ -183,8 +178,9 @@ pub(crate) fn schedule_fit(
     active: &Rc<RefCell<bool>>,
 ) {
     // ResizeObserver, font updates, visibility restoration, and pane swaps can
-    // all request a fit in the same frame. Keep one RAF in flight so xterm does
-    // not resize/repaint repeatedly while WebKit is still settling flex layout.
+    // all request a fit in the same frame. Keep the whole fit/repaint pair in
+    // flight so xterm does not resize/repaint repeatedly while WebKit is still
+    // settling flex layout.
     if !*active.borrow() || *pending.borrow() {
         return;
     }
@@ -192,23 +188,49 @@ pub(crate) fn schedule_fit(
 
     let fit_for_raf = fit_instance.clone();
     let container_for_raf = container.clone();
-    let term_for_raf = term_val.clone();
+    let term_for_fit = term_val.clone();
+    let term_for_refresh = term_val.clone();
     let pending_for_raf = pending.clone();
     let active_for_raf = active.clone();
-    // RAF callbacks fire exactly once, so use once_into_js which auto-frees
-    // the closure after invocation. Clear the coalescing marker before fitting
-    // so a ResizeObserver notification caused by the fit can schedule the next
-    // settled frame rather than being lost.
+    let window_for_refresh = window.clone();
+    // The first RAF commits the new xterm grid dimensions. The second RAF
+    // lets CanvasAddon/DOM rendering commit its backing-store dimensions before
+    // repainting; this avoids glyphs from the old cell geometry being drawn over
+    // the new rows after a font change or pane relayout.
     let raf_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
-        *pending_for_raf.borrow_mut() = false;
-        if *active_for_raf.borrow() {
-            call_fit(&fit_for_raf, &container_for_raf, &term_for_raf);
+        if !*active_for_raf.borrow() {
+            *pending_for_raf.borrow_mut() = false;
+            return;
+        }
+        call_fit(&fit_for_raf, &container_for_raf, &term_for_fit);
+
+        let pending_for_refresh = pending_for_raf.clone();
+        let active_for_refresh = active_for_raf.clone();
+        let pending_for_refresh_fallback = pending_for_refresh.clone();
+        let active_for_refresh_fallback = active_for_refresh.clone();
+        let term_for_refresh_fallback = term_for_refresh.clone();
+        let refresh_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
+            if *active_for_refresh.borrow() {
+                refresh_full(&term_for_refresh);
+            }
+            *pending_for_refresh.borrow_mut() = false;
+        });
+        if window_for_refresh
+            .request_animation_frame(refresh_closure.as_ref().unchecked_ref())
+            .is_err()
+        {
+            if *active_for_refresh_fallback.borrow() {
+                refresh_full(&term_for_refresh_fallback);
+            }
+            *pending_for_refresh_fallback.borrow_mut() = false;
         }
     });
     if window
         .request_animation_frame(raf_closure.as_ref().unchecked_ref())
         .is_err()
     {
+        call_fit(fit_instance, container, term_val);
+        refresh_full(term_val);
         *pending.borrow_mut() = false;
     }
 }
@@ -265,6 +287,51 @@ pub(crate) fn is_container_sized(width: f64, height: f64) -> bool {
     width > 0.0 && height > 0.0
 }
 
+/// xterm's FitAddon never proposes fewer than two columns and one row. Keep
+/// invalid resize events out of the PTY resize queue so a transient zero-sized
+/// or partially-laid-out pane cannot desynchronize the shell dimensions.
+pub(crate) fn is_valid_terminal_dimensions(cols: u16, rows: u16) -> bool {
+    cols >= 2 && rows >= 1
+}
+
+/// Wait for the selected web font to be loaded before xterm measures its cell
+/// geometry. `document.fonts.ready` alone does not necessarily request a font
+/// that is only referenced by Terminal.options, so explicitly call
+/// FontFaceSet.load first when the browser exposes it.
+pub(crate) async fn wait_for_font_ready(
+    window: &web_sys::Window,
+    font_family: &str,
+    font_size: f64,
+) {
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Ok(fonts) = js_sys::Reflect::get(&document, &JsValue::from_str("fonts")) else {
+        return;
+    };
+    if fonts.is_undefined() || fonts.is_null() {
+        return;
+    }
+
+    if !font_family.trim().is_empty() {
+        if let Ok(load_val) = js_sys::Reflect::get(&fonts, &JsValue::from_str("load")) {
+            if let Ok(load_fn) = load_val.dyn_into::<js_sys::Function>() {
+                let font_spec =
+                    JsValue::from_str(&format!("{}px {}", font_size.max(1.0), font_family.trim()));
+                if let Ok(promise) = load_fn.call1(&fonts, &font_spec) {
+                    let _ = JsFuture::from(js_sys::Promise::from(promise)).await;
+                }
+            }
+        }
+    }
+
+    if let Ok(ready_val) = js_sys::Reflect::get(&fonts, &JsValue::from_str("ready")) {
+        if ready_val.is_object() {
+            let _ = JsFuture::from(js_sys::Promise::from(ready_val)).await;
+        }
+    }
+}
+
 const CONTAINER_SIZE_RETRIES: usize = 15;
 
 enum ContainerSizePoll {
@@ -312,8 +379,24 @@ pub(crate) async fn wait_for_container_size(container: &web_sys::Element) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_container_sized, poll_container_size, ContainerSizePoll, CONTAINER_SIZE_RETRIES,
+        is_container_sized, is_valid_terminal_dimensions, poll_container_size, ContainerSizePoll,
+        CONTAINER_SIZE_RETRIES,
     };
+
+    #[test]
+    fn terminal_dimensions_require_a_real_xterm_grid() {
+        assert!(is_valid_terminal_dimensions(2, 1));
+        assert!(is_valid_terminal_dimensions(80, 24));
+        assert!(!is_valid_terminal_dimensions(1, 24));
+        assert!(!is_valid_terminal_dimensions(80, 0));
+    }
+
+    #[test]
+    fn terminal_dimensions_reject_zero_resize_fallbacks() {
+        assert!(!is_valid_terminal_dimensions(0, 0));
+        assert!(!is_valid_terminal_dimensions(0, 24));
+        assert!(!is_valid_terminal_dimensions(80, 0));
+    }
 
     #[test]
     fn container_size_retry_budget_is_bounded() {

@@ -32,9 +32,12 @@ mod orchestrator_title;
 mod orchestrator_tool_loop;
 pub use orchestrator_support::ProviderConfig;
 use orchestrator_support::{
-    build_anthropic_content, build_openai_content, estimate_tokens, json_to_tool_input,
-    sanitize_error_message, validate_base_url, RateLimiter,
+    build_anthropic_content, build_openai_content, estimate_tokens, json_to_tool_input, RateLimiter,
 };
+// Crate-visible re-exports so top-level modules (e.g. `llm_models`) can reuse
+// the same request-safety helpers without duplicating them. The re-export also
+// keeps the names in scope here and for child modules (`super::…`).
+pub(crate) use orchestrator_support::{sanitize_error_message, validate_base_url};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -368,7 +371,9 @@ impl AthenaOrchestrator {
         }
 
         let resolved_base_url = match &provider {
-            LLMProvider::NvidiaNim => Some("https://integrate.api.nvidia.com/v1".to_string()),
+            LLMProvider::NvidiaNim => Some(
+                base_url.unwrap_or_else(|| "https://integrate.api.nvidia.com/v1".to_string()),
+            ),
             LLMProvider::OpenAI => {
                 // User custom base_url takes precedence over hardcoded default.
                 Some(base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()))

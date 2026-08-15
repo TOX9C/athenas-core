@@ -2,8 +2,9 @@
 //!
 //! The frontend and backend use different scanner lifecycles, but share the
 //! same dependency-free parser so supported prefixes and ANSI handling cannot
-//! drift. Claude Code (and similar tools) print a line like `claude --resume <id>` on
-//! clean exit. The line arrives as raw PTY bytes split into arbitrary
+//! drift. Supported harnesses print a continuation line such as
+//! `claude --resume <id>` or `freebuff --continue <id>` on clean exit. The line
+//! arrives as raw PTY bytes split into arbitrary
 //! chunks, so a naïve "scan the last N bytes of each individual chunk"
 //! approach misses matches that span chunk boundaries or sit earlier than
 //! the scanned window.
@@ -194,6 +195,8 @@ mod tests {
             ("codex --resume ", "codex --resume"),
             ("opencode --resume ", "opencode --resume"),
             ("gemini --resume ", "gemini --resume"),
+            ("freebuff --continue ", "freebuff --continue"),
+            ("omp --resume ", "omp --resume"),
         ] {
             let text = format!("{pat}{UUID}\n");
             assert_eq!(
@@ -202,6 +205,27 @@ mod tests {
                 "prefix {pat:?} should match"
             );
         }
+    }
+
+    #[test]
+    fn preserves_harness_specific_ids() {
+        let mut scanner = ResumeScanner::new();
+        assert_eq!(
+            scanner.feed("freebuff --continue 2026-08-15T11-30-56.357Z\n"),
+            Some((
+                "freebuff --continue".to_string(),
+                "2026-08-15T11-30-56.357Z".to_string()
+            ))
+        );
+
+        scanner.clear();
+        assert_eq!(
+            scanner.feed("omp --resume 019ff77f-fadb-7000-b51d-b7b38c9cb0eb\n"),
+            Some((
+                "omp --resume".to_string(),
+                "019ff77f-fadb-7000-b51d-b7b38c9cb0eb".to_string()
+            ))
+        );
     }
 
     #[test]

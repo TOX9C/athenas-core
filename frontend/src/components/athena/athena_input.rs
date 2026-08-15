@@ -169,6 +169,8 @@ pub fn AthenaInput() -> Element {
     // back with a confusing orchestrator error.
     let api_configured = athena_state.read().api_configured;
     let is_blocked = matches!(api_configured, Some(false));
+    let can_send = !input_text.read().trim().is_empty();
+    let send_ready = can_send && !is_loading && !is_blocked;
 
     rsx! {
         div {
@@ -197,58 +199,62 @@ pub fn AthenaInput() -> Element {
             div {
                 style: "display: flex; gap: 8px; align-items: flex-end;",
 
-                textarea {
-                    class: "field",
-                    style: "flex: 1; min-height: 40px; max-height: 120px; resize: vertical;",
-                    value: "{input_text}",
-                    oninput: move |e| {
-                        // Keep the controlled signal in sync with what the user
-                        // types. Without this, `input_text` stays empty, every
-                        // submit sees an empty string, and messages silently
-                        // never send.
-                        input_text.set(e.value());
-                        // Typing breaks out of history navigation.
-                        history_idx.set(None);
-                    },
-                    onkeydown: move |e: KeyboardEvent| {
-                        // Ignore Enter while blocked — there's nowhere to send.
-                        if is_blocked { return; }
-                        if e.key() == Key::Enter && !e.modifiers().contains(Modifiers::SHIFT) {
-                            e.prevent_default();
-                            let text = input_text.read().clone();
-                            if !text.trim().is_empty() {
-                                submit_message(&text, &mut athena_state, &mut input_text, &mut input_history, &mut history_idx);
-                            }
-                        } else if e.key() == Key::ArrowUp {
-                            let hist = input_history.read();
-                            if !hist.is_empty() {
-                                let current = history_idx();
-                                let new_idx = current.map_or(hist.len() - 1, |i| if i > 0 { i - 1 } else { 0 });
-                                history_idx.set(Some(new_idx));
-                                input_text.set(hist[new_idx].clone());
-                            }
-                        } else if e.key() == Key::ArrowDown {
-                            let hist = input_history.read();
-                            if !hist.is_empty() {
-                                let current = history_idx();
-                                if let Some(i) = current {
-                                    if i + 1 < hist.len() {
-                                        history_idx.set(Some(i + 1));
-                                        input_text.set(hist[i + 1].clone());
-                                    } else {
-                                        history_idx.set(None);
-                                        input_text.set(String::new());
+                // Rounded composer field — lights with a gold ring on focus.
+                div {
+                    class: "athena-composer-field",
+                    style: "flex: 1;",
+
+                    textarea {
+                        value: "{input_text}",
+                        oninput: move |e| {
+                            // Keep the controlled signal in sync with what the user
+                            // types. Without this, `input_text` stays empty, every
+                            // submit sees an empty string, and messages silently
+                            // never send.
+                            input_text.set(e.value());
+                            // Typing breaks out of history navigation.
+                            history_idx.set(None);
+                        },
+                        onkeydown: move |e: KeyboardEvent| {
+                            // Ignore Enter while blocked — there's nowhere to send.
+                            if is_blocked { return; }
+                            if e.key() == Key::Enter && !e.modifiers().contains(Modifiers::SHIFT) {
+                                e.prevent_default();
+                                let text = input_text.read().clone();
+                                if !text.trim().is_empty() {
+                                    submit_message(&text, &mut athena_state, &mut input_text, &mut input_history, &mut history_idx);
+                                }
+                            } else if e.key() == Key::ArrowUp {
+                                let hist = input_history.read();
+                                if !hist.is_empty() {
+                                    let current = history_idx();
+                                    let new_idx = current.map_or(hist.len() - 1, |i| if i > 0 { i - 1 } else { 0 });
+                                    history_idx.set(Some(new_idx));
+                                    input_text.set(hist[new_idx].clone());
+                                }
+                            } else if e.key() == Key::ArrowDown {
+                                let hist = input_history.read();
+                                if !hist.is_empty() {
+                                    let current = history_idx();
+                                    if let Some(i) = current {
+                                        if i + 1 < hist.len() {
+                                            history_idx.set(Some(i + 1));
+                                            input_text.set(hist[i + 1].clone());
+                                        } else {
+                                            history_idx.set(None);
+                                            input_text.set(String::new());
+                                        }
                                     }
                                 }
                             }
-                        }
-                    },
-                    placeholder: if is_blocked {
-                        "Set an API key in Settings to start chatting…".to_string()
-                    } else {
-                        "Ask Athena... (Shift+Enter for newline)".to_string()
-                    },
-                    disabled: is_loading || is_blocked,
+                        },
+                        placeholder: if is_blocked {
+                            "Set an API key in Settings to start chatting…".to_string()
+                        } else {
+                            "Ask Athena... (Shift+Enter for newline)".to_string()
+                        },
+                        disabled: is_loading || is_blocked,
+                    }
                 }
 
                 if is_loading {
@@ -288,24 +294,22 @@ pub fn AthenaInput() -> Element {
                 }
 
                 button {
-                    class: "btn-primary",
-                    // Single merged style — two `style:` attributes previously
-                    // collided (last-writer-wins), so the entire inline style
-                    // was replaced by just "opacity: 0.5;" / "" and the button
-                    // lost its height/padding/layout on every render.
-                    style: format!(
-                        "padding: 0 16px; height: 40px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;{}",
-                        if is_loading || is_blocked { " opacity: 0.5;" } else { "" }
-                    ),
+                    class: "athena-composer-send",
+                    // Fills with gold when there is something to send; rests
+                    // dim otherwise. No two-style collision: single merged style.
+                    style: if send_ready {
+                        "background: var(--accent); color: var(--bg); box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);".to_string()
+                    } else {
+                        "background: var(--bgTertiary); color: var(--textDim);".to_string()
+                    },
                     title: "Send (Enter)",
                     onclick: move |_| {
                         if is_blocked { return; }
                         let text = input_text.read().clone();
                         submit_message(&text, &mut athena_state, &mut input_text, &mut input_history, &mut history_idx);
                     },
-                    disabled: is_loading || is_blocked,
-                    IconSend { size: Some(16), color: Some("currentColor".to_string()) }
-                    "Send"
+                    disabled: !send_ready,
+                    IconSend { size: Some(15), color: Some("currentColor".to_string()) }
                 }
             }
         }

@@ -588,8 +588,30 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                             }
                         }
                     } else {
-                        for msg in state.messages.iter() {
-                            AthenaChatMessage { key: "{msg.id}", message: msg.clone() }
+                        // Only the message currently receiving deltas renders in
+                        // word-blur streaming mode; settled history renders plain.
+                        {
+                            let streaming_msg_id = if state.is_streaming {
+                                state.messages.back().map(|m| m.id.clone())
+                            } else {
+                                None
+                            };
+                            rsx! {
+                                for msg in state.messages.iter() {
+                                    {
+                                        let streaming = state.is_streaming
+                                            && streaming_msg_id.as_deref()
+                                                == Some(msg.id.as_str());
+                                        rsx! {
+                                            AthenaChatMessage {
+                                                key: "{msg.id}",
+                                                message: msg.clone(),
+                                                streaming,
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 

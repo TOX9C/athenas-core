@@ -3,6 +3,9 @@
 //! The frontend and backend own different scanner lifecycles, but they must
 //! agree on the byte-level parsing rules. Keeping those rules here prevents
 //! ANSI handling and supported CLI prefixes from drifting between targets.
+//!
+//! Supported hints include both `--resume` and harness-specific continuation
+//! forms such as Freebuff's `freebuff --continue <timestamp>`.
 
 /// Maximum rolling-buffer size used by stateful scanner adapters.
 pub const MAX_SCAN_BUFFER: usize = 1024;
@@ -13,6 +16,8 @@ const PREFIXES: &[&str] = &[
     "codex --resume ",
     "opencode --resume ",
     "gemini --resume ",
+    "freebuff --continue ",
+    "omp --resume ",
 ];
 
 /// Streaming ANSI remover that preserves partial escape-sequence state across
@@ -111,8 +116,9 @@ pub fn strip_ansi(input: &str) -> String {
     stripper.feed(input)
 }
 
-/// Extract the newest known `<agent> --resume <id>` hint from already-clean
-/// `text`.
+/// Extract the newest known agent resume/continuation hint from already-clean
+/// `text`. IDs remain bounded to shell-safe token characters; Freebuff's
+/// timestamp format additionally requires `.`.
 pub fn extract_resume_id(text: &str) -> Option<(String, String)> {
     let lower = text.to_ascii_lowercase();
     let mut last_match: Option<(usize, String, String)> = None;
@@ -130,7 +136,7 @@ pub fn extract_resume_id(text: &str) -> Option<(String, String)> {
             let id: String = text[id_start..]
                 .chars()
                 .take(MAX_ID_LEN)
-                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
                 .collect();
             if !id.is_empty() {
                 let candidate = (match_start, pattern[..pattern.len() - 1].to_string(), id);
@@ -194,12 +200,40 @@ mod tests {
             ("codex --resume", "codex --resume"),
             ("opencode --resume", "opencode --resume"),
             ("gemini --resume", "gemini --resume"),
+            ("freebuff --continue", "freebuff --continue"),
+            ("omp --resume", "omp --resume"),
         ] {
             assert_eq!(
                 extract_resume_id(&format!("{prefix} {ID}\n")),
                 Some((expected.to_string(), ID.to_string()))
             );
         }
+    }
+
+    #[test]
+    fn preserves_freebuff_timestamp_and_omp_uuid_ids() {
+        assert_eq!(
+            extract_resume_id("freebuff --continue 2026-08-15T11-30-56.357Z\n"),
+            Some((
+                "freebuff --continue".to_string(),
+                "2026-08-15T11-30-56.357Z".to_string()
+            ))
+        );
+        assert_eq!(
+            extract_resume_id("omp --resume 019ff77f-fadb-7000-b51d-b7b38c9cb0eb\n"),
+            Some((
+                "omp --resume".to_string(),
+                "019ff77f-fadb-7000-b51d-b7b38c9cb0eb".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_shell_syntax_after_resume_id() {
+        assert_eq!(
+            extract_resume_id("freebuff --continue safe.id; rm -rf /\n"),
+            Some(("freebuff --continue".to_string(), "safe.id".to_string()))
+        );
     }
 
     #[test]

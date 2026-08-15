@@ -28,7 +28,7 @@ static EVENT_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// Canonicalize a command/event name to a `'static` key without touching the
 /// lock on the hot path. Known names resolve to literals; unknown names fall
-/// back to the shared cache (bounded: the app exposes ~133 commands and a
+/// back to the shared cache (bounded: the app exposes ~134 commands and a
 /// fixed set of push events, so leaks are bounded and one-time).
 fn static_key(key: &str) -> &'static str {
     match key {

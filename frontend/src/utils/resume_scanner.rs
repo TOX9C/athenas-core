@@ -1,7 +1,8 @@
 //! Robust scanner for agent resume IDs in PTY output streams.
 //!
-//! Claude Code (and similar tools) print a line like `claude --resume <id>`
-//! on exit. The line arrives as raw PTY bytes split into arbitrary chunks,
+//! Supported harnesses print a continuation line such as
+//! `claude --resume <id>` or `freebuff --continue <id>` on exit. The line
+//! arrives as raw PTY bytes split into arbitrary chunks,
 //! so a naïve "scan the last N bytes of each individual chunk" approach
 //! misses matches that span chunk boundaries or sit earlier than the
 //! scanned window.
@@ -174,6 +175,27 @@ mod tests {
         assert_eq!(
             s.feed(&text),
             Some(("claude --resume".to_string(), UUID.to_string()))
+        );
+    }
+
+    #[test]
+    fn preserves_harness_specific_ids() {
+        let mut scanner = ResumeScanner::new();
+        assert_eq!(
+            scanner.feed("freebuff --continue 2026-08-15T11-30-56.357Z\n"),
+            Some((
+                "freebuff --continue".to_string(),
+                "2026-08-15T11-30-56.357Z".to_string()
+            ))
+        );
+
+        scanner.clear();
+        assert_eq!(
+            scanner.feed("omp --resume 019ff77f-fadb-7000-b51d-b7b38c9cb0eb\n"),
+            Some((
+                "omp --resume".to_string(),
+                "019ff77f-fadb-7000-b51d-b7b38c9cb0eb".to_string()
+            ))
         );
     }
 

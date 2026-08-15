@@ -684,6 +684,13 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let out = commands::test_llm_api_key(state)?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
+        "llm_list_models" => {
+            let base_url = opts.req::<String>("base_url")?;
+            let api_key = opts.opt::<Option<String>>("api_key")?;
+            let provider = opts.opt::<Option<String>>("provider")?;
+            let out = commands::llm_list_models(base_url, api_key, provider).await?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
         "swarm_create" => {
             let dir = opts.req::<String>("dir")?;
             let swarm_state = opts.req::<String>("swarm_state")?;

@@ -118,7 +118,7 @@ impl<'de> serde::Deserialize<'de> for ProviderConfig {
     }
 }
 
-pub(super) fn sanitize_error_message(msg: &str) -> String {
+pub(crate) fn sanitize_error_message(msg: &str) -> String {
     let patterns = [
         (r"sk-[a-zA-Z0-9]{20,}", "sk-[REDACTED]"),
         (r"x-api-key: [^\s]+", "x-api-key: [REDACTED]"),
@@ -173,7 +173,7 @@ fn url_host(url: &str) -> Option<String> {
     Some(hostport.split(':').next().unwrap_or("").to_string())
 }
 
-pub(super) fn validate_base_url(url: &str) -> Result<(), OrchestratorError> {
+pub(crate) fn validate_base_url(url: &str) -> Result<(), OrchestratorError> {
     // Accept either scheme. We enforce HTTPS for any host that isn't a
     // loopback / private address, so an API key is never sent in cleartext
     // over the public internet — but local LLM servers (LM Studio, Ollama,

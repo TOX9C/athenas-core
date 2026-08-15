@@ -1,11 +1,36 @@
 use super::content_block::ContentBlockRenderer;
-use crate::components::shared::illustration::CoreMark;
 use crate::stores::athena::{AthenaMessage, MessageRole};
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct ChatMessageProps {
     pub message: AthenaMessage,
+    /// True when this message is the one currently receiving stream deltas,
+    /// so its words resolve out of blur as they arrive.
+    #[props(default = false)]
+    pub streaming: bool,
+}
+
+/// Render the live assistant message word-by-word so each freshly arrived
+/// word resolves out of a blur (stream-in). Earlier words keep their settled
+/// spans (positional diffing preserves them), so the effect reads as a
+/// continuous unfold rather than a full re-flash per delta.
+fn streaming_content(content: &str) -> Element {
+    let words: Vec<&str> = content.split(' ').collect();
+    rsx! {
+        for (i, word) in words.iter().enumerate() {
+            span {
+                key: "w-{i}",
+                style: "display: inline; will-change: filter, opacity; animation: stream-in 420ms cubic-bezier(0.22,0.61,0.36,1) both;",
+                "{word} "
+            }
+        }
+        // Blinking caret while text is still arriving.
+        span {
+            aria_hidden: "true",
+            style: "display: inline-block; width: 2px; height: 12px; margin-left: 2px; border-radius: 2px; background: var(--text); vertical-align: text-bottom; animation: blink-caret 1s step-end infinite;",
+        }
+    }
 }
 
 #[component]
@@ -14,101 +39,64 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
     let is_user = msg.role == MessageRole::User;
     let is_error = msg.is_error;
 
-    let align = if is_user { "flex-end" } else { "flex-start" };
+    // Hide empty assistant messages — when Athena is "thinking" but has
+    // produced no content yet, don't render an empty card. The thinking
+    // indicator below the message log handles that state.
+    if !is_user && msg.content.is_empty() && msg.blocks.is_empty() && msg.images.is_empty() {
+        return rsx! {};
+    }
 
-    let content_color = if is_error {
-        "var(--error)"
-    } else {
-        "var(--text)"
-    };
+    let is_streaming = props.streaming;
+    let has_content = !msg.content.is_empty();
 
-    let (plaque_bg, body_border, plaque_shadow) = if is_error {
-        ("rgba(235, 145, 19, 0.10)", "1px solid var(--error)", "none")
+    // Clean assistant interface: no avatars, no labels, no bubbles.
+    // User messages get a subtle left accent bar; assistant messages are
+    // plain readable text on the panel background.
+    let (content_color, left_accent) = if is_error {
+        ("var(--error)", "2px solid var(--error)")
     } else if is_user {
-        (
-            "var(--accentSubtle)",
-            "1px solid color-mix(in srgb, var(--accent) 28%, var(--border))",
-            "none",
-        )
+        ("var(--text)", "2px solid var(--accent)")
     } else {
-        (
-            "var(--bgSecondary)",
-            "1px solid var(--border)",
-            "var(--shadow-sm)",
-        )
+        ("var(--text)", "2px solid transparent")
     };
 
-    // Avatar: flat disc; Athena side carries the lit-sweep hover affordance.
-    let (avatar_class, avatar_glow) = if is_user {
-        ("", "none")
+    let content_bg = if is_error {
+        "rgba(235, 145, 19, 0.06)"
+    } else if is_user {
+        "var(--bgSecondary)"
     } else {
-        ("lit-sweep", "none")
-    };
-
-    let time_str = {
-        // Simple timestamp formatting
-        let secs = msg.timestamp;
-        let hours = ((secs / 3600) % 24) as u8;
-        let mins = ((secs / 60) % 60) as u8;
-        format!("{:02}:{:02}", hours, mins)
+        "transparent"
     };
 
     rsx! {
         div {
             class: "chat-message",
-            style: "display: flex; align-items: flex-start; gap: 10px; align-self: {align}; max-width: 90%; padding: 8px 0;",
+            style: "padding: 6px 0 6px 12px; border-left: {left_accent}; border-radius: 0 4px 4px 0; animation: fade-up 350ms cubic-bezier(0.22,0.61,0.36,1) both;",
 
-            // Avatar — a quiet identity mark for each speaker.
-            div {
-                class: "{avatar_class}",
-                style: "width: 28px; height: 28px; border-radius: 50%; background: var(--bgTertiary); border: 1px solid var(--border); box-shadow: {avatar_glow}; display: flex; align-items: center; justify-content: center; flex-shrink: 0;",
-                if is_user {
-                    span {
-                        style: "font-size: var(--text-2xs); font-weight: 700; color: var(--accent); letter-spacing: 0.04em;",
-                        "U"
+            // Content — plain text, no bubble.
+            if has_content {
+                div {
+                    style: "padding: 8px 12px; background: {content_bg}; color: {content_color}; border-radius: 0 4px 4px 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;",
+
+                    if is_streaming && has_content {
+                        {streaming_content(&msg.content)}
+                    } else {
+                        "{msg.content}"
                     }
-                } else {
-                    CoreMark { size: Some(18) }
                 }
             }
 
-            // Message body
-            div {
-                style: "flex: 1; min-width: 0;",
+            // Content blocks (plans, evaluations, ask-user, etc.)
+            for block in msg.blocks.iter() {
+                ContentBlockRenderer { key: "{block:?}", block: block.clone() }
+            }
 
-                // Header
+            // Image attachments — muted frost chips.
+            for img in msg.images.iter() {
                 div {
-                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 6px;",
-                    span {
-                        style: "font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--textMuted);",
-                        if is_user { "You" } else { "Athena" }
-                    }
-                    span {
-                        style: "font-size: var(--text-2xs); color: var(--textDim);",
-                        "{time_str}"
-                    }
-                }
-
-                // Content — each message gets a readable surface so the chat
-                // remains legible against the surrounding panel.
-                div {
-                    style: "padding: 12px 16px; background: {plaque_bg}; color: {content_color}; border: 1px solid {body_border}; border-radius: var(--radius-md); box-shadow: {plaque_shadow}; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;",
-
-                    "{msg.content}"
-                }
-
-                // Content blocks
-                for block in msg.blocks.iter() {
-                    ContentBlockRenderer { key: "{block:?}", block: block.clone() }
-                }
-
-                // Image attachments — muted frost chips.
-                for img in msg.images.iter() {
-                    div {
-                        key: "{img.id}",
-                        style: "margin-top: 8px; padding: 6px; background: var(--bgTertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 10px; color: var(--textDim);",
-                        "IMG {img.name.as_deref().unwrap_or(\"image\")}"
-                    }
+                    key: "{img.id}",
+                    style: "margin-top: 4px; padding: 6px; background: var(--bgTertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 10px; color: var(--textDim);",
+                    "IMG {img.name.as_deref().unwrap_or(\"image\")}"
                 }
             }
         }

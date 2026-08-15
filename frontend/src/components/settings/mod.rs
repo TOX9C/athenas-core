@@ -1,3 +1,4 @@
+pub mod provider_presets;
 pub mod settings_modal;
 pub mod shortcuts_ref;
 pub mod theme_picker;

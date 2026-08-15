@@ -426,6 +426,163 @@ h3,
   }
 }
 
+/* ── Athena chat motion ─────────────────────────────────────────────────────
+   Effects for the chat surface: pixel-grid loader cells, shimmer labels,
+   streaming word blur-in, staggered fade-up, and the blinking caret. */
+@keyframes pixel-on {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes shimmer-text {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@keyframes stream-in {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes blink-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Shimmer label — gradient swept across clipped text. Colors are derived
+   from the theme tokens so it reads on both light and dark palettes. */
+.shimmer-text {
+  background-image: linear-gradient(
+    90deg,
+    var(--textDim) 35%,
+    var(--text) 50%,
+    var(--textDim) 65%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-text 1.4s linear infinite;
+}
+
+/* Athena composer — rounded field surface that lights with a gold ring on
+   focus-within, matching the chat composer treatment. */
+.athena-composer-field {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bgSecondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition:
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+.athena-composer-field:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accentSubtle);
+}
+.athena-composer-field textarea {
+  flex: 1;
+  min-height: 38px;
+  max-height: 120px;
+  resize: vertical;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  padding: 2px 0;
+}
+.athena-composer-field textarea::placeholder {
+  color: var(--textDim);
+}
+
+/* Athena composer send — circular send affordance that fills with gold when
+   there is something to send and compresses on press. */
+.athena-composer-send {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  transition:
+    background-color 200ms var(--ease),
+    color 200ms var(--ease),
+    transform 100ms var(--ease);
+}
+.athena-composer-send:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+/* Athena ask-user (approval card) — option rows warm on hover. */
+.athena-ask-option:hover {
+  background: var(--bgHover);
+}
+
+/* Settings inline row — model input + Fetch models button + models dropdown. */
+.settings-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-inline-row select.field {
+  flex: 1;
+}
+.settings-inline-row .field {
+  margin-top: 0;
+}
+.settings-fetch-models {
+  flex-shrink: 0;
+}
+.settings-provider-hint {
+  font-size: 11px;
+  color: var(--textDim);
+  padding-left: 12px;
+}
+
 .animate-rise {
   animation: reveal-rise var(--dur-slow) var(--ease) both;
 }

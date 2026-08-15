@@ -38,8 +38,8 @@ Record the repository baseline before enforcing clean gates. At the current base
 - [x] `npm run check:release-privacy` is wired into CI and guards audited native logging paths; it is not a substitute for full release-build/diagnostic-export review.
 - [x] `npm run lint` — 0 errors, 45 pre-existing warnings (2026-08-14).
 - [ ] `npm run format:check` — Prettier baseline: 60 files (vendored xterm, historical docs); rustfmt is now clean. Baseline pending release-owner approval.
-- [x] `node scripts/check-tauri-command-drift.mjs` — 133 commands consistent (2026-08-14).
-- [x] `node scripts/check-tauri-permission-drift.mjs` — 133 commands consistent (2026-08-14).
+- [x] `node scripts/check-tauri-command-drift.mjs` — 134 commands consistent (2026-08-14).
+- [x] `node scripts/check-tauri-permission-drift.mjs` — 134 commands consistent (2026-08-14).
 - [x] `node scripts/check-plugin-integration.mjs` — passed (2026-08-14).
 - [ ] Dependency maintenance/unsoundness disposition recorded in `docs/release/DEPENDENCY_DISPOSITION_0.3.0.md`; verification evidence (`nm` and WASM symbol checks) attached to the release-candidate report.
 - [x] `git diff --check` — clean (2026-08-14).

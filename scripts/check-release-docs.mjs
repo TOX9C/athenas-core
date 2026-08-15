@@ -37,8 +37,8 @@ const legacyMcpAliases = new Set(
 ).size
 const expectedToolCount = canonicalToolCount + legacyMcpAliases
 
-if (registeredCommandCount !== 133) {
-  failures.push(`expected 133 registered commands, found ${registeredCommandCount}`)
+if (registeredCommandCount !== 134) {
+  failures.push(`expected 134 registered commands, found ${registeredCommandCount}`)
 }
 if (!new RegExp(`${registeredCommandCount} IPC commands`).test(readme)) {
   failures.push('README command count is stale')

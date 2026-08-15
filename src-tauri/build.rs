@@ -36,6 +36,7 @@ const COMMANDS: &[&str] = &[
     "store_has",
     "store_delete",
     "test_llm_api_key",
+    "llm_list_models",
     "session_create",
     "session_get",
     "session_list",

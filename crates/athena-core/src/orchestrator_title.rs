@@ -176,7 +176,8 @@ impl AthenaOrchestrator {
             }
             LLMProvider::OpenAI | LLMProvider::NvidiaNim | LLMProvider::Lmstudio => {
                 let url = match &provider {
-                    LLMProvider::NvidiaNim => "https://integrate.api.nvidia.com/v1".to_string(),
+                    LLMProvider::NvidiaNim => base_url
+                        .unwrap_or_else(|| "https://integrate.api.nvidia.com/v1".to_string()),
                     LLMProvider::OpenAI => "https://api.openai.com/v1".to_string(),
                     LLMProvider::Lmstudio => {
                         base_url.unwrap_or_else(|| "http://localhost:1234/v1".to_string())

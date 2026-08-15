@@ -153,21 +153,32 @@ impl WorkspaceState {
     pub async fn load() -> Self {
         match kv_get(WORKSPACES_KEY).await {
             Ok(json) => {
+                web_sys::console::log_1(
+                    &format!(
+                        "[resume-debug] workspace store_get succeeded bytes={}",
+                        json.len()
+                    )
+                    .into(),
+                );
                 if json.trim().is_empty() {
+                    web_sys::console::warn_1(&"[resume-debug] workspace store is empty".into());
                     return Self::new();
                 }
                 match serde_json::from_str(&json) {
                     Ok(state) => state,
                     Err(e) => {
                         web_sys::console::error_1(
-                            &format!("[WorkspaceState] deserialize error: {}", e).into(),
+                            &format!("[resume-debug] workspace deserialize failed: {e}").into(),
                         );
                         Self::new()
                     }
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 // Key absent on first run — not an error.
+                web_sys::console::warn_1(
+                    &format!("[resume-debug] workspace store_get failed/absent: {e:?}").into(),
+                );
                 Self::new()
             }
         }

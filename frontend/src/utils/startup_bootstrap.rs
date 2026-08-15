@@ -121,6 +121,22 @@ pub fn use_startup_bootstrap(
         use_effect(move || {
             spawn(async move {
                 let loaded = WorkspaceState::load().await;
+                let resume_panes = loaded
+                    .spaces
+                    .iter()
+                    .flat_map(|space| space.panes.iter())
+                    .filter(|pane| pane.resume_id.is_some() || pane.resume_cmd.is_some())
+                    .count();
+                web_sys::console::log_1(
+                    &format!(
+                        "[resume-debug] startup loaded spaces={} panes={} resume_panes={} active={:?}",
+                        loaded.spaces.len(),
+                        loaded.spaces.iter().map(|space| space.panes.len()).sum::<usize>(),
+                        resume_panes,
+                        loaded.active_space_id
+                    )
+                    .into(),
+                );
                 for space in &loaded.spaces {
                     let dir = space.dir.trim();
                     if dir.is_empty() {
@@ -135,7 +151,19 @@ pub fn use_startup_bootstrap(
                 }
                 let mut state = ws.write();
                 if state.spaces.is_empty() && state.active_space_id.is_none() {
+                    web_sys::console::log_1(
+                        &"[resume-debug] startup applying loaded workspace state".into(),
+                    );
                     *state = loaded;
+                } else {
+                    web_sys::console::warn_1(
+                        &format!(
+                            "[resume-debug] startup skipped loaded workspace state; current spaces={} active={:?}",
+                            state.spaces.len(),
+                            state.active_space_id
+                        )
+                        .into(),
+                    );
                 }
             });
         });

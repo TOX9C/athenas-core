@@ -548,6 +548,36 @@ fn PaneItem(props: PaneItemProps) -> Element {
         && !banner_dismissed()
         && (!has_detectable_agent || !agent_running());
 
+    // Diagnostic breadcrumb for resume regressions. It records only pane
+    // metadata and lengths, never terminal output or the full session ID.
+    {
+        let pane_id = props.pane_id.clone();
+        let agent = props.agent_type.to_string();
+        let resume_id_len = props.resume_id.as_deref().map(str::len).unwrap_or(0);
+        let has_resume_cmd = props.resume_cmd.is_some();
+        let variant_count = resume_variants.len();
+        let detectable_process = known_process.map(str::to_string);
+        use_effect(move || {
+            let running = agent_running();
+            let dismissed = banner_dismissed();
+            web_sys::console::log_1(
+                &format!(
+                    "[resume-debug] pane={} agent={} id_len={} cmd_present={} variants={} process={:?} running={} dismissed={} show={}",
+                    pane_id,
+                    agent,
+                    resume_id_len,
+                    has_resume_cmd,
+                    variant_count,
+                    detectable_process,
+                    running,
+                    dismissed,
+                    show_resume_banner
+                )
+                .into(),
+            );
+        });
+    }
+
     let left_label = crate::utils::pane_label::resolve_pane_label(
         props.label.as_deref(),
         &title_state,

@@ -1,6 +1,7 @@
 //! Settings section components for General, Athena, and About.
 
 use super::{FontDropdown, GroupLabel, LabeledField, SizeStepper, Toggle};
+use crate::components::settings::provider_presets::{infer_provider_id, provider_preset, LLM_PROVIDERS};
 use crate::components::shared::icon::{IconCheck, IconClose};
 use crate::stores::athena::use_athena_store;
 use crate::stores::ui::use_ui_store;
@@ -105,6 +106,163 @@ pub(super) fn GeneralSettings() -> Element {
 Tab: Athena
 ============================================================= */
 
+/// Fetch the model list for the current base URL + key. The typed key is
+/// passed through so "Fetch models" works before the user hits Save; the
+/// backend falls back to the keyring slot for `provider` when it is empty.
+///
+/// Kept as a free function (signals are `Copy` in Dioxus 0.7) so it can be
+/// called from event handlers *and* from the async load/save flows.
+#[allow(clippy::too_many_arguments)]
+fn fetch_models(
+    base_url: Signal<String>,
+    api_key_input: Signal<String>,
+    provider: Signal<String>,
+    mut models_loading: Signal<bool>,
+    mut models_error: Signal<String>,
+    mut available_models: Signal<Vec<String>>,
+    mut models_fetched_for_url: Signal<String>,
+) {
+    let url = base_url.read().clone();
+    if url.trim().is_empty() {
+        return;
+    }
+    let key = api_key_input.read().clone();
+    let prov = provider.read().clone();
+    models_loading.set(true);
+    models_error.set(String::new());
+    available_models.set(Vec::new());
+    wasm_bindgen_futures::spawn_local(async move {
+        match crate::tauri_bridge::llm_list_models(&url, &key, &prov).await {
+            Ok(json) => {
+                let parsed: serde_json::Value = match serde_json::from_str(&json) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        models_error.set("Could not parse the models response".to_string());
+                        models_loading.set(false);
+                        return;
+                    }
+                };
+                let ok = parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                if ok {
+                    let models: Vec<String> = parsed
+                        .get("models")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|m| m.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    available_models.set(models);
+                    models_fetched_for_url.set(url);
+                } else {
+                    let msg = parsed
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown response")
+                        .to_string();
+                    models_error.set(msg);
+                }
+            }
+            Err(e) => {
+                models_error.set(format!("{:?}", e));
+            }
+        }
+        models_loading.set(false);
+    });
+}
+
+/// Load the persisted config for a provider into the settings signals.
+///
+/// `legacy` reads the legacy/custom slots (`llm.base_url`, `llm.model`,
+/// `llm.api_key`) instead of the provider-scoped ones — used on first mount
+/// for existing users and whenever the Custom preset is selected. When
+/// `auto_fetch` is set and the provider exposes a `/models` list with a key
+/// available, the model list is fetched immediately so the user gets a
+/// dropdown without clicking "Fetch models".
+#[allow(clippy::too_many_arguments)]
+fn load_provider_config(
+    prov: String,
+    legacy: bool,
+    auto_fetch: bool,
+    mut provider: Signal<String>,
+    mut base_url: Signal<String>,
+    mut model: Signal<String>,
+    mut api_key_set: Signal<bool>,
+    api_key_input: Signal<String>,
+    mut available_models: Signal<Vec<String>>,
+    mut models_fetched_for_url: Signal<String>,
+    mut models_error: Signal<String>,
+    mut save_status: Signal<Option<bool>>,
+    models_loading: Signal<bool>,
+) {
+    provider.set(prov.clone());
+    save_status.set(None);
+    // A provider switch invalidates any fetched model list.
+    available_models.set(Vec::new());
+    models_fetched_for_url.set(String::new());
+    models_error.set(String::new());
+
+    let url_key = if legacy {
+        "llm.base_url".to_string()
+    } else {
+        format!("llm.base_url.{prov}")
+    };
+    let model_key = if legacy {
+        "llm.model".to_string()
+    } else {
+        format!("llm.model.{prov}")
+    };
+    let api_key_key = if legacy {
+        "llm.api_key".to_string()
+    } else {
+        format!("llm.api_key.{prov}")
+    };
+
+    wasm_bindgen_futures::spawn_local(async move {
+        // Base URL: the saved value wins, else the preset default.
+        match crate::tauri_bridge::store_get(&url_key).await {
+            Ok(url) if !url.trim().is_empty() => base_url.set(url),
+            _ => base_url.set(
+                provider_preset(&prov)
+                    .map(|p| p.default_base_url.to_string())
+                    .unwrap_or_default(),
+            ),
+        }
+        // Model: saved value, else the preset default (e.g. GLM 5.2 on NIM)
+        // so the field is never blank for a preset that ships one.
+        match crate::tauri_bridge::store_get(&model_key).await {
+            Ok(m) if !m.trim().is_empty() => model.set(m),
+            _ => model.set(
+                provider_preset(&prov)
+                    .and_then(|p| p.default_model)
+                    .map(str::to_string)
+                    .unwrap_or_default(),
+            ),
+        }
+        // Key status: scoped slot for presets, legacy slot for custom.
+        let status = crate::tauri_bridge::store_get(&api_key_key)
+            .await
+            .unwrap_or_default();
+        api_key_set.set(status == "set");
+
+        if auto_fetch
+            && provider_preset(&prov).is_some_and(|p| p.supports_model_list)
+            && (api_key_set() || !api_key_input.read().trim().is_empty())
+        {
+            fetch_models(
+                base_url,
+                api_key_input,
+                provider,
+                models_loading,
+                models_error,
+                available_models,
+                models_fetched_for_url,
+            );
+        }
+    });
+}
+
 #[component]
 pub(super) fn AthenaSettings() -> Element {
     let mut api_key_set = use_signal(|| false);
@@ -116,17 +274,50 @@ pub(super) fn AthenaSettings() -> Element {
     let mut athena_state = use_athena_store();
     let mut toast_store = crate::components::shared::toast::use_toast_store();
 
+    // Provider preset + fetched model list. `provider` holds the selected
+    // preset id (mirrors the persisted `llm.provider` value).
+    let provider = use_signal(String::new);
+    let mut available_models = use_signal(Vec::<String>::new);
+    let models_loading = use_signal(|| false);
+    let mut models_error = use_signal(String::new);
+    // Base URL the fetched model list came from — editing the URL invalidates it.
+    let mut models_fetched_for_url = use_signal(String::new);
+
     use_effect(move || {
         wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(status) = crate::tauri_bridge::store_get("llm.api_key").await {
-                api_key_set.set(status == "set");
-            }
-            if let Ok(url) = crate::tauri_bridge::store_get("llm.base_url").await {
-                base_url.set(url);
-            }
-            if let Ok(m) = crate::tauri_bridge::store_get("llm.model").await {
-                model.set(m);
-            }
+            // Resolve the persisted provider: an explicit `llm.provider` preset
+            // id wins; otherwise (existing users / custom) infer from the
+            // legacy base URL so the dropdown lands on the right preset.
+            let persisted = crate::tauri_bridge::store_get("llm.provider")
+                .await
+                .unwrap_or_default();
+            let persisted = persisted.trim().to_string();
+            let has_persisted = provider_preset(&persisted).is_some();
+            let prov = if has_persisted {
+                persisted.clone()
+            } else {
+                match crate::tauri_bridge::store_get("llm.base_url").await {
+                    Ok(url) if !url.trim().is_empty() => infer_provider_id(&url).to_string(),
+                    _ => "custom".to_string(),
+                }
+            };
+            load_provider_config(
+                prov,
+                // Legacy slots only for existing users / custom; providers
+                // with a persisted id read their own scoped keys.
+                !has_persisted,
+                true,
+                provider,
+                base_url,
+                model,
+                api_key_set,
+                api_key_input,
+                available_models,
+                models_fetched_for_url,
+                models_error,
+                save_status,
+                models_loading,
+            );
         });
     });
 
@@ -134,6 +325,26 @@ pub(super) fn AthenaSettings() -> Element {
         let new_key = api_key_input.read().clone();
         let url = base_url.read().clone();
         let m = model.read().clone();
+        let prov = provider.read().clone();
+        // Custom (or nothing picked yet) stores to the legacy slots; presets
+        // store to their own scoped slots so each provider keeps its own key,
+        // model, and base URL.
+        let is_custom = prov == "custom" || prov.trim().is_empty();
+        let api_key_key = if is_custom {
+            "llm.api_key".to_string()
+        } else {
+            format!("llm.api_key.{prov}")
+        };
+        let url_key = if is_custom {
+            "llm.base_url".to_string()
+        } else {
+            format!("llm.base_url.{prov}")
+        };
+        let model_key = if is_custom {
+            "llm.model".to_string()
+        } else {
+            format!("llm.model.{prov}")
+        };
         let key_will_be_set = !new_key.is_empty() || api_key_set();
         api_key_input.set(String::new());
 
@@ -142,7 +353,7 @@ pub(super) fn AthenaSettings() -> Element {
             let mut key_err = String::new();
 
             if !new_key.is_empty() {
-                match crate::tauri_bridge::store_set("llm.api_key", &new_key).await {
+                match crate::tauri_bridge::store_set(&api_key_key, &new_key).await {
                     Ok(()) => {
                         api_key_set.set(true);
                         key_ok = true;
@@ -156,18 +367,34 @@ pub(super) fn AthenaSettings() -> Element {
                     }
                 }
             }
-            if let Err(e) = crate::tauri_bridge::store_set("llm.base_url", &url).await {
+            if let Err(e) = crate::tauri_bridge::store_set(&url_key, &url).await {
                 key_err = if key_err.is_empty() {
                     format!("base URL: {:?}", e)
                 } else {
                     format!("{}; base URL: {:?}", key_err, e)
                 };
             }
-            if let Err(e) = crate::tauri_bridge::store_set("llm.model", &m).await {
+            if let Err(e) = crate::tauri_bridge::store_set(&model_key, &m).await {
                 key_err = if key_err.is_empty() {
                     format!("model: {:?}", e)
                 } else {
                     format!("{}; model: {:?}", key_err, e)
+                };
+            }
+            // Provider: presets persist their id so the backend routes to
+            // their scoped keys; Custom deletes it so host-based inference
+            // stays active (e.g. a localhost URL keeps LM Studio's no-vision
+            // flag) and the legacy slots remain authoritative.
+            let prov_result = if is_custom {
+                crate::tauri_bridge::store_delete("llm.provider").await
+            } else {
+                crate::tauri_bridge::store_set("llm.provider", &prov).await
+            };
+            if let Err(e) = prov_result {
+                key_err = if key_err.is_empty() {
+                    format!("provider: {:?}", e)
+                } else {
+                    format!("{}; provider: {:?}", key_err, e)
                 };
             }
 
@@ -192,16 +419,80 @@ pub(super) fn AthenaSettings() -> Element {
             athena_state
                 .write()
                 .set_configured_model(if m.trim().is_empty() { None } else { Some(m) });
+
+            // The key is now persisted (or confirmed already-set) — pull the
+            // model list so the user can pick from a dropdown right away.
+            if !any_error
+                && key_ok
+                && provider_preset(&prov).is_some_and(|p| p.supports_model_list)
+            {
+                fetch_models(
+                    base_url,
+                    api_key_input,
+                    provider,
+                    models_loading,
+                    models_error,
+                    available_models,
+                    models_fetched_for_url,
+                );
+            }
         });
     };
+
+
+
+    // Whether the current provider exposes an OpenAI-compatible /models list.
+    // Custom is OpenAI-compatible, so it counts; only Anthropic is excluded.
+    let current_supports_models = provider_preset(&provider())
+        .is_some_and(|p| p.supports_model_list);
+    // Whether the fetched list is still valid for the URL currently in the field.
+    let models_are_current = !available_models.read().is_empty()
+        && models_fetched_for_url.read().as_str() == base_url.read().as_str();
 
     rsx! {
         /* GroupLabel "Provider" sits first to anchor the first labeled field. */
         GroupLabel { label: "Provider", first: true }
 
         LabeledField {
+            label: "Provider",
+            description: Some("Each provider keeps its own API key, base URL, and model. Presets prefill the base URL; Custom accepts any OpenAI-compatible endpoint."),
+            select {
+                value: "{provider}",
+                class: "field",
+                style: "width: 100%; box-sizing: border-box;",
+                onchange: move |e| {
+                    let id = e.value();
+                    // The typed key belongs to the previous provider — clear it
+                    // so it isn't saved to the newly selected one.
+                    api_key_input.set(String::new());
+                    save_error.set(String::new());
+                    load_provider_config(
+                        id.clone(),
+                        // Custom reads the legacy slots (it has no scoped keys).
+                        id == "custom",
+                        // Auto-fetch /models when a key is already saved for it.
+                        true,
+                        provider,
+                        base_url,
+                        model,
+                        api_key_set,
+                        api_key_input,
+                        available_models,
+                        models_fetched_for_url,
+                        models_error,
+                        save_status,
+                        models_loading,
+                    );
+                },
+                for preset in LLM_PROVIDERS {
+                    option { value: "{preset.id}", "{preset.label}" }
+                }
+            }
+        }
+
+        LabeledField {
             label: "API Key",
-            description: Some("Stored in the OS keychain. Paste to replace."),
+            description: Some("Stored per provider in the OS keychain. Paste to replace."),
             div {
                 style: "display: flex; align-items: center; gap: 8px; margin-top: 4px;",
                 span {
@@ -277,19 +568,73 @@ pub(super) fn AthenaSettings() -> Element {
                 class: "field",
                 style: "width: 100%; box-sizing: border-box;",
                 placeholder: "https://api.openai.com/v1",
-                oninput: move |e| { base_url.set(e.value()); save_status.set(None); },
+                readonly: provider() == "anthropic",
+                oninput: move |e| {
+                    base_url.set(e.value());
+                    // Editing the URL invalidates the fetched model list.
+                    available_models.set(Vec::new());
+                    models_fetched_for_url.set(String::new());
+                    models_error.set(String::new());
+                    save_status.set(None);
+                },
+            }
+            if provider() == "anthropic" {
+                div { class: "settings-provider-hint", "Anthropic uses a fixed endpoint; custom Anthropic URLs aren't supported yet." }
             }
         }
 
         LabeledField {
             label: "Model",
             description: Some("gpt-4o, claude-sonnet-4-6, llama3.1, …"),
-            input {
-                value: "{model}",
-                class: "field",
-                style: "width: 100%; box-sizing: border-box;",
-                placeholder: "gpt-4o, gpt-4, llama3.1, …",
-                oninput: move |e| { model.set(e.value()); save_status.set(None); },
+            div {
+                class: "settings-inline-row",
+                style: "width: 100%;",
+                input {
+                    value: "{model}",
+                    class: "field",
+                    style: "flex: 1; min-width: 0; box-sizing: border-box;",
+                    placeholder: "gpt-4o, gpt-4, llama3.1, …",
+                    oninput: move |e| { model.set(e.value()); save_status.set(None); },
+                }
+                if current_supports_models {
+                    button {
+                        class: "btn-secondary btn-sm settings-fetch-models",
+                        r#type: "button",
+                        disabled: models_loading(),
+                        title: "Fetch available models from {base_url}/models",
+                        onclick: move |_| {
+                            fetch_models(
+                                base_url,
+                                api_key_input,
+                                provider,
+                                models_loading,
+                                models_error,
+                                available_models,
+                                models_fetched_for_url,
+                            );
+                        },
+                        if models_loading() { "Fetching…" } else { "Fetch models" }
+                    }
+                }
+            }
+            if !models_error.read().is_empty() {
+                div { style: "font-size: 11px; color: var(--error); padding-left: 12px; margin-top: 4px;", "{models_error.read()}" }
+            }
+            if models_are_current && !available_models.read().is_empty() {
+                select {
+                    class: "field",
+                    style: "width: 100%; box-sizing: border-box; margin-top: 8px;",
+                    onchange: move |e| { model.set(e.value()); save_status.set(None); },
+                    option { value: "", "Select a model…" }
+                    for m in available_models.read().iter() {
+                        option { value: "{m}", "{m}" }
+                    }
+                }
+            }
+            // Preset-specific model guidance (e.g. the GLM 5.2 reasoning note
+            // on NVIDIA NIM).
+            if let Some(hint) = provider_preset(&provider()).and_then(|p| p.model_hint) {
+                div { class: "settings-provider-hint", style: "margin-top: 6px;", "{hint}" }
             }
         }
 

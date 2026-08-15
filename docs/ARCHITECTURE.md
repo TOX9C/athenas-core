@@ -14,7 +14,7 @@ Athena's Core is a Tauri 2 desktop application with a Dioxus (Rust/WASM) fronten
 │  │  App (lib.rs)              │  │  │  main.rs                   │  │
 │  │  ├─ Sidebar                │  │  │  ├─ tauri::Builder         │  │
 │  │  ├─ WorkspaceTabs          │  │  │  ├─ AppState::manage()     │  │
-│  │  ├─ TerminalGrid           │  │  │  ├─ 133 invoke_handlers    │  │
+│  │  ├─ TerminalGrid           │  │  │  ├─ 134 invoke_handlers    │  │
 │  │  ├─ AthenaPanel            │  │  │  └─ graceful_shutdown      │  │
 │  │  ├─ KanbanBoard            │  │  └───────────────────────────┘  │
 │  │  ├─ SwarmBoard             │  │                                 │
@@ -72,7 +72,7 @@ The Tauri application binary. Serves as the entry point and IPC bridge.
 
 - `main.rs` — App builder, command registration, graceful shutdown handler
 - `state.rs` — `AppState` struct holding all shared services behind `Arc<Mutex>` / `Arc<tokio::sync::Mutex>`
-- `commands/mod.rs` — 133 `#[tauri::command]` functions organized by domain (per-domain modules re-exported from `mod.rs`)
+- `commands/mod.rs` — 134 `#[tauri::command]` functions organized by domain (per-domain modules re-exported from `mod.rs`); `commands/provider_config.rs` builds the LLM provider config from the store and exposes `llm_list_models` for the Settings model picker
 
 ### athena-frontend
 
@@ -102,6 +102,7 @@ Core business logic: LLM orchestration, MCP server, agent communications, search
 **Modules:**
 
 - `orchestrator.rs` — `AthenaOrchestrator`: dispatches messages to Anthropic/OpenAI-compatible APIs, handles tool call loops
+- `llm_models.rs` — OpenAI-compatible `/models` list fetcher used by Settings → Athena to populate the model picker (auth header attached only when a key exists; URL validated against the same SSRF guard as chat)
 - `mcp.rs` — `McpServer`: TCP JSON-RPC 2.0 server on port 4545, exposes 30 executor-backed and legacy-alias tools to external agents
 - `agent_comms.rs` — `AgentComms`: TCP server on port 4546 for agent lifecycle (initialize, notify, status, input request, heartbeat)
 - `tool_executor.rs` — Built-in tool implementations (create_tasks, get_next_task, update_task_status, notify, etc.)
@@ -383,7 +384,7 @@ Both MCP and Agent Comms servers require a UUID token for initialization. Connec
 
 ### Tauri Capabilities
 
-- The main window capability (`src-tauri/capabilities/default.json`) grants the 133 command-aligned custom permissions plus core/dialog/window/event/clipboard entries. It is **not** least-privilege by feature area; the backend validators are the primary security boundary. See [`docs/release/CAPABILITY_PLUGIN_INVENTORY.md`](release/CAPABILITY_PLUGIN_INVENTORY.md) for the full inventory and the C-1 finding regarding future capability splitting.
+- The main window capability (`src-tauri/capabilities/default.json`) grants the 134 command-aligned custom permissions plus core/dialog/window/event/clipboard entries. It is **not** least-privilege by feature area; the backend validators are the primary security boundary. See [`docs/release/CAPABILITY_PLUGIN_INVENTORY.md`](release/CAPABILITY_PLUGIN_INVENTORY.md) for the full inventory and the C-1 finding regarding future capability splitting.
 - Plugins in use: `tauri-plugin-shell`, `tauri-plugin-dialog`, `tauri-plugin-log`, `tauri-plugin-clipboard-manager`, `tauri-plugin-notification`, `tauri-plugin-window-state`.
 - Release delivery uses signed/notarized DMG publication and a documented manual-update runbook; no in-app updater plugin or update endpoint is included in this build. See [`docs/release/UPDATER_DECISION_0.3.0.md`](release/UPDATER_DECISION_0.3.0.md).
 
