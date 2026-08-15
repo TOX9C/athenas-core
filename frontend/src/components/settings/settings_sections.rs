@@ -373,17 +373,17 @@ pub(super) fn AboutSettings() -> Element {
                     div {
                         style: "display: flex; flex-direction: column; gap: 3px;",
                         span { style: "font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);", "BTC" }
-                        code { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); background: var(--bgSecondary); border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; word-break: break-all; display: block;", "YOUR_BTC_ADDRESS" }
+                        code { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); background: var(--bgSecondary); border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; word-break: break-all; display: block;", "bc1qn8ehwc7rxlpgvljztr5k6npqf307xq00dqatf8" }
                     }
                     div {
                         style: "display: flex; flex-direction: column; gap: 3px;",
                         span { style: "font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);", "ETH / USDT / USDC (ERC-20)" }
-                        code { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); background: var(--bgSecondary); border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; word-break: break-all; display: block;", "YOUR_ETH_ADDRESS" }
+                        code { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); background: var(--bgSecondary); border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; word-break: break-all; display: block;", "0x4260456e1dbdc880d69d75949726953215a93586" }
                     }
                     div {
                         style: "display: flex; flex-direction: column; gap: 3px;",
                         span { style: "font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);", "USDT (TRC-20)" }
-                        code { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); background: var(--bgSecondary); border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; word-break: break-all; display: block;", "YOUR_TRC20_ADDRESS" }
+                        code { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textDim); background: var(--bgSecondary); border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; word-break: break-all; display: block;", "TSBUpAreTjmUscbUbf4L1wkX1fvvJvSRGW" }
                     }
                 }
                 // Links
