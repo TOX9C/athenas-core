@@ -60,7 +60,9 @@ jobs:
         run: npm run check:release-privacy
 
       - name: Check release identity
-        run: npm run check:release-identity
+        run: |
+          export RELEASE_VERSION="$(node -p "require('./package.json').version")"
+          npm run check:release-identity
 
       - name: Check release documentation
         run: npm run check:release-docs
