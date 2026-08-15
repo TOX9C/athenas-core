@@ -1,0 +1,75 @@
+---
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the sections below.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of what went wrong.
+      placeholder: "When I..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: "I expected..."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug.
+      placeholder: |
+        1. Open Athena's Core
+        2. ...
+      render: markdown
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Athena's Core version
+      placeholder: "v0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: macOS version
+      placeholder: "macOS 14.5 (Sonoma)"
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - Apple Silicon (M1/M2/M3)
+        - Intel
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Paste any terminal output, crash logs, or screenshots.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: llm-provider
+    attributes:
+      label: LLM provider (if relevant)
+      description: Which AI provider were you using when the bug occurred?
+      placeholder: "Claude, OpenAI, NVIDIA NIM, local model..."
+    validations:
+      required: false
