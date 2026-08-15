@@ -7,7 +7,11 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const read = (relative) => readFileSync(resolve(root, relative), 'utf8')
 const json = (relative) => JSON.parse(read(relative))
-const suppliedVersion = process.env.RELEASE_VERSION ?? process.env.GITHUB_REF_NAME?.replace(/^v/, '')
+const suppliedVersion =
+  process.env.RELEASE_VERSION ??
+  (process.env.GITHUB_REF_TYPE === 'tag'
+    ? process.env.GITHUB_REF_NAME?.replace(/^v/, '')
+    : undefined)
 const tag = suppliedVersion ?? '0.3.0'
 const failures = []
 if (process.env.CI && !suppliedVersion) failures.push('CI release identity requires RELEASE_VERSION or GITHUB_REF_NAME')
@@ -16,7 +20,7 @@ const tauri = json('src-tauri/tauri.conf.json')
 const frontendCargo = read('frontend/Cargo.toml')
 const tauriCargo = read('src-tauri/Cargo.toml')
 const readme = read('README.md')
-const launchPlan = read('docs/release/PUBLIC_LAUNCH_PLAN.md')
+const scope = read('docs/release/RELEASE_SCOPE.md')
 const privacy = read('docs/release/PRIVACY_NOTICE.md')
 const entitlements = read('src-tauri/entitlements.plist')
 
@@ -39,16 +43,16 @@ if (!/<dict\s*\/>/.test(entitlements)) failures.push('production entitlements mu
 if (tauri.bundle?.targets !== 'dmg' && !(Array.isArray(tauri.bundle?.targets) && tauri.bundle.targets.length === 1 && tauri.bundle.targets[0] === 'dmg')) {
   failures.push('public macOS scope must package only the DMG target')
 }
-if (!/macOS on Apple Silicon/.test(readme) || !/Apple Silicon macOS first/.test(launchPlan)) {
+if (!/macOS on Apple Silicon/.test(readme) || !/Apple Silicon macOS first/.test(scope)) {
   failures.push('Apple Silicon macOS scope is not documented consistently')
 }
-if (!/Mobile Mirror.*experimental.*disabled by default/i.test(launchPlan) || !/Mobile Mirror.*experimental.*plaintext/i.test(privacy)) {
+if (!/Mobile Mirror.*experimental.*disabled by default/i.test(scope) || !/Mobile Mirror.*experimental.*plaintext/i.test(privacy)) {
   failures.push('Mobile Mirror exclusion/trust warning is missing')
 }
-if (!/No in-app updater is shipped/i.test(launchPlan)) {
+if (!/No in-app updater is shipped/i.test(scope)) {
   failures.push('no-updater scope is not recorded')
 }
-if (/Windows\/Linux are out of scope/.test(launchPlan) && /- \*\*Linux\*\*|\*\*Windows\*\*/.test(readme)) {
+if (/Windows\/Linux are out of scope/.test(scope) && /- \*\*Linux\*\*|\*\*Windows\*\*/.test(readme)) {
   // Development prerequisites may mention these platforms, but they must be
   // explicitly labeled as non-release platforms in the README.
   if (!/not release artifacts/i.test(readme)) failures.push('README advertises non-release platforms without a scope disclaimer')

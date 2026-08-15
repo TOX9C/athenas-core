@@ -130,7 +130,6 @@ These are nice-to-have improvements, cleanup items, or architectural notes that 
 
 > **Status:** ✅ Resolved by the August 2026 codebase refactor.
 > All items below were removed or consolidated during the P0–P1 refactor passes.
-> See `docs/plans/codebase-refactor-plan.md` for details.
 
 | Category            | File                                                                | What                       | Status     |
 | ------------------- | ------------------------------------------------------------------- | -------------------------- | ---------- |

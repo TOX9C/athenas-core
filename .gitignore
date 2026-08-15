@@ -69,6 +69,9 @@ dist-electron/
 .agents/
 .codex/
 
+# Local planning docs (moved out of the public repo — never commit plans)
+.plans/
+
 # HyperFrames ad composition — generated artifacts (keep source assets/fonts/sfx)
 .hyperframes/ad/renders/
 .hyperframes/ad/.thumbnails/

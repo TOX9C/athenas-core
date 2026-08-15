@@ -11,6 +11,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Unit tests:** `cargo test --workspace`
 - **E2E tests:** `npm run test:e2e` (see E2E Testing section below)
 
+## Planning Docs
+
+Working plans, specs, and agent handoffs live in `.plans/` (gitignored — never committed).
+This is deliberate: planning docs are development-internal and must not be published to the
+public repo. When a workflow calls for writing a plan/spec/handoff (e.g. the superpowers SDD
+skill), write it under `.plans/` — never under `docs/` — and reference it from code comments
+without a path (or with a `.plans/...` path, since `.plans/` stays on disk locally).
+
 ## High-Level Architecture
 
 "Athena's Core" is a Tauri 2 desktop application with a Dioxus 0.7 WASM frontend. The Rust backend handles all system-level operations (PTY, filesystem, LLM orchestration, MCP, plugins) and the Dioxus/WASM frontend renders the UI in a WKWebView.

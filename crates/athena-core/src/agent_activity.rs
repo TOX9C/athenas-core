@@ -2,7 +2,7 @@
 //! derives live agent status from PTY output, foreground-process lifecycle,
 //! shell-integration events, and per-agent session files.
 //!
-//! Design rules (see docs/plans/agent-activity-notifications.md):
+//! Design rules (from the agent-activity notifications plan):
 //! - **Plugin-status-wins**: panes with a connected plugin-host session skip
 //!   all heuristics; the plugin drives their status (the state.rs adapter
 //!   translates `agents:*` events to add `paneId`).

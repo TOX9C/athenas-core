@@ -11,9 +11,9 @@ the manual process documented in [`MANUAL_UPDATE_RUNBOOK.md`](./MANUAL_UPDATE_RU
 signed/notarized DMG plus published SHA-256 checksum on the official release
 channel, replaced by the user in `/Applications`.
 
-This is a **conditional deferral**, not an informal waiver. The conditions in
-`PUBLIC_LAUNCH_PLAN.md` (Phase 6) apply: release-owner approval, named
-owners, a tested emergency hotfix path, and a tested user communication path.
+This is a **conditional deferral**, not an informal waiver. The following
+conditions apply: release-owner approval, named owners, a tested emergency
+hotfix path, and a tested user communication path.
 
 ## Rationale
 
@@ -56,6 +56,6 @@ explicit release-owner waiver recorded here.
 ## Cross-references
 
 - [`MANUAL_UPDATE_RUNBOOK.md`](./MANUAL_UPDATE_RUNBOOK.md) — operational procedure.
-- [`PUBLIC_LAUNCH_PLAN.md`](./PUBLIC_LAUNCH_PLAN.md) Phase 6 — gate definitions.
+- [`RELEASE_SCOPE.md`](./RELEASE_SCOPE.md) — supported platform and feature scope.
 - [`RELEASE_CHECKLIST.md`](./RELEASE_CHECKLIST.md) — Updates and rollback section.
 - [`INCIDENT_RESPONSE.md`](./INCIDENT_RESPONSE.md) — rollback procedure.

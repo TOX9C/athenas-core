@@ -108,9 +108,8 @@ pub(super) fn FontDropdown(props: FontDropdownProps) -> Element {
         div {
             // The popover currently closes only via a second click on the
             // affordance. Outside-click close was discussed (the spec kept
-            // this as a deferred-for-v2 behavior — see `docs/superpowers/
-            // specs/2026-07-12-settings-codex-redesign-design.md` §10) and
-            // is not implemented yet. The Esc-key close path gets added with
+            // this as a deferred-for-v2 behavior — spec §10) and is not
+            // implemented yet. The Esc-key close path gets added with
             // a future outside-click global mousedown listener (mirroring
             // the existing IntersectionObserver pattern in
             // `xterm_mount.rs:765-834`).

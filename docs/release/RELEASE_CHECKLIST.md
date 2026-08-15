@@ -8,7 +8,7 @@ Use this checklist for every release candidate. A checked item must link to evid
 - [x] Product name and bundle identifier are final for this candidate: Athena's Core / `com.athena.core`.
 - [x] Supported architecture and minimum macOS version are documented: Apple Silicon arm64, macOS 13.0+.
 - [x] Bundle identifier decision recorded in `docs/release/BUNDLE_ID_DECISION_0.3.0.md`: clean reinstall from `com.athena.app` to `com.athena.core` for 0.3.0.
-- [ ] Scope decisions are recorded in `PUBLIC_LAUNCH_PLAN.md`.
+- [ ] Scope decisions are recorded in `RELEASE_SCOPE.md`.
 - [ ] Release owner and rollback owner are named.
 - [ ] Release notes match the actual artifact and date.
 
