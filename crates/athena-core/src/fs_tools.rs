@@ -200,9 +200,8 @@ impl ToolExecutor {
                     is_error: None,
                 })
             }
-            Err(_) => Ok(ToolCallResult {
-                text: "Search failed. Check the path and search pattern, then try again."
-                    .to_string(),
+            Err(e) => Ok(ToolCallResult {
+                text: format!("Search failed: {e}. Check the path and search pattern, then try again."),
                 is_error: Some(true),
             }),
         }
