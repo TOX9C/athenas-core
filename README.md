@@ -2,6 +2,12 @@
 
 <img src="src-tauri/icons/128x128.png?v=2025" alt="Athena's Core" width="128" height="128" />
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-blue)](https://github.com/TOX9C/athenas-core/releases)
+[![Rust](https://img.shields.io/badge/Rust-Tauri%202%20%2B%20Dioxus-orange)](https://www.rust-lang.org/)
+[![Stars](https://img.shields.io/github/stars/TOX9C/athenas-core?style=social)](https://github.com/TOX9C/athenas-core)
+[![Donate](https://img.shields.io/badge/Donate-NowPayments-purple)](https://nowpayments.io/donation/tox9c)
+
 A next-generation desktop IDE for AI-assisted software development. Athena's Core unifies a multi-pane terminal, AI chat assistant, task management, and multi-agent orchestration into a single native application. The current release scope is macOS on Apple Silicon (arm64), macOS 13.0 or newer; other platforms are not release artifacts yet.
 
 ## Preview
