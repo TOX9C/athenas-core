@@ -110,9 +110,12 @@ if [ -f "$CUSTOM_HTML" ]; then
     exit 1
   fi
   echo "Frontend entry point: $ENTRY_PATH"
-  sed -i '' "s|__FRONTEND_ENTRY__|$ENTRY_PATH|g" "$DIST_DIR/index.html"
+  # Use perl instead of `sed -i` so this works on both macOS (BSD sed, needs
+  # `sed -i ''`) and Linux runners (GNU sed, where `-i ''` misparses the script
+  # as a filename). Perl is already a dependency for the path fixes below.
+  perl -pi -e "s|__FRONTEND_ENTRY__|$ENTRY_PATH|g" "$DIST_DIR/index.html"
   if [ -f "$DIST_DIR/mobile.html" ]; then
-    sed -i '' "s|__FRONTEND_ENTRY__|$ENTRY_PATH|g" "$DIST_DIR/mobile.html"
+    perl -pi -e "s|__FRONTEND_ENTRY__|$ENTRY_PATH|g" "$DIST_DIR/mobile.html"
   fi
   echo "Replaced entry documents with custom desktop + mobile versions"
 fi
