@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussions
+    url: https://github.com/TOX9C/athenas-core/discussions
+    about: Ask questions and discuss ideas in the Discussions tab.
+  - name: Website
+    url: https://tox9c.github.io/athenas-core/
+    about: Read the project homepage and docs.
