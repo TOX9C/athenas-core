@@ -88,15 +88,15 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace
 
-      - name: cargo test
-        # The test-profile compile (parallel rustc + the final link of the
-        # webkit-linked test binaries) used to peak memory over the 7GB VM
-        # limit at the end of this job, and the hypervisor terminated the
-        # VM mid-step — the recurring "The runner has received a shutdown
-        # signal" cancellation that struck right as `cargo test` finished.
-        # CARGO_BUILD_JOBS=2 caps the peak so parallel rustc + the linker
-        # stay comfortably under the limit.
-        env:
-          CARGO_BUILD_JOBS: 2
-        run: cargo test --workspace
+      - name: cargo test (workspace)
+        # DIAGNOSTIC: the recurring "runner has received a shutdown signal"
+        # cancellation always lands while the last test binary
+        # (athena-terminal, whose session tests fork + setsid + exec real
+        # shells) is running. Split it out so the rest of the suite runs
+        # first and the culprit is isolated.
+        run: cargo test --workspace --exclude athena-terminal
         timeout-minutes: 20
+
+      - name: cargo test (athena-terminal)
+        run: cargo test -p athena-terminal --lib
+        timeout-minutes: 10
