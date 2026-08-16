@@ -51,10 +51,12 @@ frontend/target/
 # E2E test artifacts
 e2e-tests/test/screenshots/
 
-# Claude Code worktrees
+# Claude Code worktrees / agent scratch state
 .claude/worktrees/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/bug_hunt_state/
+.claude/bug_hunt_loop.sh
 
 # Backup / legacy directories
 backup_*/
@@ -71,12 +73,6 @@ dist-electron/
 
 # Local planning docs (moved out of the public repo — never commit plans)
 .plans/
-
-# HyperFrames ad composition — generated artifacts (keep source assets/fonts/sfx)
-.hyperframes/ad/renders/
-.hyperframes/ad/.thumbnails/
-.hyperframes/ad/audio/music.m4a
-
 
 # Rust compile artifacts (redundant with target/ but explicit)
 *.rlib

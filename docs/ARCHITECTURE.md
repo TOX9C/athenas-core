@@ -384,9 +384,9 @@ Both MCP and Agent Comms servers require a UUID token for initialization. Connec
 
 ### Tauri Capabilities
 
-- The main window capability (`src-tauri/capabilities/default.json`) grants the 134 command-aligned custom permissions plus core/dialog/window/event/clipboard entries. It is **not** least-privilege by feature area; the backend validators are the primary security boundary. See [`docs/release/CAPABILITY_PLUGIN_INVENTORY.md`](release/CAPABILITY_PLUGIN_INVENTORY.md) for the full inventory and the C-1 finding regarding future capability splitting.
+- The main window capability (`src-tauri/capabilities/default.json`) grants the 134 command-aligned custom permissions plus core/dialog/window/event/clipboard entries. It is **not** least-privilege by feature area; the backend validators are the primary security boundary. The full permission inventory and the C-1 finding regarding future capability splitting are maintained in the development-internal release records.
 - Plugins in use: `tauri-plugin-shell`, `tauri-plugin-dialog`, `tauri-plugin-log`, `tauri-plugin-clipboard-manager`, `tauri-plugin-notification`, `tauri-plugin-window-state`.
-- Release delivery uses signed/notarized DMG publication and a documented manual-update runbook; no in-app updater plugin or update endpoint is included in this build. See [`docs/release/UPDATER_DECISION_0.3.0.md`](release/UPDATER_DECISION_0.3.0.md).
+- Release delivery uses signed/notarized DMG publication and a documented manual-update runbook; no in-app updater plugin or update endpoint is included in this build. See [`docs/release/RELEASE_SCOPE.md`](release/RELEASE_SCOPE.md).
 
 Filesystem and process access are gated by the explicit command handlers in `src-tauri/src/commands/` and the path sandbox in `athena-fs`. The filesystem root resolver accepts only a verified source-tree marker or standard macOS bundle `Contents/Resources`; it does not fall back to `/`.
 

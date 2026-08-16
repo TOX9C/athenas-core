@@ -22,6 +22,7 @@ A native desktop workspace for AI-assisted software development — multi-pane t
 - [Features](#features)
 - [Getting Started](#getting-started)
 - [Architecture](#architecture)
+- [Documentation](#documentation)
 - [Screenshots](#screenshots)
 - [Privacy and Support](#privacy-and-support)
 - [License](#license)
@@ -241,6 +242,12 @@ cargo test --workspace -- --nocapture
 | `athena-fs`       | Filesystem utilities with path traversal protection |
 | `athena-browser`  | Browser manager for embedded webviews               |
 | `athena-plugins`  | Plugin system with manifest validation              |
+
+---
+
+## Documentation
+
+Full documentation lives in [`docs/`](docs/README.md) — architecture, plugin and MCP guides, contributing, and the release scope, privacy, and support records. See the [docs index](docs/README.md) for the complete map and what belongs in `docs/` versus `.plans/`.
 
 ---
 

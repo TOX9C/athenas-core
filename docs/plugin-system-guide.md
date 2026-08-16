@@ -161,4 +161,4 @@ npm run check:tauri-permissions
 npm run check:release-privacy
 ```
 
-For release approval, reconcile this guide with `docs/release/PLUGIN_TRUST_POLICY.md`, `docs/release/CAPABILITY_PLUGIN_INVENTORY.md`, and `docs/release/SECURITY_REVIEW.md`.
+For release approval, reconcile this guide with `docs/release/PLUGIN_TRUST_POLICY.md`.

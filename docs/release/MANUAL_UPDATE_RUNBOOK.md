@@ -10,7 +10,7 @@ This is a fallback delivery process, not proof that the updater gate is complete
 2. Publish only the signed/notarized DMG and its `.sha256` file.
 3. Publish the release notes and supported macOS/architecture scope.
 4. Keep unsigned CI artifacts private for internal testing; never link them as public downloads.
-5. Record the DMG SHA-256, tag, commit, signing identity, notarization result, and release owner in `RELEASE_CHECKLIST.md`.
+5. Record the DMG SHA-256, tag, commit, signing identity, notarization result, and release owner in the release checklist.
 
 ## User installation
 

@@ -42,7 +42,7 @@ Never request API keys, updater private keys, relay tokens, or unredacted creden
 5. Confirm workspace path and permission state without requesting private file contents.
 6. For provider failures, check endpoint/provider status and API-key presence without requesting the key.
 7. For data issues, stop destructive cleanup until a backup is made.
-8. Escalate P0/P1 incidents using `INCIDENT_RESPONSE.md`.
+8. Escalate P0/P1 incidents through the project's incident-response process.
 
 ## Diagnostics policy
 

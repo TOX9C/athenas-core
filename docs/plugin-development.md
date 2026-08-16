@@ -175,4 +175,4 @@ npm run check:tauri-permissions
 npm run check:release-privacy
 ```
 
-For a release, also complete the packaged artifact and trust-model review in `docs/release/SECURITY_REVIEW.md` and `docs/release/PLUGIN_TRUST_POLICY.md`.
+For a release, the packaged artifact and trust model must remain consistent with `docs/release/PLUGIN_TRUST_POLICY.md`.
