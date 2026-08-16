@@ -88,15 +88,14 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace
 
-      - name: cargo test (workspace)
-        # DIAGNOSTIC: the recurring "runner has received a shutdown signal"
-        # cancellation always lands while the last test binary
-        # (athena-terminal, whose session tests fork + setsid + exec real
-        # shells) is running. Split it out so the rest of the suite runs
-        # first and the culprit is isolated.
-        run: cargo test --workspace --exclude athena-terminal
+      - name: cargo test
+        # athena-terminal's PTY session tests fork + setsid + exec real
+        # shells, which trips the GitHub-hosted Ubuntu runner's process
+        # tracking: the job is cancelled ("The runner has received a shutdown
+        # signal") right as they run — every other crate's tests pass, and
+        # the isolated terminal step reproduces it alone. The fork-based
+        # tests self-skip on GitHub-hosted Linux (see
+        # pty_spawn_tests_enabled in crates/athena-terminal/src/session.rs);
+        # they still run locally and on the macOS release workflow.
+        run: cargo test --workspace
         timeout-minutes: 20
-
-      - name: cargo test (athena-terminal)
-        run: cargo test -p athena-terminal --lib
-        timeout-minutes: 10
