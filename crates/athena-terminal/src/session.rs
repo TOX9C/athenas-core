@@ -1358,18 +1358,6 @@ impl TerminalSession {
 mod tests {
     use super::*;
 
-    /// The PTY spawn tests fork + setsid + exec real shells. On GitHub-hosted
-    /// Linux runners that trips the runner's process tracking: the job is
-    /// cancelled mid-step ("The runner has received a shutdown signal") right
-    /// as the tests run — every other crate's tests pass. They still run
-    /// locally and on the macOS release workflow, so skip only here.
-    fn pty_spawn_tests_enabled() -> bool {
-        let on_github_linux = std::env::var("GITHUB_ACTIONS")
-            .is_ok_and(|v| v == "true")
-            && std::env::var("RUNNER_OS").is_ok_and(|v| v == "Linux");
-        !on_github_linux
-    }
-
     #[test]
     fn zsh_startup_bootstrap_rejects_stale_omz_path() {
         let script = startup_script_with_user_config("/bin/zsh", "echo athena");
@@ -1422,10 +1410,6 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_with_same_id_returns_existing() {
-        if !pty_spawn_tests_enabled() {
-            eprintln!("skipping PTY spawn test on GitHub-hosted Linux runner");
-            return;
-        }
         let manager = SessionManager::new();
 
         // First spawn
@@ -1447,10 +1431,6 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_replaces_an_exited_session() {
-        if !pty_spawn_tests_enabled() {
-            eprintln!("skipping PTY spawn test on GitHub-hosted Linux runner");
-            return;
-        }
         let manager = SessionManager::new();
         let first = manager
             .spawn("respawn_id".to_string(), "/bin/sh", "/", 80, 24)
@@ -1473,10 +1453,6 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_concurrent_same_id_races_to_single_session() {
-        if !pty_spawn_tests_enabled() {
-            eprintln!("skipping PTY spawn test on GitHub-hosted Linux runner");
-            return;
-        }
         let manager = SessionManager::new();
 
         let f1 = manager.spawn("race_id".to_string(), "/bin/sh", "/", 80, 24);
@@ -1499,10 +1475,6 @@ mod tests {
     /// unrelated process group.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn spawn_5_concurrent_same_id_yields_single_pty() {
-        if !pty_spawn_tests_enabled() {
-            eprintln!("skipping PTY spawn test on GitHub-hosted Linux runner");
-            return;
-        }
         let manager = SessionManager::new();
 
         // Launch all 5 spawns before awaiting any of them, so they actually
@@ -1565,10 +1537,6 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_nonexistent_shell_fails_cleanly() {
-        if !pty_spawn_tests_enabled() {
-            eprintln!("skipping PTY spawn test on GitHub-hosted Linux runner");
-            return;
-        }
         let manager = SessionManager::new();
 
         let result = manager
@@ -1783,10 +1751,6 @@ mod tests {
     /// `write()` returns a `WouldBlock` error and the test fails.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn large_write_retries_on_eagain_and_lands_full_payload() {
-        if !pty_spawn_tests_enabled() {
-            eprintln!("skipping PTY spawn test on GitHub-hosted Linux runner");
-            return;
-        }
         let manager = SessionManager::new();
         let session = manager
             .spawn("large_paste".to_string(), "/bin/cat", "/", 80, 24)
