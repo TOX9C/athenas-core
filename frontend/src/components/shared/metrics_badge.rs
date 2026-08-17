@@ -50,10 +50,20 @@ pub fn MetricsBadge() -> Element {
     let terminal_controller_renders = renders.renders("TerminalController");
     let ipc_total: u64 = renders.ipc.values().sum();
     let event_bytes_kb = renders.event_bytes / 1024;
+    // Average App render cost in milliseconds, derived from the cumulative
+    // render-duration counter. A growing average signals a render storm in
+    // the root shell (every store write re-renders App).
+    let app_avg_ms = if app_renders > 0 {
+        (renders.render_duration_us("App") as f64 / app_renders as f64 / 1000.0)
+            .round()
+            .to_string()
+    } else {
+        "-".to_string()
+    };
 
     rsx! {
         span {
-            title: "Render/IPC metrics — App renders vs PaneItem renders vs TerminalController renders; IPC calls; push-event KB. Refreshed every 2s.",
+            title: "Render/IPC metrics — App renders vs PaneItem renders vs TerminalController renders; App avg render ms; IPC calls; push-event KB. Refreshed every 2s.",
             style: "display: inline-flex; align-items: center; gap: 6px; color: var(--textDim); font-size: var(--text-xs); font-variant-numeric: tabular-nums;",
             span { style: "color: var(--accent);", "R" }
             span { "App {app_renders}" }
@@ -61,6 +71,8 @@ pub fn MetricsBadge() -> Element {
             span { "Pane {pane_renders}" }
             span { "·" }
             span { "Ctrl {terminal_controller_renders}" }
+            span { "·" }
+            span { "App {app_avg_ms}ms" }
             span { "·" }
             span { "IPC {ipc_total}" }
             span { "·" }

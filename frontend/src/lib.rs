@@ -91,6 +91,11 @@ pub fn App() -> Element {
     // Performance instrumentation: count this component's renders and expose
     // the counters to WebDriver/console via `window.__athenaMetrics.snapshot()`.
     crate::utils::perf_metrics::mark_render("App");
+    // Wall-clock start for the body; the delta is recorded just before the
+    // `rsx!` block below so it covers the full render pass (store reads,
+    // pre-computed status strings, and RSX construction). Uses
+    // `js_sys::Date::now` (ms) — same clock the terminal store uses.
+    let _render_start = js_sys::Date::now();
     crate::utils::perf_metrics::install_window_snapshot();
     // Keep the snapshot fresh without per-render work (2s cadence).
     let _metrics_refresh = use_signal(|| {
@@ -311,6 +316,14 @@ pub fn App() -> Element {
         Panel::Agents => "agents",
     }
     .to_string();
+
+    // Record how long the component body took (from the `_render_start`
+    // marker above) so e2e can flag render storms in the root shell.
+    {
+        let now = js_sys::Date::now();
+        let delta_us = ((now - _render_start).max(0.0) * 1000.0) as u64;
+        crate::utils::perf_metrics::mark_render_duration("App", delta_us);
+    }
 
     rsx! {
         div {

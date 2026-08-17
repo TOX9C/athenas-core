@@ -123,6 +123,7 @@ describe('perf metrics instrumentation', function () {
     const snap = await metricsSnapshot()
     expect(snap).not.toBeNull()
     expect(snap).toHaveProperty('renders')
+    expect(snap).toHaveProperty('renderDurations')
     expect(snap).toHaveProperty('ipc')
     expect(snap).toHaveProperty('events')
     expect(snap).toHaveProperty('eventBytes')

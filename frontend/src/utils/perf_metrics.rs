@@ -23,6 +23,8 @@ static IPC_CALLS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new(
 static EVENT_COUNTS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
 /// Component label -> render count.
 static RENDER_COUNTS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
+/// Component label -> cumulative render duration in microseconds.
+static RENDER_DURATIONS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
 /// Total `listen` payload bytes observed (JSON string length).
 static EVENT_BYTES: AtomicU64 = AtomicU64::new(0);
 
@@ -98,11 +100,25 @@ pub fn mark_render(label: &'static str) {
     incr(&RENDER_COUNTS, label);
 }
 
+/// Record the duration (microseconds) of a single render pass for a
+/// component. Callers time the component body themselves and report the
+/// delta; durations accumulate per component so e2e can compare total
+/// render cost across two scenarios.
+///
+/// Like [`mark_render`], the `'static` label is used directly as the map key
+/// (not run through `static_key`, which would `Box::leak` unknown names).
+pub fn mark_render_duration(label: &'static str, duration_us: u64) {
+    if let Ok(mut guard) = RENDER_DURATIONS.lock() {
+        *guard.entry(label).or_insert(0) += duration_us;
+    }
+}
+
 /// Serialize the full metrics snapshot as a JSON string.
 ///
 /// ```json
 /// {
 ///   "renders": { "App": 12, "PaneItem": 480 },
+///   "renderDurations": { "App": 2400, "PaneItem": 960 },
 ///   "ipc": { "pty_write": 36 },
 ///   "events": { "output-capture:batch": 8 },
 ///   "eventBytes": 8192
@@ -111,6 +127,7 @@ pub fn mark_render(label: &'static str) {
 pub fn snapshot_json() -> String {
     serde_json::json!({
         "renders": snapshot_map(&RENDER_COUNTS),
+        "renderDurations": snapshot_map(&RENDER_DURATIONS),
         "ipc": snapshot_map(&IPC_CALLS),
         "events": snapshot_map(&EVENT_COUNTS),
         "eventBytes": EVENT_BYTES.load(Ordering::Relaxed),
@@ -164,6 +181,7 @@ pub fn refresh_window_snapshot() {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MetricsSnapshot {
     pub renders: BTreeMap<String, u64>,
+    pub render_durations: BTreeMap<String, u64>,
     pub ipc: BTreeMap<String, u64>,
     pub events: BTreeMap<String, u64>,
     pub event_bytes: u64,
@@ -171,9 +189,18 @@ pub struct MetricsSnapshot {
 
 impl MetricsSnapshot {
     /// Parse a JSON snapshot string into a typed struct (best-effort).
+    ///
+    /// Unknown or missing sections (e.g. `renderDurations` in snapshots
+    /// produced before the field existed) parse to empty maps rather than
+    /// failing the whole snapshot, so old e2e specs and badge code keep
+    /// working.
     pub fn parse(json: &str) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_str(json).ok()?;
         let renders = parse_map(value.get("renders")?);
+        let render_durations = value
+            .get("renderDurations")
+            .map(parse_map)
+            .unwrap_or_default();
         let ipc = parse_map(value.get("ipc")?);
         let events = parse_map(value.get("events")?);
         let event_bytes = value
@@ -182,6 +209,7 @@ impl MetricsSnapshot {
             .unwrap_or(0);
         Some(Self {
             renders,
+            render_durations,
             ipc,
             events,
             event_bytes,
@@ -191,6 +219,11 @@ impl MetricsSnapshot {
     /// Render count for a component label.
     pub fn renders(&self, label: &str) -> u64 {
         self.renders.get(label).copied().unwrap_or(0)
+    }
+
+    /// Cumulative render duration (µs) for a component label.
+    pub fn render_duration_us(&self, label: &str) -> u64 {
+        self.render_durations.get(label).copied().unwrap_or(0)
     }
 }
 
@@ -214,9 +247,18 @@ mod tests {
         let json = snapshot_json();
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert!(value.get("renders").is_some());
+        assert!(value.get("renderDurations").is_some());
         assert!(value.get("ipc").is_some());
         assert!(value.get("events").is_some());
         assert!(value.get("eventBytes").is_some());
+    }
+
+    #[test]
+    fn mark_render_duration_accumulates_per_component() {
+        mark_render_duration("App", 500);
+        mark_render_duration("App", 700);
+        let snap = MetricsSnapshot::parse(&snapshot_json()).expect("parse");
+        assert_eq!(snap.render_duration_us("App"), 1200);
     }
 
     #[test]
@@ -233,12 +275,24 @@ mod tests {
     #[test]
     fn metrics_snapshot_round_trips() {
         let snap = MetricsSnapshot::parse(
-            r#"{"renders":{"App":3},"ipc":{"pty_write":2},"events":{"output-capture:batch":1},"eventBytes":50}"#,
+            r#"{"renders":{"App":3},"renderDurations":{"App":1500},"ipc":{"pty_write":2},"events":{"output-capture:batch":1},"eventBytes":50}"#,
         )
         .expect("parse");
         assert_eq!(snap.renders("App"), 3);
+        assert_eq!(snap.render_duration_us("App"), 1500);
         assert_eq!(snap.ipc.get("pty_write"), Some(&2));
         assert_eq!(snap.events.get("output-capture:batch"), Some(&1));
         assert_eq!(snap.event_bytes, 50);
+    }
+
+    #[test]
+    fn metrics_snapshot_missing_render_durations_defaults_empty() {
+        // Snapshots produced before `renderDurations` existed must still parse.
+        let snap = MetricsSnapshot::parse(
+            r#"{"renders":{"App":3},"ipc":{"pty_write":2},"events":{"output-capture:batch":1},"eventBytes":50}"#,
+        )
+        .expect("parse");
+        assert_eq!(snap.render_duration_us("App"), 0);
+        assert_eq!(snap.renders("App"), 3);
     }
 }
