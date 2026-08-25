@@ -1,2 +1,4 @@
 # These are the supported funding model platforms
+github: [TOX9C]
+polar: athenas-core
 custom: ["https://nowpayments.io/donation/tox9c", "https://tox9c.github.io/athenas-core/#support"]
