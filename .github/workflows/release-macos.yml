@@ -88,7 +88,7 @@ jobs:
 
       - name: Run release checks
         run: |
-          cargo check --workspace
+          cargo check --workspace --locked
           cargo audit
           # Informational warnings are captured, but compiler/command failures
           # remain blocking. The generated baseline is uploaded with the run.
@@ -105,7 +105,7 @@ jobs:
           node scripts/check-tauri-command-drift.mjs
           node scripts/check-tauri-permission-drift.mjs
           node scripts/check-plugin-integration.mjs
-          cargo test --workspace
+          cargo test --workspace --locked
 
       - name: Require signing credentials for release publication
         if: ${{ github.event_name == 'push' && env.APPLE_SIGNING_IDENTITY == '' }}

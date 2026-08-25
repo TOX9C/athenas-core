@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 
 const baselinePath = process.env.CLIPPY_WARNING_BASELINE ?? 'scripts/clippy-warning-baseline.txt'
 const logPath = process.env.CLIPPY_BASELINE_PATH ?? 'clippy-baseline.log'
-const result = spawnSync('cargo', ['clippy', '--workspace', '--message-format=json'], {
+const result = spawnSync('cargo', ['clippy', '--workspace', '--locked', '--message-format=json'], {
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'pipe'],
 })

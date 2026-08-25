@@ -12,13 +12,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-test:
+  frontend:
+    name: Frontend and release checks
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Print CI identity
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "SHA: ${{ github.sha }}"
+          echo "Runner: $RUNNER_OS ($(uname -m))"
+          node --version
+          npm --version
+          rustc --version
+          cargo --version
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -60,9 +71,13 @@ jobs:
         run: npm run check:release-privacy
 
       - name: Check release identity
+        env:
+          RELEASE_VERSION: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
         run: |
-          export RELEASE_VERSION="$(node -p "require('./package.json').version")"
-          npm run check:release-identity
+          if [ -z "$RELEASE_VERSION" ]; then
+            RELEASE_VERSION="$(node -p "require('./package.json').version")"
+          fi
+          RELEASE_VERSION="$RELEASE_VERSION" npm run check:release-identity
 
       - name: Check release documentation
         run: npm run check:release-docs
@@ -73,20 +88,77 @@ jobs:
       - name: MCP package tests
         run: npm run test:mcp
 
+      - name: Release script tests
+        run: npm run test:release-scripts
+
       - name: ESLint
         run: npm run lint
 
+  rust-quality:
+    name: Rust check and clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Print CI identity
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "SHA: ${{ github.sha }}"
+          echo "Runner: $RUNNER_OS ($(uname -m))"
+          rustc --version || true
+          cargo --version || true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev build-essential curl wget libssl-dev ripgrep
+
       - name: cargo check
-        run: cargo check --workspace
+        run: cargo check --workspace --locked
 
-      - name: Install Cargo audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: cargo clippy (no-regression vs baseline)
+        # Fails when a clippy warning appears that is not in
+        # scripts/clippy-warning-baseline.txt. Baseline entries are removed
+        # as warnings are fixed; never append without reviewing the warning.
+        run: node scripts/run-clippy-baseline.mjs
 
-      - name: Cargo advisory audit
-        run: cargo audit
+  rust-tests:
+    name: Rust tests (Ubuntu, terminal excluded)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: cargo clippy
-        run: cargo clippy --workspace
+      - name: Print CI identity
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "SHA: ${{ github.sha }}"
+          echo "Runner: $RUNNER_OS ($(uname -m))"
+          rustc --version || true
+          cargo --version || true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev build-essential curl wget libssl-dev ripgrep
 
       - name: cargo test
         # Exclude athena-terminal: its test binary — even with the fork-based
@@ -97,5 +169,28 @@ jobs:
         # The terminal crate still runs its full test suite locally and in
         # the macOS release workflow (runs-on: macos-14), where the trigger
         # does not occur.
-        run: cargo test --workspace --exclude athena-terminal
-        timeout-minutes: 20
+        run: cargo test --workspace --exclude athena-terminal --locked
+
+  security:
+    name: Cargo advisory audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Print CI identity
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "SHA: ${{ github.sha }}"
+          echo "Runner: $RUNNER_OS ($(uname -m))"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Cargo audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Cargo advisory audit
+        run: cargo audit
