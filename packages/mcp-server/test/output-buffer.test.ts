@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { OutputBufferManager } from '../src/output-buffer.js'
-import type { OutputEntry, StreamSubscription } from '../src/types/index.js'
+import type { OutputEntry } from '../src/types/index.js'
 
 describe('OutputBufferManager', () => {
   let manager: OutputBufferManager
@@ -73,7 +73,6 @@ describe('OutputBufferManager', () => {
     })
 
     it('filters by sinceTimestamp', () => {
-      const before = Date.now()
       manager.append('pane-1', 'old line')
       const afterFirst = Date.now()
       manager.append('pane-1', 'new line 1')

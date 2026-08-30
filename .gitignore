@@ -51,12 +51,8 @@ frontend/target/
 # E2E test artifacts
 e2e-tests/test/screenshots/
 
-# Claude Code worktrees / agent scratch state
-.claude/worktrees/
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
-.claude/bug_hunt_state/
-.claude/bug_hunt_loop.sh
+# Local agent / assistant configuration and scratch state
+.claude/
 
 # Backup / legacy directories
 backup_*/
@@ -73,6 +69,11 @@ dist-electron/
 
 # Local planning docs (moved out of the public repo — never commit plans)
 .plans/
+
+# Repository policy: only the root README and roadmap are tracked as Markdown.
+*.md
+!README.md
+!ROADMAP.md
 
 # Rust compile artifacts (redundant with target/ but explicit)
 *.rlib

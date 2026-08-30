@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { AthenaBridge } from '../src/bridge.js'
 
 function createBridge(): AthenaBridge {
@@ -164,5 +164,103 @@ describe('AthenaBridge', () => {
       timeout: 5000,
     })
     expect(result.cancelled).toBe(true)
+  })
+})
+
+describe('AthenaBridge notification buffer (F4)', () => {
+  /** Test-only view of the private buffer internals. */
+  interface BufferInternals {
+    notificationBuffer: Array<{ title: string }>
+    socket: { send: (payload: string) => void } | null
+    flushNotificationBuffer: () => void
+  }
+  const internalsOf = (bridge: AthenaBridge): BufferInternals => {
+    if (!('notificationBuffer' in bridge) || !('flushNotificationBuffer' in bridge)) {
+      throw new Error('bridge is missing notification buffer internals')
+    }
+    return bridge as unknown as BufferInternals
+  }
+
+  const makeNotification = (n: number) => ({
+    type: 'info' as const,
+    title: `T${n}`,
+    message: `M${n}`,
+    priority: 'normal' as const,
+  })
+
+  it('caps the disconnected buffer at MAX_BUFFERED_NOTIFICATIONS, dropping oldest', async () => {
+    const bridge = createBridge()
+    const cap = 500 // AthenaBridge.MAX_BUFFERED_NOTIFICATIONS
+
+    const total = cap + 100
+    for (let i = 0; i < total; i++) {
+      await bridge.sendNotification(makeNotification(i))
+    }
+
+    const { notificationBuffer: buffer } = internalsOf(bridge)
+    expect(buffer.length).toBe(cap)
+    // Drop-OLDEST: the first 100 are gone, the newest survive at the tail.
+    expect(buffer[0]!.title).toBe('T100')
+    expect(buffer[buffer.length - 1]!.title).toBe(`T${total - 1}`)
+  })
+
+  it('flush requeues the head entry when the socket send throws', async () => {
+    const bridge = createBridge()
+    await bridge.sendNotification(makeNotification(1))
+    await bridge.sendNotification(makeNotification(2))
+    const internals = internalsOf(bridge)
+
+    // Socket present but rejecting sends (closing/closed socket).
+    internals.socket = {
+      send: () => {
+        throw new Error('socket closing')
+      },
+    }
+    internals.flushNotificationBuffer()
+    expect(internals.notificationBuffer.length).toBe(2)
+
+    // A healthy send drains the buffer in order.
+    const sent: string[] = []
+    internals.socket = {
+      send: (payload: string) => {
+        sent.push(payload)
+      },
+    }
+    internals.flushNotificationBuffer()
+    expect(internals.notificationBuffer.length).toBe(0)
+    expect(sent.length).toBe(2)
+    expect(JSON.parse(sent[0]!).data.title).toBe('T1')
+    expect(JSON.parse(sent[1]!).data.title).toBe('T2')
+  })
+
+  it('reconnect backoff grows exponentially and resets on connect (F15)', () => {
+    const bridge = createBridge() as unknown as {
+      scheduleReconnect(): void
+      simulateOpenForTest(): void
+      reconnectDelayMs: number
+      reconnectTimer: unknown
+    }
+    const waits: number[] = []
+    // Return null so the `reconnectTimer` in-flight guard never trips;
+    // only the delay argument is under test.
+    vi.stubGlobal('setTimeout', ((_fn: never, ms?: number) => {
+      waits.push(ms!)
+      return null
+    }) as unknown as typeof setTimeout)
+    try {
+      bridge.scheduleReconnect()
+      bridge.scheduleReconnect()
+      bridge.scheduleReconnect()
+      // 5s → 10s → 20s, capped at 30s on the fourth.
+      expect(waits).toEqual([5_000, 10_000, 20_000])
+      bridge.reconnectDelayMs = 30_000
+      bridge.scheduleReconnect()
+      expect(waits[3]).toBe(30_000)
+      // A successful open resets the delay to the base (bridge.ts 'open').
+      bridge.simulateOpenForTest()
+      expect(bridge.reconnectDelayMs).toBe(5_000)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

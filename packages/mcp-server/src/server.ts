@@ -24,13 +24,27 @@ import {
   athenaStreamOutput,
   athenaStreamOutputSchema,
   athenaListAgents,
-  athenaListAgentsSchema,
   athenaGetOutputSince,
   athenaGetOutputSinceSchema,
   searchFiles,
   searchFilesSchema,
 } from './tools/index.js'
 import type { ServerConfig } from './types/index.js'
+import type {
+  NotifyInput,
+  StatusUpdateInput,
+  RequestInputInput,
+  AthenaNotifyInput,
+  AthenaRequestInputInput,
+  AthenaUpdateStatusInput,
+  AthenaReportErrorInput,
+  AthenaReportCompletionInput,
+  AthenaReadOutputInput,
+  AthenaStreamOutputInput,
+  AthenaListAgentsInput,
+  AthenaGetOutputSinceInput,
+  SearchFilesInput,
+} from './tools/index.js'
 import { connectStdio } from './transport/stdio-transport.js'
 import { WebSocketTransport } from './transport/websocket-transport.js'
 import { TcpTransport } from './transport/tcp-transport.js'
@@ -129,7 +143,7 @@ export class AthenaMcpServer {
         priority: notifySchema.shape.priority,
         agentId: notifySchema.shape.agentId,
       },
-      async (params) => notify(this.bridge, params as any),
+      async (params) => notify(this.bridge, params as NotifyInput),
     )
 
     this.server.tool(
@@ -142,7 +156,7 @@ export class AthenaMcpServer {
         artifacts: statusUpdateSchema.shape.artifacts,
         agentId: statusUpdateSchema.shape.agentId,
       },
-      async (params) => statusUpdate(this.bridge, params as any),
+      async (params) => statusUpdate(this.bridge, params as StatusUpdateInput),
     )
 
     this.server.tool(
@@ -155,7 +169,7 @@ export class AthenaMcpServer {
         timeoutMs: requestInputSchema.shape.timeoutMs,
         agentId: requestInputSchema.shape.agentId,
       },
-      async (params) => requestInput(this.bridge, params as any),
+      async (params) => requestInput(this.bridge, params as RequestInputInput),
     )
 
     // -- Extended athena_ prefixed tools ---
@@ -170,7 +184,7 @@ export class AthenaMcpServer {
         priority: athenaNotifySchema.shape.priority,
         agentId: athenaNotifySchema.shape.agentId,
       },
-      async (params) => athenaNotify(this.bridge, params as any),
+      async (params) => athenaNotify(this.bridge, params as AthenaNotifyInput),
     )
 
     this.server.tool(
@@ -182,7 +196,7 @@ export class AthenaMcpServer {
         timeout: athenaRequestInputSchema.shape.timeout,
         agentId: athenaRequestInputSchema.shape.agentId,
       },
-      async (params) => athenaRequestInput(this.bridge, params as any),
+      async (params) => athenaRequestInput(this.bridge, params as AthenaRequestInputInput),
     )
 
     this.server.tool(
@@ -195,7 +209,7 @@ export class AthenaMcpServer {
         progress: athenaUpdateStatusSchema.shape.progress,
         details: athenaUpdateStatusSchema.shape.details,
       },
-      async (params) => athenaUpdateStatus(this.bridge, params as any),
+      async (params) => athenaUpdateStatus(this.bridge, params as AthenaUpdateStatusInput),
     )
 
     this.server.tool(
@@ -209,7 +223,7 @@ export class AthenaMcpServer {
         recoverable: athenaReportErrorSchema.shape.recoverable,
         context: athenaReportErrorSchema.shape.context,
       },
-      async (params) => athenaReportError(this.bridge, params as any),
+      async (params) => athenaReportError(this.bridge, params as AthenaReportErrorInput),
     )
 
     this.server.tool(
@@ -222,7 +236,7 @@ export class AthenaMcpServer {
         metrics: athenaReportCompletionSchema.shape.metrics,
         duration: athenaReportCompletionSchema.shape.duration,
       },
-      async (params) => athenaReportCompletion(this.bridge, params as any),
+      async (params) => athenaReportCompletion(this.bridge, params as AthenaReportCompletionInput),
     )
 
     // -- Output tools ---
@@ -235,7 +249,7 @@ export class AthenaMcpServer {
         lines: athenaReadOutputSchema.shape.lines,
         sinceTimestamp: athenaReadOutputSchema.shape.sinceTimestamp,
       },
-      async (params) => athenaReadOutput(this.outputBuffer, params as any),
+      async (params) => athenaReadOutput(this.outputBuffer, params as AthenaReadOutputInput),
     )
 
     this.server.tool(
@@ -244,14 +258,14 @@ export class AthenaMcpServer {
       {
         paneId: athenaStreamOutputSchema.shape.paneId,
       },
-      async (params) => athenaStreamOutput(this.outputBuffer, params as any),
+      async (params) => athenaStreamOutput(this.outputBuffer, params as AthenaStreamOutputInput),
     )
 
     this.server.tool(
       'athena_list_agents',
       'List all active agents with their pane IDs, types, and statuses. No parameters required.',
       {},
-      async (params) => athenaListAgents(this.bridge, params as any),
+      async (params) => athenaListAgents(this.bridge, params as AthenaListAgentsInput),
     )
 
     this.server.tool(
@@ -262,7 +276,7 @@ export class AthenaMcpServer {
         sinceTimestamp: athenaGetOutputSinceSchema.shape.sinceTimestamp,
         sinceLine: athenaGetOutputSinceSchema.shape.sinceLine,
       },
-      async (params) => athenaGetOutputSince(this.outputBuffer, params as any),
+      async (params) => athenaGetOutputSince(this.outputBuffer, params as AthenaGetOutputSinceInput),
     )
 
     // -- Search tools ---
@@ -279,7 +293,7 @@ export class AthenaMcpServer {
         max_results: searchFilesSchema.shape.max_results,
         context_lines: searchFilesSchema.shape.context_lines,
       },
-      async (params) => searchFiles(this.bridge, params as any),
+      async (params) => searchFiles(this.bridge, params as SearchFilesInput),
     )
   }
 
@@ -309,7 +323,7 @@ export class AthenaMcpServer {
     this.wsTransport.onMessage(async (message, sessionId) => {
       this.wsTransport?.send(sessionId, {
         jsonrpc: '2.0',
-        id: (message as any)?.id,
+        id: (message as { id?: unknown })?.id,
         result: { status: 'received' },
       })
     })
@@ -324,7 +338,7 @@ export class AthenaMcpServer {
     this.tcpTransport.onMessage(async (message, sessionId) => {
       this.tcpTransport?.send(sessionId, {
         jsonrpc: '2.0',
-        id: (message as any)?.id,
+        id: (message as { id?: unknown })?.id,
         result: { status: 'received' },
       })
     })

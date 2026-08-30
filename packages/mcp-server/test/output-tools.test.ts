@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { OutputBufferManager } from '../src/output-buffer.js'
 import { athenaReadOutput } from '../src/tools/athena-read-output.js'
 import { athenaStreamOutput } from '../src/tools/athena-stream-output.js'
@@ -57,26 +57,23 @@ describe('athena_stream_output', () => {
 
     const streamPromise = athenaStreamOutput(buf, { paneId: 'p1' })
 
-    setTimeout(() => {
-      buf.append('p1', 'new output line')
-    }, 50)
+    // Fill the collector to MAX_STREAM_LINES (100) so the stream resolves
+    // without waiting for the 60s timeout.
+    for (let i = 0; i < 100; i++) {
+      buf.append('p1', `streamed line ${i}`)
+    }
 
-    vi.useFakeTimers()
-    const resultPromise = athenaStreamOutput(buf, { paneId: 'p1' })
-
-    setTimeout(() => {
-      buf.append('p1', 'streamed line')
-    }, 100)
-
-    vi.advanceTimersByTimeAsync(200)
-    vi.useRealTimers()
+    const result = await streamPromise
+    expect(result.content[0].text).toContain('existing line 1')
+    expect(result.content[0].text).toContain('streamed line 0')
+    expect(result.content[0].text).toContain('truncated')
   }, 10_000)
 
   it('returns no snapshot for empty pane', async () => {
     const buf = createBuffer()
     const result = await Promise.race([
       athenaStreamOutput(buf, { paneId: 'empty' }),
-      new Promise<any>((resolve) => setTimeout(() => resolve('timeout'), 200)),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 200)),
     ])
     if (result !== 'timeout') {
       expect(result.content[0].text).toContain('Stream ended')
@@ -136,7 +133,6 @@ describe('athena_get_output_since', () => {
 
   it('works with sinceTimestamp', async () => {
     const buf = createBuffer()
-    const before = Date.now()
     buf.append('p1', 'old')
     const afterFirst = Date.now()
     buf.append('p1', 'new')

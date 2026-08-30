@@ -20,17 +20,11 @@ run('npx', [
 ])
 run(process.execPath, ['--check', 'bin/mcp-proxy.js'])
 
-// Keep the public trust boundary explicit in both the release policy and the
-// runtime crate. This is a policy assertion, not a claim that arbitrary plugin
-// code is sandboxed.
-const policy = readFileSync(path.join(root, 'docs/release/PLUGIN_TRUST_POLICY.md'), 'utf8').toLowerCase()
+// Keep the runtime trust boundary explicit. This is a policy assertion, not
+// a claim that arbitrary plugin code is sandboxed.
 const pluginRuntime = readFileSync(path.join(root, 'crates/athena-plugins/src/lib.rs'), 'utf8')
-if (!policy.includes('trusted_developer_integrations')
-  || !policy.includes('sandbox')
-  || !policy.includes('marketplace')
-  || !policy.includes('not included')
-  || !pluginRuntime.includes('PUBLIC_PLUGIN_TRUST_POLICY: &str = "trusted_developer_integrations"')) {
-  throw new Error('Public plugin trust policy is missing or has drifted.')
+if (!pluginRuntime.includes('PUBLIC_PLUGIN_TRUST_POLICY: &str = "trusted_developer_integrations"')) {
+  throw new Error('Plugin trust policy has drifted.')
 }
 
 console.log('Plugin integration and public trust-policy checks passed.')

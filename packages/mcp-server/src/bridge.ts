@@ -34,6 +34,8 @@ export class AthenaBridge {
   private eventHandlers = new Set<EventHandler>()
   private agentState = new Map<string, AgentState>()
   private notificationBuffer: AthenaNotification[] = []
+  /** Drop-oldest cap for notifications buffered while disconnected. */
+  private static readonly MAX_BUFFERED_NOTIFICATIONS = 500
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(config: BridgeConfig) {
@@ -53,8 +55,8 @@ export class AthenaBridge {
       )
 
       ws.on('open', () => {
-        this.connected = true
         this.socket = ws
+        this.simulateOpenForTest()
         this.flushNotificationBuffer()
         resolve()
       })
@@ -118,6 +120,10 @@ export class AthenaBridge {
       this.socket.send(JSON.stringify(payload))
     } else {
       this.notificationBuffer.push(notification)
+      if (this.notificationBuffer.length > AthenaBridge.MAX_BUFFERED_NOTIFICATIONS) {
+        // Drop-oldest: bounded memory during long disconnects.
+        this.notificationBuffer.shift()
+      }
     }
 
     this.emit('notification', notification)
@@ -284,22 +290,45 @@ export class AthenaBridge {
 
   private flushNotificationBuffer(): void {
     while (this.notificationBuffer.length > 0) {
-      const notification = this.notificationBuffer.shift()!
+      const notification = this.notificationBuffer[0]
       const payload = {
         type: 'athena:notification' as const,
         data: notification,
       }
-      this.socket?.send(JSON.stringify(payload))
+      try {
+        this.socket?.send(JSON.stringify(payload))
+      } catch {
+        // Socket rejected the send (closing/closed): leave the entry at the
+        // head of the buffer so the next flush retries it instead of losing it.
+        return
+      }
+      this.notificationBuffer.shift()
     }
+  }
+
+  /** Next reconnect wait. Exponential with a 30 s ceiling (F15): a dead
+   * host no longer generates an attempt every 5 s forever, while a healthy
+   * one recovers on the first attempt after a single blip. */
+  private static readonly RECONNECT_BASE_MS = 5_000
+  private static readonly RECONNECT_MAX_MS = 30_000
+  private reconnectDelayMs = AthenaBridge.RECONNECT_BASE_MS
+
+  /** @internal Runs the socket-open handler body. Tests drive this instead
+   * of a live WebSocketServer to verify the backoff reset. */
+  simulateOpenForTest(): void {
+    this.connected = true
+    this.reconnectDelayMs = AthenaBridge.RECONNECT_BASE_MS
   }
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return
+    const delay = this.reconnectDelayMs
+    this.reconnectDelayMs = Math.min(delay * 2, AthenaBridge.RECONNECT_MAX_MS)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.connect().catch(() => {
         this.scheduleReconnect()
       })
-    }, 5000)
+    }, delay)
   }
 }

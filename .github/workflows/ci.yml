@@ -79,9 +79,6 @@ jobs:
           fi
           RELEASE_VERSION="$RELEASE_VERSION" npm run check:release-identity
 
-      - name: Check release documentation
-        run: npm run check:release-docs
-
       - name: JavaScript and TypeScript tests
         run: npm test
 

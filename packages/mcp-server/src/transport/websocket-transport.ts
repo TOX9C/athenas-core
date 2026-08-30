@@ -49,7 +49,7 @@ export class WebSocketTransport {
         resolve()
       })
 
-      this.wss.on('connection', (ws, req) => {
+      this.wss.on('connection', (ws, _req) => {
         const sessionId = randomUUID()
         const session: WsSession = { id: sessionId, socket: ws, alive: true }
         this.sessions.set(sessionId, session)

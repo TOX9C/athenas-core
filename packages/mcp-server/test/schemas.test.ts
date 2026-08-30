@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { notifySchema, statusUpdateSchema, requestInputSchema } from '../src/tools/notify.js'
+import { notifySchema } from '../src/tools/notify.js'
 import { statusUpdateSchema as statusSchema } from '../src/tools/status-update.js'
 import { requestInputSchema as inputSchema } from '../src/tools/request-input.js'
 import {
   athenaNotifySchema,
-  athenaRequestInputSchema,
   athenaUpdateStatusSchema,
   athenaReportErrorSchema,
   athenaReportCompletionSchema,

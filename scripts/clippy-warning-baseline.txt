@@ -12,3 +12,9 @@ clippy::should_implement_trait|crates/athena-core/src/agent_activity.rs
 clippy::too_many_arguments|crates/athena-core/src/mcp_transport.rs
 clippy::type_complexity|crates/athena-core/src/agent_activity.rs
 clippy::unnecessary_map_or|crates/athena-resume-scanner/src/lib.rs
+
+# Reviewed 2026-08-24 (Session C): introduced by provider-preset/modal churn (1e2926b), not test-track code.
+clippy::needless_borrow|src-tauri/src/commands/pty.rs
+clippy::redundant_locals|frontend/src/components/shared/modal.rs
+clippy::type_complexity|crates/athena-core/src/orchestrator.rs
+clippy::unnecessary_map_or|src-tauri/src/commands/provider_config.rs

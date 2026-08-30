@@ -25,8 +25,6 @@ const tauri = json('src-tauri/tauri.conf.json')
 const frontendCargo = read('frontend/Cargo.toml')
 const tauriCargo = read('src-tauri/Cargo.toml')
 const readme = read('README.md')
-const scope = read('docs/release/RELEASE_SCOPE.md')
-const privacy = read('docs/release/PRIVACY_NOTICE.md')
 const entitlements = read('src-tauri/entitlements.plist')
 
 const cargoVersion = (source) => source.match(/^version\s*=\s*"([^"]+)"/m)?.[1]
@@ -51,26 +49,6 @@ if (tauri.bundle?.targets !== 'dmg' && !(Array.isArray(tauri.bundle?.targets) &&
 if (!/macOS(?: \d+(?:\.\d+)?\+)? on Apple Silicon/.test(readme)) {
   fail('README platform scope', 'README must document macOS 13+ on Apple Silicon')
 }
-if (!/Apple Silicon macOS first/.test(scope)) {
-  fail('release scope platform', 'RELEASE_SCOPE.md must document Apple Silicon macOS first')
-}
-if (!/Mobile Mirror.*experimental.*disabled by default/i.test(scope)) {
-  fail('Mobile Mirror scope', 'release scope must exclude Mobile Mirror by default as experimental')
-}
-if (!/Mobile Mirror.*experimental.*plaintext/i.test(privacy)) {
-  fail('Mobile Mirror privacy', 'privacy notice must include the experimental plaintext trust warning')
-}
-if (!/No in-app updater is shipped/i.test(scope)) {
-  fail('updater scope', 'no-updater scope is not recorded')
-}
-if (/Windows\/Linux are out of scope/.test(scope) && /- \*\*Linux\*\*|\*\*Windows\*\*/.test(readme)) {
-  // Development prerequisites may mention these platforms, but they must be
-  // explicitly labeled as non-release platforms in the README.
-  if (!/not release artifacts/i.test(readme)) {
-    fail('non-release platforms', 'README advertises non-release platforms without a scope disclaimer')
-  }
-}
-
 if (failures.length) {
   console.error('Release identity checks failed:')
   for (const failure of failures) console.error(`- ${failure}`)

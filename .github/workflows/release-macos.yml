@@ -99,7 +99,6 @@ jobs:
           npm run test:mcp
           npm run test:release-scripts
           npm run check:release-identity
-          npm run check:release-docs
           npm run lint
           npm audit --omit=dev --audit-level=high
           node scripts/check-tauri-command-drift.mjs
