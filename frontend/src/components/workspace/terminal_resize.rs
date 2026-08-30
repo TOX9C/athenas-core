@@ -238,6 +238,45 @@ pub(super) fn DragOverlay(props: DragOverlayProps) -> Element {
 // Helper Functions
 // ---------------------------------------------------------------------------
 
+/// Preserve existing flex weights while adapting them to a changed grid shape.
+///
+/// Pane insertion/removal changes the number of rendered rows or columns, but
+/// it should not erase the user's existing divider positions. Existing values
+/// are retained by row/index and only newly-created slots receive the default
+/// weight.
+pub(super) fn preserve_weight_shape(
+    existing: &[Vec<f64>],
+    target_lengths: &[usize],
+) -> Vec<Vec<f64>> {
+    target_lengths
+        .iter()
+        .enumerate()
+        .map(|(row_index, &target_len)| {
+            let mut row = existing
+                .get(row_index)
+                .map(|values| values.iter().copied().take(target_len).collect::<Vec<_>>())
+                .unwrap_or_default();
+            while row.len() < target_len {
+                row.push(1.0);
+            }
+            row
+        })
+        .collect()
+}
+
+/// Preserve row flex weights while adapting to a changed number of rows.
+pub(super) fn preserve_row_weights(existing: &[f64], target_len: usize) -> Vec<f64> {
+    let mut weights = existing
+        .iter()
+        .copied()
+        .take(target_len)
+        .collect::<Vec<_>>();
+    while weights.len() < target_len {
+        weights.push(1.0);
+    }
+    weights
+}
+
 /// Resize a pair of columns/rows preserving total weight using the drag
 /// start state and the current cursor delta relative to the grid dimension.
 fn resize_pair_from_drag(
@@ -303,5 +342,25 @@ mod tests {
         assert_eq!(row_divider_count(2, 2, 2), 0);
         assert_eq!(row_divider_count(3, 2, 2), 1);
         assert_eq!(row_divider_count(4, 2, 2), 1);
+    }
+
+    #[test]
+    fn preserve_weight_shape_keeps_existing_columns_and_appends_defaults() {
+        let existing = vec![vec![1.6, 0.4], vec![0.7]];
+        let result = preserve_weight_shape(&existing, &[3, 2]);
+        assert_eq!(result, vec![vec![1.6, 0.4, 1.0], vec![0.7, 1.0]]);
+    }
+
+    #[test]
+    fn preserve_weight_shape_truncates_removed_slots_without_resetting_rows() {
+        let existing = vec![vec![1.6, 0.4], vec![0.7, 1.3]];
+        let result = preserve_weight_shape(&existing, &[1]);
+        assert_eq!(result, vec![vec![1.6]]);
+    }
+
+    #[test]
+    fn preserve_row_weights_keeps_manual_split_when_rows_are_added_or_removed() {
+        assert_eq!(preserve_row_weights(&[1.4, 0.6], 3), vec![1.4, 0.6, 1.0]);
+        assert_eq!(preserve_row_weights(&[1.4, 0.6, 1.0], 2), vec![1.4, 0.6]);
     }
 }

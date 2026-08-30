@@ -1,20 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
-  <rect width="192" height="192" rx="42" fill="#0b0b0c"/>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1c1c22"/>
-      <stop offset="1" stop-color="#09090b"/>
+      <stop offset="0" stop-color="#17171b"/>
+      <stop offset="1" stop-color="#0a0a0b"/>
     </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f0d78a"/>
+      <stop offset="1" stop-color="#b8923f"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.42" r="0.55">
+      <stop offset="0" stop-color="#d0a94f" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#d0a94f" stop-opacity="0"/>
+    </radialGradient>
   </defs>
   <rect width="192" height="192" rx="42" fill="url(#bg)"/>
-  <!-- Hexagonal core frame (the crystalline "core" mark — no triangles) -->
-  <path d="M96 28 L154.88 62 L154.88 130 L96 164 L37.12 130 L37.12 62 Z"
-        fill="#d0a94f" fill-opacity="0.08" stroke="#d0a94f" stroke-opacity="0.86" stroke-width="8.4"
-        stroke-linejoin="round" stroke-linecap="round"/>
-  <!-- Quiet inner ring -->
-  <path d="M96 52.8 L133.44 74.4 L133.44 117.6 L96 139.2 L58.56 117.6 L58.56 74.4 Z"
-        fill="none" stroke="#d0a94f" stroke-opacity="0.4" stroke-width="4"
-        stroke-linejoin="round" stroke-linecap="round"/>
-  <!-- Gold core bezant -->
-  <path d="M96 74.4 L110 96 L96 117.6 L82 96 Z" fill="#ebce7c"/>
+  <rect width="192" height="192" rx="42" fill="url(#halo)"/>
+  <rect x="1" y="1" width="190" height="190" rx="41" fill="none" stroke="#d0a94f" stroke-opacity="0.10"/>
+  <!-- Athena spear-A — forged solid mark. Shared geometry with the in-app
+       brand mark (icon_mythology.rs): diamond spearhead above solid lambda
+       legs. -->
+  <g transform="translate(12 14.8) scale(7)" stroke-linejoin="round">
+    <path d="M12 7.6 L19.2 20 L15.9 20 L12 12.6 L8.1 20 L4.8 20 Z" fill="url(#gold)"/>
+    <path d="M12 3.2 L13.3 4.9 L12 6.7 L10.7 4.9 Z" fill="url(#gold)"/>
+  </g>
 </svg>

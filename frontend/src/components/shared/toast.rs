@@ -20,6 +20,7 @@ pub struct Toast {
     pub toast_type: ToastType,
     pub title: String,
     pub message: String,
+    /// Milliseconds before removal. Toasts are always transient.
     pub duration_ms: u64,
 }
 
@@ -95,11 +96,10 @@ pub fn ToastItem(props: ToastItemProps) -> Element {
         let id = dismiss_id.clone();
         let mut store = toast_store;
         async move {
-            if duration > 0 {
-                gloo::timers::future::TimeoutFuture::new(duration as u32).await;
-            } else {
-                gloo::timers::future::TimeoutFuture::new(1).await;
-            }
+            // A zero duration is treated as the safe default rather than
+            // "permanent". Durable/actionable state belongs to history.
+            let duration = if duration == 0 { 2000 } else { duration };
+            gloo::timers::future::TimeoutFuture::new(duration.min(u32::MAX as u64) as u32).await;
             // Idempotent: retain() is a no-op if id is already gone.
             store.write().remove(&id);
         }

@@ -1,6 +1,6 @@
 use crate::components::shared::icon::IconChevronDown;
 use crate::stores::agent_output::use_agent_output_store;
-use crate::utils::agent_display::{get_agent_color_str, get_agent_label_str};
+use crate::utils::agent_display::{get_agent_color_str, get_agent_display_name};
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -36,14 +36,16 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
 
     let selected_display: String = selected
         .as_ref()
-        .map(|a| a.pane_id.chars().take(12).collect())
+        .map(|a| get_agent_display_name(&a.agent_type, &a.pane_id))
         .unwrap_or_else(|| "Select agent…".to_string());
+    let selected_pane_title: String = selected
+        .as_ref()
+        .map(|a| a.pane_id.clone())
+        .unwrap_or_default();
     let selected_color: String = selected
         .as_ref()
         .map(|a| get_agent_color_str(&a.agent_type).to_string())
         .unwrap_or_else(|| "var(--textDim)".to_string());
-
-    let _chevron_rotation: i32 = if open() { 180 } else { 0 };
 
     rsx! {
         div { style: "position: relative;",
@@ -51,8 +53,8 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
             button {
                 class: "lit-sweep",
                 style: "display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); cursor: pointer; width: 100%;",
+                title: "{selected_pane_title}",
                 onclick: move |_| open.set(!open()),
-
                 span {
                     style: "width: 7px; height: 7px; border-radius: var(--radius-pill); background: {selected_color}; flex-shrink: 0;",
                 }
@@ -74,12 +76,12 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                             let pane_id_for_event = agent.pane_id.clone();
                             let is_selected = Some(agent.pane_id.as_str()) == selected_id.as_deref();
                             let color = get_agent_color_str(&agent.agent_type).to_string();
-                            let label = get_agent_label_str(&agent.agent_type).to_string();
+                            let display_name = get_agent_display_name(&agent.agent_type, &agent.pane_id);
                             let display_id: String = agent.pane_id.chars().take(12).collect();
+                            let pane_id_full = agent.pane_id.clone();
                             let lc = agent.line_count;
                             let item_bg = "transparent";
                             let item_text_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
-                            let id_text_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
                             let pane_id_for_select = agent.pane_id.clone();
                             rsx! {
                                 button {
@@ -97,14 +99,14 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                                     }
 
                                     span {
-                                        style: "font-size: var(--text-2xs); font-family: var(--fontFamily); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: {id_text_color};",
-                                        "{display_id}"
+                                        style: "font-size: var(--text-2xs); font-family: var(--fontFamily); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: {item_text_color};",
+                                        "{display_name}"
                                     }
 
                                     span {
-                                        class: "badge",
-                                        style: "color: {color};",
-                                        "{label}"
+                                        style: "font-size: var(--text-2xs); color: var(--textDim); flex-shrink: 0;",
+                                        title: "{pane_id_full}",
+                                        "{display_id}"
                                     }
 
                                     span {

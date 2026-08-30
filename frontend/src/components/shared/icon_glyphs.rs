@@ -254,6 +254,24 @@ pub fn IconKeyboard(size: Option<u8>, color: Option<String>) -> Element {
 }
 
 /// Smartphone — mobile mirror.
+/// Mic — voice input. Rounded capsule body with a stand; the recording state
+/// is communicated by the button's color, not the glyph.
+#[component]
+pub fn IconMic(size: Option<u8>, color: Option<String>) -> Element {
+    let s = size.unwrap_or(15);
+    let c = color.as_deref().unwrap_or("currentColor");
+    inline_svg(
+        rsx! {
+            rect { x: "9", y: "2.5", width: "6", height: "11", rx: "3" }
+            path { d: "M5 12 A7 7 0 0 0 19 12" }
+            path { d: "M12 19 V21" }
+            path { d: "M8.5 21 H15.5" }
+        },
+        s,
+        c,
+    )
+}
+
 #[component]
 pub fn IconSmartphone(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(14);

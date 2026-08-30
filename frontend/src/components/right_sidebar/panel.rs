@@ -2,7 +2,7 @@ use super::browser_panel::RightBrowserPanel;
 use super::editor_panel::RightEditorPanel;
 use super::skills_panel::SkillsPanel;
 use crate::components::athena::athena_panel::{AthenaPanel, AthenaPanelMode};
-use crate::components::shared::icon::{IconFile, IconGlobe, IconKanban, IconTerminal};
+use crate::components::shared::icon::{IconAthena, IconFile, IconGlobe, IconZap};
 use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
 use crate::stores::ui::{use_ui_store, Panel};
 use dioxus::prelude::*;
@@ -24,13 +24,8 @@ pub fn RightSidebar() -> Element {
         } else {
             "2px solid transparent"
         };
-        let surface_border = if is_active {
-            "border-bottom: 1px solid var(--border);"
-        } else {
-            "border-bottom: 1px solid transparent;"
-        };
         format!(
-            "display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 14px; flex: 1; border-radius: 0; border: none; border-bottom: {border}; {surface_border} font-family: var(--font-ui); font-size: var(--text-xs); font-weight: 500; cursor: pointer; background: transparent; color: {fg}; letter-spacing: 0.04em; transition: color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);"
+            "display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 14px; flex: 1; border-radius: 0; border: none; border-bottom: {border}; font-family: var(--font-ui); font-size: var(--text-xs); font-weight: 500; cursor: pointer; background: transparent; color: {fg}; letter-spacing: 0.04em; transition: color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);"
         )
     };
 
@@ -63,7 +58,7 @@ pub fn RightSidebar() -> Element {
                         let should_be_open = panel_state.write().toggle_right_panel(RightPanel::Assistant, sidebar_open);
                         ui_state.write().right_sidebar_open = should_be_open;
                     },
-                    IconTerminal { size: Some(13), color: Some("currentColor".to_string()) }
+                    IconAthena { size: Some(13), color: Some("currentColor".to_string()) }
                     "Athena"
                 }
 
@@ -87,7 +82,7 @@ pub fn RightSidebar() -> Element {
                         let should_be_open = panel_state.write().toggle_right_panel(RightPanel::Skills, sidebar_open);
                         ui_state.write().right_sidebar_open = should_be_open;
                     },
-                    IconKanban { size: Some(13), color: Some("currentColor".to_string()) }
+                    IconZap { size: Some(13), color: Some("currentColor".to_string()) }
                     "Skills"
                 }
             }

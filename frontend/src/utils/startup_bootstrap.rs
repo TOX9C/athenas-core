@@ -4,15 +4,14 @@
 //! rendered state. It must be called once, in the same position in `App`, so
 //! Dioxus hook ordering remains stable.
 
-use crate::stores::command::{use_command_store, CommandState};
 use crate::stores::ui::UITheme;
 use crate::stores::workspace::WorkspaceState;
 use crate::utils::font_size::{parse_persisted_font_size, persist_font_size};
 use crate::utils::settings_migration::migrate_smart_pane_titles;
 use dioxus::prelude::*;
 
-/// Run the root app's one-time platform, settings, workspace, command-history,
-/// and before-unload bootstrap effects.
+/// Run the root app's one-time platform, settings, workspace, and
+/// before-unload bootstrap effects.
 pub fn use_startup_bootstrap(
     ui_state: Signal<crate::stores::ui::UIState>,
     workspace: Signal<WorkspaceState>,
@@ -165,16 +164,6 @@ pub fn use_startup_bootstrap(
                         .into(),
                     );
                 }
-            });
-        });
-    }
-
-    // Restore recent command IDs.
-    {
-        let mut cmd = use_command_store();
-        use_effect(move || {
-            spawn(async move {
-                cmd.write().recent_ids = CommandState::load_recent().await;
             });
         });
     }

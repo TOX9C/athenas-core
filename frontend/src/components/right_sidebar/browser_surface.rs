@@ -23,10 +23,13 @@ use dioxus::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::components::notifications::notification_bell::use_notification_overlay_store;
 use crate::components::shared::icon::{
     IconArrowLeft, IconArrowRight, IconChevronDown, IconFullscreen, IconGlobe, IconMinimize,
     IconRefresh,
 };
+use crate::components::shared::modal::use_modal_overlay_store;
+use crate::components::shared::toast::use_toast_store;
 use crate::stores::panel_manager::{use_panel_manager_store, RightPanel};
 use crate::stores::ui::{use_ui_store, Panel};
 use crate::tauri_bridge;
@@ -47,8 +50,13 @@ struct BrowserBounds {
     height: f64,
 }
 
+struct BoundsRequest {
+    bounds: BrowserBounds,
+    park: bool,
+}
+
 struct BoundsDispatch {
-    latest: Option<BrowserBounds>,
+    latest: Option<BoundsRequest>,
     request_in_flight: bool,
 }
 
@@ -72,6 +80,9 @@ thread_local! {
         active_generation: None,
         park_timer: None,
     }) };
+    /// Resize callbacks can still arrive after an overlay opens. Keep those
+    /// callbacks from restoring a native child that is intentionally hidden.
+    static SURFACE_PARKED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Holds JS resources that must be released when the surface unmounts.
@@ -106,8 +117,20 @@ fn push_bounds_now() {
     enqueue_bounds(bounds);
 }
 
-fn send_bounds(bounds: BrowserBounds) {
+fn send_bounds(request: BoundsRequest) {
     wasm_bindgen_futures::spawn_local(async move {
+        // Park requests must be delivered even after the parked flag is set;
+        // ordinary geometry requests are discarded while an overlay owns the
+        // top layer.
+        if !request.park && SURFACE_PARKED.with(Cell::get) {
+            BOUNDS_DISPATCH.with(|dispatch| {
+                let mut dispatch = dispatch.borrow_mut();
+                dispatch.request_in_flight = false;
+                dispatch.latest = None;
+            });
+            return;
+        }
+        let bounds = request.bounds;
         let _ = tauri_bridge::browser_set_bounds(
             BROWSER_ID,
             bounds.x,
@@ -120,7 +143,10 @@ fn send_bounds(bounds: BrowserBounds) {
         let next = BOUNDS_DISPATCH.with(|dispatch| {
             let mut dispatch = dispatch.borrow_mut();
             dispatch.request_in_flight = false;
-            dispatch.latest.take()
+            match dispatch.latest.take() {
+                Some(next) if next.park || !SURFACE_PARKED.with(Cell::get) => Some(next),
+                Some(_) | None => None,
+            }
         });
         if let Some(next) = next {
             BOUNDS_DISPATCH.with(|dispatch| {
@@ -131,10 +157,13 @@ fn send_bounds(bounds: BrowserBounds) {
     });
 }
 
-fn enqueue_bounds(bounds: BrowserBounds) {
+fn enqueue_request(request: BoundsRequest) {
+    if !request.park && SURFACE_PARKED.with(Cell::get) {
+        return;
+    }
     let next = BOUNDS_DISPATCH.with(|dispatch| {
         let mut dispatch = dispatch.borrow_mut();
-        dispatch.latest = Some(bounds);
+        dispatch.latest = Some(request);
         if dispatch.request_in_flight {
             None
         } else {
@@ -145,6 +174,25 @@ fn enqueue_bounds(bounds: BrowserBounds) {
     if let Some(next) = next {
         send_bounds(next);
     }
+}
+
+fn enqueue_bounds(bounds: BrowserBounds) {
+    enqueue_request(BoundsRequest {
+        bounds,
+        park: false,
+    });
+}
+
+fn enqueue_park() {
+    enqueue_request(BoundsRequest {
+        bounds: BrowserBounds {
+            x: -20_000.0,
+            y: -20_000.0,
+            width: 800.0,
+            height: 600.0,
+        },
+        park: true,
+    });
 }
 
 fn clear_pending_bounds() {
@@ -199,12 +247,28 @@ fn schedule_push_bounds() {
     let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
 }
 
-/// Move the webview far off-screen, keeping the page alive while hidden.
+/// Hide the native child webview by moving it off-screen. The backend also
+/// calls the platform hide API for this sentinel rectangle; geometry alone is
+/// not sufficient on macOS because child webviews are composited above the
+/// main Dioxus webview regardless of CSS z-index.
 fn park_offscreen() {
-    wasm_bindgen_futures::spawn_local(async move {
-        let _ =
-            tauri_bridge::browser_set_bounds(BROWSER_ID, -20000.0, -20000.0, 800.0, 600.0).await;
-    });
+    enqueue_park();
+}
+
+fn should_park_browser(
+    show_new_space_modal: bool,
+    show_swarm_modal: bool,
+    show_settings_modal: bool,
+    modal_overlay_open: bool,
+    notification_popover_open: bool,
+    has_toasts: bool,
+) -> bool {
+    show_new_space_modal
+        || show_swarm_modal
+        || show_settings_modal
+        || modal_overlay_open
+        || notification_popover_open
+        || has_toasts
 }
 
 /// Start a new surface lease and cancel a park scheduled by a predecessor.
@@ -278,6 +342,10 @@ pub fn BrowserSurface(expanded: bool) -> Element {
     let active_load_generation = use_hook(|| Rc::new(Cell::new(0u64)));
     let mut ui_state = use_ui_store();
     let mut panel_state = use_panel_manager_store();
+    let notification_popover_open = use_notification_overlay_store();
+    let modal_overlay_count = use_modal_overlay_store();
+    let toast_state = use_toast_store();
+    let browser_parked = use_hook(|| Rc::new(Cell::new(false)));
     let mut cleanup: Signal<Option<SurfaceCleanup>> = use_signal(|| None);
     let initialized = use_hook(|| Rc::new(RefCell::new(false)));
     let surface_generation = use_hook(|| Rc::new(RefCell::new(None::<u64>)));
@@ -311,14 +379,12 @@ pub fn BrowserSurface(expanded: bool) -> Element {
         let load_timeout_for_mount = load_timeout.clone();
         let active_generation_for_mount = active_load_generation.clone();
         let browser_unlisteners_for_mount = browser_unlisteners.clone();
+        let browser_parked_for_mount = browser_parked.clone();
         // A terminal link click sets `pending_browser_url`; honor it on first
         // mount so a cold-open lands directly on the link instead of flashing
         // the default page. The actual clear happens inside the mount effect.
-        let start_url = ui_state
-            .read()
-            .pending_browser_url
-            .clone()
-            .unwrap_or(url());
+        let start_url = ui_state.read().pending_browser_url.clone().unwrap_or(url());
+
         let mut ui_state_for_mount = ui_state;
         use_effect(move || {
             if *initialized.borrow() {
@@ -448,6 +514,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
             let mut can_go_forward_after_show = can_go_forward;
             let mut browser_error_after_show = browser_error;
             let active_generation_after_show = active_load_generation.clone();
+            let browser_parked_after_show = browser_parked_for_mount.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 match tauri_bridge::browser_show(BROWSER_ID, &create_url).await {
                     Ok(value) => {
@@ -496,7 +563,12 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                         web_sys::console::error_1(&JsValue::from_str(&message));
                     }
                 }
-                schedule_push_bounds();
+                // An overlay may have appeared while the child webview was
+                // being created. Do not let the completion callback make the
+                // native view visible over that overlay.
+                if !browser_parked_after_show.get() {
+                    schedule_push_bounds();
+                }
             });
 
             // ResizeObserver on the placeholder catches sidebar drag-resize and
@@ -540,17 +612,42 @@ pub fn BrowserSurface(expanded: bool) -> Element {
         });
     }
 
-    // ── Reconcile bounds whenever layout-affecting state changes ─────────────
+    // ── Reconcile visibility and bounds whenever layout/overlay state changes
     // Position (not just size) shifts when the left sidebar opens/closes or the
-    // active panel changes; ResizeObserver alone misses pure moves.
-    use_effect(move || {
-        let _ = ui_state.read().sidebar_visible;
-        let _ = ui_state.read().sidebar_width;
-        let _ = ui_state.read().right_sidebar_open;
-        let _ = ui_state.read().panel;
-        let _ = panel_state.read().active_right_panel;
-        let _ = panel_state.read().right_panel_width_percent;
-        schedule_push_bounds();
+    // active panel changes; ResizeObserver alone misses pure moves. Native
+    // child webviews cannot participate in DOM stacking, so park them while a
+    // root-level modal or notification overlay is visible.
+    use_effect({
+        let browser_parked = browser_parked.clone();
+        move || {
+            let _ = ui_state.read().sidebar_visible;
+            let _ = ui_state.read().sidebar_width;
+            let _ = ui_state.read().right_sidebar_open;
+            let _ = ui_state.read().panel;
+            let _ = panel_state.read().active_right_panel;
+            let _ = panel_state.read().right_panel_width_percent;
+            let is_blocked = should_park_browser(
+                ui_state.read().show_new_space_modal,
+                ui_state.read().show_swarm_modal,
+                ui_state.read().show_settings_modal,
+                *modal_overlay_count.read() > 0,
+                notification_popover_open(),
+                !toast_state.read().toasts.is_empty(),
+            );
+            if is_blocked {
+                if !browser_parked.replace(true) {
+                    SURFACE_PARKED.with(|parked| parked.set(true));
+                    clear_pending_bounds();
+                    park_offscreen();
+                }
+            } else if browser_parked.replace(false) {
+                SURFACE_PARKED.with(|parked| parked.set(false));
+                schedule_push_bounds();
+            } else {
+                SURFACE_PARKED.with(|parked| parked.set(false));
+                schedule_push_bounds();
+            }
+        }
     });
 
     // ── Unmount: release JS resources, schedule off-screen park ──────────────
@@ -755,7 +852,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                             }
                         }
                     },
-                    placeholder: "Enter URL or search..."
+                    placeholder: "Enter URL or search…"
                 }
 
                 if loading() {
@@ -795,7 +892,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
 
             if let Some(error) = browser_error() {
                 div {
-                    style: "padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--danger, #d66); font-size: 11px;",
+                    style: "padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--error); font-size: 11px;",
                     "{error}"
                 }
             }
@@ -904,5 +1001,27 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_park_browser;
+
+    #[test]
+    fn browser_stays_visible_without_overlays() {
+        assert!(!should_park_browser(
+            false, false, false, false, false, false
+        ));
+    }
+
+    #[test]
+    fn browser_parks_for_settings_and_other_blocking_overlays() {
+        assert!(should_park_browser(false, false, true, false, false, false));
+        assert!(should_park_browser(false, false, false, true, false, false));
+        assert!(should_park_browser(false, false, false, false, true, false));
+        assert!(should_park_browser(false, false, false, false, false, true));
+        assert!(should_park_browser(true, false, false, false, false, false));
+        assert!(should_park_browser(false, true, false, false, false, false));
     }
 }

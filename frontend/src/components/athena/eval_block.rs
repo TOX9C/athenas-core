@@ -47,7 +47,7 @@ pub fn EvaluationBlockView(props: EvaluationBlockViewProps) -> Element {
 
                 span {
                     class: "pill",
-                    style: "background: {status_color}22; color: {status_color}; border-color: {status_color}44;",
+                    style: "background: color-mix(in srgb, {status_color} 13%, transparent); color: {status_color};",
                     "{eval_data.overall_status}"
                 }
             }

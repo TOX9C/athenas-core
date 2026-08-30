@@ -13,21 +13,6 @@
 
 /* ── 1. Fonts ─────────────────────────────────────────────────────────────── */
 @font-face {
-  font-family: 'Cormorant';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('./fonts/Cormorant-500.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'Cormorant';
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url('./fonts/Cormorant-600.woff2') format('woff2');
-}
-
-@font-face {
   font-family: 'Hanken Grotesk';
   font-style: normal;
   font-weight: 400;
@@ -146,7 +131,7 @@
   --font-display: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-ui: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --fontFamily:
-    'Monaspace Neon', 'JetBrains Mono', ui-monospace, Menlo, monospace; /* mono (user-overridable) */
+    'Monaspace Neon', 'JetBrains Mono', 'JetBrainsMono Nerd Font', ui-monospace, Menlo, monospace; /* mono (user-overridable) */
   --font-mono: var(--fontFamily);
 
   /* type scale */
@@ -502,29 +487,16 @@ h3,
   animation: shimmer-text 1.4s linear infinite;
 }
 
-/* Athena composer — rounded field surface that lights with a gold ring on
-   focus-within, matching the chat composer treatment. */
-.athena-composer-field {
+/* ── Athena composer: a quiet surface with an always-visible action ── */
+.athena-composer {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--bgSecondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  transition:
-    border-color var(--dur) var(--ease),
-    box-shadow var(--dur) var(--ease);
+  flex-direction: column;
 }
-.athena-composer-field:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accentSubtle);
-}
-.athena-composer-field textarea {
+.athena-composer textarea {
   flex: 1;
-  min-height: 38px;
-  max-height: 120px;
-  resize: vertical;
+  min-height: 40px;
+  max-height: 132px;
+  resize: none;
   background: transparent;
   border: none;
   outline: none;
@@ -532,32 +504,345 @@ h3,
   font-family: var(--font-ui);
   font-size: var(--text-base);
   line-height: 1.5;
-  padding: 2px 0;
+  padding: 8px 4px 2px;
 }
-.athena-composer-field textarea::placeholder {
-  color: var(--textDim);
+.athena-composer textarea::placeholder {
+  color: var(--textMuted);
 }
 
-/* Athena composer send — circular send affordance that fills with gold when
-   there is something to send and compresses on press. */
-.athena-composer-send {
+/* Toolbar: mic and hint on the left, send or stop on the right. */
+.athena-composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 2px;
+}
+
+.athena-composer-hint {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-2xs);
+  color: var(--textDim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mic — small ghost affordance; fills gold while recording. */
+.athena-composer-mic {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
   transition:
     background-color 200ms var(--ease),
     color 200ms var(--ease),
     transform 100ms var(--ease);
 }
-.athena-composer-send:active:not(:disabled) {
-  transform: scale(0.94);
+.athena-composer-mic:hover:not(:disabled) {
+  background: var(--bgHover);
+  color: var(--text);
+}
+.athena-composer-mic:active:not(:disabled) {
+  transform: scale(0.92);
+}
+.athena-composer-mic:disabled {
+  opacity: 1;
+  color: var(--textMuted);
+  cursor: default;
 }
 
-/* Athena ask-user (approval card) — option rows warm on hover. */
+/* Send: visible at rest, accented when text is ready. */
+.athena-composer-send {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--textDim);
+  transition:
+    background-color 200ms var(--ease),
+    border-color 200ms var(--ease),
+    color 200ms var(--ease),
+    transform 100ms var(--ease);
+}
+.athena-composer-send:hover:not(:disabled) {
+  background: var(--bgHover);
+  border-color: var(--borderActive);
+  color: var(--text);
+}
+.athena-composer-send.is-ready {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--bg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.athena-composer-send.is-ready:hover:not(:disabled) {
+  background: var(--accentHover);
+}
+.athena-composer-send:disabled {
+  opacity: 1;
+}
+.athena-composer-send:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+/* Stop replaces send in the same slot while generation is running. */
+.athena-composer-stop {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning);
+  transition:
+    background-color 200ms var(--ease),
+    color 200ms var(--ease),
+    transform 100ms var(--ease);
+}
+.athena-composer-stop:hover {
+  background: color-mix(in srgb, var(--warning) 24%, transparent);
+}
+.athena-composer-stop:active {
+  transform: scale(0.92);
+}
+
+/* Recording dot — pulses in the hint line while the mic is capturing. */
+.athena-recording-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--error);
+  flex-shrink: 0;
+  animation: athena-mic-pulse 1.2s ease-in-out infinite;
+}
+@keyframes athena-mic-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+
+/* ── Athena messages ── */
+.athena-chat-row {
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  padding: 12px 0;
+}
+.athena-user-message {
+  max-width: min(78%, 620px);
+  padding: 6px 10px;
+  background: rgba(201, 162, 75, 0.04);
+  border-radius: 6px;
+  text-align: right;
+  margin-left: auto;
+}
+.athena-chat-row.is-user {
+  display: flex;
+  justify-content: flex-end;
+}
+.athena-chat-row.is-assistant {
+  display: flex;
+  justify-content: flex-start;
+}
+.athena-chat-row.is-assistant .athena-msg-text {
+  max-width: 760px;
+  color: var(--text);
+}
+
+/* ── Athena messages ── */
+
+/* Meta row — copy affordance reveals on hover. */
+.athena-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+.athena-msg-head .athena-msg-copy {
+  opacity: 0;
+  margin-left: 4px;
+  transition: opacity 150ms var(--ease);
+}
+.athena-chat-row:hover .athena-msg-copy,
+.athena-msg-copy:focus-visible {
+  opacity: 1;
+}
+
+.athena-msg-meta {
+  font-size: var(--text-2xs);
+  color: var(--textDim);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+/* Copy affordance — tiny ghost icon, inline with text. */
+.athena-msg-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  border-radius: var(--radius-sm);
+  color: var(--textDim);
+  background: transparent;
+  vertical-align: middle;
+  transition:
+    opacity 150ms var(--ease),
+    background-color 150ms var(--ease),
+    color 150ms var(--ease);
+}
+.athena-msg-copy:hover {
+  background: var(--bgHover);
+  color: var(--text);
+}
+
+/* Assistant text — plain, no card. */
+.athena-msg-text {
+  font-size: var(--text-base);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+}
+
+/* User text — right-aligned, plain. */
+.athena-user-text {
+  font-size: var(--text-base);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-width: 0;
+  color: var(--text);
+  text-align: right;
+}
+
+/* Inline retry — sits with the failed message, not in the composer. */
+.athena-msg-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error) 25%, transparent);
+  color: var(--error);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  transition:
+    background-color 150ms var(--ease),
+    color 150ms var(--ease);
+}
+.athena-msg-retry:hover {
+  background: color-mix(in srgb, var(--error) 20%, transparent);
+}
+
+/* ── Thinking row — three typing dots, quiet like a message of its own ── */
+.athena-typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.athena-typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.3;
+  animation: thinking-dot 1.2s ease-in-out infinite;
+}
+@keyframes thinking-dot {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1.1);
+  }
+}
+
+/* ── Empty-state quick prompts ── */
+.athena-suggestion-chip {
+  padding: 6px 11px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accentSubtle);
+  color: var(--textMuted);
+  font-size: var(--text-xs);
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition:
+    background-color 120ms var(--ease),
+    color 120ms var(--ease);
+}
+.athena-suggestion-chip:hover {
+  background: var(--accentSubtle);
+  color: var(--accent);
+}
+
+/* Ask-user confirm — circular send affordance. */
+.athena-ask-send {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  transition:
+    background-color 200ms var(--ease),
+    color 200ms var(--ease),
+    transform 100ms var(--ease);
+}
+.athena-ask-send:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+/* Plan-step highlight when jumping from a kanban card (Kanban ↔ plan deep
+   link): a soft gold pulse that fades back to the row's resting state. */
+@keyframes athena-plan-highlight {
+  0% {
+    box-shadow: inset 0 0 0 2px var(--accent);
+    background: var(--accentSubtle);
+  }
+  60% {
+    box-shadow: inset 0 0 0 1px var(--accent);
+    background: var(--accentSubtle);
+  }
+  100% {
+    box-shadow: inset 0 0 0 1px var(--accent);
+    background: var(--accentSubtle);
+  }
+}
+
+/* Athena ask-user (approval card) — option rows warm on hover. The base
+   rule keeps the resting background transparent so the :hover override
+   actually wins over the inline option styles. */
+.athena-ask-option {
+  background: transparent;
+}
 .athena-ask-option:hover {
   background: var(--bgHover);
 }
@@ -841,6 +1126,7 @@ h3,
    opaque so the conversation has a visual home inside the sidebar. */
 .athena-message-log {
   background: var(--bg);
+  scroll-behavior: smooth;
 }
 
 .athena-empty-state {
@@ -955,6 +1241,13 @@ h3,
 .status-dot.is-attention {
   background: var(--warning);
   animation: pulse-soft 1.6s ease-in-out infinite;
+}
+.status-dot.is-error {
+  background: var(--error);
+  animation: pulse-soft 1.4s ease-in-out infinite;
+}
+.status-dot.is-completed {
+  background: var(--success);
 }
 .status-dot.is-idle {
   background: var(--textDim);
@@ -1129,7 +1422,7 @@ button:disabled {
   transition: border-color var(--dur-fast) var(--ease);
 }
 .field::placeholder {
-  color: var(--textDim);
+  color: var(--textMuted);
 }
 .field:focus {
   border-color: var(--accent);
@@ -1215,25 +1508,28 @@ button:disabled {
   text-transform: uppercase;
 }
 
-/* Sidebar / list rows. */
+/* Sidebar workspace rows — quiet hover reveal, active state via the
+   is-active class (background + gold text), rounded hover surface matching
+   the file-tree rows. The close affordance rests dim and wakes on row hover
+   or keyboard focus so the list stays readable by default. */
 .workspace-row {
-}
-
-/* Tooltip bubble (positioned by the Tooltip component) — flat, shadow kept. */
-.tip-bubble {
-  position: absolute;
-  z-index: 9500;
-  padding: 4px 9px;
-  background: var(--bgSecondary);
-  color: var(--text);
-  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-  font-family: var(--font-ui);
-  white-space: nowrap;
-  box-shadow: var(--shadow-md);
-  pointer-events: none;
-  animation: reveal-fade var(--dur-fast) var(--ease) both;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+.workspace-row:hover {
+  background-color: var(--bgHover);
+}
+.workspace-row.is-active {
+  background-color: var(--bgHover);
+}
+.workspace-row .workspace-row-close {
+  opacity: 0.55;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.workspace-row:hover .workspace-row-close,
+.workspace-row:focus-within .workspace-row-close,
+.workspace-row-close:focus-visible {
+  opacity: 1;
 }
 
 /* Modal scrim + container motion — the ONE place shadows live (raised surfaces). */
@@ -1386,15 +1682,6 @@ button:disabled {
   line-height: 1;
 }
 
-.codex-section-epi {
-  margin-left: auto;
-  color: var(--textDim);
-  font-family: var(--font-display);
-  font-size: 12px;
-  max-width: 240px;
-  text-align: right;
-}
-
 .codex-section-intro {
   color: var(--textMuted);
   font-size: 13px;
@@ -1419,7 +1706,7 @@ button:disabled {
   background: var(--accent);
 }
 
-/* Cormorant small-caps label with a trailing hairline
+/* Small-caps display label with a trailing hairline
    (the section dividers within a section like Typography / Pane Titles). */
 .group-label {
   display: flex;
@@ -1899,12 +2186,6 @@ button:disabled {
   font-size: 19px;
 }
 
-.settings-panel .codex-section-epi,
-.modal-container .codex-section-epi {
-  max-width: 200px;
-  font-size: 11px;
-}
-
 /* Resize handle — hairline at rest with no hover effect. */
 .resize-handle {
   background: var(--border);
@@ -1944,6 +2225,16 @@ button:disabled {
   pointer-events: none;
   z-index: 4;
   box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Keep the active workspace pane fully readable while making the other panes
+   recede slightly. The ring lives on the wrapper, outside this content node,
+   so it remains crisp instead of inheriting the content opacity. */
+.pane-content {
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.pane-content.is-dimmed {
+  opacity: 0.72;
 }
 
 /* Pane corner ornaments — retired (was astrolabe quarter-circles). Class kept
@@ -2178,7 +2469,18 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* Terminal cells must have stable glyph advances. Ligatures and
+     contextual alternates can make a canvas repaint look like characters
+     were merged or painted over during a resize. */
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
 }
+.xterm-mount .xterm-screen,
+.xterm-mount .xterm-viewport {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
 .xterm-mount .xterm-viewport {
   overflow-y: scroll !important;
   overflow-x: hidden !important;
@@ -2253,4 +2555,36 @@ button:disabled {
 }
 .dnd-overlay.is-grabbing {
   cursor: grabbing;
+}
+
+/* ── Terminal file/image drops ───────────────────────────────────────────── */
+/* Native Tauri and DOM drag paths are routed to the pane under the pointer.
+   The class is applied directly to both the stable pane wrapper and xterm
+   mount so it remains visible even while xterm owns pointer events. */
+.pane-wrap.is-file-drop-target,
+.xterm-mount.is-file-drop-target {
+  box-shadow:
+    inset 0 0 0 2px var(--accent),
+    0 0 0 3px var(--accentSubtle);
+  border-color: var(--accent);
+  transition:
+    box-shadow var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.pane-wrap.is-file-drop-target::after {
+  content: 'Drop to insert path';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  padding: 3px 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  background: var(--bgSecondary);
+  color: var(--accent);
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  pointer-events: none;
 }

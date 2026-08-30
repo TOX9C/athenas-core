@@ -7,7 +7,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Always build the frontend in release mode. Dioxus debug builds enable
 # devtools that attempt a WebSocket connection for hot-reload, which panics
-# in WKWebView (SecurityError). See E2E notes in CLAUDE.md.
+# in WKWebView (SecurityError). See the release E2E configuration for details.
 PROFILE="release"
 DX_FLAG="--release"
 
@@ -45,9 +45,11 @@ wasm_opt_run() {
   fi
 }
 
-echo "Copying build output to dist..."
 rm -rf "$DIST_DIR"
 cp -r "$BUILD_DIR" "$DIST_DIR"
+# dx copies public/ verbatim into the build output; drop the legacy art
+# archive before anything else looks at dist (perf#5, see comment below).
+rm -rf "$DIST_DIR/art"
 
 # Optimize the main WASM file before creating stable aliases
 for wasm in "$DIST_DIR"/assets/athena-frontend_bg-dx*.wasm; do
@@ -72,24 +74,27 @@ cp -f "$SCRIPT_DIR/public/manifest.webmanifest" "$DIST_DIR/manifest.webmanifest"
 cp -f "$SCRIPT_DIR/public/sw.js" "$DIST_DIR/sw.js"
 rm -rf "$DIST_DIR/icons"
 cp -r "$SCRIPT_DIR/public/icons" "$DIST_DIR/icons"
-rm -rf "$DIST_DIR/art"
-cp -r "$SCRIPT_DIR/public/art" "$DIST_DIR/art"
 
-# Create stable-name aliases for hashed filenames BEFORE checking entry path.
-# Dioxus release builds output to assets/ with hashes; debug builds to wasm/ without.
-# Use hard copies (not symlinks) so Tauri's asset embedder picks them up for release bundles.
-for wasm in "$DIST_DIR"/assets/athena-frontend_bg-dx*.wasm; do
-  [ -f "$wasm" ] && cp -f "$wasm" "$DIST_DIR/assets/athena-frontend_bg.wasm"
-done
+# Stable entry-script names: the custom index.html/mobile.html reference
+# `athena-frontend.js` (unhashed), and the wasm-bindgen bootstrap inside that
+# script fetches the *hashed* `-dx*.wasm` directly. So the JS entry keeps its
+# unhashed alias (HTML points at it), but the WASM does NOT get one — nothing
+# fetches the unhashed name at runtime (the `new URL("athena-frontend_bg.wasm",
+# import.meta.url)` fallback only fires when init() is called with no path,
+# which the bootstrap never does), so we drop it and save ~2.2 MB per copy.
 for js in "$DIST_DIR"/assets/athena-frontend-dx*.js; do
   [ -f "$js" ] && cp -f "$js" "$DIST_DIR/assets/athena-frontend.js"
-done
-for wasm in "$DIST_DIR"/wasm/athena-frontend_bg-dx*.wasm; do
-  [ -f "$wasm" ] && cp -f "$wasm" "$DIST_DIR/wasm/athena-frontend_bg.wasm"
 done
 for js in "$DIST_DIR"/wasm/athena-frontend-dx*.js; do
   [ -f "$js" ] && cp -f "$js" "$DIST_DIR/wasm/athena-frontend.js"
 done
+# perf#5: remove the duplicates nothing fetches. In assets/ (release layout)
+# that is: the unhashed WASM copy AND the hashed JS entry (the HTML loads the
+# stable `athena-frontend.js` alias; the hashed JS name has no consumer once
+# the alias exists). Keep the hashed WASM — the bootstrap embeds that exact
+# name.
+rm -f "$DIST_DIR"/assets/athena-frontend_bg.wasm \
+      "$DIST_DIR"/assets/athena-frontend-dx*.js
 
 # Replace Dioxus-generated entry documents with our custom ones.
 # index.html keeps the desktop diagnostics; mobile.html mounts the same WASM

@@ -429,6 +429,37 @@ fn AgentNotifySettings() -> Element {
         save_agent_notify_config(next);
     };
 
+    // One-click emitter install (Warp-style): writes the OSC 6337 emitter
+    // script and wires each agent's native hooks non-destructively via the
+    // `agent_notify_install` backend command. `installing` gates double
+    // clicks; `install_result` surfaces the written-files summary or error.
+    let mut installing = use_signal(|| false);
+    let mut install_result = use_signal(String::new);
+    let mut install_err = use_signal(|| false);
+
+    let run_install = move |_| {
+        if installing() {
+            return;
+        }
+        installing.set(true);
+        install_err.set(false);
+        install_result.set("Installing agent notification hooks…".to_string());
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = crate::tauri_bridge::agent_notify_install("all").await;
+            installing.set(false);
+            match result {
+                Ok(summary) => install_result.set(summary),
+                Err(e) => {
+                    install_err.set(true);
+                    install_result.set(
+                        e.as_string()
+                            .unwrap_or_else(|| "Install failed".to_string()),
+                    );
+                }
+            }
+        });
+    };
+
     rsx! {
         div {
             style: "margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);",
@@ -439,6 +470,42 @@ fn AgentNotifySettings() -> Element {
                     "Agent Notifications"
                 }
             }
+
+            /* ── One-click emitter install ── */
+            div {
+                style: "display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); margin-bottom: 10px;",
+                div {
+                    style: "display: flex; flex-direction: column; gap: 3px; min-width: 0;",
+                    span {
+                        style: "font-size: var(--text-sm); font-weight: 600; color: var(--text);",
+                        "Instant notifications from your agents"
+                    }
+                    span {
+                        style: "font-size: var(--text-xs); color: var(--textDim); line-height: 1.45;",
+                        "Wires Claude Code, Codex, and OMP hooks so \"done\" and \"needs attention\" arrive the moment they happen — even when you\'re in another workspace. Existing hooks are preserved."
+                    }
+                    if !install_result.read().is_empty() {
+                        span {
+                            style: if install_err() {
+                                "font-size: 11px; color: var(--error); word-break: break-word; white-space: pre-wrap; margin-top: 2px;"
+                            } else {
+                                "font-size: 11px; color: var(--textDim); word-break: break-word; white-space: pre-wrap; margin-top: 2px;"
+                            },
+                            "{install_result.read()}"
+                        }
+                    }
+                }
+                button {
+                    class: "btn-primary btn-sm",
+                    style: "flex-shrink: 0; padding: 6px 14px; font-weight: 500;",
+                    r#type: "button",
+                    disabled: installing(),
+                    title: "Install notification hooks for Claude Code, Codex, and OMP",
+                    onclick: run_install,
+                    if installing() { "Installing…" } else { "Install" }
+                }
+            }
+
             div {
                 style: "display: flex; flex-direction: column; gap: 2px;",
                 NotifyRow {

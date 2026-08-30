@@ -1,7 +1,9 @@
 //! Settings section components for General, Athena, and About.
 
 use super::{FontDropdown, GroupLabel, LabeledField, SizeStepper, Toggle};
-use crate::components::settings::provider_presets::{infer_provider_id, provider_preset, LLM_PROVIDERS};
+use crate::components::settings::provider_presets::{
+    infer_provider_id, provider_preset, LLM_PROVIDERS,
+};
 use crate::components::shared::icon::{IconCheck, IconClose};
 use crate::stores::athena::use_athena_store;
 use crate::stores::ui::use_ui_store;
@@ -422,9 +424,7 @@ pub(super) fn AthenaSettings() -> Element {
 
             // The key is now persisted (or confirmed already-set) — pull the
             // model list so the user can pick from a dropdown right away.
-            if !any_error
-                && key_ok
-                && provider_preset(&prov).is_some_and(|p| p.supports_model_list)
+            if !any_error && key_ok && provider_preset(&prov).is_some_and(|p| p.supports_model_list)
             {
                 fetch_models(
                     base_url,
@@ -439,12 +439,10 @@ pub(super) fn AthenaSettings() -> Element {
         });
     };
 
-
-
     // Whether the current provider exposes an OpenAI-compatible /models list.
     // Custom is OpenAI-compatible, so it counts; only Anthropic is excluded.
-    let current_supports_models = provider_preset(&provider())
-        .is_some_and(|p| p.supports_model_list);
+    let current_supports_models =
+        provider_preset(&provider()).is_some_and(|p| p.supports_model_list);
     // Whether the fetched list is still valid for the URL currently in the field.
     let models_are_current = !available_models.read().is_empty()
         && models_fetched_for_url.read().as_str() == base_url.read().as_str();
@@ -676,8 +674,53 @@ pub(super) fn AthenaSettings() -> Element {
 Tab: About
 ============================================================= */
 
+fn browser_diagnostic_value(object_name: &str, method_name: &str) -> String {
+    let Some(window) = web_sys::window() else {
+        return String::new();
+    };
+    let Ok(object) = js_sys::Reflect::get(&window, &JsValue::from_str(object_name)) else {
+        return String::new();
+    };
+    let Ok(method) = js_sys::Reflect::get(&object, &JsValue::from_str(method_name)) else {
+        return String::new();
+    };
+    let Ok(method) = method.dyn_into::<js_sys::Function>() else {
+        return String::new();
+    };
+    method
+        .call0(&object)
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_default()
+}
+
 #[component]
 pub(super) fn AboutSettings() -> Element {
+    let mut exporting = use_signal(|| false);
+    let mut export_status = use_signal(String::new);
+    let export_diagnostics = move |_| {
+        if exporting() {
+            return;
+        }
+        exporting.set(true);
+        export_status.set("Collecting redacted diagnostics…".to_string());
+        let frontend_logs = browser_diagnostic_value("__athenaDiagnostics", "getConsole");
+        let frontend_metrics = browser_diagnostic_value("__athenaDiagnostics", "getMetrics");
+        let mut exporting = exporting;
+        let mut export_status = export_status;
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::tauri_bridge::diagnostics_export(&frontend_logs, &frontend_metrics).await {
+                Ok(path) => {
+                    export_status.set(format!("Saved redacted bundle: {path}"));
+                }
+                Err(error) => {
+                    export_status.set(format!("Diagnostics export failed: {error:?}"));
+                }
+            }
+            exporting.set(false);
+        });
+    };
+
     rsx! {
         div {
             style: "display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 36px 20px 20px; color: var(--textDim); max-width: 620px; margin: 0 auto;",
@@ -696,6 +739,35 @@ pub(super) fn AboutSettings() -> Element {
             div {
                 style: "font-family: var(--font-display); font-style: italic; color: var(--textDim); font-size: 13px; margin-top: 14px; max-width: 380px; text-align: center; line-height: 1.6;",
                 "AI-powered software orchestration and development environment. Built with Tauri, Dioxus, and a lot of coffee."
+            }
+        }
+
+        // ── Diagnostics ──
+        div {
+            style: "max-width: 620px; margin: 0 auto; padding: 0 20px 28px;",
+            div {
+                style: "border-top: 1px solid var(--border); padding-top: 24px; margin-top: 8px;",
+                div {
+                    style: "font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--accent); margin-bottom: 6px;",
+                    "Diagnostics"
+                }
+                p {
+                    style: "font-family: var(--font-display); font-style: italic; color: var(--textDim); font-size: 12px; line-height: 1.6; margin-bottom: 14px;",
+                    "Export a bounded, redacted bundle of runtime errors, warnings, performance metrics, and backend logs for troubleshooting. API keys, authorization headers, prompt content, and private home paths are excluded where detected."
+                }
+                button {
+                    class: "btn-secondary btn-sm",
+                    r#type: "button",
+                    disabled: exporting(),
+                    onclick: export_diagnostics,
+                    if exporting() { "Exporting…" } else { "Export diagnostics" }
+                }
+                if !export_status().is_empty() {
+                    div {
+                        style: "margin-top: 10px; color: var(--textDim); font-family: var(--font-mono); font-size: 10px; word-break: break-word;",
+                        "{export_status}"
+                    }
+                }
             }
         }
 
@@ -789,6 +861,32 @@ async fn copy_to_clipboard(text: String) -> Result<(), ()> {
 
 #[component]
 pub(super) fn MobileMirrorSettings() -> Element {
+    /// Translate raw bridge/wasm error strings into user-facing copy. Internal
+    /// plumbing failures (Tauri bridge missing, wasm glue errors, stack-frame
+    /// dumps) collapse to a friendly one-liner; the raw text is preserved for a
+    /// "Technical details" fold so debugging information is never lost.
+    fn relay_error_message(raw: &str) -> (String, Option<String>) {
+        let lower = raw.to_ascii_lowercase();
+        let internal = [
+            "__tauri__",
+            "reflect",
+            "__wbindgen",
+            "dispatch error",
+            "wasm",
+            "js bridge",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
+        if internal {
+            (
+                "The local relay is unavailable from this interface.".to_string(),
+                Some(raw.to_string()),
+            )
+        } else {
+            (raw.to_string(), None)
+        }
+    }
+
     // Live running state from `relay_status` (authoritative — the persisted
     // `relay.enabled` flag could be stale if the relay failed to bind).
     let mut running = use_signal(|| false);
@@ -856,9 +954,24 @@ pub(super) fn MobileMirrorSettings() -> Element {
                     "Bind a local port and accept authenticated connections from devices on your LAN."
                 }
                 if !last_error.read().is_empty() {
-                    span {
-                        style: "font-size: 11px; color: var(--error); margin-top: 2px; word-break: break-word;",
-                        "{last_error.read()}"
+                    {
+                        let (msg, detail) = relay_error_message(&last_error.read());
+                        rsx! {
+                            span {
+                                style: "font-size: 11px; color: var(--error); margin-top: 2px; word-break: break-word;",
+                                "{msg}"
+                            }
+                            if let Some(detail) = detail {
+                                details {
+                                    style: "margin-top: 2px; font-size: 10px; color: var(--textDim);",
+                                    summary { style: "cursor: pointer;", "Technical details" }
+                                    pre {
+                                        style: "white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; font-family: var(--font-mono, monospace);",
+                                        "{detail}"
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

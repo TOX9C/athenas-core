@@ -150,7 +150,7 @@ pub fn SessionList() -> Element {
                 if loading() {
                     div {
                         style: "padding: 16px; text-align: center; color: var(--textDim); font-size: 10px;",
-                        "Loading sessions..."
+                        "Loading sessions…"
                     }
                 } else if session_data.is_empty() {
                     EmptyState {

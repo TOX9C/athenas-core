@@ -83,30 +83,53 @@ pub fn FileTree() -> Element {
 
     let nodes = use_signal(Vec::new);
     let loading = use_signal(|| true);
+    let load_error = use_signal(|| false);
+
+    // Fetch directory contents when active_dir changes. Returns true on success.
+    // Exposed for the retry button and the event-driven refresh path.
+    fn load_dir(
+        dir_path: String,
+        mut nodes: Signal<Vec<FileNode>>,
+        mut loading: Signal<bool>,
+        mut load_error: Signal<bool>,
+    ) {
+        loading.set(true);
+        load_error.set(false);
+        spawn(async move {
+            match tauri_bridge::fs_list_dir(&dir_path).await {
+                Ok(response) => {
+                    nodes.set(parse_dir_entries(&response));
+                    load_error.set(false);
+                }
+                Err(_) => {
+                    // Paths and provider/OS error text may disclose private
+                    // workspace details; keep the UI generic.
+                    nodes.set(Vec::new());
+                    load_error.set(true);
+                }
+            }
+            loading.set(false);
+        });
+    }
 
     // Fetch directory contents when active_dir changes.
     {
         let dir_for_effect = active_dir.clone();
         let mut nodes_for_effect = nodes;
         let mut loading_for_effect = loading;
+        let mut load_error_for_effect = load_error;
         use_effect(move || {
             if let Some(dir_path) = dir_for_effect.clone() {
-                loading_for_effect.set(true);
-                spawn(async move {
-                    match tauri_bridge::fs_list_dir(&dir_path).await {
-                        Ok(response) => {
-                            nodes_for_effect.set(parse_dir_entries(&response));
-                            loading_for_effect.set(false);
-                        }
-                        Err(_) => {
-                            nodes_for_effect.set(Vec::new());
-                            loading_for_effect.set(false);
-                        }
-                    }
-                });
+                load_dir(
+                    dir_path,
+                    nodes_for_effect,
+                    loading_for_effect,
+                    load_error_for_effect,
+                );
             } else {
                 nodes_for_effect.set(Vec::new());
                 loading_for_effect.set(false);
+                load_error_for_effect.set(false);
             }
         });
     }
@@ -133,6 +156,7 @@ pub fn FileTree() -> Element {
             let workspace_for_listen = workspace;
             let mut nodes_for_listen = nodes;
             let mut loading_for_listen = loading;
+            let mut load_error_for_listen = load_error;
 
             if let Ok(u) = tauri_bridge::listen("fs:change:*", move |_payload: String| {
                 // Re-read the current active dir from the live workspace state.
@@ -150,6 +174,7 @@ pub fn FileTree() -> Element {
                     });
                 if let Some(dir) = dir_path {
                     loading_for_listen.set(true);
+                    load_error_for_listen.set(false);
                     // NB: this closure runs from a raw Tauri JS event, *outside*
                     // any Dioxus scope. `dioxus_core::spawn` would panic in
                     // `current_scope_id().unwrap()` and poison the runtime.
@@ -157,13 +182,14 @@ pub fn FileTree() -> Element {
                         match tauri_bridge::fs_list_dir(&dir).await {
                             Ok(response) => {
                                 nodes_for_listen.set(parse_dir_entries(&response));
-                                loading_for_listen.set(false);
+                                load_error_for_listen.set(false);
                             }
                             Err(_) => {
                                 nodes_for_listen.set(Vec::new());
-                                loading_for_listen.set(false);
+                                load_error_for_listen.set(true);
                             }
                         }
+                        loading_for_listen.set(false);
                     });
                 }
             }) {
@@ -235,6 +261,26 @@ pub fn FileTree() -> Element {
                             "{dir}"
                         }
                         "Loading file tree…"
+                    }
+                } else if load_error() {
+                    div {
+                        style: "padding: 8px 16px; color: var(--textDim); font-size: var(--text-sm);",
+                        div {
+                            style: "font-size: var(--text-2xs); margin-bottom: 4px; color: var(--textMuted); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                            "{dir}"
+                        }
+                        div {
+                            style: "color: var(--error); margin-bottom: 6px;",
+                            "Couldn't read this directory."
+                        }
+                        button {
+                            class: "file-tree-retry",
+                            style: "font-size: var(--text-xs); color: var(--accent); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline;",
+                            onclick: move |_| {
+                                load_dir(dir.clone(), nodes, loading, load_error);
+                            },
+                            "Retry"
+                        }
                     }
                 } else if nodes().is_empty() {
                     div {

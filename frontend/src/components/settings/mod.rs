@@ -1,4 +1,6 @@
 pub mod provider_presets;
+pub mod relay_pairing_prompt;
+pub mod relay_pane_share_prompt;
 pub mod settings_modal;
 pub mod shortcuts_ref;
 pub mod theme_picker;

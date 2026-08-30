@@ -38,8 +38,17 @@ fn section_glyph(idx: usize) -> Element {
 SettingsContent – the codex of settings (seven sections + floating index)
 ============================================================= */
 
+#[derive(Props, Clone, PartialEq)]
+pub struct SettingsContentProps {
+    /// In a Modal the dialog chrome already renders its own "Settings"
+    /// header — the interior masthead would duplicate it. The standalone
+    /// panel variant keeps it.
+    #[props(default = true)]
+    pub show_masthead: bool,
+}
+
 #[component]
-pub fn SettingsContent() -> Element {
+pub fn SettingsContent(props: SettingsContentProps) -> Element {
     // 0..=5 — the topmost visible section index. Updated by the scroll
     // listener (Task 7). Initial value 0 (General) so the index shows
     // item one as active before the first scroll event.
@@ -168,7 +177,6 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "I",
             title: "General",
-            epigraph: "Tune the essentials — type, size, appearance.",
             intro: Some("Configure your environment — type, size, pane titles."),
             id: "s-i",
             GeneralSettings {}
@@ -178,7 +186,6 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "II",
             title: "Athena",
-            epigraph: "Configure your model provider.",
             intro: Some("Configure your LLM provider. Works with any OpenAI-compatible API or Anthropic."),
             id: "s-ii",
             AthenaSettings {}
@@ -188,7 +195,6 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "III",
             title: "Agents",
-            epigraph: "Manage the agents that work for you.",
             intro: Some("Manage custom agents with aliases and commands that launch them."),
             id: "s-iii",
             AgentsSettings {}
@@ -198,7 +204,6 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "IV",
             title: "Themes",
-            epigraph: "Choose how the workspace looks.",
             intro: Some("Choose a color scheme for your environment."),
             id: "s-iv",
             ThemePicker {}
@@ -208,7 +213,6 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "V",
             title: "Shortcuts",
-            epigraph: "The keys that move you through the app.",
             intro: Some("Quick reference for the most common keyboard shortcuts."),
             id: "s-v",
             ShortcutsRef {}
@@ -218,7 +222,6 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "VI",
             title: "About",
-            epigraph: "Version, updates, and privacy.",
             intro: Some(""),
             id: "s-vi",
             AboutSettings {}
@@ -228,7 +231,6 @@ pub fn SettingsContent() -> Element {
         CodexSection {
             numeral: "VII",
             title: "Mobile Mirror",
-            epigraph: "Mirror your desktop to a phone on your LAN.",
             intro: Some("Mirror this desktop to your phone over the local network."),
             id: "s-vii",
             MobileMirrorSettings {}
@@ -252,6 +254,7 @@ pub fn SettingsContent() -> Element {
             style: "display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--bgSecondary); color: var(--text);",
 
             /* ── Interior masthead (decorative; modal close button is owned by Modal) ── */
+            if props.show_masthead {
             div {
                 style: "display: flex; align-items: center; gap: 12px; padding: 18px 24px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
                 span {
@@ -267,6 +270,7 @@ pub fn SettingsContent() -> Element {
                     style: "margin-left: auto; color: var(--textDim); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;",
                     "Workspace preferences"
                 }
+            }
             }
 
             /* ── Body: index on the left, scroll tome on the right ── */
@@ -351,7 +355,7 @@ pub fn SettingsModal(props: SettingsModalProps) -> Element {
             title: "Settings",
             on_close: move |_| props.on_close.call(()),
             width: 860,
-            SettingsContent {}
+            SettingsContent { show_masthead: false }
         }
     }
 }
@@ -366,8 +370,6 @@ struct CodexSectionProps {
     numeral: &'static str,
     /// Title text shown next to the numeral in --text + --font-display.
     title: &'static str,
-    /// Short muted line aligned to the right of the header.
-    epigraph: &'static str,
     /// Optional intro line under the rule (--textMuted, --text-base).
     intro: Option<&'static str>,
     /// DOM id used by the floating index to scroll/jump-active. e.g. "s-i".
@@ -385,7 +387,6 @@ fn CodexSection(props: CodexSectionProps) -> Element {
                 class: "codex-section-head",
                 span { class: "codex-section-num", "{props.numeral}." }
                 span { class: "codex-section-title", "{props.title}" }
-                span { class: "codex-section-epi", "{props.epigraph}" }
             }
             if let Some(intro) = props.intro {
                 div { class: "codex-section-intro", "{intro}" }

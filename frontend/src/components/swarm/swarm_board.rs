@@ -1,10 +1,12 @@
 use super::activity_feed::SwarmActivityFeed;
 use super::agent_card::AgentCard;
+use crate::components::shared::confirm_dialog::ConfirmDialog;
 use crate::components::shared::icon::IconSwarm;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::swarm::{parse_swarm_data, use_swarm_store, SwarmOverallStatus};
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
+use crate::utils::agent_display::get_agent_display_name;
 use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,6 +37,7 @@ pub fn SwarmBoard() -> Element {
     let mut task_title = use_signal(String::new);
     let mut task_description = use_signal(String::new);
     let mut message_text = use_signal(String::new);
+    let mut confirm_complete = use_signal(|| false);
     let unlisten: Rc<RefCell<Option<Box<dyn FnOnce()>>>> = use_hook(|| Rc::new(RefCell::new(None)));
     let watched_dir: Rc<RefCell<Option<String>>> = use_hook(|| Rc::new(RefCell::new(None)));
 
@@ -164,12 +167,22 @@ pub fn SwarmBoard() -> Element {
             let activities = swarm
                 .messages
                 .iter()
-                .map(|message| ActivityEntry {
-                    id: message.id.clone(),
-                    agent_name: message.from.clone(),
-                    role: "agent".to_string(),
-                    action: message.content.clone(),
-                    timestamp: message.timestamp,
+                .map(|message| {
+                    // Resolve the sender from the swarm roster so the feed
+                    // shows a human label (and real role color) instead of
+                    // a raw agent uuid.
+                    let from_agent = swarm.agents.iter().find(|a| a.id == message.from);
+                    ActivityEntry {
+                        id: message.id.clone(),
+                        agent_name: from_agent
+                            .map(|a| get_agent_display_name(&a.agent_type.to_string(), &a.id))
+                            .unwrap_or_else(|| message.from.chars().take(12).collect()),
+                        role: from_agent
+                            .map(|a| a.role.to_string())
+                            .unwrap_or_else(|| "agent".to_string()),
+                        action: message.content.clone(),
+                        timestamp: message.timestamp,
+                    }
                 })
                 .collect();
             (
@@ -232,10 +245,7 @@ pub fn SwarmBoard() -> Element {
                         button {
                             class: "btn-ghost",
                             disabled: status == "completed" || status == "cancelled",
-                            onclick: move |_| {
-                                let dir = complete_dir.clone();
-                                spawn(async move { let _ = tauri_bridge::swarm_set_status(&dir, "completed").await; });
-                            },
+                            onclick: move |_| confirm_complete.set(true),
                             "Complete"
                         }
                     }
@@ -320,6 +330,21 @@ pub fn SwarmBoard() -> Element {
                 }
             }
             div { style: "width: 280px; border-left: 1px solid var(--border); background: var(--bgSecondary);", SwarmActivityFeed { activities } }
+
+            // Completing ends the swarm session; confirm it explicitly.
+            if confirm_complete() {
+                ConfirmDialog {
+                    title: "Complete swarm".to_string(),
+                    message: "Mark this swarm as completed? The agents stop and the board ends — start a new swarm in this workspace to continue working.".to_string(),
+                    confirm_label: "Complete".to_string(),
+                    on_cancel: move |_| confirm_complete.set(false),
+                    on_confirm: move |_| {
+                        confirm_complete.set(false);
+                        let dir = complete_dir.clone();
+                        spawn(async move { let _ = tauri_bridge::swarm_set_status(&dir, "completed").await; });
+                    },
+                }
+            }
         }
     }
 }

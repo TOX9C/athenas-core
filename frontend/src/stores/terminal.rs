@@ -5,6 +5,7 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::components::workspace::terminal_input::TerminalInputRouter;
 use crate::tauri_bridge;
 
 #[path = "terminal_colors.rs"]
@@ -312,7 +313,7 @@ impl TerminalStore {
         if let Some(mut inner) = registry.write_session(id) {
             inner.resize(cols, rows);
         }
-        if let Err(e) = tauri_bridge::pty_resize(id, cols, rows).await {
+        if let Err(e) = tauri_bridge::pty_resize(id, cols, rows, None).await {
             web_sys::console::error_1(&format!("pty_resize failed: {:?}", e).into());
         }
     }
@@ -483,6 +484,7 @@ impl TerminalStore {
 #[derive(Clone)]
 pub struct TerminalRegistry {
     sessions: Rc<RefCell<HashMap<String, Signal<TerminalSession>>>>,
+    input_router: TerminalInputRouter,
     // Pane ids marked for permanent close. XtermMount consumes this marker in
     // its drop hook, after unlisten/snapshot/dispose, so registry removal never
     // races component teardown or a temporary remount.
@@ -500,6 +502,7 @@ impl TerminalRegistry {
     pub fn new() -> Self {
         Self {
             sessions: Rc::new(RefCell::new(HashMap::new())),
+            input_router: TerminalInputRouter::new(),
             closing: Rc::new(RefCell::new(HashSet::new())),
         }
     }
@@ -533,6 +536,11 @@ impl TerminalRegistry {
             Signal::new_in_scope(TerminalSession::new(id_str, cols, rows), ScopeId::APP),
         );
         true
+    }
+
+    /// Shared serialized input router used by xterm and file-drop input.
+    pub fn input_router(&self) -> TerminalInputRouter {
+        self.input_router.clone()
     }
 
     /// Returns the reactive per-session signal, or `None` if no session for `id`.

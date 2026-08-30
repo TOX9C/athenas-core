@@ -25,6 +25,9 @@ pub fn WorkspaceTabs(props: WorkspaceTabsProps) -> Element {
         .collect();
 
     let mut items: Vec<Element> = Vec::with_capacity(space_handles.len());
+    // The titlebar "+" stays hidden while there are no workspaces — the
+    // welcome screen and sidebar already carry the creation affordance.
+    let has_spaces = !space_handles.is_empty();
     for space_rc in space_handles {
         let space_id_on_select = space_rc.id.clone();
         let space_id_on_close = space_rc.id.clone();
@@ -54,13 +57,15 @@ pub fn WorkspaceTabs(props: WorkspaceTabsProps) -> Element {
             {items.into_iter()}
 
             // Add space button
-            button {
-                class: "icon-btn",
-                style: "margin-left: 4px;",
-                title: "New Workspace (Cmd+T)",
-                "aria-label": "New Workspace",
-                onclick: move |_| props.on_new_space.call(()),
-                IconPlus { size: Some(15), color: Some("currentColor".to_string()) }
+            if has_spaces {
+                button {
+                    class: "icon-btn",
+                    style: "margin-left: 4px;",
+                    title: "New Workspace (Cmd+T)",
+                    "aria-label": "New Workspace",
+                    onclick: move |_| props.on_new_space.call(()),
+                    IconPlus { size: Some(15), color: Some("currentColor".to_string()) }
+                }
             }
         }
     }

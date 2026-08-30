@@ -3,30 +3,23 @@ use dioxus::prelude::*;
 
 #[component]
 pub fn ShortcutsRef() -> Element {
-    let groups: [(&str, &[(&str, &str)]); 3] = [
+    let groups: [(&str, &[(&str, &str)]); 2] = [
         (
             "Workspace",
             &[
                 ("\u{2318}T", "New terminal"),
-                ("\u{2318}J", "Toggle sidebar"),
+                ("\u{2318}J", "Toggle right sidebar"),
+                ("\u{2318}B", "Toggle sidebar"),
                 ("\u{2318}1-9", "Switch panel"),
-                ("\u{2318}= / \u{2318}+", "Increase shared font size"),
+                ("\u{2318}=", "Increase shared font size"),
                 ("\u{2318}-", "Decrease shared font size"),
-            ],
-        ),
-        (
-            "Command",
-            &[
-                ("\u{2318}K", "Command palette"),
-                ("\u{2318}\u{21e7}P", "Command palette (alt)"),
-                ("\u{2318}\u{21e7}S", "Settings"),
             ],
         ),
         (
             "General",
             &[
-                ("Escape", "Close modal/palette"),
-                ("\u{2318}\u{21e7}R", "Refresh"),
+                ("Escape", "Close modal"),
+                ("\u{2318}\u{21e7}R", "Reset workspace view"),
             ],
         ),
     ];

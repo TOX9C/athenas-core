@@ -310,11 +310,21 @@ pub fn AgentInspector() -> Element {
                                             "error" | "task_error" => "var(--error)",
                                             "warning" => "var(--warning)",
                                             "success" | "task_complete" => "var(--success)",
+                                            "needs_input" => "var(--warning)",
                                             _ => "var(--accentTeal)",
                                         };
                                         let n_id = n.id.clone();
                                         let n_title = n.title.clone();
-                                        let n_type = n.notif_type.clone();
+                                        let n_type: String = match n.notif_type.as_str() {
+                                            "info" => "Info".to_string(),
+                                            "warning" => "Warning".to_string(),
+                                            "error" => "Error".to_string(),
+                                            "success" => "Success".to_string(),
+                                            "needs_input" => "Needs input".to_string(),
+                                            "task_complete" => "Task done".to_string(),
+                                            "task_error" => "Task error".to_string(),
+                                            other => other.replace('_', " ").to_string(),
+                                        };
                                         let n_msg = n.message.clone();
                                         rsx! {
                                             div {

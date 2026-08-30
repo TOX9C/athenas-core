@@ -150,11 +150,80 @@ pub(crate) fn restore_term_from_session(term_val: &JsValue, session: &TerminalSe
     write_str_to_term(term_val, &snapshot);
 }
 
+/// Viewport intent captured before a geometry change. `at_bottom` means the
+/// user was following the newest output; otherwise we preserve the distance
+/// from the bottom instead of unexpectedly forcing the terminal to the prompt.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ViewportState {
+    pub at_bottom: bool,
+    pub distance_from_bottom: i32,
+}
+
+fn read_number(value: &JsValue, property: &str) -> Option<i32> {
+    js_sys::Reflect::get(value, &JsValue::from_str(property))
+        .ok()
+        .and_then(|value| value.as_f64())
+        .map(|value| value.round() as i32)
+}
+
+fn active_buffer(term_val: &JsValue) -> Option<JsValue> {
+    let buffer = js_sys::Reflect::get(term_val, &JsValue::from_str("buffer")).ok()?;
+    js_sys::Reflect::get(&buffer, &JsValue::from_str("active")).ok()
+}
+
+/// Capture xterm's visible position before FitAddon changes the row count.
+///
+/// xterm.js exposes `buffer.active.viewportY` and `baseY` specifically for
+/// inspecting the visible viewport. Keeping this intent separate from the
+/// serialized terminal contents lets normal-buffer scrollback and alternate
+/// screen applications follow their own redraw semantics.
+pub(crate) fn capture_viewport(term_val: &JsValue) -> ViewportState {
+    let Some(active) = active_buffer(term_val) else {
+        return ViewportState {
+            at_bottom: true,
+            distance_from_bottom: 0,
+        };
+    };
+    let viewport_y = read_number(&active, "viewportY").unwrap_or(0).max(0);
+    let base_y = read_number(&active, "baseY").unwrap_or(viewport_y).max(0);
+    ViewportState {
+        at_bottom: viewport_y >= base_y,
+        distance_from_bottom: base_y.saturating_sub(viewport_y),
+    }
+}
+
+/// Restore the visible position after xterm has applied a new geometry.
+pub(crate) fn restore_viewport(term_val: &JsValue, state: ViewportState) {
+    let method = if state.at_bottom {
+        "scrollToBottom"
+    } else {
+        "scrollToLine"
+    };
+    let Ok(method_val) = js_sys::Reflect::get(term_val, &JsValue::from_str(method)) else {
+        return;
+    };
+    let Ok(method_fn) = method_val.dyn_into::<js_sys::Function>() else {
+        return;
+    };
+
+    if state.at_bottom {
+        let _ = method_fn.call0(term_val);
+        return;
+    }
+
+    let target_line = active_buffer(term_val)
+        .and_then(|active| read_number(&active, "baseY"))
+        .unwrap_or(0)
+        .saturating_sub(state.distance_from_bottom)
+        .max(0);
+    let _ = method_fn.call1(term_val, &JsValue::from_f64(target_line as f64));
+}
+
 // FitAddon recomputes xterm's rows/columns from the container and the
 // renderer's measured cell dimensions. Repainting in the same callback is
 // unsafe in WebKit: CanvasAddon may still be applying the new canvas size.
 // Keep this function focused on fitting; `schedule_fit` performs the repaint
-// on the following animation frame.
+// and viewport restoration on the following animation frame.
 pub(crate) fn call_fit(fit_instance: &JsValue, container: &web_sys::Element, _term_val: &JsValue) {
     let rect = container.get_bounding_client_rect();
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -176,14 +245,16 @@ pub(crate) fn schedule_fit(
     term_val: &JsValue,
     pending: &Rc<RefCell<bool>>,
     active: &Rc<RefCell<bool>>,
+    viewport: &Rc<RefCell<Option<ViewportState>>>,
 ) {
     // ResizeObserver, font updates, visibility restoration, and pane swaps can
     // all request a fit in the same frame. Keep the whole fit/repaint pair in
     // flight so xterm does not resize/repaint repeatedly while WebKit is still
-    // settling flex layout.
+    // settling flex layout. Capture only the first request in a coalesced burst.
     if !*active.borrow() || *pending.borrow() {
         return;
     }
+    *viewport.borrow_mut() = Some(capture_viewport(term_val));
     *pending.borrow_mut() = true;
 
     let fit_for_raf = fit_instance.clone();
@@ -192,26 +263,35 @@ pub(crate) fn schedule_fit(
     let term_for_refresh = term_val.clone();
     let pending_for_raf = pending.clone();
     let active_for_raf = active.clone();
+    let viewport_for_raf = viewport.clone();
     let window_for_refresh = window.clone();
     // The first RAF commits the new xterm grid dimensions. The second RAF
-    // lets CanvasAddon/DOM rendering commit its backing-store dimensions before
-    // repainting; this avoids glyphs from the old cell geometry being drawn over
-    // the new rows after a font change or pane relayout.
+    // lets xterm commit its resized buffer before repainting and restoring the
+    // viewport intent. This also gives full-screen applications one frame to
+    // process the PTY's SIGWINCH redraw.
     let raf_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
         if !*active_for_raf.borrow() {
             *pending_for_raf.borrow_mut() = false;
+            *viewport_for_raf.borrow_mut() = None;
             return;
         }
         call_fit(&fit_for_raf, &container_for_raf, &term_for_fit);
 
         let pending_for_refresh = pending_for_raf.clone();
         let active_for_refresh = active_for_raf.clone();
+        let viewport_for_refresh = viewport_for_raf.clone();
         let pending_for_refresh_fallback = pending_for_refresh.clone();
         let active_for_refresh_fallback = active_for_refresh.clone();
+        let viewport_for_refresh_fallback = viewport_for_refresh.clone();
         let term_for_refresh_fallback = term_for_refresh.clone();
         let refresh_closure = wasm_bindgen::closure::Closure::once_into_js(move || {
             if *active_for_refresh.borrow() {
                 refresh_full(&term_for_refresh);
+                if let Some(state) = viewport_for_refresh.borrow_mut().take() {
+                    restore_viewport(&term_for_refresh, state);
+                }
+            } else {
+                *viewport_for_refresh.borrow_mut() = None;
             }
             *pending_for_refresh.borrow_mut() = false;
         });
@@ -221,6 +301,11 @@ pub(crate) fn schedule_fit(
         {
             if *active_for_refresh_fallback.borrow() {
                 refresh_full(&term_for_refresh_fallback);
+                if let Some(state) = viewport_for_refresh_fallback.borrow_mut().take() {
+                    restore_viewport(&term_for_refresh_fallback, state);
+                }
+            } else {
+                *viewport_for_refresh_fallback.borrow_mut() = None;
             }
             *pending_for_refresh_fallback.borrow_mut() = false;
         }
@@ -231,6 +316,9 @@ pub(crate) fn schedule_fit(
     {
         call_fit(fit_instance, container, term_val);
         refresh_full(term_val);
+        if let Some(state) = viewport.borrow_mut().take() {
+            restore_viewport(term_val, state);
+        }
         *pending.borrow_mut() = false;
     }
 }

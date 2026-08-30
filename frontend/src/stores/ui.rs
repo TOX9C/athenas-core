@@ -15,7 +15,6 @@ pub enum Panel {
     Swarm,
     Plugin,
     Notifications,
-    Agents,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -35,7 +34,6 @@ pub struct UIState {
     pub sidebar_width: f64,
     pub theme: UITheme,
     pub is_mobile: bool,
-    pub command_palette_open: bool,
     pub show_new_space_modal: bool,
     pub show_swarm_modal: bool,
     pub show_settings_modal: bool,
@@ -68,7 +66,6 @@ impl Default for UIState {
             sidebar_width: 240.0,
             theme: UITheme::default(),
             is_mobile: false,
-            command_palette_open: false,
             show_new_space_modal: false,
             show_swarm_modal: false,
             show_settings_modal: false,

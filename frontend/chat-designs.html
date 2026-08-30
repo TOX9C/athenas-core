@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Athena Chat - Design Variations</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0b0b0c;
+    color: #e6e6e6;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 40px 20px;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 24px;
+    font-weight: 700;
+    color: #c9a24b;
+    margin-bottom: 8px;
+  }
+
+  .subtitle {
+    text-align: center;
+    color: #8a8a90;
+    font-size: 13px;
+    margin-bottom: 40px;
+  }
+
+  .design-card {
+    max-width: 680px;
+    margin: 0 auto 48px;
+    border: 1px solid #1f2024;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #111114;
+  }
+
+  .design-header {
+    padding: 16px 20px;
+    background: #16171a;
+    border-bottom: 1px solid #1f2024;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .design-header .number {
+    background: #c9a24b;
+    color: #0b0b0c;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+
+  .design-header .label {
+    font-weight: 600;
+    font-size: 15px;
+    color: #e6e6e6;
+  }
+
+  .design-header .desc {
+    font-size: 12px;
+    color: #8a8a90;
+    margin-left: auto;
+  }
+
+  .chat-area {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .msg-user .text, .msg-assistant .text {
+    line-height: 1.6;
+    word-break: break-word;
+  }
+
+  .composer-bar {
+    padding: 12px 20px;
+    border-top: 1px solid #1f2024;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .composer-bar .input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #e6e6e6;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .composer-bar .input::placeholder {
+    color: #5a5a60;
+  }
+  .composer-bar .btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 1px solid #1f2024;
+    background: transparent;
+    color: #5a5a60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .composer-bar .btn.active {
+    background: #c9a24b;
+    border-color: transparent;
+    color: #0b0b0c;
+  }
+
+  .note {
+    max-width: 680px;
+    margin: 0 auto 24px;
+    padding: 12px 16px;
+    background: rgba(201, 162, 75, 0.08);
+    border: 1px solid rgba(201, 162, 75, 0.2);
+    border-radius: 8px;
+    color: #c9a24b;
+    font-size: 13px;
+    text-align: center;
+  }
+
+  /* ── VARIATION 3A: Accent Bar - Minimal ── */
+  .v3a .msg-user {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .v3a .msg-user .text {
+    max-width: 75%;
+    text-align: right;
+    color: #e6e6e6;
+    padding-right: 12px;
+    border-right: 1.5px solid #c9a24b;
+  }
+  .v3a .msg-assistant {
+    display: flex;
+    justify-content: flex-start;
+  }
+  .v3a .msg-assistant .text {
+    max-width: 75%;
+    color: #c0c0c4;
+    padding-left: 12px;
+    border-left: 1.5px solid #2a2b30;
+  }
+
+  /* ── VARIATION 3B: Accent Bar + Faint Background ── */
+  .v3b .msg-user {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .v3b .msg-user .text {
+    max-width: 75%;
+    text-align: right;
+    color: #e6e6e6;
+    padding: 8px 12px;
+    border-right: 2px solid #c9a24b;
+    background: rgba(201, 162, 75, 0.04);
+    border-radius: 4px 0 0 4px;
+  }
+  .v3b .msg-assistant {
+    display: flex;
+    justify-content: flex-start;
+  }
+  .v3b .msg-assistant .text {
+    max-width: 75%;
+    color: #c0c0c4;
+    padding-left: 12px;
+    border-left: 2px solid #2a2b30;
+  }
+
+  /* ── VARIATION 6A: Thin Dividers + Faint Tint ── */
+  .v6a .msg-user {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 12px;
+    border-top: 1px solid #1f2024;
+  }
+  .v6a .msg-user .text {
+    max-width: 75%;
+    text-align: right;
+    color: #e6e6e6;
+    padding: 6px 10px;
+    background: rgba(201, 162, 75, 0.05);
+    border-radius: 6px;
+  }
+  .v6a .msg-assistant {
+    display: flex;
+    justify-content: flex-start;
+    padding-top: 12px;
+    border-top: 1px solid #1f2024;
+  }
+  .v6a .msg-assistant .text {
+    max-width: 75%;
+    color: #c0c0c4;
+  }
+
+  /* ── VARIATION 6B: Thin Dividers + Tiny Avatars ── */
+  .v6b .msg-user {
+    display: flex;
+    justify-content: flex-end;
+    align-items: flex-start;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid #1f2024;
+  }
+  .v6b .msg-user .text {
+    max-width: 70%;
+    text-align: right;
+    color: #e6e6e6;
+  }
+  .v6b .msg-user .avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #1c1d21;
+    border: 1px solid #2a2b30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 600;
+    color: #8a8a90;
+    flex-shrink: 0;
+  }
+  .v6b .msg-assistant {
+    display: flex;
+    justify-content: flex-start;
+    align-items: flex-start;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid #1f2024;
+  }
+  .v6b .msg-assistant .text {
+    max-width: 70%;
+    color: #c0c0c4;
+  }
+  .v6b .msg-assistant .avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(201, 162, 75, 0.12);
+    border: 1px solid rgba(201, 162, 75, 0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: #c9a24b;
+    flex-shrink: 0;
+  }
+
+  /* ── VARIATION HYBRID: Accent Bar + Dividers ── */
+  .vhybrid .msg-user {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 12px;
+    border-top: 1px solid #1f2024;
+  }
+  .vhybrid .msg-user .text {
+    max-width: 75%;
+    text-align: right;
+    color: #e6e6e6;
+    padding-right: 12px;
+    border-right: 2px solid #c9a24b;
+  }
+  .vhybrid .msg-assistant {
+    display: flex;
+    justify-content: flex-start;
+    padding-top: 12px;
+    border-top: 1px solid #1f2024;
+  }
+  .vhybrid .msg-assistant .text {
+    max-width: 75%;
+    color: #c0c0c4;
+    padding-left: 12px;
+    border-left: 2px solid #2a2b30;
+  }
+</style>
+</head>
+<body>
+
+<h1>Athena Chat - Design Iterations</h1>
+<p class="subtitle">Based on styles 3 (Accent Bar) and 6 (Thin Dividers). Pick your favorite.</p>
+
+<div class="note">This is a standalone preview file. It does not edit the app.</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- VARIATION 3A: Accent Bar - Minimal -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="design-card">
+  <div class="design-header">
+    <div class="number">1</div>
+    <div class="label">Accent Bar - Minimal</div>
+    <div class="desc">Thin gold bar for user, neutral bar for assistant</div>
+  </div>
+  <div class="chat-area v3a">
+    <div class="msg-user">
+      <div class="text">What can I help you with?</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="text">I'm Athena, the orchestrator for your developer desktop environment. I coordinate background agents, terminals, execution plans, and your Kanban board on your behalf.</div>
+    </div>
+    <div class="msg-user">
+      <div class="text">What model are you?</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="text">I'm Claude, built by Anthropic. What can I help you with?</div>
+    </div>
+  </div>
+  <div class="composer-bar">
+    <input class="input" placeholder="Type a message..." disabled>
+    <div class="btn">↑</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- VARIATION 3B: Accent Bar + Faint Background -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="design-card">
+  <div class="design-header">
+    <div class="number">2</div>
+    <div class="label">Accent Bar + Faint Tint</div>
+    <div class="desc">Gold bar + subtle background for user</div>
+  </div>
+  <div class="chat-area v3b">
+    <div class="msg-user">
+      <div class="text">What can I help you with?</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="text">I'm Athena, the orchestrator for your developer desktop environment. I coordinate background agents, terminals, execution plans, and your Kanban board on your behalf.</div>
+    </div>
+    <div class="msg-user">
+      <div class="text">What model are you?</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="text">I'm Claude, built by Anthropic. What can I help you with?</div>
+    </div>
+  </div>
+  <div class="composer-bar">
+    <input class="input" placeholder="Type a message..." disabled>
+    <div class="btn">↑</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- VARIATION 6A: Thin Dividers + Faint Tint -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="design-card">
+  <div class="design-header">
+    <div class="number">3</div>
+    <div class="label">Thin Dividers + Faint Tint</div>
+    <div class="desc">Divider between turns, user gets a faint gold tint</div>
+  </div>
+  <div class="chat-area v6a">
+    <div class="msg-user">
+      <div class="text">What can I help you with?</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="text">I'm Athena, the orchestrator for your developer desktop environment. I coordinate background agents, terminals, execution plans, and your Kanban board on your behalf.</div>
+    </div>
+    <div class="msg-user">
+      <div class="text">What model are you?</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="text">I'm Claude, built by Anthropic. What can I help you with?</div>
+    </div>
+  </div>
+  <div class="composer-bar">
+    <input class="input" placeholder="Type a message..." disabled>
+    <div class="btn">↑</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- VARIATION 6B: Thin Dividers + Tiny Avatars -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="design-card">
+  <div class="design-header">
+    <div class="number">4</div>
+    <div class="label">Thin Dividers + Tiny Avatars</div>
+    <div class="desc">Divider between turns, small avatar for each side</div>
+  </div>
+  <div class="chat-area v6b">
+    <div class="msg-user">
+      <div class="text">What can I help you with?</div>
+      <div class="avatar">U</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="avatar">A</div>
+      <div class="text">I'm Athena, the orchestrator for your developer desktop environment. I coordinate background agents, terminals, execution plans, and your Kanban board on your behalf.</div>
+    </div>
+    <div class="msg-user">
+      <div class="text">What model are you?</div>
+      <div class="avatar">U</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="avatar">A</div>
+      <div class="text">I'm Claude, built by Anthropic. What can I help you with?</div>
+    </div>
+  </div>
+  <div class="composer-bar">
+    <input class="input" placeholder="Type a message..." disabled>
+    <div class="btn">↑</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- VARIATION HYBRID: Accent Bar + Dividers -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="design-card">
+  <div class="design-header">
+    <div class="number">5</div>
+    <div class="label">Hybrid: Accent Bar + Dividers</div>
+    <div class="desc">Gold bar for user + divider between every turn</div>
+  </div>
+  <div class="chat-area vhybrid">
+    <div class="msg-user">
+      <div class="text">What can I help you with?</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="text">I'm Athena, the orchestrator for your developer desktop environment. I coordinate background agents, terminals, execution plans, and your Kanban board on your behalf.</div>
+    </div>
+    <div class="msg-user">
+      <div class="text">What model are you?</div>
+    </div>
+    <div class="msg-assistant">
+      <div class="text">I'm Claude, built by Anthropic. What can I help you with?</div>
+    </div>
+  </div>
+  <div class="composer-bar">
+    <input class="input" placeholder="Type a message..." disabled>
+    <div class="btn">↑</div>
+  </div>
+</div>
+
+</body>
+</html>

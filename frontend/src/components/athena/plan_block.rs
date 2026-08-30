@@ -1,6 +1,13 @@
-use crate::components::shared::icon::{IconCheck, IconChevronDown, IconChevronRight, IconClose};
-use crate::stores::athena::{PlanBlock, PlanStepStatus};
+use crate::components::shared::icon::{
+    IconCheck, IconChevronDown, IconChevronRight, IconClose, IconKanban,
+};
+use crate::stores::athena::{use_athena_store, PlanBlock, PlanStepStatus};
+use crate::stores::task::use_task_store;
+use crate::tauri_bridge;
 use dioxus::prelude::*;
+use std::collections::HashSet;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct PlanBlockViewProps {
@@ -11,6 +18,62 @@ pub struct PlanBlockViewProps {
 pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
     let mut collapsed = use_signal(|| false);
     let plan = &props.plan;
+
+    // Kanban ↔ plan deep link: when the user clicks "View in plan" on a kanban
+    // card, the store carries the target step id; scroll to and pulse that step.
+    let athena_state = use_athena_store();
+    let task_store = use_task_store();
+    let highlight_step = athena_state.read().plan_highlight_step.clone();
+    let plan_has_step = highlight_step
+        .as_ref()
+        .is_some_and(|h| plan.steps.iter().any(|s| &s.id == h));
+
+    // Scroll the highlighted step into view once the overlay mounts, then
+    // clear the highlight so a later click on the same step re-triggers.
+    use_effect(move || {
+        if !plan_has_step {
+            return;
+        }
+        let Some(step_id) = highlight_step.clone() else {
+            return;
+        };
+        let mut athena_state = athena_state;
+        spawn(async move {
+            // Let the panel overlay mount / settle before scrolling.
+            gloo::timers::future::TimeoutFuture::new(120).await;
+            if let (Some(window), Some(doc)) = (
+                web_sys::window(),
+                web_sys::window().and_then(|w| w.document()),
+            ) {
+                if let Some(el) = doc.get_element_by_id(&format!("plan-step-{step_id}")) {
+                    if let Ok(f) = js_sys::Reflect::get(&el, &JsValue::from_str("scrollIntoView"))
+                        .and_then(|f| f.dyn_into::<js_sys::Function>())
+                    {
+                        let opts = js_sys::Object::new();
+                        let _ = js_sys::Reflect::set(
+                            &opts,
+                            &JsValue::from_str("behavior"),
+                            &JsValue::from_str("smooth"),
+                        );
+                        let _ = js_sys::Reflect::set(
+                            &opts,
+                            &JsValue::from_str("block"),
+                            &JsValue::from_str("center"),
+                        );
+                        let _ = f.call1(&el, &opts);
+                    }
+                    let _ = window;
+                }
+            }
+            // Clear the highlight after the pulse animation completes so the
+            // next deep link to the same step re-triggers.
+            gloo::timers::future::TimeoutFuture::new(2800).await;
+            athena_state.write().set_plan_highlight(None);
+        });
+    });
+
+    // Steps that have been sent to the kanban board this session.
+    let sent_steps = use_signal(HashSet::<String>::new);
 
     let completed_count = plan
         .steps
@@ -58,7 +121,7 @@ pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
 
                 span {
                     class: "pill",
-                    style: "background: {status_color}22; color: {status_color}; border-color: {status_color}44;",
+                    style: "background: color-mix(in srgb, {status_color} 13%, transparent); color: {status_color};",
                     "{completed_count}/{total_count}"
                 }
             }
@@ -79,10 +142,24 @@ pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
                         {
                             let step_status = step.status.clone();
                             let show_agent_type = !step.agent_type.is_empty();
+                            let step_id = step.id.clone();
+                            let step_title = step.title.clone();
+                            let step_desc = step.description.clone();
+                            let is_highlighted = athena_state
+                                .read()
+                                .plan_highlight_step
+                                .as_deref()
+                                == Some(step.id.as_str());
+                            let is_sent = sent_steps.read().contains(&step.id);
                             rsx! {
                                 div {
                                     key: "{step.id}",
-                                    style: "display: flex; align-items: center; gap: 8px; padding: 4px 0;",
+                                    id: "plan-step-{step.id}",
+                                    style: if is_highlighted {
+                                        "display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: var(--radius-sm); background: var(--accentSubtle); box-shadow: inset 0 0 0 1px var(--accent); animation: athena-plan-highlight 2.4s ease-in-out;"
+                                    } else {
+                                        "display: flex; align-items: center; gap: 8px; padding: 4px 0;"
+                                    },
 
                                     span {
                                         style: "flex-shrink: 0; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center;",
@@ -110,6 +187,58 @@ pub fn PlanBlockView(props: PlanBlockViewProps) -> Element {
                                             class: "badge",
                                             style: "color: var(--textMuted);",
                                             "{step.agent_type}"
+                                        }
+                                    }
+                                    if is_sent {
+                                        span {
+                                            class: "badge",
+                                            style: "color: var(--success);",
+                                            "In Kanban"
+                                        }
+                                    } else {
+                                        button {
+                                            class: "icon-btn",
+                                            style: "opacity: 0.55;",
+                                            title: "Send this step to the kanban board",
+                                            "aria-label": "Send step to kanban",
+                                            onclick: {
+                                                let sid = step_id.clone();
+                                                let stitle = step_title.clone();
+                                                let sdesc = step_desc.clone();
+                                                let mut sent = sent_steps;
+                                                let mut task_store = task_store;
+                                                move |_| {
+                                                    let sid = sid.clone();
+                                                    let stitle = stitle.clone();
+                                                    let sdesc = sdesc.clone();
+                                                    spawn(async move {
+                                                        let desc = format!("Plan step: {sdesc}");
+                                                        match tauri_bridge::kanban_create_task(
+                                                            &stitle,
+                                                            Some(&desc),
+                                                            Some(&sid),
+                                                        )
+                                                        .await
+                                                        {
+                                                            Ok(json) => {
+                                                                sent.write().insert(sid.clone());
+                                                                // Keep a mounted board in sync immediately.
+                                                                if let Ok(tasks) = crate::stores::task::tasks_from_backend_json(&format!("[{json}]")) {
+                                                                    if let Some(task) = tasks.into_iter().next() {
+                                                                        task_store.write().add_task(task);
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(error) => {
+                                                                web_sys::console::error_1(
+                                                                    &format!("[plan] kanban create failed: {error:?}").into(),
+                                                                );
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            },
+                                            IconKanban { size: Some(13), color: Some("currentColor".to_string()) }
                                         }
                                     }
                                 }

@@ -1,7 +1,4 @@
 use crate::components::shared::toast::{use_toast_store, Toast, ToastType};
-use crate::stores::notification::{
-    add_notification, use_notification_store, NotificationRecord, NotificationType,
-};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 use std::cell::RefCell;
@@ -110,7 +107,6 @@ enum PluginBusEvent {
 pub fn PluginEventBus() -> Element {
     let plugin_store = use_plugin_bus_store();
     let toast_store = use_toast_store();
-    let notif_store = use_notification_store();
     let mut mounted = use_signal(|| false);
 
     let unlistens: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
@@ -122,7 +118,6 @@ pub fn PluginEventBus() -> Element {
         move |mut rx: UnboundedReceiver<PluginBusEvent>| async move {
             let mut plugin_store = plugin_store;
             let mut toast_store = toast_store;
-            let mut notif_store = notif_store;
             while let Ok(event) = rx.recv().await {
                 match event {
                     PluginBusEvent::RegistryUpdated(entries) => {
@@ -148,24 +143,6 @@ pub fn PluginEventBus() -> Element {
                             duration_ms: 3000,
                         };
                         toast_store.write().push(toast);
-
-                        let notif = NotificationRecord {
-                            id: format!("notif-plugin-{}", chrono::Utc::now().timestamp_millis()),
-                            r#type: NotificationType::Success,
-                            title: "Plugin Connected".to_string(),
-                            message: format!("{} is now connected", name),
-                            source: "plugin".to_string(),
-                            agent_id: None,
-                            data: None,
-                            metadata: None,
-                            actions: None,
-                            request_id: None,
-                            dismissed_at: None,
-                            read: false,
-                            timestamp: chrono::Utc::now().timestamp_millis(),
-                            count: 1,
-                        };
-                        add_notification(&mut notif_store, notif);
                     }
                     PluginBusEvent::Enabled { id } => {
                         plugin_store.write().set_plugin_enabled(&id, true);

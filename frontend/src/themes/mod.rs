@@ -159,7 +159,7 @@ pub fn apply_font_to_dom(font_family: &str, font_size: u8) {
     set_css_property(
         "--fontFamily",
         &format!(
-            "'{}', 'Monaspace Neon', ui-monospace, monospace",
+            "'{}', 'Monaspace Neon', 'JetBrainsMono Nerd Font', ui-monospace, monospace",
             font_family
         ),
     );

@@ -93,7 +93,7 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
                     }
                 } else {
                     span {
-                        style: "font-size: 8px; font-weight: 700; letter-spacing: 0.04em; color: {icon_color}; background: {icon_color}1f; padding: 2px 3.5px; border-radius: 4px; line-height: 1; font-family: var(--fontFamily);",
+                        style: "font-size: 8px; font-weight: 700; letter-spacing: 0.04em; color: {icon_color}; background: color-mix(in srgb, {icon_color} 12%, transparent); padding: 2px 3.5px; border-radius: 4px; line-height: 1; font-family: var(--fontFamily);",
                         "{icon_text}"
                     }
                 }

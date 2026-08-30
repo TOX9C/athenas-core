@@ -10,6 +10,23 @@ pub async fn invoke<T>(command: &str, args: &str) -> TauriResult<T>
 where
     T: JsValueCast,
 {
+    // Perf accounting happens once in `invoke_js_value`; recording here too
+    // would double-count every JSON invoke.
+    let args_value: JsValue = serde_json::from_str(args)
+        .map(|v: serde_json::Value| {
+            js_sys::JSON::parse(&v.to_string()).unwrap_or(JsValue::UNDEFINED)
+        })
+        .unwrap_or(JsValue::UNDEFINED);
+
+    invoke_js_value(command, args_value).await
+}
+
+/// Invoke with live-built JS args. Required for arguments that cannot cross
+/// JSON (e.g. a `Channel` instance for raw binary PTY delivery).
+pub async fn invoke_js_value<T>(command: &str, args_value: JsValue) -> TauriResult<T>
+where
+    T: JsValueCast,
+{
     crate::utils::perf_metrics::record_ipc(command);
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("No window"))?;
     let tauri = js_sys::Reflect::get(&window, &JsValue::from_str("__TAURI__"))
@@ -21,12 +38,6 @@ where
     let invoke_fn = invoke_fn
         .dyn_into::<js_sys::Function>()
         .map_err(|e| JsValue::from(format!("__TAURI__.core.invoke not found: {:?}", e)))?;
-
-    let args_value: JsValue = serde_json::from_str(args)
-        .map(|v: serde_json::Value| {
-            js_sys::JSON::parse(&v.to_string()).unwrap_or(JsValue::UNDEFINED)
-        })
-        .unwrap_or(JsValue::UNDEFINED);
 
     let promise = invoke_fn
         .call2(&core, &JsValue::from_str(command), &args_value)
@@ -181,25 +192,35 @@ pub async fn store_get(key: &str) -> TauriResult<String> {
 }
 
 pub async fn store_set(key: &str, value: &str) -> TauriResult<()> {
-    web_sys::console::log_1(
-        &format!(
-            "[tauri_bridge] store_set key={:?} value_len={}",
-            key,
-            value.len()
-        )
-        .into(),
-    );
     let result = invoke(
         "store_set",
         &serde_json::json!({ "key": key, "value": value }).to_string(),
     )
     .await;
-    if result.is_ok() {
-        web_sys::console::log_1(&format!("[tauri_bridge] store_set SUCCESS key={:?}", key).into());
-    } else {
-        web_sys::console::error_1(&format!("[tauri_bridge] store_set FAILED key={:?}", key).into());
+    if let Err(error) = &result {
+        web_sys::console::error_1(
+            &format!("[tauri_bridge] store_set FAILED key={key:?}: {error:?}").into(),
+        );
     }
     result
+}
+
+/// Export a redacted diagnostic bundle assembled by the native backend.
+/// `frontend_logs` and `frontend_metrics` are supplied by the bounded browser
+/// diagnostics ring in `frontend/index.html`.
+pub async fn diagnostics_export(
+    frontend_logs: &str,
+    frontend_metrics: &str,
+) -> TauriResult<String> {
+    invoke(
+        "diagnostics_export",
+        &serde_json::json!({
+            "frontendLogs": frontend_logs,
+            "frontendMetrics": frontend_metrics,
+        })
+        .to_string(),
+    )
+    .await
 }
 
 /// Delete a key from the persistent key-value store.
@@ -262,7 +283,7 @@ pub async fn output_buffer_append(
     invoke(
         "output_buffer_append",
         // Tauri 2 converts command args to camelCase on the wire (see
-        // CLAUDE.md parameter-naming note) — `paneId`/`agentType`, not snake.
+        // Tauri command parameter naming — `paneId`/`agentType`, not snake.
         &serde_json::json!({ "paneId": pane_id, "data": data, "agentType": agent_type })
             .to_string(),
     )
@@ -285,12 +306,30 @@ pub async fn output_buffer_list() -> TauriResult<String> {
     invoke("output_buffer_list", "{}").await
 }
 
+fn output_buffer_clear_args(pane_id: &str) -> String {
+    // The relay dispatcher consumes this command's raw JSON and expects the
+    // Rust parameter name; unlike Tauri's desktop invoke path it does not
+    // perform camelCase conversion.
+    serde_json::json!({ "pane_id": pane_id }).to_string()
+}
+
 pub async fn output_buffer_clear(pane_id: &str) -> TauriResult<String> {
-    invoke(
-        "output_buffer_clear",
-        &serde_json::json!({ "paneId": pane_id }).to_string(),
-    )
-    .await
+    invoke("output_buffer_clear", &output_buffer_clear_args(pane_id)).await
+}
+
+#[cfg(test)]
+mod contract_tests {
+    #[test]
+    fn output_buffer_clear_uses_the_relay_pane_id_wire_key() {
+        let args: serde_json::Value =
+            serde_json::from_str(&super::output_buffer_clear_args("pane-7")).unwrap();
+
+        assert_eq!(
+            args.get("pane_id").and_then(|value| value.as_str()),
+            Some("pane-7")
+        );
+        assert!(args.get("paneId").is_none());
+    }
 }
 
 /// Notification operations
@@ -342,6 +381,27 @@ pub async fn notification_dismiss(id: &str) -> TauriResult<()> {
     .await
 }
 
+pub async fn notification_resolve(id: &str) -> TauriResult<()> {
+    invoke(
+        "notification_resolve",
+        &serde_json::json!({ "notificationId": id }).to_string(),
+    )
+    .await
+}
+
+/// Install the agent-notification emitter for one agent (or `"all"`).
+/// Writes the OSC 6337 emitter script and wires each agent's native hooks
+/// (Claude Code `Stop`/`PermissionRequest`/`Notification`, Codex lifecycle
+/// hooks) non-destructively. Returns a human-readable summary of the files
+/// written, or an error string.
+pub async fn agent_notify_install(agent: &str) -> TauriResult<String> {
+    invoke(
+        "agent_notify_install",
+        &serde_json::json!({ "agent": agent }).to_string(),
+    )
+    .await
+}
+
 /// Plan operations
 pub async fn plan_create(goal: &str, reasoning: &str, steps: &str) -> TauriResult<String> {
     invoke(
@@ -362,8 +422,7 @@ pub async fn plan_update_step(
 ) -> TauriResult<String> {
     invoke(
         "plan_update_step",
-        &serde_json::json!({ "stepId": step_id, "status": status, "paneId": pane_id })
-            .to_string(),
+        &serde_json::json!({ "stepId": step_id, "status": status, "paneId": pane_id }).to_string(),
     )
     .await
 }
@@ -380,8 +439,7 @@ pub async fn agent_comms_sessions() -> TauriResult<String> {
 pub async fn agent_comms_send(agent_id: &str, method: &str, params: &str) -> TauriResult<String> {
     invoke(
         "agent_comms_send",
-        &serde_json::json!({ "agentId": agent_id, "method": method, "params": params })
-            .to_string(),
+        &serde_json::json!({ "agentId": agent_id, "method": method, "params": params }).to_string(),
     )
     .await
 }
@@ -438,7 +496,7 @@ pub async fn swarm_create(dir: &str, swarm_state: &str) -> TauriResult<String> {
     // Tauri v2 expects camelCase JSON keys for command arguments. The backend
     // param is `swarm_state` (snake_case, a required String), so the wire key
     // must be `swarmState` — sending `swarm_state` makes the command fail with
-    // "missing required key swarmState" (see CLAUDE.md parameter-naming note
+    // "missing required key swarmState" (Tauri command parameter naming
     // vs. tauri-macros' default `rename_all = "camelCase"`).
     invoke(
         "swarm_create",
@@ -596,12 +654,20 @@ pub async fn kanban_get_tasks() -> TauriResult<String> {
 }
 
 /// Create a new kanban task in the active workspace.
-pub async fn kanban_create_task(title: &str, description: Option<&str>) -> TauriResult<String> {
+///
+/// `plan_step_id` optionally back-links the card to a plan step (Kanban ↔ plan
+/// deep link) so the card can jump back to the step in the Athena plan.
+pub async fn kanban_create_task(
+    title: &str,
+    description: Option<&str>,
+    plan_step_id: Option<&str>,
+) -> TauriResult<String> {
     invoke(
         "kanban_create_task",
         &serde_json::json!({
             "title": title,
-            "description": description
+            "description": description,
+            "planStepId": plan_step_id,
         })
         .to_string(),
     )
@@ -754,6 +820,25 @@ pub async fn pty_spawn_agent(
     .await
 }
 
+/// Stage a data-only dropped image in an app-owned temporary directory and
+/// return its path. Used when CleanShot X supplies image bytes without a path.
+pub async fn pty_stage_drop_file(
+    file_name: &str,
+    mime_type: &str,
+    base64_data: &str,
+) -> TauriResult<String> {
+    invoke(
+        "pty_stage_drop_file",
+        &serde_json::json!({
+            "fileName": file_name,
+            "mimeType": mime_type,
+            "base64Data": base64_data,
+        })
+        .to_string(),
+    )
+    .await
+}
+
 /// Write data to a PTY session.
 pub async fn pty_write(id: &str, data: &str) -> TauriResult<()> {
     invoke(
@@ -773,11 +858,18 @@ pub async fn pty_kill(id: &str) -> TauriResult<()> {
     invoke("pty_kill", &serde_json::json!({ "id": id }).to_string()).await
 }
 
-/// Resize a PTY session.
-pub async fn pty_resize(id: &str, cols: u16, rows: u16) -> TauriResult<()> {
+/// Resize a PTY session. `owner` identifies the current xterm mount so a
+/// stale remounted instance cannot resize the replacement PTY.
+pub async fn pty_resize(id: &str, cols: u16, rows: u16, owner: Option<&str>) -> TauriResult<()> {
     invoke(
         "pty_resize",
-        &serde_json::json!({ "id": id, "cols": cols, "rows": rows }).to_string(),
+        &serde_json::json!({
+            "id": id,
+            "cols": cols,
+            "rows": rows,
+            "owner": owner,
+        })
+        .to_string(),
     )
     .await
 }
@@ -927,33 +1019,29 @@ pub async fn get_pane_history(pane_id: &str) -> TauriResult<Vec<OutputLine>> {
     serde_json::from_str(&raw)
         .map_err(|e| js_sys::Error::new(&format!("failed to parse output history: {}", e)).into())
 }
+/// A raw PTY listener: subscribes to the base64 `pty:raw:<id>` event stream.
+/// On unmount invoke the returned `unlisten` and call `pty_detach_listener`
+/// so the backend pauses the raw flushes for this session.
+pub struct PtyRawListener {
+    /// Event-mode unlisten closure.
+    pub unlisten: Option<Box<dyn FnOnce()>>,
+}
+
+/// Subscribe to raw PTY byte chunks for a session.
 ///
-/// The backend emits `pty:raw` events with a JSON payload of the form
-/// `{ "session_id": "<id>", "data": "<base64>" }`. This function filters
-/// by `id` and decodes `data` from base64 to `Vec<u8>` before invoking
-/// `callback`. Events for other sessions are dropped silently.
-///
-/// The returned unlisten function must be invoked on component unmount
-/// to release the listener and the underlying closure. Discarding the
-/// return value with `let _ = ...` will keep the listener alive for
-/// the app lifetime.
+/// Bytes cross IPC as base64 inside the `pty:raw:<id>` event payload; the
+/// backend coalesces to one emit per 8 ms tick, so decode cost is amortized
+/// per flush rather than per read.
 pub fn pty_listen_raw(
     id: &str,
     mut callback: impl FnMut(Vec<u8>) + 'static,
-) -> Result<Box<dyn FnOnce()>, TauriBridgeError> {
-    let id_owned = id.to_string();
-    listen("pty:raw", move |payload_str: String| {
+) -> Result<PtyRawListener, TauriBridgeError> {
+    let event_name = format!("pty:raw:{id}");
+    let unlisten = listen(&event_name, move |payload_str: String| {
         let parsed: serde_json::Value = match serde_json::from_str(&payload_str) {
             Ok(v) => v,
             Err(_) => return,
         };
-        let session_id = match parsed.get("sessionId").and_then(|v| v.as_str()) {
-            Some(s) => s,
-            None => return,
-        };
-        if session_id != id_owned {
-            return;
-        }
         let data_b64 = match parsed.get("data").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return,
@@ -986,7 +1074,61 @@ pub fn pty_listen_raw(
         }
 
         callback(bytes);
+    })?;
+
+    Ok(PtyRawListener {
+        unlisten: Some(unlisten),
     })
+}
+
+/// Fetch the last ~64 KB of raw PTY bytes buffered for replay (base64 on the
+/// wire), decoded to bytes. Returns `Ok(None)` when the pane has no replay
+/// buffer (fresh spawn, killed pane, or nothing flushed yet).
+///
+/// Used by the mobile xterm mount to restore exact VT screen state (cursor
+/// position, colors, a partial in-flight line) after a relay reconnect — the
+/// ANSI-stripped `output_buffer_get` text history cannot reproduce those.
+pub async fn pty_raw_replay(pane_id: &str) -> TauriResult<Option<Vec<u8>>> {
+    let b64: String = invoke(
+        "pty_raw_replay",
+        &serde_json::json!({ "paneId": pane_id }).to_string(),
+    )
+    .await?;
+    if b64.is_empty() {
+        return Ok(None);
+    }
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("No window"))?;
+    let atob_val = js_sys::Reflect::get(&window, &JsValue::from_str("atob"))
+        .map_err(|e| JsValue::from(format!("Reflect atob error: {e:?}")))?;
+    let atob_fn = atob_val
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| JsValue::from_str("atob not a function"))?;
+    let s_val = atob_fn
+        .call1(&JsValue::NULL, &JsValue::from_str(&b64))
+        .map_err(|e| JsValue::from(format!("atob error: {e:?}")))?;
+    let s = s_val
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("atob returned a non-string"))?;
+    let mut bytes = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        bytes.push(c as u8);
+    }
+    Ok(Some(bytes))
+}
+
+/// Start capturing the microphone for Athena voice input (desktop). The
+/// backend records on-device until `voice_record_stop`; audio never leaves the
+/// Mac. Errors surface permission problems (mic access, speech recognition)
+/// and "already recording" states.
+pub async fn voice_record_start() -> TauriResult<()> {
+    invoke("voice_record_start", "{}").await
+}
+
+/// Stop the voice capture and transcribe the clip on-device. Returns the
+/// transcript text on success (errors when nothing was recorded, the mic was
+/// silent, or recognition failed).
+pub async fn voice_record_stop() -> TauriResult<String> {
+    invoke("voice_record_stop", "{}").await
 }
 
 /// Tool executor operations
@@ -1216,8 +1358,7 @@ pub async fn plugin_get(plugin_id: &str) -> TauriResult<String> {
 pub async fn plugin_register(plugin_id: &str, name: &str, version: &str) -> TauriResult<String> {
     invoke(
         "plugin_register",
-        &serde_json::json!({ "pluginId": plugin_id, "name": name, "version": version })
-            .to_string(),
+        &serde_json::json!({ "pluginId": plugin_id, "name": name, "version": version }).to_string(),
     )
     .await
 }
@@ -1304,15 +1445,16 @@ pub async fn plugin_host_emit_event(event_type: &str, data: &str) -> TauriResult
 // ---------------------------------------------------------------------------
 
 /// Query the live mobile-mirror relay status. Returns a JSON object
-/// `{ "running": bool, "url": Option<String>, "port": Option<u16> }` — parsed
-/// by the Settings panel (raw string return follows the `session_list` /
-/// `output_buffer_list` convention).
+/// `{ "running": bool, "url": Option<String>, "port": u16, "qr_svg_base64": Option<String> }`
+/// — parsed by the Settings panel (raw string return follows the
+/// `session_list` / `output_buffer_list` convention).
 pub async fn relay_status() -> TauriResult<String> {
     invoke("relay_status", "{}").await
 }
 
 /// Start the mobile-mirror relay. On success returns the bound socket
-/// address (e.g. `192.168.1.10:8787`) as a string.
+/// address as a string. The port is ephemeral (fresh per start), so the URL
+/// changes on every enable.
 pub async fn relay_start() -> TauriResult<String> {
     invoke("relay_start", "{}").await
 }
@@ -1320,6 +1462,47 @@ pub async fn relay_start() -> TauriResult<String> {
 /// Stop the mobile-mirror relay. Idempotent — succeeds even if not running.
 pub async fn relay_stop() -> TauriResult<()> {
     invoke("relay_stop", "{}").await
+}
+
+/// Mark a pane as shared (or unshared) with the mobile mirror. Desktop-only;
+/// a paired phone cannot self-authorize panes through the relay. Tauri 2 maps
+/// the snake_case `pane_id` param to the `paneId` wire key.
+pub async fn relay_set_pane_shared(pane_id: &str, shared: bool) -> TauriResult<()> {
+    invoke(
+        "relay_set_pane_shared",
+        &serde_json::json!({ "paneId": pane_id, "shared": shared }).to_string(),
+    )
+    .await
+}
+
+/// List the panes currently shared with the mobile mirror (sorted).
+pub async fn relay_list_shared_panes() -> TauriResult<Vec<String>> {
+    let raw: String = invoke("relay_list_shared_panes", "{}").await?;
+    serde_json::from_str(&raw)
+        .map_err(|e| js_sys::Error::new(&format!("failed to parse shared panes: {}", e)).into())
+}
+
+/// Approve (`approved = true`) or deny a pending Mobile Mirror pairing
+/// request surfaced by the `relay:pairingRequest` event. Desktop-only; a
+/// paired phone cannot self-authorize its own connection.
+pub async fn relay_pairing_respond(request_id: &str, approved: bool) -> TauriResult<()> {
+    invoke(
+        "relay_pairing_respond",
+        &serde_json::json!({ "requestId": request_id, "approved": approved }).to_string(),
+    )
+    .await
+}
+
+/// Ask the desktop to share a pane with this phone. The desktop operator
+/// receives a `relay:paneShareRequest` prompt and may approve (flipping the
+/// pane's share toggle) or ignore it. Harmless if the pane is already
+/// accessible — the operator can just dismiss the prompt.
+pub async fn relay_request_pane_share(pane_id: &str) -> TauriResult<()> {
+    invoke(
+        "relay_request_pane_share",
+        &serde_json::json!({ "paneId": pane_id }).to_string(),
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

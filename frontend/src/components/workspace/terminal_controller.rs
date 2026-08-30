@@ -6,6 +6,7 @@
 
 use dioxus::prelude::*;
 
+use crate::components::workspace::terminal_drop::TerminalDropController;
 use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::workspace::use_workspace_store;
 
@@ -13,7 +14,11 @@ fn select_active_pane(current: Option<&str>, pane_ids: &[String]) -> Option<Stri
     current
         .filter(|id| pane_ids.iter().any(|pane_id| pane_id == id))
         .map(str::to_string)
-        .or_else(|| pane_ids.first().cloned())
+        .or_else(|| fallback_active_pane(pane_ids))
+}
+
+fn fallback_active_pane(pane_ids: &[String]) -> Option<String> {
+    pane_ids.first().cloned()
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -118,10 +123,25 @@ pub fn TerminalController(props: TerminalControllerProps) -> Element {
                     .write()
                     .remove_pane_from_space(&space_id, &pane_id);
                 registry_for_kill.mark_closing(&pane_id);
+                let remaining_pane_ids = {
+                    let state = workspace_for_kill.read();
+                    state
+                        .spaces
+                        .iter()
+                        .find(|space| space.id == space_id)
+                        .map(|space| {
+                            space
+                                .panes
+                                .iter()
+                                .map(|pane| pane.id.clone())
+                                .collect::<Vec<String>>()
+                        })
+                        .unwrap_or_default()
+                };
                 let mut store = terminal_store_for_kill.write();
                 store.known_pane_ids.remove(&pane_id);
                 if store.active_session_id.as_deref() == Some(pane_id.as_str()) {
-                    store.active_session_id = store.known_pane_ids.iter().next().cloned();
+                    store.active_session_id = fallback_active_pane(&remaining_pane_ids);
                 }
                 store.generation = store.generation.wrapping_add(1);
             }
@@ -129,7 +149,9 @@ pub fn TerminalController(props: TerminalControllerProps) -> Element {
         });
     });
 
-    rsx! {}
+    rsx! {
+        TerminalDropController {}
+    }
 }
 
 #[cfg(test)]
@@ -151,5 +173,14 @@ mod tests {
             Some("pane-1".to_string())
         );
         assert_eq!(super::select_active_pane(None, &[]), None);
+    }
+
+    #[test]
+    fn close_fallback_uses_workspace_order() {
+        let remaining = vec!["first-in-space".to_string(), "second-in-space".to_string()];
+        assert_eq!(
+            super::fallback_active_pane(&remaining),
+            Some("first-in-space".to_string())
+        );
     }
 }

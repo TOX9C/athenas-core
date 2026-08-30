@@ -13,7 +13,7 @@ pub fn FileExplorer() -> Element {
             if is_loading() {
                 div {
                     style: "flex: 1; overflow-y: auto; padding: 16px; text-align: center; color: var(--textDim); font-size: var(--text-sm);",
-                    "Loading..."
+                    "Loading…"
                 }
             } else {
                 div {

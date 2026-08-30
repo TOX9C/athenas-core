@@ -1,19 +1,15 @@
 use super::inline_svg;
 use dioxus::prelude::*;
-// ──────────────── Brand mark + motif icons ────────────────
-// The Athena mark is a crystalline core: a pointy-topped hexagonal frame
-// holds a quiet inner ring and a solid gold diamond bezant. Pure geometric
-// geometry — no triangles, no shields — so it stays legible from 14px chrome
-// up to 1024px app icons. Keep this aligned with CoreMark, athena.svg, and
-// the promo mark so the identity remains consistent.
+// The Athena mark is her spear drawn as a solid lambda: a diamond point at
+// the apex above two strong legs. Solid fills — no strokes — so it stays
+// bold and legible from 15px chrome up to 1024px app icons. Keep this
+// aligned with CoreMark, athena.svg, and the promo mark so the identity
+// remains consistent.
 
-/// Outer hexagonal frame (circumradius 8.5 in a 24-box).
-const ATHENA_FRAME: &str = "M12 3.5 L19.36 7.75 L19.36 16.25 L12 20.5 L4.64 16.25 L4.64 7.75 Z";
-/// Quiet inner ring — the "core within the core".
-const ATHENA_RING: &str = "M12 6.6 L16.68 9.3 L16.68 14.7 L12 17.4 L7.32 14.7 L7.32 9.3 Z";
-/// The gold core itself — a vertical diamond that reads as a cut gem.
-const ATHENA_CORE: &str = "M12 9.3 L13.75 12 L12 14.7 L10.25 12 Z";
-
+/// Spear legs — solid lambda slash-open at the bottom.
+const ATHENA_FRAME: &str = "M12 7.6 L19.2 20 L15.9 20 L12 12.6 L8.1 20 L4.8 20 Z";
+/// Spearhead — diamond point floating above the legs.
+const ATHENA_CORE: &str = "M12 3.2 L13.3 4.9 L12 6.7 L10.7 4.9 Z";
 fn brand_svg(children: Element, size: u8, color: &str) -> Element {
     let size_str = format!("{size}px");
     rsx! {
@@ -30,15 +26,14 @@ fn brand_svg(children: Element, size: u8, color: &str) -> Element {
     }
 }
 
-/// Athena — the compact core mark for titlebars and toolbars.
+/// Athena — the compact spear-A mark for titlebars and toolbars.
 #[component]
 pub fn IconAthena(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(16);
     let c = color.as_deref().unwrap_or("currentColor");
     brand_svg(
         rsx! {
-            path { d: "{ATHENA_FRAME}", fill: c, fill_opacity: "0.07", stroke: c, stroke_opacity: "0.85", stroke_width: "1.05" }
-            path { d: "{ATHENA_RING}", stroke: c, stroke_opacity: "0.38", stroke_width: "0.5" }
+            path { d: "{ATHENA_FRAME}", fill: c, stroke: "none" }
             path { d: "{ATHENA_CORE}", fill: c, stroke: "none" }
         },
         s,
@@ -46,15 +41,14 @@ pub fn IconAthena(size: Option<u8>, color: Option<String>) -> Element {
     )
 }
 
-/// Seal — the larger presentation version of the core mark.
+/// Seal — the larger presentation version of the spear-A mark.
 #[component]
 pub fn IconSeal(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(16);
     let c = color.as_deref().unwrap_or("currentColor");
     brand_svg(
         rsx! {
-            path { d: "{ATHENA_FRAME}", fill: c, fill_opacity: "0.06", stroke: c, stroke_opacity: "0.78", stroke_width: "1.05" }
-            path { d: "{ATHENA_RING}", stroke: c, stroke_opacity: "0.34", stroke_width: "0.5" }
+            path { d: "{ATHENA_FRAME}", fill: c, stroke: "none" }
             path { d: "{ATHENA_CORE}", fill: c, stroke: "none" }
         },
         s,

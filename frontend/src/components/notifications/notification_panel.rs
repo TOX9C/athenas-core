@@ -1,3 +1,4 @@
+use crate::components::plugin::input_request_modal::use_input_request_overlay_store;
 use crate::components::shared::icon::IconClose;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::notification::{
@@ -21,6 +22,7 @@ fn notification_type_label(notification_type: &NotificationType) -> &'static str
 #[component]
 pub fn NotificationPanel() -> Element {
     let mut notifications = use_notification_store();
+    let mut input_open = use_input_request_overlay_store();
     let mut active_tab = use_signal(|| "all".to_string());
 
     let filtered: Vec<_> = notifications
@@ -30,7 +32,10 @@ pub fn NotificationPanel() -> Element {
             "unread" => !n.read,
             "alerts" => matches!(
                 n.r#type,
-                NotificationType::Error | NotificationType::Warning | NotificationType::TaskError
+                NotificationType::Error
+                    | NotificationType::Warning
+                    | NotificationType::NeedsInput
+                    | NotificationType::TaskError
             ),
             "tasks" => matches!(
                 n.r#type,
@@ -165,6 +170,17 @@ pub fn NotificationPanel() -> Element {
                                         }
                                     }
 
+                                    if n.requires_action && n.resolved_at.is_none() && n.request_id.is_some() {
+                                        button {
+                                            class: "btn-primary btn-sm",
+                                            onclick: move |e: Event<MouseData>| {
+                                                e.stop_propagation();
+                                                input_open.set(true);
+                                            },
+                                            "Respond"
+                                        }
+                                    }
+
                                     // Dismiss button
                                     button {
                                         class: "icon-btn",
@@ -191,6 +207,7 @@ pub fn NotificationPanel() -> Element {
                 style: "display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border);",
                 button {
                     class: "btn-ghost btn-sm",
+                    disabled: unread_count == 0,
                     onclick: move |_| {
                         spawn(async move {
                             let _ = tauri_bridge::notification_mark_all_read().await;
@@ -203,6 +220,7 @@ pub fn NotificationPanel() -> Element {
                 }
                 button {
                     class: "btn-ghost btn-sm",
+                    disabled: notifications.read().is_empty(),
                     onclick: move |_| {
                         spawn(async move {
                             let _ = tauri_bridge::notification_clear_all().await;

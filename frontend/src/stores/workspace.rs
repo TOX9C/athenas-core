@@ -1,8 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::RefCell;
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::JsValue;
 
 use crate::tauri_bridge::store_get as kv_get;
 use crate::tauri_bridge::store_set as kv_set;
@@ -21,8 +20,71 @@ pub use workspace_helpers::{grid_for_pane_count, swap_panes_by_id};
 /// Key used in KeyValueStore for workspace persistence.
 const WORKSPACES_KEY: &str = "workspaces";
 
-/// Monotonic generation counter for coalescing concurrent saves attempts.
-static SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Single-threaded latest-value queue for workspace persistence.
+///
+/// `kv_set` is asynchronous, so a generation check before awaiting it cannot
+/// prevent an older write from completing after a newer one. Keeping one
+/// pending snapshot and draining it from one worker makes writes strictly
+/// serial while coalescing bursts of mutations to the newest state.
+#[derive(Debug, Default)]
+struct WorkspaceSaveQueue {
+    pending: Option<String>,
+    writing: bool,
+}
+
+impl WorkspaceSaveQueue {
+    fn enqueue(&mut self, json: String) -> bool {
+        self.pending = Some(json);
+        if self.writing {
+            false
+        } else {
+            self.writing = true;
+            true
+        }
+    }
+
+    fn take_next(&mut self) -> Option<String> {
+        self.pending.take()
+    }
+
+    fn finish_write(&mut self) -> bool {
+        if self.pending.is_some() {
+            true
+        } else {
+            self.writing = false;
+            false
+        }
+    }
+}
+
+thread_local! {
+    static SAVE_QUEUE: RefCell<WorkspaceSaveQueue> =
+        RefCell::new(WorkspaceSaveQueue::default());
+}
+
+fn enqueue_workspace_save(json: String) {
+    let should_start_worker = SAVE_QUEUE.with(|queue| queue.borrow_mut().enqueue(json));
+    if should_start_worker {
+        wasm_bindgen_futures::spawn_local(drain_workspace_saves());
+    }
+}
+
+async fn drain_workspace_saves() {
+    loop {
+        let Some(json) = SAVE_QUEUE.with(|queue| queue.borrow_mut().take_next()) else {
+            return;
+        };
+
+        if let Err(e) = kv_set(WORKSPACES_KEY, &json).await {
+            web_sys::console::error_1(&format!("[WorkspaceState] store_set error: {:?}", e).into());
+        }
+
+        let has_pending_write = SAVE_QUEUE.with(|queue| queue.borrow_mut().finish_write());
+        if !has_pending_write {
+            return;
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -65,11 +127,17 @@ impl WorkspaceState {
         self.save();
     }
 
-    pub fn update_space(&mut self, id: &str, f: impl FnOnce(&mut Space)) {
-        if let Some(space) = self.spaces.iter_mut().find(|s| s.id == id) {
-            f(space);
+    pub fn update_space(&mut self, id: &str, f: impl FnOnce(&mut Space)) -> bool {
+        let Some(space) = self.spaces.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        let before = space.clone();
+        f(space);
+        if *space == before {
+            return false;
         }
         self.save();
+        true
     }
 
     pub fn add_pane_to_space(&mut self, space_id: &str, pane: PaneConfig) {
@@ -111,8 +179,8 @@ impl WorkspaceState {
 
     /// Persist the current workspace state to the backend KeyValueStore.
     /// Call this after every mutation that changes workspace layout or panes.
-    /// Saves are coalesced with a generation counter so that overlapping
-    /// async writes never result in a stale state overwriting a newer one.
+    /// Saves are coalesced and drained serially so overlapping async writes
+    /// never result in a stale state overwriting a newer one.
     pub fn save(&self) {
         let json = match serde_json::to_string(self) {
             Ok(j) => j,
@@ -124,28 +192,7 @@ impl WorkspaceState {
             }
         };
 
-        // Acquire a generation number for this save request.
-        let my_gen = SAVE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-
-        wasm_bindgen_futures::spawn_local(async move {
-            // Yield briefly so that any synchronously-spawned save()
-            // calls have a chance to increment the global counter.
-            let _ =
-                wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::UNDEFINED))
-                    .await;
-
-            // Only the latest generation should perform the write;
-            // earlier saves self-cancel to prevent stale overwrites.
-            if SAVE_GENERATION.load(Ordering::SeqCst) > my_gen {
-                return;
-            }
-
-            if let Err(e) = kv_set(WORKSPACES_KEY, &json).await {
-                web_sys::console::error_1(
-                    &format!("[WorkspaceState] store_set error: {:?}", e).into(),
-                );
-            }
-        });
+        enqueue_workspace_save(json);
     }
 
     /// Load workspace state from the backend KeyValueStore.
@@ -197,4 +244,65 @@ pub fn use_workspace_store() -> Signal<WorkspaceState> {
 /// Initialize the workspace store as a context provider.
 pub fn provide_workspace_store() {
     use_context_provider(|| Signal::new(WorkspaceState::new()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_space_does_not_report_or_save_when_nothing_changes() {
+        let space = Space {
+            id: "space-1".to_string(),
+            ..Space::default()
+        };
+        let mut state = WorkspaceState {
+            spaces: vec![space],
+            active_space_id: Some("space-1".to_string()),
+        };
+
+        assert!(!state.update_space("space-1", |_| {}));
+        assert!(!state.update_space("missing", |_| {}));
+    }
+
+    #[test]
+    fn repeated_resume_capture_is_idempotent() {
+        let pane = PaneConfig {
+            id: "pane-1".to_string(),
+            resume_id: Some("2026-08-17T21-35-03.500Z".to_string()),
+            resume_cmd: Some("freebuff --continue 2026-08-17T21-35-03.500Z".to_string()),
+            resume_dismissed: Some(false),
+            ..PaneConfig::default()
+        };
+        let space = Space {
+            id: "space-1".to_string(),
+            panes: vec![pane],
+            ..Space::default()
+        };
+        let mut state = WorkspaceState {
+            spaces: vec![space],
+            active_space_id: Some("space-1".to_string()),
+        };
+
+        assert!(!state.update_space("space-1", |space| {
+            let pane = space.panes.first_mut().expect("test pane");
+            pane.resume_id = Some("2026-08-17T21-35-03.500Z".to_string());
+            pane.resume_cmd = Some("freebuff --continue 2026-08-17T21-35-03.500Z".to_string());
+            pane.resume_dismissed = Some(false);
+        }));
+    }
+
+    #[test]
+    fn save_queue_serializes_writes_and_keeps_only_the_latest_pending_state() {
+        let mut queue = WorkspaceSaveQueue::default();
+
+        assert!(queue.enqueue("old".to_string()));
+        assert_eq!(queue.take_next().as_deref(), Some("old"));
+
+        assert!(!queue.enqueue("newer".to_string()));
+        assert!(!queue.enqueue("newest".to_string()));
+        assert!(queue.finish_write());
+        assert_eq!(queue.take_next().as_deref(), Some("newest"));
+        assert!(!queue.finish_write());
+    }
 }

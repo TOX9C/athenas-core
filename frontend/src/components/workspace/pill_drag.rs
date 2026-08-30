@@ -58,11 +58,12 @@ pub struct PillDrag {
     pub moved: bool,
     /// Hit-tested release destination, or `None` when outside a valid target.
     pub target: Option<PillDropTarget>,
-    /// Agent type copied into Athena context when this drag is released there.
+    /// Pane type copied into Athena context when this drag is released there.
     pub source_agent_type: String,
-    /// Typed eligibility flag for Athena references. Plain shell panes set this
-    /// to false regardless of their display label or enum formatting.
-    pub source_is_agent: bool,
+    /// Whether this pane can be referenced by Athena. Agent and plain shell
+    /// panes are both valid sources; the type is retained for the context chip
+    /// and prompt metadata.
+    pub source_can_reference: bool,
 }
 
 /// Walk up the DOM from `el` to the nearest ancestor (inclusive) carrying a
@@ -331,7 +332,19 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
         if !is_origin {
             return;
         }
-        let finished = drag.read().clone();
+        let mut finished = drag.read().clone();
+        let Some(current) = finished.as_mut() else {
+            return;
+        };
+        if current.moved {
+            // Re-hit-test at release time. The last pointermove can be stale
+            // when the pointer crosses the target between browser frames.
+            let coords = e.data.client_coordinates();
+            current.cur_x = coords.x;
+            current.cur_y = coords.y;
+            let target = find_drop_target(coords.x, coords.y, current);
+            current.target = target;
+        }
         drag.set(None);
         set_athena_drag_hover(false);
         let Some(d) = finished else {
@@ -350,18 +363,26 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
                 // pane id with the agent, so this stays valid post-swap.
                 terminal_store.write().set_active(d.source_pane_id);
             }
-            Some(PillDropTarget::Athena) if d.source_is_agent => {
-                athena_store.write().add_agent_context(
+            Some(PillDropTarget::Athena) if d.source_can_reference => {
+                let added = athena_store.write().add_agent_context(
                     d.source_pane_id,
                     d.source_agent_type,
                     d.source_label,
                 );
-                // Make the successful reference immediately visible even
-                // when the drop landed on the temporary fallback target.
+                // Always reveal Athena after a valid drop. If the reference was
+                // already present, opening the panel still gives the user a
+                // deterministic acknowledgement instead of a silent no-op.
                 panel_store
                     .write()
                     .open_right_panel(crate::stores::panel_manager::RightPanel::Assistant);
                 ui_store.write().right_sidebar_open = true;
+                web_sys::console::log_1(
+                    &format!(
+                        "[athena-dnd] reference {}",
+                        if added { "added" } else { "already present" }
+                    )
+                    .into(),
+                );
             }
             _ => {}
         }
@@ -380,14 +401,6 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
         drag.set(None);
         set_athena_drag_hover(false);
     };
-    let onmouseleave = move |_e: MouseEvent| {
-        // WKWebView can cancel a pointer sequence while the window is losing
-        // focus without delivering pointerup. Treat leaving the capture
-        // surface as an abort so a stale highlight cannot survive.
-        drag.set(None);
-        set_athena_drag_hover(false);
-    };
-
     let is_grabbing = drag.read().as_ref().map(|d| d.moved).unwrap_or(false);
     let class = if is_grabbing {
         "dnd-overlay is-grabbing"
@@ -402,7 +415,6 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
             onpointermove: onpointermove,
             onpointerup: onpointerup,
             onpointercancel: onpointercancel,
-            onmouseleave: onmouseleave,
         }
     }
 }
@@ -464,7 +476,7 @@ mod tests {
             moved: true,
             target: None,
             source_agent_type: "claude".into(),
-            source_is_agent: true,
+            source_can_reference: true,
         }
     }
 

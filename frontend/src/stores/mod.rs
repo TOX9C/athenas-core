@@ -1,7 +1,6 @@
 pub mod agent_output;
 pub mod agent_status;
 pub mod athena;
-pub mod command;
 pub mod editor;
 pub mod notification;
 pub mod panel_manager;

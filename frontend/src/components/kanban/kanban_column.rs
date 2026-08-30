@@ -68,7 +68,7 @@ pub fn KanbanColumn(props: KanbanColumnProps) -> Element {
                                 }
                             }
                         },
-                        placeholder: "Add task..."
+                        placeholder: "Add task…"
                     }
                     button {
                         class: "icon-btn",
@@ -93,8 +93,11 @@ pub fn KanbanColumn(props: KanbanColumnProps) -> Element {
 }
 
 /// Create a task and set its status to match the column.
-async fn create_task_in_column(title: &str, col_status: KanbanStatus) -> Result<(), String> {
-    let json = tauri_bridge::kanban_create_task(title, None)
+pub(super) async fn create_task_in_column(
+    title: &str,
+    col_status: KanbanStatus,
+) -> Result<(), String> {
+    let json = tauri_bridge::kanban_create_task(title, None, None)
         .await
         .map_err(|e| format!("{e:?}"))?;
     let parsed = crate::stores::task::tasks_from_backend_json(&format!("[{json}]"))?;
@@ -112,7 +115,7 @@ async fn create_task_in_column(title: &str, col_status: KanbanStatus) -> Result<
     Ok(())
 }
 /// Reload all tasks from backend into the store.
-async fn reload_tasks(mut task_store: Signal<crate::stores::task::TaskState>) {
+pub(super) async fn reload_tasks(mut task_store: Signal<crate::stores::task::TaskState>) {
     if let Ok(json) = tauri_bridge::kanban_get_tasks().await {
         if let Ok(tasks) = crate::stores::task::tasks_from_backend_json(&json) {
             task_store.write().set_tasks(tasks);

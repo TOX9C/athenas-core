@@ -374,7 +374,7 @@ mod icon_glyphs;
 
 pub use icon_glyphs::{
     IconArrowLeft, IconArrowRight, IconCheck, IconCopy, IconEdit, IconFile, IconFullscreen,
-    IconGlobe, IconKeyboard, IconMenu, IconMinimize, IconPlay, IconRefresh, IconSend,
+    IconGlobe, IconKeyboard, IconMenu, IconMic, IconMinimize, IconPlay, IconRefresh, IconSend,
     IconSmartphone, IconStar, IconTrash, IconWarning, IconWindowMaximize, IconWindowRestore,
 };
 

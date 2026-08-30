@@ -62,13 +62,10 @@ pub(super) struct AgentSlot {
     pub(super) label: Option<String>,
 }
 
+/// Role identity color — delegated to the single source of truth in
+/// [`crate::utils::agent_display`].
 pub(super) fn role_color(role: &AgentRole) -> &'static str {
-    match role {
-        AgentRole::Coordinator => "#0ea5e9",
-        AgentRole::Builder => "#22c55e",
-        AgentRole::Scout => "#f59e0b",
-        AgentRole::Reviewer => "#06b6d4",
-    }
+    crate::utils::agent_display::get_role_color_str(agent_role_str(role))
 }
 
 pub(super) fn agent_role_str(role: &AgentRole) -> &'static str {

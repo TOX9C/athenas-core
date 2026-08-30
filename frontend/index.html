@@ -16,7 +16,7 @@
   transition: opacity 0.3s; pointer-events: none;
 }
 #wasm-loading.loading { pointer-events: none; }
-#wasm-loading.done { opacity: 0; pointer-events: none; }
+#wasm-loading.done { opacity: 0; pointer-events: none; visibility: hidden; }
 .spinner {
   width: 32px; height: 32px; border: 3px solid var(--border, #2a303e);
   border-top-color: var(--accent, #38bdf8); border-radius: 50%;
@@ -50,27 +50,62 @@
 <script>
 // Console capture — forward all console output to visible DOM element
 (function() {
+  // Keep diagnostics useful without allowing a long-running WebView to grow
+  // an unbounded DOM tree. DevTools still receives every original message;
+  // this ring buffer is only the opt-in in-app/export diagnostic copy.
+  var MAX_ENTRIES = 800;
   var logEl = null;
+  var entries = [];
   function getLogEl() {
     if (!logEl) logEl = document.getElementById('console-log');
     return logEl;
   }
-  function appendLine(cls, args) {
-    var el = getLogEl();
-    if (!el) return;
-    var line = document.createElement('div');
-    line.className = cls;
+  function stringifyArgs(args) {
     try {
-      line.textContent = Array.prototype.slice.call(args).map(function(a) {
+      // Bound each retained message as well as the number of retained
+      // messages. A single giant string/object must not defeat the ring
+      // buffer's memory bound.
+      return Array.prototype.slice.call(args).map(function(a) {
         if (a === null) return 'null';
         if (a === undefined) return 'undefined';
-        if (typeof a === 'object') { try { return JSON.stringify(a).substring(0, 500); } catch(e) { return String(a); } }
-        return String(a);
-      }).join(' ');
-    } catch(e) { line.textContent = 'log-capture-error'; }
+        if (typeof a === 'object') { try { return JSON.stringify(a).substring(0, 500); } catch(e) { return String(a).substring(0, 500); } }
+        return String(a).substring(0, 2000);
+      }).join(' ').substring(0, 2000);
+    } catch(e) { return 'log-capture-error'; }
+  }
+  function appendLine(cls, args) {
+    var text = stringifyArgs(args);
+    var level = cls === 'error' ? 'error' : cls === 'warn' ? 'warn' : 'info';
+    entries.push({ timestamp: new Date().toISOString(), level: level, text: text });
+    if (entries.length > MAX_ENTRIES) entries.shift();
+
+    // Only warnings/errors are mirrored into the hidden DOM. High-volume
+    // informational logs remain available through DevTools, not as retained
+    // DOM nodes.
+    var el = getLogEl();
+    if (!el || (level !== 'error' && level !== 'warn')) return;
+    var line = document.createElement('div');
+    line.className = cls;
+    line.textContent = text;
     el.appendChild(line);
+    while (el.childNodes.length > MAX_ENTRIES) el.removeChild(el.firstChild);
     el.scrollTop = el.scrollHeight;
   }
+  window.__athenaDiagnostics = {
+    getConsole: function() {
+      return JSON.stringify(entries.filter(function(entry) {
+        return entry.level === 'error' || entry.level === 'warn';
+      }));
+    },
+    getMetrics: function() {
+      try {
+        if (window.__athenaMetrics && typeof window.__athenaMetrics.snapshot === 'function') {
+          return window.__athenaMetrics.snapshot();
+        }
+      } catch(e) {}
+      return '{}';
+    }
+  };
   var _log = console.log;
   var _error = console.error;
   var _warn = console.warn;
@@ -80,7 +115,6 @@
   console.warn = function() { appendLine('warn', arguments); _warn.apply(console, arguments); };
   console.info = function() { appendLine('info', arguments); _info.apply(console, arguments); };
 
-  // Immediate test
   console.info('[BOOT] Console capture initialized');
 })();
 
@@ -142,6 +176,7 @@ function dismissOverlay() {
   if (loader) {
     loader.classList.remove('loading');
     loader.classList.add('done');
+    loader.setAttribute('aria-hidden', 'true');
   }
   console.info('[MOUNT] Overlay dismissed');
 }

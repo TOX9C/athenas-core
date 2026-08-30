@@ -19,10 +19,19 @@ fn mobile_entry_enabled() -> bool {
 }
 
 fn token_present() -> bool {
-    web_sys::window()
-        .and_then(|window| window.location().hash().ok())
+    let window = web_sys::window();
+    // The relay token rides in the query string (?token=...); accept the
+    // legacy #token= fragment form too.
+    let query_ok = window
+        .as_ref()
+        .and_then(|w| w.location().search().ok())
+        .map(|search| search.contains("token=") && search.len() > 6)
+        .unwrap_or(false);
+    let hash_ok = window
+        .and_then(|w| w.location().hash().ok())
         .map(|hash| hash.contains("token=") && hash.trim_start_matches('#').len() > 6)
-        .unwrap_or(false)
+        .unwrap_or(false);
+    query_ok || hash_ok
 }
 
 pub fn should_render_mobile_app() -> bool {
@@ -99,10 +108,20 @@ pub fn MobileApp() -> Element {
                             spaces.set(state.spaces);
                             status.set("Connected to Athena".to_string());
                         }
-                        Err(error) => status.set(format!("Workspace data is invalid: {error}")),
+                        Err(error) => {
+                            web_sys::console::warn_1(
+                                &format!("[mobile] workspace parse failed: {error}").into(),
+                            );
+                            status.set(
+                                "Workspace data is invalid. Restart the app to resync.".to_string(),
+                            );
+                        }
                     }
                 }
-                Err(error) => status.set(format!("Connection failed: {error:?}")),
+                Err(error) => {
+                    web_sys::console::warn_1(&format!("[mobile] connect failed: {error:?}").into());
+                    status.set("Couldn't reach the Athena desktop app.".to_string());
+                }
             }
         });
     });
@@ -219,7 +238,12 @@ pub fn MobileApp() -> Element {
                     .await;
                     status.set("Connected to Athena".to_string());
                 }
-                Err(error) => status.set(format!("Terminal start failed: {error:?}")),
+                Err(error) => {
+                    web_sys::console::warn_1(
+                        &format!("[mobile] terminal spawn failed: {error:?}").into(),
+                    );
+                    status.set("Couldn't start the terminal.".to_string());
+                }
             }
         });
     };
@@ -337,13 +361,35 @@ pub fn MobileApp() -> Element {
                                     }
                                 }
                                 if let (Some(pane_id), Some(space)) = (active_pane.read().clone(), selected_space.as_ref()) {
-                                    div { class: "mobile-terminal-frame",
-                                        div { class: "mobile-terminal-frame-bar",
-                                            span { class: "mobile-terminal-live-dot" }
-                                            span { class: "mobile-terminal-session", "{pane_id}" }
-                                            span { class: "mobile-terminal-live-label", "LIVE" }
+                                    {
+                                        let request_pane = pane_id.clone();
+                                        rsx! {
+                                            div { key: "mobile-terminal-frame-{pane_id}", class: "mobile-terminal-frame",
+                                                {
+                                                    let pane_id_full = pane_id.clone();
+                                                    let pane_id_short: String =
+                                                        pane_id.chars().take(10).collect();
+                                                    rsx! {
+                                                        div { class: "mobile-terminal-frame-bar",
+                                                            span { class: "mobile-terminal-live-dot" }
+                                                            span { class: "mobile-terminal-session", title: "{pane_id_full}", "{pane_id_short}…" }
+                                                            span { class: "mobile-terminal-live-label", "LIVE" }
+                                                        }
+                                                        button {
+                                                            class: "mobile-frame-request-button",
+                                                            onclick: move |_| {
+                                                                let pane_id = request_pane.clone();
+                                                                spawn(async move {
+                                                                    let _ = tauri_bridge::relay_request_pane_share(&pane_id).await;
+                                                                });
+                                                            },
+                                                            "Request access"
+                                                        }
+                                                        MobileXtermMount { pane_id: pane_id, cwd: space.dir.clone() }
+                                                    }
+                                                }
+                                            }
                                         }
-                                        MobileXtermMount { key: "mobile-xterm-{pane_id}", pane_id: pane_id, cwd: space.dir.clone() }
                                     }
                                 } else {
                                     div { class: "mobile-terminal-empty", IconTerminal { size: Some(26), color: Some("var(--accent)".to_string()) } "Choose a pane to attach." }
@@ -361,10 +407,17 @@ pub fn MobileApp() -> Element {
                             div { class: "mobile-chat-log mobile-scroll-screen",
                                 for (index, message) in chat_messages.read().iter().enumerate() {
                                     {
-                                        let message_class = if message.role == "You" { "mobile-chat-message is-user" } else { "mobile-chat-message" };
+                                        let message_class = if message.role == "You" {
+                                            "mobile-chat-message is-user"
+                                        } else if message.role == "Error" {
+                                            "mobile-chat-message is-error"
+                                        } else {
+                                            "mobile-chat-message"
+                                        };
                                         rsx! {
+                                            // No sender label — position alone
+                                            // distinguishes You vs Athena.
                                             div { key: "message-{index}", class: message_class,
-                                                span { class: "mobile-message-role", "{message.role}" }
                                                 p { "{message.text}" }
                                             }
                                         }
@@ -390,10 +443,16 @@ pub fn MobileApp() -> Element {
                             }
                             div { class: "mobile-file-form",
                                 label { "File path" }
-                                div { class: "mobile-file-row", input { value: "{file_path}", placeholder: "/path/to/file", "aria-label": "File path", oninput: move |event| file_path.set(event.value()) } button { class: "mobile-ghost-button", onclick: move |_| { let path = file_path.read().clone(); let mut status_for_file = status; spawn(async move { match tauri_bridge::fs_read_file(&path).await { Ok(content) => file_content.set(content), Err(error) => status_for_file.set(format!("Read failed: {error:?}")) } }); }, "Read" } }
+                                div { class: "mobile-file-row", input { value: "{file_path}", placeholder: "/path/to/file", "aria-label": "File path", oninput: move |event| file_path.set(event.value()) } button { class: "mobile-ghost-button", onclick: move |_| { let path = file_path.read().clone(); let mut status_for_file = status; spawn(async move { match tauri_bridge::fs_read_file(&path).await { Ok(content) => file_content.set(content),                Err(error) => {
+                    web_sys::console::warn_1(&format!("[mobile] read failed: {error:?}").into());
+                    status_for_file.set("Couldn't read the file.".to_string());
+                } } }); }, "Read" } }
                                 label { "File content" }
                                 textarea { class: "mobile-file-editor", value: "{file_content}", placeholder: "File content", "aria-label": "File content", oninput: move |event| file_content.set(event.value()) }
-                                button { class: "mobile-primary-button mobile-save-button", onclick: move |_| { let path = file_path.read().clone(); let content = file_content.read().clone(); let mut status_for_file = status; spawn(async move { match tauri_bridge::fs_write_file(&path, &content).await { Ok(_) => status_for_file.set("File saved".to_string()), Err(error) => status_for_file.set(format!("Save failed: {error:?}")) } }); }, "Save file" }
+                                button { class: "mobile-primary-button mobile-save-button", onclick: move |_| { let path = file_path.read().clone(); let content = file_content.read().clone(); let mut status_for_file = status; spawn(async move { match tauri_bridge::fs_write_file(&path, &content).await { Ok(_) => status_for_file.set("File saved".to_string()),                Err(error) => {
+                    web_sys::console::warn_1(&format!("[mobile] save failed: {error:?}").into());
+                    status_for_file.set("Couldn't save the file.".to_string());
+                } } }); }, "Save file" }
                             }
                         }
                     }

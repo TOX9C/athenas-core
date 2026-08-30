@@ -59,6 +59,30 @@ fn record_from_value(value: &serde_json::Value) -> Option<NotificationRecord> {
             .or_else(|| value.get("request_id"))
             .and_then(|v| v.as_str())
             .map(str::to_string),
+        event_key: value
+            .get("eventKey")
+            .or_else(|| value.get("event_key"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        run_id: value
+            .get("runId")
+            .or_else(|| value.get("run_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        pane_id: value
+            .get("paneId")
+            .or_else(|| value.get("pane_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        requires_action: value
+            .get("requiresAction")
+            .or_else(|| value.get("requires_action"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        resolved_at: value
+            .get("resolvedAt")
+            .or_else(|| value.get("resolved_at"))
+            .and_then(|v| v.as_i64()),
         dismissed_at: value
             .get("dismissedAt")
             .or_else(|| value.get("dismissed_at"))
@@ -93,6 +117,8 @@ enum NotificationBusEvent {
     New(serde_json::Value),
     MarkRead(String),
     MarkAllRead,
+    Resolved(String),
+    Dismissed(String),
     Clear,
 }
 
@@ -122,13 +148,16 @@ pub fn NotificationToast() -> Element {
                             toast_type: toast_type(&ntype),
                             title: record.title.clone(),
                             message: record.message.clone(),
-                            duration_ms: if matches!(
-                                ntype,
-                                NotificationType::NeedsInput | NotificationType::TaskError
-                            ) {
-                                0
-                            } else {
-                                5000
+                            // Toasts are transient attention cues. Durable
+                            // history and unresolved input state live in the
+                            // notification store, not in this bottom-right UI.
+                            duration_ms: match ntype {
+                                NotificationType::NeedsInput => 2500,
+                                NotificationType::TaskError | NotificationType::Error => 3000,
+                                NotificationType::TaskComplete
+                                | NotificationType::Success
+                                | NotificationType::Warning => 2000,
+                                NotificationType::Info => 1800,
                             },
                         };
                         let id = record.id.clone();
@@ -144,6 +173,17 @@ pub fn NotificationToast() -> Element {
                         for record in notifications.write().iter_mut() {
                             record.read = true;
                         }
+                    }
+                    NotificationBusEvent::Resolved(id) => {
+                        if let Some(record) = notifications.write().iter_mut().find(|n| n.id == id)
+                        {
+                            record.read = true;
+                            record.resolved_at = Some(chrono::Utc::now().timestamp_millis());
+                        }
+                    }
+                    NotificationBusEvent::Dismissed(id) => {
+                        notifications.write().retain(|record| record.id != id);
+                        toasts.write().remove(&id);
                     }
                     NotificationBusEvent::Clear => {
                         notifications.write().clear();
@@ -188,6 +228,32 @@ pub fn NotificationToast() -> Element {
                         update_dispatcher.send(NotificationBusEvent::MarkAllRead);
                     } else if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
                         update_dispatcher.send(NotificationBusEvent::MarkRead(id.to_string()));
+                    }
+                }
+            })
+        {
+            listeners_for_effect.borrow_mut().push(unlisten);
+        }
+
+        let resolved_dispatcher = dispatcher;
+        if let Ok(unlisten) =
+            tauri_bridge::listen("notifications:resolved", move |payload: String| {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+                    if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
+                        resolved_dispatcher.send(NotificationBusEvent::Resolved(id.to_string()));
+                    }
+                }
+            })
+        {
+            listeners_for_effect.borrow_mut().push(unlisten);
+        }
+
+        let dismissed_dispatcher = dispatcher;
+        if let Ok(unlisten) =
+            tauri_bridge::listen("notifications:dismissed", move |payload: String| {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+                    if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
+                        dismissed_dispatcher.send(NotificationBusEvent::Dismissed(id.to_string()));
                     }
                 }
             })

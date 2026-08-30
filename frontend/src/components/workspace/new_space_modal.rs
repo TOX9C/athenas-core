@@ -351,12 +351,17 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 )
                                                 .await
                                             {
-                                                let message = format!(
-                                                    "Could not authorize the workspace: {:?}",
-                                                    error
+                                                web_sys::console::error_1(
+                                                    &format!(
+                                                        "[NewSpaceModal] trust-on-launch failed: {:?}",
+                                                        error
+                                                    )
+                                                    .into(),
                                                 );
-                                                web_sys::console::error_1(&message.clone().into());
-                                                launch_error.set(Some(message));
+                                                launch_error.set(Some(
+                                                    "Couldn't grant access to this folder. Check macOS permissions and try again."
+                                                        .to_string(),
+                                                ));
                                                 return;
                                             }
                                             match crate::tauri_bridge::swarm_create(&swarm_dir, &swarm_json).await {
@@ -367,12 +372,17 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     props.on_close.call(());
                                                 }
                                                 Err(error) => {
-                                                    let message = format!(
-                                                        "Could not create the swarm mission: {:?}",
-                                                        error
+                                                    web_sys::console::error_1(
+                                                        &format!(
+                                                            "[NewSpaceModal] swarm create failed: {:?}",
+                                                            error
+                                                        )
+                                                        .into(),
                                                     );
-                                                    web_sys::console::error_1(&message.clone().into());
-                                                    launch_error.set(Some(message));
+                                                    launch_error.set(Some(
+                                                        "Couldn't create the swarm mission. Check the folder permissions and try again."
+                                                            .to_string(),
+                                                    ));
                                                 }
                                             }
                                         });

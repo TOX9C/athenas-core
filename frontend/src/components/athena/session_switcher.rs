@@ -1,3 +1,4 @@
+use crate::components::shared::confirm_dialog::ConfirmDialog;
 use crate::components::shared::icon::{IconChevronDown, IconChevronUp, IconPlus, IconTrash};
 use crate::stores::athena::{use_athena_store, AthenaMessage, MessageRole};
 use crate::tauri_bridge;
@@ -86,15 +87,18 @@ pub fn SessionSwitcher() -> Element {
     let mut is_open = use_signal(|| false);
     let mut sessions: Signal<Vec<SessionListItem>> = use_signal(Vec::new);
     let mut is_loading = use_signal(|| false);
+    // Session id awaiting delete confirmation (deleting a chat is destructive
+    // and irreversible — the full transcript is dropped).
+    let mut confirm_delete = use_signal(|| None::<String>);
 
-    // Load sessions on mount
+    // Load sessions on mount.
     use_effect(move || {
         spawn(async move {
             is_loading.set(true);
             match fetch_sessions().await {
                 Ok(items) => sessions.set(items),
                 Err(error) => {
-                    web_sys::console::error_1(&format!("[SessionSwitcher] {error}").into())
+                    web_sys::console::error_1(&format!("[SessionSwitcher] {error}").into());
                 }
             }
             is_loading.set(false);
@@ -109,7 +113,7 @@ pub fn SessionSwitcher() -> Element {
         current_title
     };
 
-    // Clone for the click handlers that need to refresh
+    // Clone for the click handlers that need to refresh.
     let sessions_data = sessions.read().clone();
     let loading_val = is_loading();
     let is_dropdown_open = is_open();
@@ -118,7 +122,7 @@ pub fn SessionSwitcher() -> Element {
         div {
             style: "position: relative; display: inline-flex; align-items: center;",
 
-            // Trigger button
+            // Trigger button.
             button {
                 class: "btn-ghost btn-sm",
                 style: "display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: var(--radius-sm); border: none; background: transparent; color: var(--text); font-family: var(--font-ui); font-size: var(--text-xs); cursor: pointer; transition: background var(--dur-fast) var(--ease);",
@@ -136,26 +140,26 @@ pub fn SessionSwitcher() -> Element {
                 }
             }
 
-            // Dropdown panel
+            // Dropdown panel.
             if is_dropdown_open {
                 div {
                     style: "position: absolute; top: calc(100% + 6px); left: 0; z-index: 200; width: 280px; max-height: 360px; display: flex; flex-direction: column; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-md); overflow: hidden;",
 
-                    // New chat button
+                    // New chat button.
                     div {
                         style: "padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
                         button {
                             class: "btn-secondary btn-sm",
                             style: "width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--text); font-family: var(--font-ui); font-size: var(--text-xs); cursor: pointer; transition: all var(--dur-fast) var(--ease);",
-                            onclick: move |_| {                                                let mut athena = athena_state;
-                                                spawn(async move {
-                                                    let request_id = athena.read().active_request_id.clone();
-                                                    if let Some(request_id) = request_id {
-                                                        let _ = tauri_bridge::athena_cancel_stream(&request_id).await;
-                                                        athena.write().invalidate_active_request();
-                                                    }
-                                                    match tauri_bridge::session_create(Some("New Chat")).await {
-
+                            onclick: move |_| {
+                                let mut athena = athena_state;
+                                spawn(async move {
+                                    let request_id = athena.read().active_request_id.clone();
+                                    if let Some(request_id) = request_id {
+                                        let _ = tauri_bridge::athena_cancel_stream(&request_id).await;
+                                        athena.write().invalidate_active_request();
+                                    }
+                                    match tauri_bridge::session_create(Some("New Chat")).await {
                                         Ok(json) => {
                                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
                                                 if let Some(real_id) = val.get("id").and_then(|v| v.as_str()) {
@@ -169,7 +173,6 @@ pub fn SessionSwitcher() -> Element {
                                             web_sys::console::error_1(&format!("[SessionSwitcher] Failed to create session: {:?}", e).into());
                                         }
                                     }
-                                    // Refresh list after create
                                     match fetch_sessions().await {
                                         Ok(items) => sessions.set(items),
                                         Err(error) => web_sys::console::error_1(
@@ -184,7 +187,7 @@ pub fn SessionSwitcher() -> Element {
                         }
                     }
 
-                    // Session list
+                    // Session list.
                     div {
                         style: "flex: 1; overflow-y: auto; padding: 4px 0;",
 
@@ -223,17 +226,13 @@ pub fn SessionSwitcher() -> Element {
                                                 let sid = session_id_for_click.clone();
                                                 let mut athena = athena_state;
                                                 spawn(async move {
-                                                    match do_load_session(&sid, &mut athena).await {
-                                                        Ok(_) => {}
-                                                        Err(e) => {
-                                                            web_sys::console::error_1(&format!("[SessionSwitcher] {}", e).into());
-                                                        }
+                                                    if let Err(error) = do_load_session(&sid, &mut athena).await {
+                                                        web_sys::console::error_1(&format!("[SessionSwitcher] {error}").into());
                                                     }
                                                 });
                                                 is_open.set(false);
                                             },
 
-                                            // Session info
                                             div {
                                                 style: "flex: 1; min-width: 0;",
                                                 div {
@@ -253,37 +252,13 @@ pub fn SessionSwitcher() -> Element {
                                                 }
                                             }
 
-                                            // Delete button
+                                            // Delete button — opens a confirmation dialog.
                                             button {
                                                 class: "icon-btn",
                                                 style: "flex-shrink: 0; opacity: 0.6; padding: 2px; border: none; background: none; cursor: pointer; color: var(--textDim); transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);",
                                                 onclick: move |ev: Event<MouseData>| {
                                                     ev.stop_propagation();
-                                                    let sid = session_id_for_delete.clone();
-                                                    let mut athena = athena_state;
-                                                    spawn(async move {
-                                                        match tauri_bridge::session_delete(&sid).await {
-                                                            Ok(_) => {
-                                                                web_sys::console::log_1(&format!("[SessionSwitcher] Deleted session {}", sid).into());
-                                                            }
-                                                            Err(e) => {
-                                                                web_sys::console::error_1(&format!("[SessionSwitcher] Failed to delete session: {:?}", e).into());
-                                                            }
-                                                        }
-                                                        // If we deleted the active session, clear state
-                                                        if athena.read().session_id.as_deref() == Some(&sid) {
-                                                            athena.write().clear_messages();
-                                                            athena.write().set_session_id(None);
-                                                            athena.write().set_session_title(String::new());
-                                                        }
-                                                        // Refresh list after delete
-                                                        match fetch_sessions().await {
-                                                            Ok(items) => sessions.set(items),
-                                                            Err(error) => web_sys::console::error_1(
-                                                                &format!("[SessionSwitcher] {error}").into(),
-                                                            ),
-                                                        }
-                                                    });
+                                                    confirm_delete.set(Some(session_id_for_delete.clone()));
                                                 },
                                                 title: "Delete session",
                                                 IconTrash { size: Some(12), color: Some("currentColor".to_string()) }
@@ -293,6 +268,54 @@ pub fn SessionSwitcher() -> Element {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // Confirm before deleting a chat — the transcript is dropped permanently.
+        if let Some(pending_id) = confirm_delete() {
+            {
+                let pending_title = sessions
+                    .read()
+                    .iter()
+                    .find(|s| s.id == pending_id)
+                    .map(|s| s.title.clone())
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or_else(|| "this chat".to_string());
+                let mut confirm_delete_set = confirm_delete;
+                rsx! {
+                    ConfirmDialog {
+                        title: "Delete chat".to_string(),
+                        message: format!("Delete \"{pending_title}\"? Its transcript will be permanently removed."),
+                        confirm_label: "Delete Chat".to_string(),
+                        on_cancel: move |_| confirm_delete_set.set(None),
+                        on_confirm: move |_| {
+                            confirm_delete_set.set(None);
+                            let sid = pending_id.clone();
+                            let mut athena = athena_state;
+                            spawn(async move {
+                                match tauri_bridge::session_delete(&sid).await {
+                                    Ok(_) => {
+                                        web_sys::console::log_1(&format!("[SessionSwitcher] Deleted session {}", sid).into());
+                                    }
+                                    Err(e) => {
+                                        web_sys::console::error_1(&format!("[SessionSwitcher] Failed to delete session: {:?}", e).into());
+                                    }
+                                }
+                                if athena.read().session_id.as_deref() == Some(&sid) {
+                                    athena.write().clear_messages();
+                                    athena.write().set_session_id(None);
+                                    athena.write().set_session_title(String::new());
+                                }
+                                match fetch_sessions().await {
+                                    Ok(items) => sessions.set(items),
+                                    Err(error) => web_sys::console::error_1(
+                                        &format!("[SessionSwitcher] {error}").into(),
+                                    ),
+                                }
+                            });
+                        },
                     }
                 }
             }

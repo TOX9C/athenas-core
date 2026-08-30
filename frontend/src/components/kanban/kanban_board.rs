@@ -1,4 +1,5 @@
-use super::kanban_column::KanbanColumn;
+use super::kanban_column::{create_task_in_column, reload_tasks, KanbanColumn};
+use crate::components::shared::icon::IconPlus;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::task::{tasks_from_backend_json, use_task_store, KanbanStatus, KanbanTask};
 use crate::tauri_bridge;
@@ -8,6 +9,10 @@ use dioxus::prelude::*;
 pub fn KanbanBoard() -> Element {
     let task_state = use_task_store();
     let mut loaded = use_signal(|| false);
+    // First-task affordance shown on the empty board — the columns (and their
+    // add-task inputs) don't exist until a task exists, so the empty state
+    // owns its own quick-add row.
+    let mut add_text = use_signal(String::new);
 
     let columns = [
         ("To Do", KanbanStatus::Todo),
@@ -55,7 +60,55 @@ pub fn KanbanBoard() -> Element {
                 EmptyState {
                     kind: EmptyArt::Kanban,
                     title: "No tasks".to_string(),
-                    hint: Some("Add a task to a column to start planning.".to_string()),
+                    hint: Some("Create the first task to start planning.".to_string()),
+                    div {
+                        style: "display: flex; align-items: center; gap: 6px; width: 100%; max-width: 340px;",
+                        input {
+                            class: "field",
+                            style: "flex: 1; padding: 6px 10px; font-size: var(--text-xs);",
+                            value: "{add_text}",
+                            oninput: move |e| add_text.set(e.value()),
+                            onkeydown: move |e| {
+                                if e.key() == Key::Enter {
+                                    let text = add_text.read().clone();
+                                    if !text.is_empty() {
+                                        add_text.set(String::new());
+                                        let store_for_add = task_state;
+                                        spawn(async move {
+                                            if let Err(e) = create_task_in_column(&text, KanbanStatus::Todo).await {
+                                                web_sys::console::error_1(
+                                                    &format!("[KanbanBoard] create failed: {e:?}").into(),
+                                                );
+                                            }
+                                            reload_tasks(store_for_add).await;
+                                        });
+                                    }
+                                }
+                            },
+                            placeholder: "Add your first task…"
+                        }
+                        button {
+                            class: "icon-btn",
+                            title: "Add task",
+                            onclick: move |_| {
+                                let text = add_text.read().clone();
+                                if text.is_empty() {
+                                    return;
+                                }
+                                add_text.set(String::new());
+                                let store_for_add = task_state;
+                                spawn(async move {
+                                    if let Err(e) = create_task_in_column(&text, KanbanStatus::Todo).await {
+                                        web_sys::console::error_1(
+                                            &format!("[KanbanBoard] create failed: {e:?}").into(),
+                                        );
+                                    }
+                                    reload_tasks(store_for_add).await;
+                                });
+                            },
+                            IconPlus { size: Some(14), color: Some("currentColor".to_string()) }
+                        }
+                    }
                 }
             } else {
                 for (col_name, col_status) in columns.iter() {

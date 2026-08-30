@@ -49,6 +49,7 @@ pub(super) enum OutputBusEvent {
     },
     InputRequested {
         pane_id: String,
+        request_id: Option<String>,
         message: String,
         now: i64,
     },

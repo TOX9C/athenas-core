@@ -1,3 +1,4 @@
+use crate::components::plugin::input_request_modal::use_input_request_overlay_store;
 use crate::components::shared::icon::{IconBell, IconClose};
 use crate::stores::notification::{
     mark_notification_dismissed, mark_notification_read, use_notification_store,
@@ -7,6 +8,11 @@ use crate::tauri_bridge;
 use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+/// Unique newtype so this overlay never collides with other `Signal<bool>`
+/// contexts — Dioxus contexts are keyed by type, and the input-request
+/// overlay also wraps `Signal<bool>`.
+#[derive(Clone, Copy)]
+pub struct NotificationOverlayState(pub Signal<bool>);
 
 fn notification_type_label(notification_type: &NotificationType) -> &'static str {
     match notification_type {
@@ -22,11 +28,13 @@ fn notification_type_label(notification_type: &NotificationType) -> &'static str
 
 /// Shared open state for the root-level notification popover.
 pub fn provide_notification_overlay_store() {
-    use_context_provider(|| Signal::new(false));
+    use_context_provider(|| NotificationOverlayState(Signal::new(false)));
 }
 
-fn use_notification_overlay_store() -> Signal<bool> {
-    use_context::<Signal<bool>>()
+/// Read the root-level notification popover state from another overlay-aware
+/// component (for example, the native browser surface).
+pub fn use_notification_overlay_store() -> Signal<bool> {
+    use_context::<NotificationOverlayState>().0
 }
 
 /// Notification bell for the title bar. The popover itself is rendered by
@@ -101,6 +109,7 @@ pub fn NotificationBell() -> Element {
 pub fn NotificationPopover() -> Element {
     let mut dropdown_open = use_notification_overlay_store();
     let mut notifications = use_notification_store();
+    let mut input_open = use_input_request_overlay_store();
     let visible: Vec<NotificationRecord> = notifications
         .read()
         .iter()
@@ -175,6 +184,18 @@ pub fn NotificationPopover() -> Element {
                                     div { style: "font-size: var(--text-sm); font-weight: {weight}; color: {title_color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;", "{display_title}" }
                                     div { style: "font-size: var(--text-2xs); color: var(--textDim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;", "{message}" }
                                 }
+                                if n.requires_action && n.resolved_at.is_none() && n.request_id.is_some() {
+                                    button {
+                                        class: "btn-primary btn-sm",
+                                        onclick: {
+                                            move |event: Event<MouseData>| {
+                                                event.stop_propagation();
+                                                input_open.set(true);
+                                            }
+                                        },
+                                        "Respond"
+                                    }
+                                }
                                 button {
                                     class: "icon-btn",
                                     style: "flex-shrink: 0;",
@@ -200,6 +221,7 @@ pub fn NotificationPopover() -> Element {
                 style: "position: sticky; bottom: 0; display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bgSecondary);",
                 button {
                     class: "btn-ghost btn-sm",
+                    disabled: visible.is_empty() || unread_count == 0,
                     onclick: move |_| {
                         spawn(async move { let _ = tauri_bridge::notification_mark_all_read().await; });
                         for n in notifications.write().iter_mut() { n.read = true; }
@@ -208,6 +230,7 @@ pub fn NotificationPopover() -> Element {
                 }
                 button {
                     class: "btn-ghost btn-sm",
+                    disabled: visible.is_empty(),
                     onclick: move |_| {
                         spawn(async move { let _ = tauri_bridge::notification_clear_all().await; });
                         notifications.write().clear();

@@ -65,6 +65,10 @@ pub struct AthenaState {
     /// error message so the UI can show a warning instead of silently
     /// looking like everything is fine. `None` = no error or not checked.
     pub api_keyring_error: Option<String>,
+    /// Plan step to highlight (Kanban ↔ plan deep link). Set when the user
+    /// clicks "View in plan" on a kanban card; the plan block scrolls to and
+    /// pulses that step, then clears it.
+    pub plan_highlight_step: Option<String>,
 }
 
 impl AthenaState {
@@ -88,6 +92,7 @@ impl AthenaState {
             api_configured: None,
             configured_model: None,
             api_keyring_error: None,
+            plan_highlight_step: None,
         }
     }
 
@@ -103,6 +108,10 @@ impl AthenaState {
 
     pub fn set_open(&mut self, open: bool) {
         self.is_open = open;
+    }
+
+    pub fn set_plan_highlight(&mut self, step_id: Option<String>) {
+        self.plan_highlight_step = step_id;
     }
 
     pub fn toggle_open(&mut self) {
@@ -194,8 +203,14 @@ impl AthenaState {
             self.error = Some(message.clone());
             if let Some(last) = self.messages.back_mut() {
                 if last.role == MessageRole::Athena && !last.is_error {
+                    // Always surface the reason. Previously a failure after any
+                    // partial stream left the error stranded in `self.error` and
+                    // rendered only the bare "This request failed." caption with
+                    // no cause. Append the reason to whatever partial text exists.
                     if last.content.is_empty() {
                         last.content = format!("Error: {message}");
+                    } else {
+                        last.content.push_str(&format!("\n\nError: {message}"));
                     }
                     last.is_error = true;
                 }
@@ -629,6 +644,22 @@ mod tests {
     }
 
     #[test]
+    fn shell_context_is_stored_and_deduplicated_like_agent_context() {
+        let mut s = AthenaState::default();
+        assert!(s.add_agent_context("pane-shell", "shell", "Terminal"));
+        assert!(!s.add_agent_context("pane-shell", "shell", "Renamed Terminal"));
+        assert_eq!(s.dropped_context.len(), 1);
+        assert!(matches!(
+            &s.dropped_context[0],
+            DraggableItem::Agent {
+                agent_type,
+                label,
+                ..
+            } if agent_type == "shell" && label == "Terminal"
+        ));
+    }
+
+    #[test]
     fn prepare_retry_removes_failed_turn_without_touching_earlier_history() {
         let mut s = AthenaState::default();
         s.add_message(AthenaMessage {
@@ -664,5 +695,49 @@ mod tests {
         assert_eq!(s.messages.len(), 1);
         assert_eq!(s.messages.front().unwrap().content, "older question");
         assert!(s.error.is_none());
+    }
+
+    #[test]
+    fn fail_stream_appends_reason_to_partial_content() {
+        // Regression: a failure after a partial stream used to leave the error
+        // only in `self.error`, rendering "This request failed." with no cause.
+        let mut s = AthenaState::default();
+        s.begin_stream("req-1".to_string());
+        s.add_message(AthenaMessage {
+            id: "assistant".into(),
+            role: MessageRole::Athena,
+            content: "partial answer".into(),
+            timestamp: 0,
+            is_error: false,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+
+        s.fail_stream("req-1", "rate limit exceeded".to_string(), false);
+
+        let last = s.messages.back().unwrap();
+        assert!(last.is_error);
+        assert_eq!(last.content, "partial answer\n\nError: rate limit exceeded");
+    }
+
+    #[test]
+    fn fail_stream_fills_empty_content_with_reason() {
+        let mut s = AthenaState::default();
+        s.begin_stream("req-1".to_string());
+        s.add_message(AthenaMessage {
+            id: "assistant".into(),
+            role: MessageRole::Athena,
+            content: String::new(),
+            timestamp: 0,
+            is_error: false,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+
+        s.fail_stream("req-1", "timeout".to_string(), false);
+
+        let last = s.messages.back().unwrap();
+        assert!(last.is_error);
+        assert_eq!(last.content, "Error: timeout");
     }
 }

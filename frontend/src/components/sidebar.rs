@@ -53,19 +53,6 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                 div {
                     style: "display: flex; align-items: center; gap: 4px;",
 
-                    if matches!(section, SidebarSection::Spaces) {
-                        button {
-                            class: "icon-btn",
-                            title: "New workspace",
-                            "aria-label": "New workspace",
-                            onclick: move |_| {
-                                web_sys::console::log_1(&"[Sidebar] Header + clicked".into());
-                                props.on_new_space.call(());
-                            },
-                            IconPlus { size: Some(15), color: Some("currentColor".to_string()) }
-                        }
-                    }
-
                     button {
                         class: "icon-btn",
                         title: "Collapse sidebar",

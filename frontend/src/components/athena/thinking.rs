@@ -9,19 +9,15 @@ pub struct ThinkingProps {
 }
 
 /* ─────────────────────────────────────────────────────────
- * PIXEL-GRID LOADER + AGENT TRACE
+ * ASSISTANT THINKING ROW
  *
- * Header row: a 3×3 chevron wavefront of gold cells, a
- * shimmering status label, and a live elapsed timer in mono
- * tabular figures. Expandable beneath it: the rolling trace
- * of agent statuses for this request — earlier steps settle
- * into checks, the current step spins. The reduced-motion
- * guard in styles.css freezes the grid to its dim state.
+ * A quiet "working" row that sits in the message
+ * column like a message of its own: three typing
+ * dots, a status label, and a live elapsed timer. Expandable
+ * beneath it: the rolling trace of agent statuses for this
+ * request — earlier steps settle into checks, the current
+ * step spins.
  * ───────────────────────────────────────────────────────── */
-
-/// Chevron wavefront delays, one per grid cell. The 650ms cycle is shorter
-/// than the sweep, so two fronts are always in flight.
-const PIXEL_DELAYS: [u32; 9] = [90, 180, 270, 0, 90, 180, 90, 180, 270];
 
 fn format_elapsed(tenths: u64) -> String {
     let total = tenths as f64 / 10.0;
@@ -55,73 +51,74 @@ pub fn AthenaThinkingIndicator(props: ThinkingProps) -> Element {
     rsx! {
         div {
             class: "thinking-indicator",
-            style: "display: flex; flex-direction: column; gap: 4px; padding: 8px 12px;",
+            style: "display: flex; align-items: flex-start; gap: 8px; padding: 6px 12px 8px;",
 
-            // Header — pixel grid + shimmer label + elapsed + chevron.
-            button {
-                type: "button",
-                aria_expanded: format!("{}", expanded()),
-                onclick: move |_| expanded.set(!expanded()),
-                style: "display: flex; align-items: center; gap: 8px; width: fit-content; padding: 2px 4px; margin: -2px -4px; border-radius: var(--radius-sm); transition: background-color 100ms var(--ease); background: transparent;",
+            div {
+                style: "flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;",
 
-                // 3×3 pixel grid — gold cells driven by a chevron wavefront.
-                span {
-                    aria_hidden: "true",
-                    style: "display: grid; grid-template-columns: repeat(3, 4px); gap: 1.5px;",
-                    for (i, delay) in PIXEL_DELAYS.iter().enumerate() {
-                        span {
-                            key: "px-{i}",
-                            style: "width: 4px; height: 4px; border-radius: 1px; background: var(--accent); opacity: 0.15; animation: pixel-on 650ms ease-in-out {delay}ms infinite;",
+                // Header — typing dots + status + elapsed + chevron.
+                button {
+                    type: "button",
+                    aria_expanded: format!("{}", expanded()),
+                    onclick: move |_| expanded.set(!expanded()),
+                    style: "display: flex; align-items: center; gap: 8px; width: fit-content; padding: 2px 4px; margin: -2px -4px; border-radius: var(--radius-sm); transition: background-color 100ms var(--ease); background: transparent;",
+
+                    // Three-dot typing indicator.
+                    span {
+                        class: "athena-typing-dots",
+                        aria_hidden: "true",
+                        for (i, delay) in [0u32, 160, 320].iter().enumerate() {
+                            span {
+                                key: "dot-{i}",
+                                class: "athena-typing-dot",
+                                style: "animation-delay: {delay}ms;",
+                            }
                         }
+                    }
+
+                    // Status label.
+                    span {
+                        style: "font-size: var(--text-sm); font-weight: 500; white-space: nowrap; color: var(--text);",
+                        "{status_label}"
+                    }
+
+                    // Live elapsed timer.
+                    span {
+                        style: "font-family: var(--font-mono); font-size: var(--text-xs); color: var(--textDim); font-variant-numeric: tabular-nums;",
+                        "{format_elapsed(elapsed_tenths())}"
+                    }
+
+                    if expanded() {
+                        IconChevronDown { size: Some(12), color: Some("var(--textDim)".to_string()) }
+                    } else {
+                        IconChevronRight { size: Some(12), color: Some("var(--textDim)".to_string()) }
                     }
                 }
 
-                // Shimmering status label.
-                span {
-                    class: "shimmer-text",
-                    style: "font-size: var(--text-sm); font-weight: 500; white-space: nowrap;",
-                    "{status_label}"
-                }
-
-                // Live elapsed timer — mono tabular figures.
-                span {
-                    style: "font-family: var(--font-mono); font-size: var(--text-xs); color: var(--textDim); font-variant-numeric: tabular-nums;",
-                    "{format_elapsed(elapsed_tenths())}"
-                }
-
-                if expanded() {
-                    IconChevronDown { size: Some(13), color: Some("var(--textDim)".to_string()) }
-                } else {
-                    IconChevronRight { size: Some(13), color: Some("var(--textDim)".to_string()) }
-                }
-            }
-
-            // Expandable trace — statuses settle into checks, the newest spins.
-            if expanded() && !trace.is_empty() {
-                div {
-                    style: "display: flex; flex-direction: column; gap: 3px; margin-top: 4px; padding-left: 2px;",
-                    for (i, step) in trace.iter().enumerate() {
-                        {
-                            let is_last = i == trace.len() - 1;
-                            let step_text = step.clone();
-                            rsx! {
-                                div {
-                                    key: "trace-{i}",
-                                    style: format!(
-                                        "display: flex; align-items: center; gap: 8px; min-height: 20px; padding: 1px 6px; animation: fade-up 320ms var(--ease) {}ms both;",
-                                        i * 90
-                                    ),
-                                    if is_last {
-                                        // Spinner — current step.
-                                        span {
-                                            style: "width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--border); border-top-color: var(--textMuted); animation: spin 700ms linear infinite; flex-shrink: 0;",
+                // Expandable trace — statuses settle into checks, the newest spins.
+                if expanded() && !trace.is_empty() {
+                    div {
+                        style: "display: flex; flex-direction: column; gap: 2px; margin-top: 2px;",
+                        for (i, step) in trace.iter().enumerate() {
+                            {
+                                let is_last = i == trace.len() - 1;
+                                let step_text = step.clone();
+                                rsx! {
+                                    div {
+                                        key: "trace-{i}",
+                                        style: "display: flex; align-items: center; gap: 8px; min-height: 20px; padding: 1px 6px; animation: fade-up 300ms var(--ease) both;",
+                                        if is_last {
+                                            // Spinner — current step.
+                                            span {
+                                                style: "width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--border); border-top-color: var(--textMuted); animation: spin 700ms linear infinite; flex-shrink: 0;",
+                                            }
+                                        } else {
+                                            IconCheck { size: Some(10), color: Some("var(--success)".to_string()) }
                                         }
-                                    } else {
-                                        IconCheck { size: Some(11), color: Some("var(--success)".to_string()) }
-                                    }
-                                    span {
-                                        style: "font-size: var(--text-sm); color: var(--textMuted);",
-                                        "{step_text}"
+                                        span {
+                                            style: "font-size: var(--text-sm); color: var(--textMuted);",
+                                            "{step_text}"
+                                        }
                                     }
                                 }
                             }

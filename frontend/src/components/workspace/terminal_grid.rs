@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::components::shared::icon::{
-    IconCheck, IconClose, IconCopy, IconFullscreen, IconMinimize,
+    IconCheck, IconClose, IconCopy, IconFullscreen, IconMinimize, IconSmartphone,
 };
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus};
@@ -14,8 +14,8 @@ use crate::stores::workspace::{use_workspace_store, AgentType, Space};
 use crate::tauri_bridge::{pty_agent_info, pty_kill, pty_write};
 use crate::types::workspace::CustomAgent;
 use crate::utils::agent_commands::{
-    agent_process_name, claude_resume_variants, custom_agent_process_name, get_agent_color,
-    get_agent_label, get_agent_resume_command,
+    agent_process_name, claude_resume_variants, custom_agent_process_name, get_agent_label,
+    get_agent_resume_command,
 };
 
 #[path = "terminal_cells.rs"]
@@ -24,7 +24,9 @@ use terminal_cells::TerminalPaneBody;
 
 #[path = "terminal_resize.rs"]
 mod terminal_resize;
-use terminal_resize::{ColDivider, DragInfo, DragOverlay, RowDivider};
+use terminal_resize::{
+    preserve_row_weights, preserve_weight_shape, ColDivider, DragInfo, DragOverlay, RowDivider,
+};
 
 #[cfg(feature = "xterm")]
 use crate::components::workspace::xterm_mount::XtermMount;
@@ -117,6 +119,9 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     let panel_store = use_panel_manager_store();
     let ui_store = use_ui_store();
     let active_pane_id = terminal_store.read().active_session_id.clone();
+    let has_active_pane = active_pane_id
+        .as_ref()
+        .is_some_and(|id| space.panes.iter().any(|pane| &pane.id == id));
     // Note: active pane selection is stored in TerminalStore (single source of truth).
     // The clicked pane gets a subtle gold focus ring (see `.pane-focus-ring`).
 
@@ -137,24 +142,21 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
         let current_width_shape: Vec<usize> =
             col_widths.read().iter().map(|row| row.len()).collect();
         if current_width_shape != target_width_shape {
-            col_widths.set(
-                target_width_shape
-                    .into_iter()
-                    .map(|len| vec![1.0_f64; len])
-                    .collect(),
-            );
+            let existing = col_widths.read().clone();
+            col_widths.set(preserve_weight_shape(&existing, &target_width_shape));
         }
 
         let target_row_count = actual_row_count.max(1);
         if row_heights.read().len() != target_row_count {
-            row_heights.set(vec![1.0_f64; target_row_count]);
+            let existing = row_heights.read().clone();
+            row_heights.set(preserve_row_weights(&existing, target_row_count));
         }
     });
 
     let show_athena_fallback = pill_drag
         .read()
         .as_ref()
-        .is_some_and(|drag| drag.source_is_agent)
+        .is_some_and(|drag| drag.source_can_reference)
         && (!ui_store.read().right_sidebar_open
             || panel_store.read().active_right_panel != RightPanel::Assistant);
 
@@ -237,6 +239,8 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
 
                                             PaneItem {
                                                 key: "pane-{space.id}-{pane.id}",
+                                                is_active,
+                                                is_dimmed: has_active_pane && !is_active,
                                                 space_id: space.id.clone(),
                                                 pane_id: pane.id.clone(),
                                                 cwd: space.dir.clone(),
@@ -333,6 +337,8 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
 struct PaneItemProps {
     space_id: String,
     pane_id: String,
+    is_active: bool,
+    is_dimmed: bool,
     cwd: String,
     agent_type: AgentType,
     /// Whether this PTY-backed pane should use xterm.js for rendering and input.
@@ -369,10 +375,27 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let pane_id_for_close = props.pane_id.clone();
     let space_id_for_close = props.space_id.clone();
     let agent_label = get_agent_label(&props.agent_type);
-    let _agent_color = get_agent_color(&props.agent_type);
     let _display_id: String = props.pane_id.chars().take(10).collect();
     let is_fullscreen = fullscreen_pane_id.read().as_deref() == Some(&props.pane_id);
     let pane_id_for_fullscreen = props.pane_id.clone();
+
+    // Mobile-mirror per-pane share state. Default off; the backend's shared
+    // set is in-memory (reset on app exit), so a fresh mount always starts
+    // unshared and re-reads the live set on mount to stay in sync with the
+    // Settings relay panel.
+    let pane_id_for_share = props.pane_id.clone();
+    let mut pane_shared = use_signal(|| false);
+    {
+        let pane_id_for_share_init = pane_id_for_share.clone();
+        use_effect(move || {
+            let pid = pane_id_for_share_init.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(ids) = crate::tauri_bridge::relay_list_shared_panes().await {
+                    pane_shared.set(ids.iter().any(|id| id == &pid));
+                }
+            });
+        });
+    }
 
     // Drag-source locals for the pill drag-and-drop swap (clone once so the
     // grab-surface `onpointerdown` closure can move them without re-borrowing
@@ -548,8 +571,13 @@ fn PaneItem(props: PaneItemProps) -> Element {
         && !banner_dismissed()
         && (!has_detectable_agent || !agent_running());
 
-    // Diagnostic breadcrumb for resume regressions. It records only pane
-    // metadata and lengths, never terminal output or the full session ID.
+    // Diagnostic breadcrumb for resume regressions. It is opt-in so normal
+    // rendering does not emit one console message per pane refresh. It records
+    // only pane metadata and lengths, never terminal output or the full session ID.
+    let diagnostics_enabled = web_sys::window()
+        .and_then(|window| window.location().search().ok())
+        .map(|search| search.contains("diagnostics=1"))
+        .unwrap_or(false);
     {
         let pane_id = props.pane_id.clone();
         let agent = props.agent_type.to_string();
@@ -558,6 +586,9 @@ fn PaneItem(props: PaneItemProps) -> Element {
         let variant_count = resume_variants.len();
         let detectable_process = known_process.map(str::to_string);
         use_effect(move || {
+            if !diagnostics_enabled {
+                return;
+            }
             let running = agent_running();
             let dismissed = banner_dismissed();
             web_sys::console::log_1(
@@ -617,9 +648,9 @@ fn PaneItem(props: PaneItemProps) -> Element {
         // Thinking renders as a pulsing dot — distinct from the solid
         // working dot so a freshly-woken agent reads as "warming up".
         Some(AgentRunStatus::Thinking) => "status-dot is-thinking",
-        Some(AgentRunStatus::WaitingForInput)
-        | Some(AgentRunStatus::Error)
-        | Some(AgentRunStatus::Completed) => "status-dot is-attention",
+        Some(AgentRunStatus::WaitingForInput) => "status-dot is-attention",
+        Some(AgentRunStatus::Error) => "status-dot is-error",
+        Some(AgentRunStatus::Completed) => "status-dot is-completed",
         _ => "status-dot is-idle",
     };
     let pane_dot_title = match pane_status.as_ref() {
@@ -651,6 +682,13 @@ fn PaneItem(props: PaneItemProps) -> Element {
 
     rsx! {
         div {
+            class: if props.is_active {
+                "pane-content is-active"
+            } else if props.is_dimmed {
+                "pane-content is-dimmed"
+            } else {
+                "pane-content"
+            },
             style: "flex: 1; width: 100%; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; box-sizing: border-box;",
             onpointerdown: move |_| {
                 terminal_store.write().set_active(props.pane_id.clone());
@@ -700,7 +738,10 @@ fn PaneItem(props: PaneItemProps) -> Element {
                             moved: false,
                             target: None,
                             source_agent_type: drag_agent_type_for_start.to_string(),
-                            source_is_agent: !matches!(&drag_agent_type_for_start, AgentType::Shell),
+                            // Every pane is a valid Athena reference source. For
+                            // shell panes this captures the pane identity/type;
+                            // agent panes retain their provider metadata.
+                            source_can_reference: true,
                         }));
                     },
                         "data-agent-pill": "true",
@@ -776,6 +817,38 @@ fn PaneItem(props: PaneItemProps) -> Element {
                     }
                     div {
                         style: "display: flex; align-items: center; gap: 4px; margin-left: auto;",
+                        button {
+                            class: "icon-btn",
+                            title: if pane_shared() { "Stop sharing with mobile" } else { "Share with mobile" },
+                            "aria-label": if pane_shared() { "Stop sharing with mobile" } else { "Share with mobile" },
+                            onpointerdown: move |e: dioxus::prelude::PointerEvent| {
+                                e.stop_propagation();
+                            },
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                let next = !pane_shared();
+                                pane_shared.set(next);
+                                let pid = pane_id_for_share.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Err(err) =
+                                        crate::tauri_bridge::relay_set_pane_shared(&pid, next).await
+                                    {
+                                        web_sys::console::error_1(
+                                            &format!(
+                                                "[relay] share toggle failed for {}: {:?}",
+                                                pid, err
+                                            )
+                                            .into(),
+                                        );
+                                    }
+                                });
+                            },
+                            IconSmartphone {
+                                size: Some(13),
+                                color: Some(if pane_shared() { "var(--accent)".to_string() } else { "currentColor".to_string() }),
+                            }
+                        }
+
                         button {
                             class: "icon-btn",
                             title: if is_fullscreen { "Exit Fullscreen" } else { "Fullscreen" },

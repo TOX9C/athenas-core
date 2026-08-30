@@ -37,36 +37,59 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
         });
     };
 
+    // Confirm the current selection / custom text.
+    let confirm = {
+        let request_id = request_id.clone();
+        let options = options.clone();
+        move |_| {
+            if let Some(i) = selected() {
+                if let Some(option) = options.get(i) {
+                    submit(request_id.clone(), option.label.clone());
+                }
+            } else {
+                let text = custom_text.read().clone();
+                if !text.trim().is_empty() {
+                    submit(request_id.clone(), text.trim().to_string());
+                    custom_text.set(String::new());
+                }
+            }
+        }
+    };
+
     rsx! {
         div {
-            style: "margin-top: 8px; border-radius: var(--radius-lg); border: 1px solid var(--border); background: var(--bgSecondary); box-shadow: var(--shadow-sm); overflow: hidden; animation: fade-up 350ms var(--ease) both;",
+            style: "margin-top: 6px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bgSecondary); overflow: hidden; animation: fade-up 300ms var(--ease) both;",
 
             if ask.answered {
-                // ── Sent state — green check + the recorded answer. ──
+                // ── Answered — a slim recap row, not a full card. ──
                 div {
-                    style: "display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 20px 16px;",
+                    style: "display: flex; align-items: center; gap: 8px; padding: 10px 12px;",
                     span {
-                        style: "width: 26px; height: 26px; border-radius: 50%; background: var(--success); color: var(--bg); display: inline-flex; align-items: center; justify-content: center; animation: pop-in 300ms cubic-bezier(0.22,0.61,0.36,1) both;",
-                        IconCheck { size: Some(13), color: Some("var(--bg)".to_string()) }
+                        style: "width: 18px; height: 18px; border-radius: 50%; background: var(--success); color: var(--bg); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; animation: pop-in 260ms cubic-bezier(0.22,0.61,0.36,1) both;",
+                        IconCheck { size: Some(10), color: Some("var(--bg)".to_string()) }
                     }
                     span {
-                        style: "font-size: var(--text-base); font-weight: 500; color: var(--text); animation: fade-up 350ms cubic-bezier(0.22,0.61,0.36,1) 100ms both;",
-                        "Answered: {answered_text}"
+                        style: "font-size: var(--text-xs); color: var(--textDim);",
+                        "You chose"
+                    }
+                    span {
+                        style: "font-size: var(--text-base); font-weight: 500; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                        "{answered_text}"
                     }
                 }
             } else {
-                // ── Question card — one question, elongated option pills. ──
+                // ── Question — prompt + selectable options + custom answer. ──
                 div {
-                    style: "padding: 12px 12px 4px;",
+                    style: "padding: 12px 12px 6px;",
                     span {
-                        style: "font-size: var(--text-base); font-weight: 500; color: var(--text); line-height: 1.5;",
+                        style: "display: block; font-size: var(--text-base); font-weight: 500; color: var(--text); line-height: 1.5;",
                         "{ask.question}"
                     }
                 }
 
                 if !options.is_empty() {
                     div {
-                        style: "padding: 4px 12px 0; display: flex; flex-direction: column; gap: 2px;",
+                        style: "padding: 4px 10px 0; display: flex; flex-direction: column; gap: 2px;",
                         for (i, option) in options.iter().enumerate() {
                             {
                                 let on = selected() == Some(i);
@@ -78,16 +101,19 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
                                         type: "button",
                                         aria_pressed: format!("{}", on),
                                         class: "athena-ask-option",
-                                        onclick: {
-                                            let request_id = request_id.clone();
-                                            let label = label.clone();
-                                            move |_| {
-                                                selected.set(Some(i));
-                                                custom_text.set(String::new());
-                                                submit(request_id.clone(), label.clone());
-                                            }
+                                        onclick: move |_| {
+                                            // Select only — the send button confirms.
+                                            selected.set(Some(i));
+                                            custom_text.set(String::new());
                                         },
-                                        style: "display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 5px 8px; border-radius: var(--radius-sm); transition: background-color 100ms var(--ease); background: transparent;",
+                                        style: format!(
+                                            "display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 7px 8px; border-radius: var(--radius-sm); transition: background-color 100ms var(--ease); {}",
+                                            if on {
+                                                "background: var(--accentSubtle); box-shadow: inset 0 0 0 1px var(--accent);"
+                                            } else {
+                                                ""
+                                            }
+                                        ),
                                         span {
                                             style: format!(
                                                 "width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; transition: background-color 200ms var(--ease), box-shadow 200ms var(--ease); {}",
@@ -100,16 +126,16 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
                                             }
                                         }
                                         span {
-                                            style: format!(
-                                                "font-size: var(--text-base); transition: color 200ms var(--ease); {}",
-                                                if on { "color: var(--text);" } else { "color: var(--textMuted);" }
-                                            ),
-                                            "{label}"
-                                        }
-                                        if !description.is_empty() {
+                                            style: "flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px;",
                                             span {
-                                                style: "margin-left: auto; font-size: var(--text-xs); color: var(--textDim);",
-                                                "{description}"
+                                                style: "font-size: var(--text-base); color: var(--text); line-height: 1.35;",
+                                                "{label}"
+                                            }
+                                            if !description.is_empty() {
+                                                span {
+                                                    style: "font-size: var(--text-xs); color: var(--textDim); line-height: 1.35;",
+                                                    "{description}"
+                                                }
                                             }
                                         }
                                     }
@@ -119,12 +145,12 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
                     }
                 }
 
-                // Custom answer row — spacer keeps the field aligned with options.
+                // Custom answer row.
                 div {
-                    style: "padding: 4px 12px 0;",
+                    style: "padding: 2px 10px 0;",
                     label {
                         class: "athena-ask-option",
-                        style: "display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 8px; border-radius: var(--radius-sm); transition: background-color 100ms var(--ease); background: transparent;",
+                        style: "display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border-radius: var(--radius-sm); transition: background-color 100ms var(--ease);",
                         span { aria_hidden: "true", style: "width: 16px; height: 16px; flex-shrink: 0;" }
                         input {
                             value: "{custom_text}",
@@ -155,31 +181,17 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
                     style: "display: flex; align-items: center; justify-content: flex-end; padding: 6px 12px 10px;",
                     button {
                         type: "button",
+                        class: "athena-ask-send",
                         aria_label: "Send answer",
-                        title: "Send answer",
+                        title: "Send answer (Enter)",
                         disabled: !send_ready,
-                        onclick: {
-                            let request_id = request_id.clone();
-                            move |_| {
-                                if let Some(i) = selected() {
-                                    if let Some(option) = options.get(i) {
-                                        submit(request_id.clone(), option.label.clone());
-                                    }
-                                } else {
-                                    let text = custom_text.read().clone();
-                                    if !text.trim().is_empty() {
-                                        submit(request_id.clone(), text.trim().to_string());
-                                        custom_text.set(String::new());
-                                    }
-                                }
-                            }
-                        },
+                        onclick: confirm,
                         style: if send_ready {
                             "background: var(--accent); color: var(--bg); box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);".to_string()
                         } else {
                             "background: var(--bgTertiary); color: var(--textDim);".to_string()
                         },
-                        IconSend { size: Some(14), color: Some("currentColor".to_string()) }
+                        IconSend { size: Some(13), color: Some("currentColor".to_string()) }
                     }
                 }
             }

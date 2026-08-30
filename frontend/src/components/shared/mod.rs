@@ -1,11 +1,10 @@
 pub mod badge;
 pub mod button;
+pub mod confirm_dialog;
 pub mod context_menu;
 pub mod error_boundary;
 pub mod icon;
 pub mod illustration;
 pub mod metrics_badge;
 pub mod modal;
-pub mod resizable_panel;
 pub mod toast;
-pub mod tooltip;

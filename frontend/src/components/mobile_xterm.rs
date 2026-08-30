@@ -192,22 +192,37 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                 }
             }
 
-            // Capture best-effort scrollback before pausing. The PTY keeps
-            // emitting while this snapshot is read; bytes after the snapshot
-            // are buffered by the pause handshake and arrive through xterm's
-            // raw stream after attach, avoiding a duplicate replay.
-            let history = tauri_bridge::output_buffer_get(&pane_id_for_task, Some(240), None)
+            // Capture best-effort scrollback before pausing. Prefer the relay's
+            // raw replay buffer: exact VT bytes (cursor position, colors, a
+            // partial in-flight line) restore true screen state after a
+            // reconnect. Fall back to ANSI-stripped text history when no raw
+            // replay exists (fresh spawn / nothing flushed yet). Bytes after
+            // this snapshot are buffered by the pause handshake and arrive
+            // through xterm's raw stream after attach, avoiding a duplicate
+            // replay.
+            let raw_replay = tauri_bridge::pty_raw_replay(&pane_id_for_task)
                 .await
                 .ok()
-                .and_then(|raw| serde_json::from_str::<Vec<tauri_bridge::OutputLine>>(&raw).ok())
-                .map(|lines| {
-                    lines
-                        .into_iter()
-                        .map(|line| line.text)
-                        .collect::<Vec<_>>()
-                        .join("\r\n")
-                })
-                .filter(|text| !text.is_empty());
+                .flatten()
+                .filter(|bytes| !bytes.is_empty());
+            let text_history = if raw_replay.is_none() {
+                tauri_bridge::output_buffer_get(&pane_id_for_task, Some(240), None)
+                    .await
+                    .ok()
+                    .and_then(|raw| {
+                        serde_json::from_str::<Vec<tauri_bridge::OutputLine>>(&raw).ok()
+                    })
+                    .map(|lines| {
+                        lines
+                            .into_iter()
+                            .map(|line| line.text)
+                            .collect::<Vec<_>>()
+                            .join("\r\n")
+                    })
+                    .filter(|text| !text.is_empty())
+            } else {
+                None
+            };
 
             // Mark the session xterm-managed before installing the raw
             // listener. Listener output is resumed by the generation lease
@@ -240,7 +255,7 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             set("scrollback", JsValue::from_f64(10000.0));
             set(
                 "fontFamily",
-                JsValue::from_str("'JetBrains Mono', monospace"),
+                JsValue::from_str("'JetBrains Mono', 'JetBrainsMono Nerd Font', monospace"),
             );
             set("fontSize", JsValue::from_f64(13.0));
             set("theme", {
@@ -283,9 +298,13 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             }
 
             // Replay best-effort scrollback before resuming the raw VT stream.
-            // This is intentionally history, not a claimed full VT snapshot:
-            // alternate-screen apps and cursor state are owned by the live PTY.
-            if let Some(history) = history {
+            // Raw replay (when present) is exact VT state; text history is the
+            // ANSI-stripped fallback. Either way this is history, not a claimed
+            // full VT snapshot: alternate-screen apps and cursor state are
+            // owned by the live PTY.
+            if let Some(bytes) = raw_replay {
+                write_bytes(&term, &bytes);
+            } else if let Some(history) = text_history {
                 write_text(&term, &format!("{}\r\n", history));
             }
 
@@ -305,13 +324,13 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
 
             let term_for_output = term.clone();
             let active_for_output = active_for_task.clone();
-            let unlisten =
+            let listener =
                 match tauri_bridge::pty_listen_raw(&pane_id_for_task, move |bytes: Vec<u8>| {
                     if *active_for_output.borrow() {
                         write_bytes(&term_for_output, &bytes);
                     }
                 }) {
-                    Ok(unlisten) => unlisten,
+                    Ok(listener) => listener,
                     Err(error) => {
                         web_sys::console::error_1(
                             &format!("[mobile xterm] raw listener failed: {error}").into(),
@@ -334,6 +353,7 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             let pane_for_attach = pane_id_for_task.clone();
             let generation_for_attach = listener_generation.clone();
             let active_for_attach = active_for_task.clone();
+            let unlisten = listener.unlisten;
             wasm_bindgen_futures::spawn_local(async move {
                 for attempt in 0..4 {
                     if !*active_for_attach.borrow() {
@@ -420,7 +440,7 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                     .unwrap_or(24.0) as u16;
                 let pane = pane_for_resize.clone();
                 wasm_bindgen_futures::spawn_local(async move {
-                    let _ = tauri_bridge::pty_resize(&pane, cols.max(1), rows.max(1)).await;
+                    let _ = tauri_bridge::pty_resize(&pane, cols.max(1), rows.max(1), None).await;
                 });
             }) as Box<dyn FnMut(JsValue)>);
             if let Ok(on_resize_fn) = js_sys::Reflect::get(&term, &JsValue::from_str("onResize"))
@@ -461,7 +481,7 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
 
             cleanup.set(Some(MobileXtermCleanup {
                 term,
-                unlisten: Some(unlisten),
+                unlisten,
                 _on_data: on_data_js,
                 _on_resize: on_resize_js,
                 resize_observer,

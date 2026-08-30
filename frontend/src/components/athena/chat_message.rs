@@ -1,6 +1,10 @@
 use super::content_block::ContentBlockRenderer;
-use crate::stores::athena::{AthenaMessage, MessageRole};
+use crate::components::athena::athena_input::retry_last_message;
+use crate::components::shared::icon::{IconCheck, IconCopy, IconRefresh};
+use crate::stores::athena::{use_athena_store, AthenaMessage, MessageRole};
 use dioxus::prelude::*;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct ChatMessageProps {
@@ -33,11 +37,61 @@ fn streaming_content(content: &str) -> Element {
     }
 }
 
+/// Copy plain text to the OS clipboard via the async Clipboard API.
+async fn copy_to_clipboard(text: String) -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Ok(clipboard) = js_sys::Reflect::get(&window.navigator(), &JsValue::from_str("clipboard"))
+    else {
+        return false;
+    };
+    let Ok(write_text) = js_sys::Reflect::get(&clipboard, &JsValue::from_str("writeText")) else {
+        return false;
+    };
+    let Ok(f) = write_text.dyn_into::<js_sys::Function>() else {
+        return false;
+    };
+    f.call1(&clipboard, &JsValue::from_str(&text)).is_ok()
+}
+
+/// Copy affordance on assistant messages — swaps to a check for a beat after
+/// a successful copy.
+#[component]
+fn CopyButton(content: String) -> Element {
+    let copied = use_signal(|| false);
+    rsx! {
+        button {
+            class: "athena-msg-copy",
+            title: "Copy message",
+            "aria-label": "Copy message",
+            onclick: move |_| {
+                let text = content.clone();
+                let mut copied = copied;
+                spawn(async move {
+                    if copy_to_clipboard(text).await {
+                        copied.set(true);
+                        gloo::timers::future::TimeoutFuture::new(1_400).await;
+                        copied.set(false);
+                    }
+                });
+            },
+            if copied() {
+                IconCheck { size: Some(11), color: Some("var(--success)".to_string()) }
+            } else {
+                IconCopy { size: Some(11), color: Some("currentColor".to_string()) }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
     let msg = &props.message;
     let is_user = msg.role == MessageRole::User;
     let is_error = msg.is_error;
+    // Hook calls must be unconditional — this drives the inline retry action.
+    let athena_state = use_athena_store();
 
     // Hide empty assistant messages — when Athena is "thinking" but has
     // produced no content yet, don't render an empty card. The thinking
@@ -49,54 +103,87 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
     let is_streaming = props.streaming;
     let has_content = !msg.content.is_empty();
 
-    // Clean assistant interface: no avatars, no labels, no bubbles.
-    // User messages get a subtle left accent bar; assistant messages are
-    // plain readable text on the panel background.
-    let (content_color, left_accent) = if is_error {
-        ("var(--error)", "2px solid var(--error)")
-    } else if is_user {
-        ("var(--text)", "2px solid var(--accent)")
-    } else {
-        ("var(--text)", "2px solid transparent")
-    };
-
-    let content_bg = if is_error {
-        "rgba(235, 145, 19, 0.06)"
-    } else if is_user {
-        "var(--bgSecondary)"
-    } else {
-        "transparent"
-    };
-
-    rsx! {
-        div {
-            class: "chat-message",
-            style: "padding: 6px 0 6px 12px; border-left: {left_accent}; border-radius: 0 4px 4px 0; animation: fade-up 350ms cubic-bezier(0.22,0.61,0.36,1) both;",
-
-            // Content — plain text, no bubble.
-            if has_content {
+    if is_user {
+        rsx! {
+            div {
+                class: "athena-chat-row is-user",
                 div {
-                    style: "padding: 8px 12px; background: {content_bg}; color: {content_color}; border-radius: 0 4px 4px 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;",
-
-                    if is_streaming && has_content {
-                        {streaming_content(&msg.content)}
-                    } else {
+                    class: "athena-user-message",
+                    div {
+                        class: "athena-user-text",
+                        style: if is_error { "color: var(--error);" } else { "" },
                         "{msg.content}"
                     }
                 }
             }
+        }
+    } else {
+        let content_for_copy = msg.content.clone();
+        rsx! {
+            div {
+                class: "athena-chat-row is-assistant",
+                style: "align-items: flex-start; gap: 10px;",
 
-            // Content blocks (plans, evaluations, ask-user, etc.)
-            for block in msg.blocks.iter() {
-                ContentBlockRenderer { key: "{block:?}", block: block.clone() }
-            }
-
-            // Image attachments — muted frost chips.
-            for img in msg.images.iter() {
                 div {
-                    key: "{img.id}",
-                    style: "margin-top: 4px; padding: 6px; background: var(--bgTertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 10px; color: var(--textDim);",
-                    "IMG {img.name.as_deref().unwrap_or(\"image\")}"
+                    style: "flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;",
+
+                    // Content — plain text, no card.
+                    if has_content {
+                        div {
+                            class: "athena-msg-text",
+                            style: if is_error {
+                                "color: var(--error);"
+                            } else {
+                                ""
+                            },
+
+                            if is_streaming && has_content {
+                                {streaming_content(&msg.content)}
+                            } else {
+                                span { "{msg.content}" }
+                            }
+
+                            // Copy button inline with text.
+                            if !is_error {
+                                CopyButton { content: content_for_copy }
+                            }
+                        }
+                    }
+
+                    // Content blocks (plans, evaluations, ask-user, etc.)
+                    for block in msg.blocks.iter() {
+                        ContentBlockRenderer { key: "{block:?}", block: block.clone() }
+                    }
+
+                    // Image attachments.
+                    for img in msg.images.iter() {
+                        div {
+                            key: "{img.id}",
+                            style: "padding: 6px 10px; background: var(--bgTertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 10px; color: var(--textDim); width: fit-content;",
+                            "IMG {img.name.as_deref().unwrap_or(\"image\")}"
+                        }
+                    }
+
+                    // Inline retry — lives with the failure, not in the
+                    // composer, so the input row never shifts.
+                    if is_error {
+                        div {
+                            style: "display: flex; align-items: center; gap: 8px; padding-top: 2px;",
+                            span {
+                                style: "font-size: var(--text-xs); color: var(--error);",
+                                "This request failed."
+                            }
+                            button {
+                                class: "athena-msg-retry",
+                                onclick: move |_| {
+                                    let mut athena_state = athena_state;
+                                    retry_last_message(&mut athena_state);
+                                },
+                                IconRefresh { size: Some(11), color: Some("currentColor".to_string()) }
+                                "Retry"
+                            }
+                        }
+                    }
                 }
             }
         }

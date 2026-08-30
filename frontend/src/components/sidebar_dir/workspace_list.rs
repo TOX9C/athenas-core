@@ -1,3 +1,4 @@
+use crate::components::shared::confirm_dialog::ConfirmDialog;
 use crate::components::shared::icon::IconClose;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::agent_status::use_agent_status_store;
@@ -11,6 +12,11 @@ pub fn WorkspaceList() -> Element {
     let agent_status = use_agent_status_store();
     let spaces = workspace_state.read().spaces.clone();
     let active_space_id = workspace_state.read().active_space_id.clone();
+
+    // Closing a workspace that still has active agents kills their sessions,
+    // so that path is gated behind an explicit confirm (idle/shell-only
+    // workspaces close immediately).
+    let mut confirm_close = use_signal(|| None::<String>);
 
     rsx! {
         div {
@@ -27,11 +33,6 @@ pub fn WorkspaceList() -> Element {
                 for space in spaces.iter() {
                     {
                         let is_active = active_space_id.as_deref() == Some(&space.id);
-                        let bg = if is_active {
-                            "var(--bgHover)"
-                        } else {
-                            "transparent"
-                        };
                         let text_color = if is_active { "var(--accent)" } else { "var(--textMuted)" };
                         let font_weight = if is_active { "600" } else { "400" };
                         let space_id = space.id.clone();
@@ -43,12 +44,15 @@ pub fn WorkspaceList() -> Element {
                         // rendered as a redundant badge.
                         let counts: SpaceCounts =
                             count_space_agents(&space.panes, &agent_status.read().statuses);
+                        // Active agents (working/thinking/waiting/errored/finished)
+                        // mean closing kills a live session → confirm first.
+                        let close_requires_confirm = counts.working > 0 || counts.attention > 0;
 
                         rsx! {
                             div {
                                 key: "{space_id}",
-                                class: "workspace-row",
-                                style: "display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 0; cursor: pointer; background: {bg}; transition: background var(--dur-fast) var(--ease);",
+                                class: if is_active { "workspace-row is-active" } else { "workspace-row" },
+                                style: "display: flex; align-items: center; gap: 6px; padding: 6px 8px; cursor: pointer;",
                                 onclick: move |_| {
                                     workspace_state.write().set_active_space(&space_id);
                                 },
@@ -90,17 +94,47 @@ pub fn WorkspaceList() -> Element {
                                 }
 
                                 button {
-                                    class: "icon-btn",
+                                    class: "icon-btn workspace-row-close",
                                     style: "width: 22px; height: 22px;",
                                     title: "Close workspace",
                                     "aria-label": "Close workspace",
                                     onclick: move |e| {
                                         e.stop_propagation();
-                                        workspace_state.write().remove_space(&space_id_close);
+                                        if close_requires_confirm {
+                                            confirm_close.set(Some(space_id_close.clone()));
+                                        } else {
+                                            workspace_state.write().remove_space(&space_id_close);
+                                        }
                                     },
                                     IconClose { size: Some(13), color: Some("currentColor".to_string()) }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Confirm before closing a workspace whose agents are still
+            // active — closing kills their live sessions.
+            if let Some(pending_id) = confirm_close() {
+                {
+                    let pending_name = spaces
+                        .iter()
+                        .find(|s| s.id == pending_id)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_else(|| "this workspace".to_string());
+                    rsx! {
+                        ConfirmDialog {
+                            title: "Close workspace".to_string(),
+                            message: format!(
+                                "Close \"{pending_name}\"? Its agents are still active and will be stopped."
+                            ),
+                            confirm_label: "Close Workspace".to_string(),
+                            on_cancel: move |_| confirm_close.set(None),
+                            on_confirm: move |_| {
+                                confirm_close.set(None);
+                                workspace_state.write().remove_space(&pending_id);
+                            },
                         }
                     }
                 }

@@ -1,8 +1,8 @@
-use super::athena_input::AthenaInput;
+use super::athena_input::{submit_message_text, AthenaInput};
 use super::chat_message::AthenaChatMessage;
 use super::session_switcher::SessionSwitcher;
 use super::thinking::AthenaThinkingIndicator;
-use crate::components::shared::icon::{IconClose, IconSeal, IconWarning};
+use crate::components::shared::icon::{IconClose, IconWarning};
 use crate::components::shared::illustration::CoreMark;
 use crate::stores::athena::{
     use_athena_store, AskUserOption, AthenaMessage, MessageRole, PlanStatus, PlanStepStatus,
@@ -12,6 +12,7 @@ use crate::tauri_bridge;
 use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+use wasm_bindgen::JsCast;
 
 /// Rendering mode for the Athena chat panel.
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -29,10 +30,56 @@ pub struct AthenaPanelProps {
     pub mode: AthenaPanelMode,
 }
 
+/// Coalesce streamed text deltas to one signal write per animation frame.
+/// Provider chunks often arrive faster than the browser can paint; writing the
+/// whole Athena state for each chunk needlessly re-renders the chat history.
+fn schedule_stream_flush(
+    mut store: Signal<crate::stores::athena::AthenaState>,
+    queue: Rc<RefCell<Vec<(String, String)>>>,
+    scheduled: Rc<RefCell<bool>>,
+) {
+    if *scheduled.borrow() {
+        return;
+    }
+    *scheduled.borrow_mut() = true;
+
+    let queue_for_frame = queue.clone();
+    let scheduled_for_frame = scheduled.clone();
+    let flush = move || {
+        let deltas = queue_for_frame.borrow_mut().drain(..).collect::<Vec<_>>();
+        if !deltas.is_empty() {
+            let mut state = store.write();
+            for (request_id, text) in deltas {
+                state.append_stream_delta(&request_id, &text);
+            }
+        }
+        *scheduled_for_frame.borrow_mut() = false;
+    };
+    let frame = wasm_bindgen::closure::Closure::once_into_js(Box::new(flush) as Box<dyn FnOnce()>);
+    let frame_scheduled = web_sys::window()
+        .and_then(|window| {
+            window
+                .request_animation_frame(frame.as_ref().unchecked_ref())
+                .ok()
+        })
+        .is_some();
+    if !frame_scheduled {
+        let deltas = queue.borrow_mut().drain(..).collect::<Vec<_>>();
+        let mut state = store.write();
+        for (request_id, text) in deltas {
+            state.append_stream_delta(&request_id, &text);
+        }
+        *scheduled.borrow_mut() = false;
+    }
+}
+
 #[component]
 pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
     let mut athena_state = use_athena_store();
     let mut mounted = use_signal(|| false);
+    let stream_delta_queue: Rc<RefCell<Vec<(String, String)>>> =
+        use_hook(|| Rc::new(RefCell::new(Vec::new())));
+    let stream_delta_scheduled: Rc<RefCell<bool>> = use_hook(|| Rc::new(RefCell::new(false)));
     let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
         use_hook(|| Rc::new(RefCell::new(Vec::new())));
     let unlisteners_clone = unlisteners.clone();
@@ -54,6 +101,8 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         mounted.set(true);
 
         let store = athena_state;
+        let stream_delta_queue_for_listener = stream_delta_queue.clone();
+        let stream_delta_scheduled_for_listener = stream_delta_scheduled.clone();
 
         // athena:stream — request-scoped text and lifecycle events. Every
         // mutation is guarded by the active request ID in AthenaState.
@@ -72,7 +121,14 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
             match event.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                 "delta" => {
                     if let Some(text) = event.get("text").and_then(|v| v.as_str()) {
-                        stream_store.write().append_stream_delta(request_id, text);
+                        stream_delta_queue_for_listener
+                            .borrow_mut()
+                            .push((request_id.to_string(), text.to_string()));
+                        schedule_stream_flush(
+                            stream_store,
+                            stream_delta_queue_for_listener.clone(),
+                            stream_delta_scheduled_for_listener.clone(),
+                        );
                     }
                 }
                 "status" => {
@@ -92,7 +148,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     let message = event
                         .get("message")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("Athena request failed");
+                        .unwrap_or("Request failed");
                     let cancelled = event
                         .get("cancelled")
                         .and_then(|v| v.as_bool())
@@ -421,6 +477,27 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         });
     });
 
+    // Keep the log pinned to the newest content: any message/delta change
+    // scrolls to the bottom — unless the user has scrolled up to read, in
+    // which case the viewport is left alone until they return near bottom.
+    use_effect(move || {
+        let state = athena_state.read();
+        let _ = state.messages.len();
+        let _ = state.is_streaming;
+        drop(state);
+        if let Some(window) = web_sys::window() {
+            if let Some(doc) = window.document() {
+                if let Some(el) = doc.get_element_by_id("athena-message-log") {
+                    let near_bottom =
+                        el.scroll_height() - el.scroll_top() - el.client_height() < 80;
+                    if near_bottom {
+                        el.set_scroll_top(el.scroll_height());
+                    }
+                }
+            }
+        }
+    });
+
     // Cleanup: unlisten all event listeners on component unmount.
     let unlisteners_drop = unlisteners.clone();
     use_drop(move || {
@@ -455,11 +532,14 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
             if state.api_keyring_error.is_some() {
                 ("var(--warning)", "API key set but keychain locked")
             } else {
-                ("var(--success)", "API keyconfigured")
+                ("var(--success)", "API key configured")
             }
         }
-        Some(false) => ("var(--warning)", "API key not set — configure in Settings"),
-        None => ("var(--textDim)", "Checking configuration…"),
+        Some(false) => (
+            "var(--warning)",
+            "API key not set. Configure it in Settings.",
+        ),
+        None => ("var(--textDim)", "Checking configuration..."),
     };
 
     let wrapper_style = match mode {
@@ -476,22 +556,16 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
             div {
                 style: "flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;",
 
-                // Header — brand seal + session switcher + status dot.
+                // Header: session switcher, model, and status.
                 div {
                     style: "display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bgSecondary); flex-shrink: 0;",
 
-                    span {
-                        class: "seal-mark",
-                        IconSeal { size: Some(16), color: Some("var(--accent)".to_string()) }
-                    }
-
-                    span {
-                        style: "font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); flex-shrink: 0;",
-                        "Athena"
-                    }
-
                     // Session switcher dropdown
                     SessionSwitcher {}
+
+                    span {
+                        style: "flex: 1;",
+                    }
 
                     span {
                         class: "badge",
@@ -503,16 +577,10 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     // keyring-backed probe, not the in-memory defaults.
                     span {
                         title: "{status_title}",
+                        "aria-label": "{status_title}",
+                        role: "status",
                         style: "width: 8px; height: 8px; border-radius: 50%; background: {status_color}; flex-shrink: 0;",
                     }
-
-                    if state.is_streaming {
-                        span {
-                            style: "font-size: var(--text-2xs); color: var(--accent); letter-spacing: 0.04em; text-transform: lowercase;",
-                            "streaming..."
-                        }
-                    }
-
                 }
 
                 // Keyring failure warning — shows when the keychain is locked
@@ -520,7 +588,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                 // status dot may look odd.
                 if let Some(ref err) = state.api_keyring_error {
                     div {
-                        style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--warning); background: rgba(235, 145, 19, 0.08); color: var(--warning); font-size: 12px;",
+                        style: "display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: rgba(235, 145, 19, 0.08); color: var(--warning); font-size: 12px;",
                         span { style: "flex-shrink: 0; display: inline-flex; align-items: center;",
                             IconWarning { size: Some(13), color: Some("var(--warning)".to_string()) }
                         }
@@ -528,15 +596,28 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     }
                 }
 
-                // Pinned context bar
+                // Referenced pane bar. This is the durable acknowledgement for
+                // a successful drag: it remains visible while the reference is
+                // attached to the current Athena conversation, including when
+                // Athena was opened by the drop itself.
                 if !state.dropped_context.is_empty() {
                     div {
-                        style: "background: var(--bgTertiary); border-bottom: 1px solid var(--border); padding: 4px 12px; font-size: 11px; color: var(--textMuted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center;",
-                        span { style: "font-weight: 600; color: var(--accent);", "Context:" }
+                        class: "athena-context-bar",
+                        "data-athena-context-count": "{state.dropped_context.len()}",
+                        role: "status",
+                        "aria-live": "polite",
+                        style: "background: transparent; padding: 5px 14px; font-size: 11px; color: var(--textMuted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center;",
+                        span { style: "font-weight: 600; color: var(--accent);", "Referenced:" }
                         for (i, item) in state.dropped_context.iter().enumerate() {
                             {
                                 let display = match item {
-                                    crate::stores::athena::DraggableItem::Agent { pane_id: _pane_id, label, .. } => format!("Agent: {}", label),
+                                    crate::stores::athena::DraggableItem::Agent { agent_type, label, .. } => {
+                                        if agent_type == "shell" {
+                                            format!("Shell: {}", label)
+                                        } else {
+                                            format!("Agent: {}", label)
+                                        }
+                                    },
                                     crate::stores::athena::DraggableItem::KanbanTask { title, .. } => format!("Task: {}", title),
                                     crate::stores::athena::DraggableItem::File { name, .. } => format!("File: {}", name),
                                 };
@@ -547,7 +628,8 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                                             crate::stores::athena::DraggableItem::Agent { pane_id, .. } => pane_id.clone(),
                                             _ => String::new(),
                                         },
-                                        style: "padding: 1px 6px; border-radius: 4px; background: var(--bg); border: 1px solid var(--border); font-size: 10px;",
+                                        title: "Referenced by Athena",
+                                        style: "padding: 2px 8px; border-radius: var(--radius-pill); background: var(--accentSubtle); color: var(--text); font-size: 10px;",
                                         "{display}"
                                     }
                                 }
@@ -566,26 +648,51 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     }
                 }
 
-                // Great-circle rule — meridian divider between the header band and the message log.
-                hr { class: "great-circle-rule", style: "margin: 0; width: 100%;" }
-
                 // Messages. Keep the log on its own surface so the chat reads
                 // as a deliberate workspace rather than transparent text over
                 // the sidebar chrome.
                 div {
                     class: "athena-message-log",
-                    style: "flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; background: var(--bg);",
+                    id: "athena-message-log",
+                    style: "flex: 1; overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 10px; background: var(--bg);",
 
                     if state.messages.is_empty() {
                         div {
                             class: "athena-empty-state",
                             style: "flex: 1; display: flex; align-items: center; justify-content: center;",
+                        div {
+                            style: "text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 270px;",
+                            div { class: "athena-empty-mark", CoreMark { size: Some(44) } }
+                            strong { "Start a conversation" }
+                            span { "Ask for a plan, a refactor, or a second pair of eyes on the work in your workspace." }
                             div {
-                                style: "text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 260px;",
-                                div { class: "athena-empty-mark", CoreMark { size: Some(44) } }
-                                strong { "Start with Athena" }
-                                span { "Ask for a plan, a refactor, or a second pair of eyes on the work in your workspace." }
+                                style: "display: flex; flex-direction: column; gap: 6px; width: 100%; margin-top: 8px;",
+                                for prompt in [
+                                    "Plan a refactor of this codebase",
+                                    "Review my recent changes",
+                                    "Explain how to add a new command",
+                                ] {
+                                    {
+                                        let prompt = prompt.to_string();
+                                        rsx! {
+                                            button {
+                                                class: "athena-suggestion-chip",
+                                                onclick: move |_| {
+                                                    let mut athena = athena_state;
+                                                    // Don't fire a doomed request before an API key
+                                                    // is configured — the composer banner covers it.
+                                                    if matches!(athena.read().api_configured, Some(false)) {
+                                                        return;
+                                                    }
+                                                    submit_message_text(&prompt, &mut athena);
+                                                },
+                                                "{prompt}"
+                                            }
+                                        }
+                                    }
+                                }
                             }
+                        }
                         }
                     } else {
                         // Only the message currently receiving deltas renders in
@@ -619,9 +726,6 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                         AthenaThinkingIndicator { status: state.streaming_status.clone() }
                     }
                 }
-
-                // Great-circle rule — meridian divider between the message log and the input.
-                hr { class: "great-circle-rule", style: "margin: 0; width: 100%;" }
 
                 // Input
                 AthenaInput {}

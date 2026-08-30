@@ -74,16 +74,15 @@ pub fn EmptyState(
     }
 }
 
-/// Brand mark for welcome / chat / thinking. `size` is in px.
-/// A crystalline core: hexagonal frame, quiet inner ring, and a solid gold
-/// diamond bezant. Pure geometry — no triangles — legible from 14px to 52px.
+/// The Athena spear-A: a diamond point above solid lambda legs. Solid fills,
+/// pure geometry — legible from 14px to 52px. Shared with icon_mythology.rs
+/// and icons/athena.svg.
 #[component]
 pub fn CoreMark(size: Option<u16>) -> Element {
     let s = size.unwrap_or(20);
     let sz = format!("{s}px");
-    const MARK_FRAME: &str = "M12 3.5 L19.36 7.75 L19.36 16.25 L12 20.5 L4.64 16.25 L4.64 7.75 Z";
-    const MARK_RING: &str = "M12 6.6 L16.68 9.3 L16.68 14.7 L12 17.4 L7.32 14.7 L7.32 9.3 Z";
-    const MARK_CORE: &str = "M12 9.3 L13.75 12 L12 14.7 L10.25 12 Z";
+    const MARK_FRAME: &str = "M12 7.6 L19.2 20 L15.9 20 L12 12.6 L8.1 20 L4.8 20 Z";
+    const MARK_CORE: &str = "M12 3.2 L13.3 4.9 L12 6.7 L10.7 4.9 Z";
     rsx! {
         svg {
             view_box: "0 0 24 24",
@@ -93,8 +92,7 @@ pub fn CoreMark(size: Option<u16>) -> Element {
             stroke_linecap: "round",
             stroke_linejoin: "round",
             style: "width: {sz}; height: {sz}; display: inline-block; vertical-align: middle;",
-            path { d: "{MARK_FRAME}", fill: "var(--accent)", fill_opacity: "0.07", stroke: "var(--accent)", stroke_opacity: "0.85", stroke_width: "1.05" }
-            path { d: "{MARK_RING}", stroke: "var(--accent)", stroke_opacity: "0.38", stroke_width: "0.5" }
+            path { d: "{MARK_FRAME}", fill: "var(--accent)", stroke: "none" }
             path { d: "{MARK_CORE}", fill: "var(--accent)", stroke: "none" }
         }
     }

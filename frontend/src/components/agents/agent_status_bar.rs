@@ -1,7 +1,7 @@
 use crate::components::shared::icon::IconPulse;
 use crate::stores::agent_output::use_agent_output_store;
 use crate::stores::agent_status::use_agent_status_store;
-use crate::utils::agent_display::get_agent_color_str;
+use crate::utils::agent_display::{get_agent_color_str, get_agent_display_name};
 use dioxus::prelude::*;
 
 #[path = "agent_status_bar_model.rs"]
@@ -38,7 +38,8 @@ pub fn AgentStatusBar(props: AgentStatusBarProps) -> Element {
 
     let (label, word, color) = status_label(&current_status.status);
     let agent_color = get_agent_color_str(&current_status.agent_type);
-    let display_id: String = props.pane_id.chars().take(10).collect();
+    let display_id: String = get_agent_display_name(&current_status.agent_type, &props.pane_id);
+    let pane_id_full = props.pane_id.clone();
     let msg_preview: String = current_status.message.chars().take(40).collect();
     let ago = time_ago(current_status.last_updated_at);
 
@@ -64,9 +65,10 @@ pub fn AgentStatusBar(props: AgentStatusBarProps) -> Element {
                 }
             }
 
-            // Pane id
+            // Pane id (human label; hover reveals the raw pane id)
             span {
                 style: "font-size: var(--text-2xs); font-family: var(--fontFamily); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--textMuted); flex-shrink: 0;",
+                title: "{pane_id_full}",
                 "{display_id}"
             }
 

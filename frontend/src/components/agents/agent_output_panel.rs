@@ -3,6 +3,7 @@ use super::agent_selector::AgentSelector;
 use crate::components::shared::icon::{IconChevronDown, IconTrash};
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::agent_output::{use_agent_output_store, OutputLine as StoreLine};
+use crate::utils::agent_display::get_agent_display_name;
 use dioxus::prelude::*;
 
 /// Convert a store OutputLine to the component-level OutputLine.
@@ -66,10 +67,24 @@ pub fn AgentOutputPanel() -> Element {
         }
     });
 
-    let pane_id_display: String = selected_id
-        .as_ref()
-        .map(|s| s.chars().take(16).collect())
-        .unwrap_or_default();
+    let pane_id_display: String = {
+        let store = agent_output.read();
+        let pane_id = store.selected_pane_id.as_deref();
+        pane_id
+            .and_then(|pid| {
+                store
+                    .agents
+                    .iter()
+                    .find(|a| a.pane_id == pid)
+                    .map(|a| get_agent_display_name(&a.agent_type, pid))
+            })
+            .unwrap_or_else(|| {
+                pane_id
+                    .map(|pid| pid.chars().take(16).collect())
+                    .unwrap_or_default()
+            })
+    };
+    let pane_id_full = selected_id.clone().unwrap_or_default();
     let line_count = lines().len();
 
     rsx! {
@@ -139,7 +154,7 @@ pub fn AgentOutputPanel() -> Element {
             div {
                 style: "display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; border-top: 1px solid var(--border); font-size: var(--text-2xs); color: var(--textDim); font-family: var(--fontFamily); flex-shrink: 0;",
                 span { "{line_count} lines" }
-                span { "{pane_id_display}" }
+                span { title: "{pane_id_full}", "{pane_id_display}" }
             }
         }
     }

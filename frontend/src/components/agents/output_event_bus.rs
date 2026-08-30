@@ -1,8 +1,5 @@
 use crate::stores::agent_output::{is_stderr_like, use_agent_output_store};
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatusUpdate};
-use crate::stores::notification::{
-    add_notification, use_notification_store, NotificationRecord, NotificationType,
-};
 use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::use_workspace_store;
@@ -10,7 +7,7 @@ use crate::tauri_bridge;
 use crate::types::workspace::AgentType;
 use dioxus::prelude::*;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 #[path = "output_bus_event.rs"]
@@ -20,6 +17,44 @@ use output_bus_event::OutputBusEvent;
 #[path = "swarm_status_sync.rs"]
 mod swarm_status_sync;
 use swarm_status_sync::{PaneGenerationGuard, SwarmStatusSync, SwarmStatusUpdate};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TitleRequestKey {
+    session_id: String,
+    generation: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct TitleRequestTracker {
+    latest_by_pane: HashMap<String, TitleRequestKey>,
+    started: HashSet<(String, TitleRequestKey)>,
+}
+
+impl TitleRequestTracker {
+    fn observe(&mut self, pane_id: &str, request: TitleRequestKey) {
+        self.latest_by_pane.insert(pane_id.to_string(), request);
+    }
+
+    fn begin(&mut self, pane_id: &str, request: &TitleRequestKey) -> bool {
+        self.started.insert((pane_id.to_string(), request.clone()))
+    }
+
+    fn invalidate(&mut self, pane_id: &str) {
+        if let Some(request) = self.latest_by_pane.remove(pane_id) {
+            self.started.remove(&(pane_id.to_string(), request));
+        }
+    }
+
+    fn accepts_result(
+        &self,
+        pane_id: &str,
+        request: &TitleRequestKey,
+        current_session_id: Option<&str>,
+    ) -> bool {
+        self.latest_by_pane.get(pane_id) == Some(request)
+            && current_session_id == Some(request.session_id.as_str())
+    }
+}
 
 /// Output event bus component - renders nothing, handles IPC events.
 ///
@@ -39,7 +74,6 @@ use swarm_status_sync::{PaneGenerationGuard, SwarmStatusSync, SwarmStatusUpdate}
 pub fn OutputEventBus() -> Element {
     let agent_status = use_agent_status_store();
     let agent_output = use_agent_output_store();
-    let notifications = use_notification_store();
     // `use_terminal_store()` and `use_terminal_registry()` are Dioxus hooks
     // (`use_context`). They may only run synchronously during render — calling
     // them inside the `use_coroutine` async body (which runs after render, on
@@ -86,13 +120,12 @@ pub fn OutputEventBus() -> Element {
         async move {
             let mut agent_status = agent_status;
             let mut agent_output = agent_output;
-            let mut notifications = notifications;
             let mut terminal_store = terminal_store;
             let swarm_state = swarm_state;
-            // (pane_id, session_id) pairs already LLM-summarized — moved here
-            // from the removed `AgentInfoPoller` so a session change triggers
-            // exactly one title call per pane per session.
-            let mut summarized_pairs: HashSet<(String, String)> = HashSet::new();
+            // Tracks the latest title request identity per pane. The tracker
+            // is shared with spawned LLM tasks so a late result can verify it
+            // still belongs to the current session and backend generation.
+            let title_requests = Rc::new(RefCell::new(TitleRequestTracker::default()));
             let mut swarm_sync = SwarmStatusSync::default();
             let mut pane_generation_guard = PaneGenerationGuard::default();
             while let Ok(event) = rx.recv().await {
@@ -151,6 +184,13 @@ pub fn OutputEventBus() -> Element {
                         // `update_agent_info` below, which writes the new
                         // session id into the registry.
                         let sid = session_id.clone().unwrap_or_default();
+                        let title_request = TitleRequestKey {
+                            session_id: sid.clone(),
+                            generation,
+                        };
+                        title_requests
+                            .borrow_mut()
+                            .observe(&pane_id, title_request.clone());
                         {
                             let old_sid = terminal_registry
                                 .peek_session(&pane_id)
@@ -230,57 +270,67 @@ pub fn OutputEventBus() -> Element {
                                 p.id == pane_id && matches!(p.agent_type, AgentType::Shell)
                             })
                         });
-                        if feature_enabled && prompt_ready && !is_shell {
-                            let key = (pane_id.clone(), sid.clone());
-                            if !summarized_pairs.contains(&key) {
-                                summarized_pairs.insert(key);
-                                // Mark the title as pending in a single write
-                                // (the pill shows Pending while the LLM call
-                                // is in flight, then Done/Failed).
-                                if let Some(mut inner) = terminal_registry.write_session(&pane_id) {
-                                    inner.title_state =
-                                        crate::utils::pane_label::TitleState::Pending;
-                                    inner.generation = inner.generation.wrapping_add(1);
-                                }
-                                let registry_for_spawn = terminal_registry.clone();
-                                let raw_prompt = raw.clone();
-                                let pane = pane_id.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    let result =
-                                        crate::tauri_bridge::summarize_agent_title(&raw_prompt)
-                                            .await;
-                                    let Some(mut inner) = registry_for_spawn.write_session(&pane)
-                                    else {
-                                        return;
-                                    };
-                                    match result {
-                                        Ok(summary) => {
-                                            let cleaned = summary.trim().to_string();
-                                            web_sys::console::log_1(
-                                                &format!(
-                                                    "[OutputEventBus] title for pane={}: {}",
-                                                    pane, cleaned
-                                                )
-                                                .into(),
-                                            );
-                                            inner.title_state =
-                                                crate::utils::pane_label::TitleState::Done(cleaned);
-                                        }
-                                        Err(e) => {
-                                            web_sys::console::warn_1(
-                                                &format!(
-                                                    "[OutputEventBus] title failed for pane={}: {:?}",
-                                                    pane, e
-                                                )
-                                                .into(),
-                                            );
-                                            inner.title_state =
-                                                crate::utils::pane_label::TitleState::Failed;
-                                        }
-                                    }
-                                    inner.generation = inner.generation.wrapping_add(1);
-                                });
+                        if feature_enabled
+                            && prompt_ready
+                            && !is_shell
+                            && title_requests.borrow_mut().begin(&pane_id, &title_request)
+                        {
+                            // Mark the title as pending in a single write
+                            // (the pill shows Pending while the LLM call
+                            // is in flight, then Done/Failed).
+                            if let Some(mut inner) = terminal_registry.write_session(&pane_id) {
+                                inner.title_state = crate::utils::pane_label::TitleState::Pending;
+                                inner.generation = inner.generation.wrapping_add(1);
                             }
+                            let registry_for_spawn = terminal_registry.clone();
+                            let raw_prompt = raw.clone();
+                            let pane = pane_id.clone();
+                            let title_requests_for_spawn = title_requests.clone();
+                            let title_request_for_spawn = title_request.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let result =
+                                    crate::tauri_bridge::summarize_agent_title(&raw_prompt).await;
+                                let current_session_id = registry_for_spawn
+                                    .peek_session(&pane)
+                                    .and_then(|session| session.session_id);
+                                if !title_requests_for_spawn.borrow().accepts_result(
+                                    &pane,
+                                    &title_request_for_spawn,
+                                    current_session_id.as_deref(),
+                                ) {
+                                    return;
+                                }
+                                let Some(mut inner) = registry_for_spawn.write_session(&pane)
+                                else {
+                                    return;
+                                };
+                                match result {
+                                    Ok(summary) => {
+                                        let cleaned = summary.trim().to_string();
+                                        web_sys::console::log_1(
+                                            &format!(
+                                                "[OutputEventBus] title for pane={}: {}",
+                                                pane, cleaned
+                                            )
+                                            .into(),
+                                        );
+                                        inner.title_state =
+                                            crate::utils::pane_label::TitleState::Done(cleaned);
+                                    }
+                                    Err(e) => {
+                                        web_sys::console::warn_1(
+                                            &format!(
+                                                "[OutputEventBus] title failed for pane={}: {:?}",
+                                                pane, e
+                                            )
+                                            .into(),
+                                        );
+                                        inner.title_state =
+                                            crate::utils::pane_label::TitleState::Failed;
+                                    }
+                                }
+                                inner.generation = inner.generation.wrapping_add(1);
+                            });
                         }
                     }
                     OutputBusEvent::TerminalExit {
@@ -315,6 +365,7 @@ pub fn OutputEventBus() -> Element {
                         if !is_current {
                             continue;
                         }
+                        title_requests.borrow_mut().invalidate(&pane_id);
                         pane_generation_guard.retire(&pane_id, generation);
                         swarm_sync.remove(&pane_id);
                         let swarm_dir = {
@@ -363,6 +414,7 @@ pub fn OutputEventBus() -> Element {
                         agent_status.write().connect_agent(pane_id, now);
                     }
                     OutputBusEvent::AgentDisconnected { pane_id, now } => {
+                        title_requests.borrow_mut().invalidate(&pane_id);
                         pane_generation_guard.retire(&pane_id, None);
                         agent_status.write().disconnect_agent(&pane_id, now);
                         swarm_sync.remove(&pane_id);
@@ -453,30 +505,15 @@ pub fn OutputEventBus() -> Element {
                     }
                     OutputBusEvent::InputRequested {
                         pane_id,
+                        request_id: _request_id,
                         message,
                         now,
                     } => {
-                        agent_status
-                            .write()
-                            .request_input(pane_id.clone(), message.clone(), now);
-
-                        let notif = NotificationRecord {
-                            id: format!("input-{}", chrono::Utc::now().timestamp_millis()),
-                            r#type: NotificationType::NeedsInput,
-                            title: "Agent Input Requested".to_string(),
-                            message,
-                            source: "agent".to_string(),
-                            agent_id: Some(pane_id.clone()),
-                            data: Some(serde_json::json!({ "paneId": pane_id })),
-                            metadata: None,
-                            actions: None,
-                            request_id: None,
-                            dismissed_at: None,
-                            read: false,
-                            timestamp: chrono::Utc::now().timestamp_millis(),
-                            count: 1,
-                        };
-                        add_notification(&mut notifications, notif);
+                        // The backend owns the durable NeedsInput record and
+                        // emits notifications:new. This bus only updates the
+                        // live agent status; creating a second frontend-only
+                        // record caused missing persistence and duplicate rows.
+                        agent_status.write().request_input(pane_id, message, now);
                     }
                     OutputBusEvent::OutputBatch { pane_id, lines } => {
                         agent_output.write().append_batch(&pane_id, lines);
@@ -725,6 +762,11 @@ pub fn OutputEventBus() -> Element {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let request_id = val
+                    .get("requestId")
+                    .or_else(|| val.get("request_id"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
                 let message = val
                     .get("message")
                     .or_else(|| val.get("prompt"))
@@ -735,6 +777,7 @@ pub fn OutputEventBus() -> Element {
                     let now = js_sys::Date::now() as i64;
                     dispatcher.send(OutputBusEvent::InputRequested {
                         pane_id,
+                        request_id,
                         message,
                         now,
                     });
@@ -839,4 +882,41 @@ pub fn OutputEventBus() -> Element {
     });
 
     rsx! {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_results_require_the_latest_session_and_generation() {
+        let mut tracker = TitleRequestTracker::default();
+        let first = TitleRequestKey {
+            session_id: "session-a".to_string(),
+            generation: Some(1),
+        };
+        let newer_generation = TitleRequestKey {
+            session_id: "session-a".to_string(),
+            generation: Some(2),
+        };
+        let newer_session = TitleRequestKey {
+            session_id: "session-b".to_string(),
+            generation: Some(3),
+        };
+
+        tracker.observe("pane-1", first.clone());
+        assert!(tracker.begin("pane-1", &first));
+        assert!(tracker.accepts_result("pane-1", &first, Some("session-a")));
+
+        tracker.observe("pane-1", newer_generation.clone());
+        assert!(!tracker.accepts_result("pane-1", &first, Some("session-a")));
+        assert!(!tracker.accepts_result("pane-1", &newer_generation, Some("session-b")));
+
+        tracker.observe("pane-1", newer_session.clone());
+        assert!(!tracker.accepts_result("pane-1", &newer_generation, Some("session-a")));
+        assert!(tracker.accepts_result("pane-1", &newer_session, Some("session-b")));
+
+        tracker.invalidate("pane-1");
+        assert!(!tracker.accepts_result("pane-1", &newer_session, Some("session-b")));
+    }
 }

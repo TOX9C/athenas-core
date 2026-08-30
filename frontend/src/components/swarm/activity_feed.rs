@@ -1,5 +1,6 @@
 use super::swarm_board::ActivityEntry;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
+use crate::utils::agent_display::get_role_color_str;
 use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
@@ -34,13 +35,7 @@ pub fn SwarmActivityFeed(props: SwarmActivityFeedProps) -> Element {
                 } else {
                     for entry in props.activities.iter() {
                         {
-                            let role_color = match entry.role.as_str() {
-                                "coordinator" => "#0ea5e9",
-                                "builder" => "#22c55e",
-                                "scout" => "#f59e0b",
-                                "reviewer" => "#06b6d4",
-                                _ => "var(--accentTeal)",
-                            };
+                            let role_color = get_role_color_str(&entry.role);
                             rsx! {
                                 div {
                                     key: "{entry.id}",

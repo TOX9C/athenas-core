@@ -1,8 +1,11 @@
 //! Agent command utilities — ported from src/utils/agentCommands.ts
 //!
-//! Maps agent types to CLI commands, labels, and colors.
+//! Maps agent types to CLI commands. Labels and colors are NOT defined here:
+//! they delegate to [`crate::utils::agent_display`], the single source of
+//! truth (this module used to carry a second, divergent palette).
 
 use crate::types::workspace::{AgentType, CustomAgent};
+use crate::utils::agent_display::{get_agent_color_str, get_agent_label_str};
 
 /// **SECURITY WARNING**: This flag bypasses all Claude Code permission checks.
 /// Only use this in trusted/development environments. Never use in production.
@@ -127,37 +130,19 @@ pub fn claude_resume_variants(resume_id: &str, claude_aliases: &[CustomAgent]) -
 }
 
 /// Get the human-readable label for an agent type.
+///
+/// `AgentType`'s strum `Display` serializes to the canonical lowercase keys
+/// ("claude", "codex", ...), so this just forwards to the shared table in
+/// [`crate::utils::agent_display`].
 pub fn get_agent_label(agent_type: &AgentType) -> &'static str {
-    match agent_type {
-        AgentType::Claude => "Claude Code",
-        AgentType::Codex => "Codex",
-        AgentType::Opencode => "OpenCode",
-        AgentType::Gemini => "Gemini CLI",
-        AgentType::Qwen => "Qwen Code",
-        AgentType::Aider => "Aider",
-        AgentType::Cursor => "Cursor",
-        AgentType::Freebuff => "Freebuff",
-        AgentType::Omp => "OMP",
-        AgentType::Custom => "Custom",
-        AgentType::Shell => "Shell",
-    }
+    get_agent_label_str(&agent_type.to_string())
 }
 
 /// Get the accent color for an agent type.
+///
+/// See [`get_agent_label`] for the delegation note.
 pub fn get_agent_color(agent_type: &AgentType) -> &'static str {
-    match agent_type {
-        AgentType::Claude => "#d97706",
-        AgentType::Codex => "#10b981",
-        AgentType::Opencode => "#3b82f6",
-        AgentType::Gemini => "#0891b2",
-        AgentType::Qwen => "#6366f1",
-        AgentType::Aider => "#eab308",
-        AgentType::Cursor => "#22d3ee",
-        AgentType::Freebuff => "#e11d48",
-        AgentType::Omp => "#84cc16",
-        AgentType::Custom => "#6b7280",
-        AgentType::Shell => "#64748b",
-    }
+    get_agent_color_str(&agent_type.to_string())
 }
 
 #[cfg(test)]

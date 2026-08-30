@@ -36,6 +36,11 @@ pub struct NotificationRecord {
     pub metadata: Option<serde_json::Value>,
     pub actions: Option<Vec<serde_json::Value>>,
     pub request_id: Option<String>,
+    pub event_key: Option<String>,
+    pub run_id: Option<String>,
+    pub pane_id: Option<String>,
+    pub requires_action: bool,
+    pub resolved_at: Option<i64>,
     pub dismissed_at: Option<i64>,
     pub read: bool,
     /// Unix epoch milliseconds. Stored as millis so the dedup window can
@@ -59,6 +64,11 @@ impl NotificationRecord {
             metadata: None,
             actions: None,
             request_id: None,
+            event_key: None,
+            run_id: None,
+            pane_id: None,
+            requires_action: false,
+            resolved_at: None,
             dismissed_at: None,
             read: false,
             timestamp: Utc::now().timestamp_millis(),
@@ -70,5 +80,58 @@ impl NotificationRecord {
 impl Default for NotificationRecord {
     fn default() -> Self {
         Self::new("", "", NotificationType::Info)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Contract: the bounded store keeps at most MAX_NOTIFICATIONS records,
+    // and duplicates inside DEDUP_WINDOW_MS merge by count rather than
+    // pushing a new entry. These constants are consumed by notification.rs;
+    // pin them so silent retuning breaks the UI contract visibly.
+    #[test]
+    fn bounds_are_pinned() {
+        assert_eq!(MAX_NOTIFICATIONS, 50);
+        assert_eq!(DEDUP_WINDOW_MS, 1000);
+    }
+
+    #[test]
+    fn record_new_sets_defaults() {
+        let record =
+            NotificationRecord::new("Build failed", "see logs", NotificationType::TaskError);
+        assert_eq!(record.r#type, NotificationType::TaskError);
+        assert_eq!(record.title, "Build failed");
+        assert_eq!(record.message, "see logs");
+        assert_eq!(record.source, "frontend");
+        assert!(record.id.starts_with("notif-"));
+        assert_eq!(record.count, 1, "fresh record observed exactly once");
+        assert!(!record.read);
+        assert!(!record.requires_action);
+        assert_eq!(record.resolved_at, None);
+        assert_eq!(record.dismissed_at, None);
+        assert!(record.timestamp > 0);
+    }
+
+    #[test]
+    fn all_notification_types_have_defaults_and_equality() {
+        let types = [
+            NotificationType::Info,
+            NotificationType::Warning,
+            NotificationType::Error,
+            NotificationType::Success,
+            NotificationType::NeedsInput,
+            NotificationType::TaskComplete,
+            NotificationType::TaskError,
+        ];
+        assert_eq!(types.len(), 7);
+        assert_eq!(NotificationType::default(), NotificationType::Info);
+        // Distinctness: every variant compares unequal to every other.
+        for (i, a) in types.iter().enumerate() {
+            for (j, b) in types.iter().enumerate() {
+                assert_eq!(a == b, i == j);
+            }
+        }
     }
 }

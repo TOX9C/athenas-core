@@ -8,18 +8,23 @@ pub mod utils;
 
 use components::agents::agent_inspector::AgentInspector;
 use components::agents::output_event_bus::OutputEventBus;
-use components::command_palette::CommandPalette;
 use components::kanban::kanban_board::KanbanBoard;
 use components::mobile::{should_render_mobile_app, MobileApp};
 use components::notifications::notification_bell::{
-    provide_notification_overlay_store, NotificationBell, NotificationPopover,
+    provide_notification_overlay_store, use_notification_overlay_store, NotificationBell,
+    NotificationPopover,
 };
 use components::notifications::notification_panel::NotificationPanel;
 use components::notifications::notification_toast::NotificationToast;
+use components::plugin::input_request_modal::{
+    provide_input_request_overlay_store, InputRequestModal,
+};
 use components::plugin::plugin_event_bus::{provide_plugin_bus_store, PluginEventBus};
 use components::right_sidebar::editor_panel::RightEditorPanel;
 use components::right_sidebar::panel::RightSidebar;
 use components::right_sidebar::BrowserSurface;
+use components::settings::relay_pairing_prompt::RelayPairingPrompt;
+use components::settings::relay_pane_share_prompt::RelayPaneSharePrompt;
 use components::settings::settings_modal::SettingsModal;
 use components::settings::SettingsPanel;
 use components::shared::error_boundary::ErrorBoundary;
@@ -30,6 +35,7 @@ use components::shared::icon::{
 };
 use components::shared::illustration::CoreMark;
 use components::shared::metrics_badge::MetricsBadge;
+use components::shared::modal::provide_modal_overlay_store;
 use components::shared::toast::{provide_toast_store, ToastContainer};
 use components::sidebar::Sidebar;
 use components::swarm::swarm_board::SwarmBoard;
@@ -45,7 +51,6 @@ use std::rc::Rc;
 use stores::agent_output::provide_agent_output_store;
 use stores::agent_status::provide_agent_status_store;
 use stores::athena::{provide_athena_store, use_athena_store};
-use stores::command::provide_command_store;
 use stores::editor::provide_editor_store;
 use stores::notification::provide_notification_store;
 use stores::panel_manager::{provide_panel_manager_store, use_panel_manager_store};
@@ -83,6 +88,12 @@ fn change_shared_font_size(mut ui_state: Signal<crate::stores::ui::UIState>, del
 /// Root application component — faithful port of App.tsx.
 #[component]
 pub fn App() -> Element {
+    // The status-bar metrics badge is an internal telemetry readout; it is
+    // hidden unless the app was launched with `?metrics=1` in the URL.
+    let metrics_enabled = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .map(|s| s.contains("metrics=1"))
+        .unwrap_or(false);
     // Keep the outer JavaScript watchdog informed even while the DOM is idle.
     // This is intentionally outside the error-boundary subtree: if a Dioxus
     // render path fails, the heartbeat stops and the WebView-level recovery
@@ -134,11 +145,12 @@ pub fn App() -> Element {
     provide_athena_store();
     provide_notification_store();
     provide_notification_overlay_store();
+    provide_modal_overlay_store();
+    provide_input_request_overlay_store();
     provide_editor_store();
     provide_session_store();
     provide_swarm_store();
     provide_task_store();
-    provide_command_store();
     provide_agent_output_store();
     provide_agent_status_store();
     provide_panel_manager_store();
@@ -151,6 +163,7 @@ pub fn App() -> Element {
     let mut workspace_mut = use_workspace_store();
     let mut athena_state = use_athena_store();
     let mut panel_state = use_panel_manager_store();
+    let mut notification_overlay = use_notification_overlay_store();
 
     // Capture keyboard shortcuts before xterm.js receives them. The bubbling
     // Dioxus handler below still performs the app action; this listener only
@@ -220,11 +233,6 @@ pub fn App() -> Element {
         });
     }
 
-    // Track mounted spaces. The set is reconciled against the current
-    // workspace state on every render so it stays bounded — entries for
-    // spaces that no longer exist are dropped, preventing unbounded growth
-    // across long sessions that create and destroy many workspaces.
-    let mounted_spaces = use_signal(std::collections::HashSet::<String>::new);
     let platform = use_signal(|| {
         if crate::utils::platform_utils::is_mac() {
             "MacIntel"
@@ -252,40 +260,17 @@ pub fn App() -> Element {
     let active_space_id = workspace.read().active_space_id.clone();
     let spaces = workspace.read().spaces.clone();
 
-    // Sync mounted_spaces inside use_effect so writes happen after render.
-    use_effect({
-        let mut mounted_spaces = mounted_spaces;
-        move || {
-            let ws = workspace.read();
-            let existing_ids: std::collections::HashSet<String> =
-                ws.spaces.iter().map(|s| s.id.clone()).collect();
-            let active = ws.active_space_id.clone();
-
-            let mut mounted = mounted_spaces.write();
-
-            // Track active space
-            if let Some(id) = &active {
-                mounted.insert(id.clone());
-            }
-
-            // Prune spaces that no longer exist
-            mounted.retain(|id| existing_ids.contains(id));
-        }
-    });
-
     let active_space: Option<Space> = spaces
         .iter()
         .find(|s| Some(&s.id) == active_space_id.as_ref())
         .cloned();
-    let mounted_space_ids = mounted_spaces.read().clone();
-    let mounted_workspaces: Vec<Space> = spaces
-        .iter()
-        .filter(|space| {
-            mounted_space_ids.contains(&space.id)
-                || active_space_id.as_deref() == Some(space.id.as_str())
-        })
-        .cloned()
-        .collect();
+    // Only the active workspace owns live xterm mounts. Inactive workspaces
+    // used to remain mounted with hidden canvases, raw listeners, observers,
+    // and focus handlers, multiplying event and memory costs by workspace
+    // count. XtermMount's listener lease and app-scoped TerminalRegistry make
+    // suspend/resume safe: switching away pauses the PTY stream and switching
+    // back reattaches it after replay.
+    let mounted_workspaces: Vec<Space> = active_space.iter().cloned().collect();
 
     let is_mac = platform().to_lowercase().contains("mac");
     let sidebar_open = ui_state.read().sidebar_visible;
@@ -313,7 +298,6 @@ pub fn App() -> Element {
         Panel::Browser => "browser",
         Panel::Plugin => "plugin",
         Panel::Notifications => "notifications",
-        Panel::Agents => "agents",
     }
     .to_string();
 
@@ -350,16 +334,13 @@ pub fn App() -> Element {
                     Some(GlobalKeyAction::DecreaseFontSize) => {
                         change_shared_font_size(ui_state, -1);
                     }
-                    Some(GlobalKeyAction::ToggleCommandPalette) => {
-                        let v = ui_state.read().command_palette_open;
-                        ui_state.write().command_palette_open = !v;
-                    }
                     Some(GlobalKeyAction::ToggleRightSidebar) => {
                         let is_open = ui_state.read().right_sidebar_open;
                         let should_be_open = panel_state.write().toggle_right_sidebar(is_open);
                         ui_state.write().right_sidebar_open = should_be_open;
                     }
                     Some(GlobalKeyAction::ShowNewSpace) => {
+                        notification_overlay.set(false);
                         ui_state.write().show_new_space_modal = true;
                     }
                     Some(GlobalKeyAction::ToggleSidebar) => {
@@ -401,9 +382,11 @@ pub fn App() -> Element {
                             if current == Panel::Editor { Panel::Workspace } else { Panel::Editor };
                     }
                     Some(GlobalKeyAction::ShowSettings) => {
+                        notification_overlay.set(false);
                         ui_state.write().show_settings_modal = true;
                     }
                     Some(GlobalKeyAction::ShowSwarmModal) => {
+                        notification_overlay.set(false);
                         ui_state.write().show_swarm_modal = true;
                     }
                     Some(GlobalKeyAction::AddShell) => {
@@ -434,11 +417,11 @@ pub fn App() -> Element {
                             }
                         }
                         let mut ui = ui_state.write();
-                        ui.command_palette_open = false;
                         ui.show_new_space_modal = false;
                         ui.show_swarm_modal = false;
                         ui.show_settings_modal = false;
                         athena_state.write().is_open = false;
+                        notification_overlay.set(false);
                         e.stop_propagation();
                     }
                     None => {}
@@ -470,7 +453,7 @@ pub fn App() -> Element {
 
                 // Workspace tabs (centered, flex-1)
                 div { style: "flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 8px; min-width: 0; overflow: hidden;",
-                    WorkspaceTabs { on_new_space: move |_| { ui_state.write().show_new_space_modal = true; } }
+                    WorkspaceTabs { on_new_space: move |_| { notification_overlay.set(false); ui_state.write().show_new_space_modal = true; } }
                 }
 
                 // Right toolbar buttons
@@ -537,7 +520,8 @@ pub fn App() -> Element {
                     button {
                         class: "icon-btn tb-extra-btn",
                         title: "Launch Swarm",
-                        onclick: move |_| { ui_state.write().show_swarm_modal = true; },
+                        onclick: move |_| { notification_overlay.set(false);
+                            ui_state.write().show_swarm_modal = true; },
                         IconSwarm { size: Some(16), color: Some("currentColor".to_string()) }
                     }
 
@@ -548,7 +532,8 @@ pub fn App() -> Element {
                     button {
                         class: "icon-btn",
                         title: "Settings (Cmd+,)",
-                        onclick: move |_| { ui_state.write().show_settings_modal = true; },
+                        onclick: move |_| { notification_overlay.set(false);
+                            ui_state.write().show_settings_modal = true; },
                         IconSettings { size: Some(16), color: Some("currentColor".to_string()) }
                     }
                 }
@@ -591,7 +576,7 @@ pub fn App() -> Element {
 
                 // Left sidebar or sidebar rail
                 if sidebar_open {
-                    Sidebar { on_new_space: move |_| { ui_state.write().show_new_space_modal = true; } }
+                    Sidebar { on_new_space: move |_| { notification_overlay.set(false); ui_state.write().show_new_space_modal = true; } }
                 } else {
                     // SidebarRail — compact icon strip for collapsed state
                     div {
@@ -651,7 +636,7 @@ pub fn App() -> Element {
 
                             // Active panel or empty state
                             if active_space.is_none() {
-                                // Branded welcome — frost-heavy plaque over the starfield sky.
+                                // Branded welcome — quiet plaque on the root surface.
                                 div {
                                     class: "animate-rise",
                                     style: "flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; padding: 40px; margin: 24px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bgSecondary); box-shadow: var(--shadow-lg);",
@@ -687,6 +672,7 @@ pub fn App() -> Element {
                                         class: "btn-primary",
                                         onclick: move |_| {
                                             web_sys::console::log_1(&"[EmptyState] New Workspace clicked".into());
+                                            notification_overlay.set(false);
                                             ui_state.write().show_new_space_modal = true;
                                         },
                                         IconPlus { size: Some(15), color: Some("currentColor".to_string()) }
@@ -823,12 +809,18 @@ pub fn App() -> Element {
                 style: "flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-top: 1px solid var(--border); height: 24px; background: var(--bgSecondary); color: var(--textDim); font-size: var(--text-xs);",
 
                 span { style: "color: var(--textMuted);", "{status_workspace_name}" }
-                span { style: "color: var(--textDim); opacity: 0.5;", "\u{00B7}" }
-                span { "{status_pane_count}" }
-                span { style: "color: var(--textDim); opacity: 0.5;", "\u{00B7}" }
-                span { "{status_panel_str}" }
+                if !status_pane_count.is_empty() {
+                    span { style: "color: var(--textDim); opacity: 0.5;", "\u{00B7}" }
+                    span { "{status_pane_count}" }
+                }
+                if active_space.is_some() {
+                    span { style: "color: var(--textDim); opacity: 0.5;", "\u{00B7}" }
+                    span { "{status_panel_str}" }
+                }
                 div { style: "flex: 1;" }
-                MetricsBadge {}
+                if metrics_enabled {
+                    MetricsBadge {}
+                }
                 span {
                     style: "display: inline-flex; align-items: center; gap: 5px; color: var(--accent); font-weight: 600;",
                     span { style: "width: 5px; height: 5px; border-radius: 50%; background: var(--accent);" }
@@ -836,10 +828,6 @@ pub fn App() -> Element {
                 }
             }
 
-            ErrorBoundary {
-                fallback_message: "The command palette could not be rendered.".to_string(),
-                CommandPalette {}
-            }
 
             if ui_state.read().show_new_space_modal {
                 ErrorBoundary {
@@ -868,36 +856,40 @@ pub fn App() -> Element {
                 }
             }
 
+            // Mobile Mirror pairing confirmation — always mounted so the
+            // desktop can approve/deny a phone connecting at any time.
+            ErrorBoundary {
+                fallback_message: "The pairing prompt could not be rendered.".to_string(),
+                RelayPairingPrompt {}
+            }
+
+            // Mobile Mirror pane-share requests — the phone asks, the desktop
+            // operator approves/ignores via the pane share toggle.
+            ErrorBoundary {
+                fallback_message: "The pane-share prompt could not be rendered.".to_string(),
+                RelayPaneSharePrompt {}
+            }
+
             // Keep terminal coordination outside the root's reactive shell.
             TerminalController {
                 close_request: close_first_pane_request,
             }
 
-            // Notifications remain passive: attention is represented by the
-            // agent status/badge and notification bell rather than a blocking
-            // full-screen input-request modal.
+            // Notifications have a transient toast plus durable history. An
+            // actionable input request also gets a focused response surface;
+            // closing it leaves the request unresolved and reopenable from the
+            // notification bell or panel.
             ErrorBoundary {
                 fallback_message: "A background interface component could not be rendered.".to_string(),
                 ToastContainer {}
                 NotificationToast {}
                 NotificationPopover {}
+                InputRequestModal {}
                 PluginEventBus {}
                 OutputEventBus {}
             }
 
-            // Terminal sessions are spawned lazily inside the TerminalPaneBody component
-
-            // Hidden triggers for command palette integration
-            button {
-                "data-new-space-trigger": "",
-                style: "display: none;",
-                onclick: move |_| { ui_state.write().show_new_space_modal = true; },
-            }
-            button {
-                "data-swarm-trigger": "",
-                style: "display: none;",
-                onclick: move |_| { ui_state.write().show_swarm_modal = true; },
-            }
+            // Terminal sessions are spawned separately inside the TerminalPaneBody component
         }
     }
 }

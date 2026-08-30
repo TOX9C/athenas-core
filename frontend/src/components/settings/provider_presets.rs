@@ -81,7 +81,10 @@ pub fn provider_preset(id: &str) -> Option<&'static ProviderPreset> {
 /// request time. Known trade-off: this duplicates `infer_provider`'s
 /// heuristics (accepted for v1 — see the provider-presets plan §4a).
 pub fn infer_provider_id(base_url: &str) -> &'static str {
-    let host = base_url.split_once("://").map(|(_, rest)| rest).unwrap_or(base_url);
+    let host = base_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(base_url);
     let host = host.rsplit('@').next().unwrap_or(host);
     let host = host.split('/').next().unwrap_or(host);
     let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
@@ -94,7 +97,9 @@ pub fn infer_provider_id(base_url: &str) -> &'static str {
         "openai"
     } else if host == "localhost"
         || host.ends_with(".local")
-        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
     {
         "lmstudio"
     } else {

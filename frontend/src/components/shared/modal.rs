@@ -1,5 +1,32 @@
 use super::icon::IconClose;
 use dioxus::prelude::*;
+use std::cell::Cell;
+use std::rc::Rc;
+
+/// Number of mounted root-level modal overlays. Native child webviews must be
+/// parked while any shared modal is present because CSS z-index cannot cover a
+/// platform-native child webview on macOS.
+pub fn provide_modal_overlay_store() {
+    use_context_provider(|| Signal::new(0u32));
+}
+
+pub fn use_modal_overlay_store() -> Signal<u32> {
+    use_context::<Signal<u32>>()
+}
+
+fn acquire_modal_overlay(mut overlay_count: Signal<u32>, mounted: Rc<Cell<bool>>) {
+    if !mounted.replace(true) {
+        let current = *overlay_count.read();
+        overlay_count.set(current.saturating_add(1));
+    }
+}
+
+fn release_modal_overlay(mut overlay_count: Signal<u32>, mounted: Rc<Cell<bool>>) {
+    if mounted.replace(false) {
+        let current = *overlay_count.read();
+        overlay_count.set(current.saturating_sub(1));
+    }
+}
 
 #[derive(Props, Clone, PartialEq)]
 pub struct ModalProps {
@@ -18,6 +45,18 @@ pub struct ModalProps {
 
 #[component]
 pub fn Modal(props: ModalProps) -> Element {
+    let overlay_count = use_modal_overlay_store();
+    let mounted = use_hook(|| Rc::new(Cell::new(false)));
+
+    use_effect({
+        let mounted = mounted.clone();
+        move || acquire_modal_overlay(overlay_count, mounted.clone())
+    });
+    use_drop({
+        let mounted = mounted.clone();
+        move || release_modal_overlay(overlay_count, mounted)
+    });
+
     let width_str = format!("{}px", props.width);
     let height_style = if props.compact {
         "height: auto; max-height: 70vh;"
