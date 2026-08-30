@@ -415,12 +415,23 @@ pub fn browser_set_bounds(
 
     let handle = state.get_app_handle().ok_or("AppHandle not available")?;
     if let Some(webview) = handle.get_webview(&label) {
+        // A native child webview is outside the main DOM stacking context. On
+        // macOS it paints above the Dioxus webview even when an app modal or
+        // toast has a higher CSS z-index. The browser surface uses this
+        // off-screen rectangle as a visibility sentinel, so explicitly hide
+        // the child instead of relying on geometry or CSS to cover it.
+        let parked = x <= -10_000.0 && y <= -10_000.0;
         webview
             .set_position(tauri_runtime::dpi::LogicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
         webview
             .set_size(tauri_runtime::dpi::LogicalSize::new(width, height))
             .map_err(|e| e.to_string())?;
+        if parked {
+            webview.hide().map_err(|e| e.to_string())?;
+        } else {
+            webview.show().map_err(|e| e.to_string())?;
+        }
     }
 
     Ok(())

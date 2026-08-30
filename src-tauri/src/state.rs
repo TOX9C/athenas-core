@@ -6,6 +6,13 @@ use athena_core::plan_manager::ExecutionPlan;
 use athena_core::tool_executor::ToolEventSender;
 use tauri::{AppHandle, Emitter, Manager};
 
+/// Watch-channel sender mirroring `AppState::mcp_runtime_stop`. The MCP
+/// runtime thread parks on the receiver (`stop_rx.changed()`) instead of
+/// busy-polling the AtomicBool at 100 ms (F12). Shutdown paths send `true`
+/// through this AND store the AtomicBool (which `McpServer` itself reads).
+pub(crate) static MCP_RUNTIME_STOP_TX: std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>> =
+    std::sync::Mutex::new(None);
+
 // ---------------------------------------------------------------------------
 // TauriEventSender — real implementation (wired to SessionManager)
 // ---------------------------------------------------------------------------
@@ -148,9 +155,18 @@ impl ToolEventSender for TauriEventSender {
 
             match session_result {
                 Ok(session) => {
-                    if let Err(e) = session.write(agent_cmd.as_bytes()).await {
-                        log::error!("Failed to write agent command to PTY {}: {}", id, e);
-                        return;
+                    // The frontend's `pty_spawn_agent` path appends a newline
+                    // before invoking, but this tool-launched path did not — so
+                    // `launch_builtin_agent`/`dispatch_plan_step` commands were
+                    // only echoed, never executed. Terminate the command so the
+                    // shell actually runs it. Skip empty commands (a "shell"
+                    // agent with no task prompt is just an interactive shell).
+                    if !agent_cmd.is_empty() {
+                        let command = format!("{}\n", agent_cmd);
+                        if let Err(e) = session.write(command.as_bytes()).await {
+                            log::error!("Failed to write agent command to PTY {}: {}", id, e);
+                            return;
+                        }
                     }
 
                     if let Some(ref handle) = app_handle {
@@ -228,31 +244,41 @@ impl ToolEventSender for TauriEventSender {
     }
 
     fn has_session(&self, pane_id: &str) -> bool {
-        // Fast path: check the active sessions cache.
+        // Fast path: agents launched by Athena are registered immediately.
         {
             let guard = self.active_sessions.lock();
             if guard.contains(pane_id) {
                 return true;
             }
         }
-        // Fallback: ask the real session manager.
-        //
-        // We must NOT use `handle.block_on(...)` or `blocking_lock()` here:
-        // both panic with "Cannot start a runtime from within a runtime" when
-        // this method is invoked from a tokio worker thread (which it is —
-        // `execute_tool` dispatch runs via `spawn_blocking`, and the orchestrator
-        // calls `has_session` synchronously from there).
-        //
-        // `try_lock()` is non-blocking: if the SessionManager is contended it
-        // returns `Err`, which we treat as "session not confirmed" (false) —
-        // safe because the cache fast-path above handles the common case, and
-        // callers only use this to decide whether to write to a PTY.
+
+        // User-created panes are not added to `active_sessions`, but their
+        // read loop registers output in this shared buffer. Treat that as a
+        // useful identity signal while the session-manager lock is briefly
+        // contended; otherwise a valid pane can be reported as missing.
+        // Only trust a *live* buffer: once a PTY exits, `on_pty_exit` marks
+        // the buffer dead, so buffered history from a gone session must not
+        // make the pane look alive (the executor would otherwise keep writing
+        // agent commands into a dead pane).
+        let has_live_buffer = self
+            .output_buffer
+            .get_pane_buffer_info(pane_id)
+            .is_some_and(|info| !info.dead);
+
+        // `has_session` is called from the executor's `spawn_blocking` bridge,
+        // so a synchronous read is appropriate here. Retry instead of turning
+        // transient SessionManager contention into a false "No active PTY"
+        // result. The live-buffer fallback covers panes that have already
+        // produced output while their session lock is busy.
         let session_manager = Arc::clone(&self.session_manager);
-        let lock_result = session_manager.try_lock();
-        match lock_result {
-            Ok(sm) => sm.has_session_sync(pane_id),
-            Err(_) => false,
+        for _ in 0..4 {
+            if let Ok(sm) = session_manager.try_lock() {
+                return sm.has_session_sync(pane_id);
+            }
+            std::thread::yield_now();
         }
+
+        has_live_buffer
     }
 
     fn ask_user(&self, request_id: &str, question: &str, options: &[serde_json::Value]) -> String {
@@ -422,6 +448,7 @@ impl ToolEventSender for TauriEventSender {
                         athena_core::plan_manager::StepStatus::Failed => "failed",
                         athena_core::plan_manager::StepStatus::Cancelled => "cancelled",
                     },
+                    "agentType": s.agent_type,
                     "assignedPaneId": s.assigned_pane_id,
                 })).collect::<Vec<_>>(),
                 "status": match plan.status {
@@ -549,6 +576,45 @@ pub struct AppState {
     /// ToolExecutor's internally-held instance (the store clone keeps storage
     /// consistent via the same backing KeyValueStore).
     pub kanban_backend: Arc<athena_core::kanban::KanbanBackend>,
+
+    /// Panes the desktop has explicitly shared with the Mobile Mirror relay.
+    /// In-memory and empty by default (per-pane sharing is opt-in); reset on
+    /// app exit. The relay's terminal read/write surface is gated on this set
+    /// (∪ panes a phone spawned itself). Desktop-only commands mutate it.
+    pub relay_shared_panes: parking_lot::Mutex<HashSet<String>>,
+
+    /// Pending Mobile Mirror pairing requests awaiting desktop approval.
+    /// Keyed by request id; the value is a oneshot sender the desktop's
+    /// `relay_pairing_respond` command uses to approve (`true`) or deny
+    /// (`false`) the in-flight WebSocket upgrade. Tokio oneshots are
+    /// runtime-agnostic, so the sender lives here (Tauri command runtime)
+    /// while the receiver is awaited on the relay's dedicated runtime.
+    pub relay_pairing_requests:
+        Arc<parking_lot::Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+
+    /// Last `relay_request_pane_share` timestamp per pane (ms since epoch),
+    /// used to rate-limit share prompts so a paired phone can't spam the
+    /// desktop operator with approval dialogs.
+    pub relay_pane_share_last_request: Arc<parking_lot::Mutex<HashMap<String, u64>>>,
+
+    /// Per-pane raw byte replay buffer (last ~64 KB per pane, ~4 MB across
+    /// all panes) for the Mobile Mirror relay. Appended by the PTY read loop
+    /// on every flush; dropped on `pty_kill` and evicted least-recently-first
+    /// past the aggregate cap. A reconnecting phone replays these exact bytes
+    /// to restore VT screen state (cursor position, colors, a partial
+    /// in-flight line) instead of relying only on ANSI-stripped text history.
+    pub relay_raw_replay: Arc<parking_lot::Mutex<crate::commands::RelayReplayStore>>,
+    /// Live relay subscriptions to `pty:raw:<pane>` events. The PTY read
+    /// loop emits the base64 event only while this count is positive —
+    /// `Emitter::emit` evals webview JS even with no listeners, so an
+    /// unconditional emission wasted work on every 8 ms flush once the
+    /// desktop frontend moved to raw channel delivery.
+    pub relay_raw_subscribers: Arc<parking_lot::Mutex<HashMap<String, usize>>>,
+
+    /// Active microphone capture for Athena voice input (desktop). `Some`
+    /// while recording; `voice_record_stop` takes it (dropping the cpal stream
+    /// ends capture) and transcribes the clip on-device. Empty by default.
+    pub voice_recording: parking_lot::Mutex<Option<crate::commands::voice::VoiceRecording>>,
 }
 
 impl Default for AppState {
@@ -618,7 +684,7 @@ impl AppState {
 
         // -- Build ToolExecutor with the SAME Arc<T> instances ---------
 
-        let tool_executor = Arc::new(parking_lot::Mutex::new(
+        let tool_executor = Arc::new(parking_lot::RwLock::new(
             athena_core::tool_executor::ToolExecutor::new(
                 Arc::clone(&output_buffer),
                 Arc::clone(&plan_manager),
@@ -693,6 +759,14 @@ impl AppState {
             shell_integration_parser,
             kanban_backend,
             pending_questions,
+            relay_shared_panes: parking_lot::Mutex::new(HashSet::new()),
+            relay_pairing_requests: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            relay_pane_share_last_request: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            relay_raw_replay: Arc::new(parking_lot::Mutex::new(
+                crate::commands::RelayReplayStore::default(),
+            )),
+            relay_raw_subscribers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            voice_recording: parking_lot::Mutex::new(None),
             rate_limiter: crate::commands::caps::global_rate_limiter(),
             // Kept for command/API compatibility; desktop startup now owns
             // only the TCP transport and never consumes stdin/stdout.
@@ -795,21 +869,36 @@ impl AppState {
                     }
                 }
             };
-
             rt.block_on(async {
+                // F12: shutdown is a `watch` channel, not a 100 ms busy-poll —
+                // the parked await wakes the instant main.rs sends through
+                // `MCP_RUNTIME_STOP_TX` (main.rs also stores the AtomicBool that
+                // `McpServer` itself reads).
+                let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+                if let Ok(mut guard) = MCP_RUNTIME_STOP_TX.lock() {
+                    *guard = Some(stop_tx);
+                }
+
+                // Retry until init succeeds or shutdown fires: a transient port
+                // conflict must not permanently disable MCP (doc contract above).
                 loop {
                     if mcp_runtime_stop.load(Ordering::Relaxed) {
                         break;
                     }
 
+                    // `init` performs the blocking `std::net::TcpListener::bind`
+                    // + `local_addr`. It needs `&mut self`, so it runs under the
+                    // async mutex; the bind is local and fast (no network I/O),
+                    // so the hold is short. Kept inside per the API shape — do
+                    // not grow this critical section.
                     let started = {
                         let mut server = mcp_server.lock().await;
                         match server.init(4545) {
                             Ok(()) => true,
                             Err(e) => {
                                 log::error!(
-                                    "Failed to start MCP TCP server on 127.0.0.1:4545: {e}; retrying"
-                                );
+                                "Failed to start MCP TCP server on 127.0.0.1:4545: {e}; retrying"
+                            );
                                 false
                             }
                         }
@@ -820,17 +909,20 @@ impl AppState {
 
                         // `McpServer::init` spawns its accept task on this
                         // runtime. Keep it alive until app shutdown; dropping
-                        // it here would abort the TCP server.
-                        while !mcp_runtime_stop.load(Ordering::Relaxed) {
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        }
+                        // this future would abort the TCP server.
+                        let _ = stop_rx.changed().await;
                         break;
                     }
 
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    // Bind failed: retry after a delay, or exit immediately on
+                    // shutdown.
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                        _ = stop_rx.changed() => { break; }
+                    }
                 }
-            });
-            mcp_runtime_started.store(false, Ordering::SeqCst);
+                mcp_runtime_started.store(false, Ordering::SeqCst);
+            }); // rt.block_on
         });
     }
 
@@ -962,6 +1054,7 @@ impl AppState {
                 "notifications:new"
                     | "notifications:updated"
                     | "notifications:dismissed"
+                    | "notifications:resolved"
                     | "notifications:cleared"
             ) {
                 let unread = service_for_closure.get_unread_count();
@@ -1050,6 +1143,159 @@ impl AppState {
                 }
             }
 
+            // Plugin status transitions are lifecycle signals, not merely
+            // badge updates. Route terminal states through the shared service
+            // so a plugin-connected agent cannot become "Done" silently.
+            if channel == "agents:statusUpdate" {
+                let status = data
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("idle");
+                let request_id = data
+                    .get("requestId")
+                    .or_else(|| data.get("request_id"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                // An explicit input request below is the canonical actionable
+                // event. Do not also create a second NeedsInput record when a
+                // plugin sends the accompanying waiting status with the same
+                // request id.
+                let notification_type = match status {
+                    "waiting_for_input" | "waiting_input" if request_id.is_none() => {
+                        Some(athena_core::notification::NotificationType::NeedsInput)
+                    }
+                    "completed" | "done" | "complete" => {
+                        Some(athena_core::notification::NotificationType::TaskComplete)
+                    }
+                    "error" | "failed" => {
+                        Some(athena_core::notification::NotificationType::TaskError)
+                    }
+                    "cancelled" | "canceled" => {
+                        Some(athena_core::notification::NotificationType::Warning)
+                    }
+                    _ => None,
+                };
+                if let Some(notification_type) = notification_type {
+                    let pane_id = data
+                        .get("paneId")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    let run_id = data
+                        .get("runId")
+                        .or_else(|| data.get("sessionId"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    let event_timestamp = data
+                        .get("timestamp")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_else(crate::commands::now_ms);
+                    let event_key = data
+                        .get("eventId")
+                        .or_else(|| data.get("eventKey"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            Some(format!(
+                                "agent-status:{}:{}:{}:{}",
+                                pane_id.as_deref().unwrap_or("unknown"),
+                                run_id.as_deref().unwrap_or("unknown"),
+                                status,
+                                event_timestamp
+                            ))
+                        });
+                    let title = match notification_type {
+                        athena_core::notification::NotificationType::NeedsInput => {
+                            "Agent needs input"
+                        }
+                        athena_core::notification::NotificationType::TaskComplete => {
+                            "Agent finished"
+                        }
+                        athena_core::notification::NotificationType::TaskError => "Agent error",
+                        _ => "Agent update",
+                    };
+                    // Compute before `push_notification` moves `notification_type`.
+                    let requires_action = matches!(
+                        notification_type,
+                        athena_core::notification::NotificationType::NeedsInput
+                    );
+                    notification_service.push_notification(
+                        athena_core::notification::NotificationEvent {
+                            r#type: notification_type,
+                            title: title.to_string(),
+                            message: data
+                                .get("message")
+                                .or_else(|| data.get("prompt"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(status)
+                                .to_string(),
+                            source: "agent".to_string(),
+                            agent_id: data
+                                .get("agentId")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
+                            data: Some(data.clone()),
+                            timestamp: data
+                                .get("timestamp")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or_else(crate::commands::now_ms),
+                            metadata: None,
+                            actions: None,
+                            request_id: request_id.clone(),
+                            event_key,
+                            run_id,
+                            pane_id,
+                            requires_action,
+                        },
+                    );
+                }
+            }
+
+            // An explicit input request carries the stable request identity
+            // needed to resolve the correct blocked agent later.
+            if channel == "agents:inputRequested" {
+                let pane_id = data
+                    .get("paneId")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let request_id = data
+                    .get("requestId")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                notification_service.push_notification(
+                    athena_core::notification::NotificationEvent {
+                        r#type: athena_core::notification::NotificationType::NeedsInput,
+                        title: "Agent input requested".to_string(),
+                        message: data
+                            .get("message")
+                            .or_else(|| data.get("prompt"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Agent is requesting input")
+                            .to_string(),
+                        source: "agent".to_string(),
+                        agent_id: data
+                            .get("agentId")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        data: Some(data.clone()),
+                        timestamp: data
+                            .get("timestamp")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_else(crate::commands::now_ms),
+                        metadata: None,
+                        actions: None,
+                        request_id: request_id.clone(),
+                        event_key: request_id.as_ref().map(|id| format!("agent-input:{id}")),
+                        run_id: data
+                            .get("runId")
+                            .or_else(|| data.get("sessionId"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        pane_id,
+                        requires_action: true,
+                    },
+                );
+            }
+
             // Plugin notifications are high-fidelity equivalents of the
             // passive tracker notifications. Route them through the
             // shared service so the existing frontend, macOS sound, and
@@ -1071,6 +1317,11 @@ impl AppState {
                     .get("paneId")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
+                // Compute before `push_notification` moves `notification_type`.
+                let requires_action = matches!(
+                    notification_type,
+                    athena_core::notification::NotificationType::NeedsInput
+                );
                 notification_service.push_notification(
                     athena_core::notification::NotificationEvent {
                         r#type: notification_type,
@@ -1093,7 +1344,22 @@ impl AppState {
                             .unwrap_or_else(crate::commands::now_ms),
                         metadata: None,
                         actions: None,
-                        request_id: None,
+                        request_id: data
+                            .get("requestId")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        event_key: data
+                            .get("eventId")
+                            .or_else(|| data.get("eventKey"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        run_id: data
+                            .get("runId")
+                            .or_else(|| data.get("sessionId"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        pane_id: pane_id.clone(),
+                        requires_action,
                     },
                 );
                 return;
@@ -1137,6 +1403,11 @@ impl AppState {
             };
             rt.block_on(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
+                // perf#4: the config is re-read only when the KV store's
+                // revision counter changes; a steady-state tick is now a
+                // single relaxed atomic load instead of a Value clone plus
+                // JSON parse.
+                let mut cached_rev: Option<u64> = None;
                 loop {
                     interval.tick().await;
 
@@ -1144,15 +1415,25 @@ impl AppState {
                     // frontend writes it via the existing `store_set` IPC —
                     // no new command surface needed). Best-effort: missing /
                     // malformed JSON keeps the previous config.
-                    if let Ok(Some(json)) = store.get::<String>("agent_notify_config") {
-                        if let Ok(cfg) = serde_json::from_str::<
-                            athena_core::agent_activity::AgentNotifyConfig,
-                        >(&json)
-                        {
-                            agent_activity.set_notify_config(cfg);
+                    let rev = store.revision();
+                    if cached_rev != Some(rev) {
+                        if let Ok(Some(json)) = store.get::<String>("agent_notify_config") {
+                            if let Ok(cfg) = serde_json::from_str::<
+                                athena_core::agent_activity::AgentNotifyConfig,
+                            >(&json)
+                            {
+                                agent_activity.set_notify_config(cfg);
+                            }
                         }
+                        cached_rev = Some(rev);
                     }
 
+                    // Belt-and-braces leak guard: evict activity entries
+                    // whose pane vanished without a teardown path (F5).
+                    // 24 h: a pane quiet for a day is dead; 30 s would evict
+                    // live quiet panes every tick.
+                    agent_activity
+                        .prune_stale_panes(crate::commands::now_ms(), 24 * 60 * 60 * 1000);
                     let sessions = {
                         let sm = session_manager.lock().await;
                         sm.list_sessions().await
@@ -1185,13 +1466,10 @@ impl AppState {
                             )
                         });
                         let tail = if fg_opt.is_some() {
-                            let lines = output_buffer.get_output(sid, None);
+                            let lines = output_buffer.get_output_tail(sid, 40);
                             Some(
                                 lines
                                     .iter()
-                                    .rev()
-                                    .take(40)
-                                    .rev()
                                     .map(|l| l.text.as_str())
                                     .collect::<Vec<_>>()
                                     .join("\n"),

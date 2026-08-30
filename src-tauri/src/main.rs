@@ -7,7 +7,6 @@ mod commands;
 mod relay;
 mod state;
 use commands::*;
-use std::sync::Arc;
 use tauri::Manager;
 
 #[cfg(debug_assertions)]
@@ -28,6 +27,18 @@ fn main() {
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Debug)
+                // Keep both the terminal-visible stream and the rotated
+                // per-user file explicit. Relying on plugin defaults made it
+                // too easy for a future upgrade to silently drop the disk
+                // archive needed for post-freeze investigation.
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: None,
+                    }),
+                ])
+                .max_file_size(5 * 1024 * 1024)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))
                 .build(),
         )
         .plugin(tauri_plugin_shell::init())
@@ -58,6 +69,8 @@ fn main() {
     let app = builder
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
+            // Diagnostics
+            diagnostics_export,
             // Window
             window_minimize,
             window_maximize,
@@ -87,10 +100,12 @@ fn main() {
             session_update,
             session_add_message,
             // PTY
+            pty_stage_drop_file,
             pty_spawn,
             pty_write,
             read_clipboard_text,
             pty_kill,
+            pty_raw_replay,
             pty_resize,
             pty_get_history,
             pty_has_session,
@@ -103,6 +118,9 @@ fn main() {
             pty_detach_listener,
             pty_foreground_process,
             pty_agent_info,
+            // Voice input (mic → on-device transcription)
+            voice_record_start,
+            voice_record_stop,
             // Trusted workspace roots
             workspace_add_trusted_root,
             workspace_remove_trusted_root,
@@ -132,6 +150,7 @@ fn main() {
             notification_mark_all_read,
             notification_dismiss,
             notification_clear_all,
+            notification_resolve,
             notification_counts,
             // Plans
             plan_create,
@@ -149,6 +168,8 @@ fn main() {
             agent_send_message,
             agent_disconnect,
             agent_get_token,
+            // Agent notifications (Phase 2: emitter install)
+            agent_notify_install,
             // Search
             search_code,
             search_ripgrep,
@@ -213,6 +234,9 @@ fn main() {
             relay_start,
             relay_stop,
             relay_status,
+            relay_set_pane_shared,
+            relay_list_shared_panes,
+            relay_pairing_respond,
         ])
         .setup(|app| {
             // Request macOS notification permission up front so agent
@@ -225,6 +249,43 @@ fn main() {
                     log::warn!("failed to request notification permission: {e}");
                 }
             }
+            // Explicit macOS application menu. Without this the app ships
+            // with no Edit menu, which breaks copy/paste/undo shortcuts in
+            // terminals and the webview, and the Window menu lacks the
+            // conventional zoom/minimize entries.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
+
+                let app_menu = SubmenuBuilder::new(app, "Athena's Core")
+                    .item(&PredefinedMenuItem::about(app, None, None)?)
+                    .separator()
+                    .hide()
+                    .hide_others()
+                    .show_all()
+                    .separator()
+                    .quit()
+                    .build()?;
+                let edit_menu = SubmenuBuilder::new(app, "Edit")
+                    .undo()
+                    .redo()
+                    .separator()
+                    .cut()
+                    .copy()
+                    .paste()
+                    .select_all()
+                    .build()?;
+                let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
+                let window_menu = SubmenuBuilder::new(app, "Window")
+                    .minimize()
+                    .maximize()
+                    .item(&PredefinedMenuItem::close_window(app, None)?)
+                    .build()?;
+                let menu = MenuBuilder::new(app)
+                    .items(&[&app_menu, &edit_menu, &view_menu, &window_menu])
+                    .build()?;
+                app.set_menu(menu)?;
+            }
 
             Ok(())
         })
@@ -235,6 +296,11 @@ fn main() {
         let state = app.state::<state::AppState>();
         state.set_app_handle(app.handle().clone());
         state.wire_pty_events();
+
+        // Surface, in the app's own logs, why macOS keeps re-prompting for
+        // Files & Folders access across rebuilds (ad-hoc code signature).
+        #[cfg(target_os = "macos")]
+        commands::log_macos_permission_diagnostics(&state.store);
 
         // Mobile Mirror is an experimental plaintext LAN service and must
         // never silently reopen merely because it was enabled in an earlier
@@ -297,95 +363,65 @@ fn main() {
                     });
                 }
             }
-            tauri::RunEvent::ExitRequested { api: _, .. } => {
-                log::info!("Exit requested -- initiating graceful shutdown");
-                log::info!("[resume-debug] RunEvent::ExitRequested received; capturing resume hints before PTY shutdown");
-                // Some Tauri/macOS paths deliver ExitRequested before Exit.
-                // Capture while the PTYs are still alive; the Exit handler is
-                // an idempotent fallback for platforms that skip this event.
-                capture_resume_on_exit(app_handle);
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                use std::sync::atomic::Ordering;
 
-                // Stop the mobile-mirror relay first so the port is
-                // released before the runtime tears down. Idempotent.
-                relay::stop();
-
-                let state = app_handle.state::<state::AppState>();
-                // Close native browser children before the main window/runtime
-                // tears down. This keeps the model and Tauri registry aligned
-                // even when the app exits without a browser hide command.
-                shutdown_browser_children(&state);
-
-                // Stop the dedicated MCP runtime and signal the TCP server
-                // before attempting the synchronous cleanup lock. This keeps
-                // shutdown reliable even if the async MCP mutex is contended.
-                state
-                    .mcp_runtime_stop
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Ok(server) = state.mcp_server.try_lock() {
-                    server.request_shutdown();
+                // Prevent Tauri from tearing down the process while the
+                // bounded worker captures agent resume ids and reaps PTYs.
+                // The old implementation detached capture but immediately
+                // allowed Exit, so the process could disappear before the
+                // worker persisted anything. The worker below requests exit
+                // again after cleanup; this atomic makes that second request
+                // pass through without starting another cleanup cycle.
+                if EXIT_SHUTDOWN_SCHEDULED.swap(true, Ordering::SeqCst) {
+                    log::debug!("Exit requested again; graceful shutdown is already complete or in progress");
+                    return;
                 }
+                api.prevent_exit();
+                log::info!("Exit requested -- scheduling bounded graceful shutdown");
+                log::info!("[resume-debug] RunEvent::ExitRequested received; preserving PTYs for resume capture");
 
-                // Shut down MCP server (synchronous — no tokio runtime on main thread)
-                {
-                    let mcp_server = Arc::clone(&state.mcp_server);
-                    if let Ok(mut server) = mcp_server.try_lock() {
-                        server.shutdown();
-                    };
-                }
-
-                // Shut down agent comms
-                let _ = state.agent_comms.shutdown_agent_comms();
-
-                // Gracefully interrupt + reap every live PTY so foreground
-                // processes (claude, codex, …) are closed cleanly rather than
-                // orphaned. Runs before the store flush so any resume id the
-                // scanner captured from the live PTY stream is already on
-                // disk before we tear the runtime down.
-                {
-                    let sm = Arc::clone(&state.session_manager);
-                    if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                        if let Ok(manager) = sm.try_lock() {
-                            rt.block_on(manager.shutdown_all());
-                            log::info!("[resume-debug] ExitRequested PTY shutdown completed");
-                        } else {
-                            log::warn!(
-                                "session_manager lock contended during exit; PTYs may be orphaned"
-                            );
-                        }
-                    }
-                }
-
-                // Flush any dirty writes to disk before exit
-                {
-                    let store = Arc::clone(&state.store);
-                    if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                        if let Err(e) = rt.block_on(store.flush_if_dirty()) {
-                            log::error!("Failed to flush KV store on exit: {}", e);
-                        }
-                    }
-                }
-
-                log::info!("Graceful shutdown complete");
-            }
-            tauri::RunEvent::Exit => {
-                // ExitRequested captures first when that event is delivered;
-                // this remains an idempotent fallback for paths that deliver
-                // only Exit. The PTYs are still alive when neither earlier
-                // shutdown path has run.
-                log::info!("[resume-debug] RunEvent::Exit received; invoking idempotent capture fallback");
+                // Stop UI-owned services immediately; these operations are
+                // non-blocking/try-lock based and do not touch the PTY mutex.
                 relay::stop();
                 let state = app_handle.state::<state::AppState>();
                 shutdown_browser_children(&state);
                 state
                     .mcp_runtime_stop
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Ok(server) = state.mcp_server.try_lock() {
-                    server.request_shutdown();
+                // Wake the MCP runtime thread's parked `stop_rx.changed()`
+                // immediately instead of waiting for any poll (F12).
+                if let Ok(guard) = state::MCP_RUNTIME_STOP_TX.lock() {
+                    if let Some(tx) = guard.as_ref() {
+                        let _ = tx.send(true);
+                    }
                 }
                 if let Ok(mut server) = state.mcp_server.try_lock() {
+                    server.request_shutdown();
                     server.shutdown();
                 }
-                capture_resume_on_exit(app_handle);
+                let _ = state.agent_comms.shutdown_agent_comms();
+
+                // Keep all potentially waiting PTY/store work off Tauri's
+                // event-loop thread. The worker has explicit timeouts and
+                // always requests process exit, including runtime/spawn
+                // failures, so Cmd+Q cannot strand the app indefinitely.
+                start_graceful_shutdown(app_handle);
+            }
+            tauri::RunEvent::Exit => {
+                use std::sync::atomic::Ordering;
+                if EXIT_SHUTDOWN_SCHEDULED.load(Ordering::SeqCst) {
+                    log::info!("Graceful shutdown complete; final Exit event received");
+                } else {
+                    // Defensive fallback for a platform that delivers only
+                    // Exit. There is no way to defer this late event, so keep
+                    // this best-effort and non-blocking.
+                    log::warn!("[resume-debug] RunEvent::Exit arrived without ExitRequested; using best-effort fallback");
+                    relay::stop();
+                    let state = app_handle.state::<state::AppState>();
+                    shutdown_browser_children(&state);
+                    capture_resume_on_exit(app_handle);
+                }
             }
             _ => {}
         }
@@ -496,10 +532,12 @@ fn visible_fraction(window: (i64, i64, i64, i64), monitors: &[(i64, i64, i64, i6
 
 static RESUME_CAPTURE_DONE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+static EXIT_SHUTDOWN_SCHEDULED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 /// Keep macOS Cmd+Q responsive while still allowing fast agent exit handlers
 /// to print and persist a resume id. The exit callback runs on Tauri's main
-/// thread, so joining a worker beyond this budget makes the whole app appear
-/// frozen with a spinning cursor.
+/// thread, so the capture worker is detached and the async capture itself has
+/// a hard timeout.
 const EXIT_RESUME_CAPTURE_BUDGET_MS: u64 = 800;
 
 /// Type `/exit` into every live PTY on app exit, scan each pane's output for the
@@ -508,10 +546,9 @@ const EXIT_RESUME_CAPTURE_BUDGET_MS: u64 = 800;
 /// process).
 ///
 /// The async capture runs on a DEDICATED OS thread with its own current-thread
-/// runtime; the caller blocks on the thread join. This deliberately keeps the
-/// work OFF the shared multi-threaded runtime's worker threads, which must stay
-/// free to keep the `pty_read_loop` tasks feeding the output buffer with the
-/// agents' exit output while we poll for the resume line.
+/// runtime. It is intentionally detached from the Tauri event loop; the
+/// capture function has a hard timeout so it cannot keep the process alive
+/// indefinitely if the session manager is contended.
 fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
     use std::sync::atomic::Ordering;
     if RESUME_CAPTURE_DONE.swap(true, Ordering::SeqCst) {
@@ -544,12 +581,94 @@ fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
             });
         });
     match worker {
-        Ok(w) => {
-            if let Err(e) = w.join() {
-                log::error!("[resume-debug] capture worker panicked: {e:?}");
-            }
+        Ok(_) => {
+            // This fallback is intentionally detached because Exit has already
+            // been delivered and cannot be deferred. Normal Cmd+Q uses
+            // `start_graceful_shutdown`, which prevents exit until this work
+            // and PTY cleanup have completed.
+            log::debug!("[resume-debug] best-effort capture worker detached");
         }
         Err(e) => log::error!("resume capture: failed to spawn worker thread: {e}"),
+    }
+}
+
+/// Run resume capture, PTY reaping, and store flushing away from Tauri's main
+/// event loop, then request a second exit once the bounded cleanup is done.
+fn start_graceful_shutdown(app_handle: &tauri::AppHandle) {
+    log::info!(
+        "[resume-debug] graceful shutdown worker starting; capture budget={}ms",
+        EXIT_RESUME_CAPTURE_BUDGET_MS
+    );
+    let app_handle = app_handle.clone();
+    let spawn_failure_handle = app_handle.clone();
+    let worker = std::thread::Builder::new()
+        .name("athena-graceful-shutdown".to_string())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("graceful shutdown: failed to build runtime: {e}");
+                    app_handle.exit(1);
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let state = app_handle.state::<state::AppState>();
+                let persisted = commands::capture_resume_ids_on_exit(
+                    &state,
+                    EXIT_RESUME_CAPTURE_BUDGET_MS,
+                )
+                .await;
+                log::info!(
+                    "[resume-debug] graceful shutdown capture finished; persisted {persisted} resume id(s)"
+                );
+
+                let session_shutdown = tokio::time::timeout(
+                    std::time::Duration::from_millis(2_200),
+                    async {
+                        let manager = state.session_manager.lock().await;
+                        manager.shutdown_all().await;
+                    },
+                )
+                .await;
+                if session_shutdown.is_err() {
+                    log::warn!(
+                        "graceful shutdown: PTY cleanup exceeded 2200ms; allowing process exit"
+                    );
+                } else {
+                    log::info!("[resume-debug] graceful shutdown PTY cleanup completed");
+                }
+
+                let flush = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    state.store.flush_if_dirty(),
+                )
+                .await;
+                match flush {
+                    Ok(Ok(())) => log::info!("Graceful shutdown complete"),
+                    Ok(Err(e)) => log::error!("Failed to flush KV store on exit: {e}"),
+                    Err(_) => log::warn!("KV store flush exceeded 500ms; allowing process exit"),
+                }
+                state
+                    .mcp_runtime_stop
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(guard) = state::MCP_RUNTIME_STOP_TX.lock() {
+                    if let Some(tx) = guard.as_ref() {
+                        let _ = tx.send(true);
+                    }
+                }
+                app_handle.exit(0);
+            });
+        });
+
+    if let Err(e) = worker {
+        log::error!("graceful shutdown: failed to spawn worker: {e}");
+        // The event-loop handler already prevented exit. If thread creation
+        // fails, do not leave the app in a permanently non-exiting state.
+        spawn_failure_handle.exit(1);
     }
 }
 

@@ -186,7 +186,7 @@ pub async fn summarize_agent_title(
 #[tauri::command]
 pub async fn athena_clear_context(state: State<'_, AppState>) -> Result<(), String> {
     let orchestrator = Arc::clone(&state.orchestrator);
-    orchestrator.clear_context();
+    orchestrator.clear_context().await;
     Ok(())
 }
 
@@ -199,7 +199,7 @@ pub async fn athena_set_session_context(
     let entries: Vec<athena_core::types::SessionHistoryEntry> =
         serde_json::from_str(&history).map_err(|e| e.to_string())?;
     let orchestrator = Arc::clone(&state.orchestrator);
-    orchestrator.set_session_context(entries);
+    orchestrator.set_session_context(entries).await;
     Ok(())
 }
 

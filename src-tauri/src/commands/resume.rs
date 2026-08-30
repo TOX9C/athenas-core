@@ -115,6 +115,20 @@ pub(crate) fn merge_resume_ids_into_workspaces(
 /// feeding the output buffer with the agents' exit output (see
 /// `capture_resume_on_exit` in main.rs).
 pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> usize {
+    let budget = std::time::Duration::from_millis(wait_ms.max(1));
+    match tokio::time::timeout(budget, capture_resume_ids_on_exit_inner(state, wait_ms)).await {
+        Ok(count) => count,
+        Err(_) => {
+            log::warn!(
+                "[resume-debug] capture timed out after {}ms; abandoning without blocking shutdown",
+                budget.as_millis()
+            );
+            0
+        }
+    }
+}
+
+async fn capture_resume_ids_on_exit_inner(state: &AppState, wait_ms: u64) -> usize {
     log::info!("[resume-debug] capture begin wait_ms={wait_ms}");
     let all_sessions = {
         let sm = state.session_manager.lock().await;

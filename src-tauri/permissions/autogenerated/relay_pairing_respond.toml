@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-relay-pairing-respond"
+description = "Enables the relay_pairing_respond command without any pre-configured scope."
+commands.allow = ["relay_pairing_respond"]
+
+[[permission]]
+identifier = "deny-relay-pairing-respond"
+description = "Denies the relay_pairing_respond command without any pre-configured scope."
+commands.deny = ["relay_pairing_respond"]

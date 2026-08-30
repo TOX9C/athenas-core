@@ -14,6 +14,8 @@
 //!   - Error types like `CommandError` (which serializes to a string) and plain
 //!     `String` all map to `Err(String)` — the shape the frontend bridge unpicks.
 
+use std::collections::HashSet;
+
 use serde_json::{Map, Value};
 use tauri::Manager;
 
@@ -239,7 +241,9 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
         "kanban_create_task" => {
             let title = opts.req::<String>("title")?;
             let description = opts.opt::<Option<String>>("description")?;
-            let out = commands::kanban_create_task(state, title, description).await?;
+            // camelCase wire key `planStepId` — see pty_set_xterm note.
+            let plan_step_id = opts.opt::<Option<String>>("planStepId")?;
+            let out = commands::kanban_create_task(state, title, description, plan_step_id).await?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "kanban_update_task" => {
@@ -298,7 +302,8 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
         }
         "notification_mark_read" => {
             let notification_id = opts
-                .req::<String>("id")
+                .req::<String>("notificationId")
+                .or_else(|_| opts.req::<String>("id"))
                 .or_else(|_| opts.req::<String>("notification_id"))?;
             let out = commands::notification_mark_read(state, notification_id)?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
@@ -309,7 +314,8 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
         }
         "notification_dismiss" => {
             let notification_id = opts
-                .req::<String>("id")
+                .req::<String>("notificationId")
+                .or_else(|_| opts.req::<String>("id"))
                 .or_else(|_| opts.req::<String>("notification_id"))?;
             let out = commands::notification_dismiss(state, notification_id)?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
@@ -318,12 +324,24 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let out = commands::notification_clear_all(state);
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
+        "notification_resolve" => {
+            let notification_id = opts
+                .req::<String>("notificationId")
+                .or_else(|_| opts.req::<String>("id"))
+                .or_else(|_| opts.req::<String>("notification_id"))?;
+            let out = commands::notification_resolve(state, notification_id)?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
         "notification_counts" => {
             let out = commands::notification_counts(state)?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "output_buffer_get" => {
-            let pane_id = opts.req::<String>("pane_id")?;
+            // camelCase wire key `paneId` — see pty_set_xterm note. The bridge
+            // sends `paneId`; the relay reads raw JSON, so the snake_case key
+            // would always be missing and the mobile scrollback fetch would
+            // fail silently.
+            let pane_id = opts.req::<String>("paneId")?;
             let limit = opts.opt::<Option<usize>>("limit")?;
             let offset = opts.opt::<Option<usize>>("offset")?;
             let out = commands::output_buffer_get(state, pane_id, limit, offset)?;
@@ -339,8 +357,15 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "get_pane_history" => {
-            let pane_id = opts.req::<String>("pane_id")?;
+            // camelCase wire key `paneId` — see pty_set_xterm note.
+            let pane_id = opts.req::<String>("paneId")?;
             let out = commands::get_pane_history(state, pane_id)?;
+            Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
+        }
+        "pty_raw_replay" => {
+            // camelCase wire key `paneId` — see pty_set_xterm note.
+            let pane_id = opts.req::<String>("paneId")?;
+            let out = commands::pty_raw_replay(state, pane_id).await?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "plan_create" => {
@@ -468,8 +493,9 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let shell = opts.req::<String>("shell")?;
             let cols = opts.opt::<Option<u16>>("cols")?;
             let rows = opts.opt::<Option<u16>>("rows")?;
-            let start_paused = opts.opt::<Option<bool>>("start_paused")?;
-            let listener_owner = opts.opt::<Option<String>>("listener_owner")?;
+            // camelCase wire keys — see pty_set_xterm note.
+            let start_paused = opts.opt::<Option<bool>>("startPaused")?;
+            let listener_owner = opts.opt::<Option<String>>("listenerOwner")?;
             commands::pty_spawn(
                 state,
                 id,
@@ -502,7 +528,8 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let id = opts.req::<String>("id")?;
             let cols = opts.req::<u16>("cols")?;
             let rows = opts.req::<u16>("rows")?;
-            commands::pty_resize(state, id, cols, rows).await?;
+            let owner = opts.opt::<Option<String>>("owner")?;
+            commands::pty_resize(state, id, cols, rows, owner).await?;
             Ok(Value::Null)
         }
         "pty_get_history" => {
@@ -539,11 +566,12 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let id = opts.req::<String>("id")?;
             let cwd = opts.req::<String>("cwd")?;
             let shell = opts.req::<String>("shell")?;
-            let agent_cmd = opts.req::<String>("agent_cmd")?;
+            // camelCase wire keys — see pty_set_xterm note.
+            let agent_cmd = opts.req::<String>("agentCmd")?;
             let cols = opts.opt::<Option<u16>>("cols")?;
             let rows = opts.opt::<Option<u16>>("rows")?;
-            let start_paused = opts.opt::<Option<bool>>("start_paused")?;
-            let listener_owner = opts.opt::<Option<String>>("listener_owner")?;
+            let start_paused = opts.opt::<Option<bool>>("startPaused")?;
+            let listener_owner = opts.opt::<Option<String>>("listenerOwner")?;
             commands::pty_spawn_agent(
                 state,
                 id,
@@ -560,15 +588,23 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
         }
         "pty_set_xterm" => {
             let id = opts.req::<String>("id")?;
-            let is_xterm = opts.req::<bool>("is_xterm")?;
+            // Wire key is camelCase `isXterm` (the bridge sends camelCase and
+            // Tauri's rename only applies on the desktop invoke path; the relay
+            // reads raw JSON).
+            let is_xterm = opts.req::<bool>("isXterm")?;
             commands::pty_set_xterm(state, id, is_xterm).await?;
             Ok(Value::Null)
         }
         "pty_attach_listener" => {
             let id = opts.req::<String>("id")?;
             let owner = opts.req::<String>("owner")?;
-            let replace_current = opts.opt::<Option<bool>>("replace_current")?;
-            let out = commands::pty_attach_listener(state, id, owner, replace_current).await?;
+            let replace_current = opts.opt::<Option<bool>>("replaceCurrent")?;
+            // The relay shim cannot construct a Tauri `Channel` — phones keep
+            // consuming the base64 `pty:raw` event stream, which the read
+            // loop now emits only while a relay subscriber exists (see
+            // `relay_raw_subscribers` / `flush_pty_raw`).
+            let out =
+                commands::pty_attach_listener_relay(state, id, owner, replace_current).await?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "pty_detach_listener" => {
@@ -664,11 +700,19 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             if !mobile_store_key_allowed(&key) {
                 return Err(format!("relay store key is not available: {key}"));
             }
-            commands::store_set(state, key, value)?;
+            commands::store_set(state, key, value).await?;
             Ok(Value::Null)
         }
         "store_has" => {
             let key = opts.req::<String>("key")?;
+            // Match the store_get/store_set/store_delete arms: `store_has` is
+            // not in `command_allowed` today, but gating it here keeps the
+            // dispatch layer defense-in-depth consistent if it is ever
+            // allowlisted. Arbitrary store keys (secrets, relay token, …) must
+            // never be probed over the LAN.
+            if !mobile_store_key_allowed(&key) {
+                return Err(format!("relay store key is not available: {key}"));
+            }
             let out = commands::store_has(state, key);
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
@@ -807,6 +851,13 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             commands::output_buffer_append(state, pane_id, data, agent_type);
             Ok(Value::Null)
         }
+        "relay_request_pane_share" => {
+            // The frontend bridge sends camelCase wire keys (see tauri_bridge);
+            // the relay dispatch reads them verbatim (no Tauri rename).
+            let pane_id = opts.req::<String>("paneId")?;
+            commands::relay_request_pane_share(state, pane_id)?;
+            Ok(Value::Null)
+        }
         _ => Err(format!("unknown relay command: {cmd}")),
     }
 }
@@ -842,6 +893,7 @@ pub fn command_allowed(cmd: &str) -> bool {
             | "notification_mark_read"
             | "notification_mark_all_read"
             | "notification_dismiss"
+            | "notification_resolve"
             | "output_buffer_get"
             | "output_buffer_list"
             | "get_pane_history"
@@ -854,8 +906,83 @@ pub fn command_allowed(cmd: &str) -> bool {
             | "pty_is_ready"
             | "pty_agent_info"
             | "pty_foreground_process"
+            | "pty_raw_replay"
             | "session_list"
+            | "relay_request_pane_share"
     )
+}
+
+/// Pane-scoped commands the relay gates to panes the desktop has shared (or
+/// the phone spawned itself). These read or mutate a specific pane's terminal
+/// content/stream, so the per-pane share toggle is their authorization
+/// boundary — the token alone is not sufficient for them.
+///
+/// Status-only queries (`pty_has_session`, `pty_is_ready`, `pty_agent_info`,
+/// `pty_foreground_process`) are deliberately excluded: the workspace blob
+/// already exposes pane ids, these leak only process/status metadata, and
+/// gating them would break the mobile attach flow's session pre-check.
+pub fn pane_scoped_command(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "pty_write"
+            | "pty_resize"
+            | "pty_kill"
+            | "pty_set_xterm"
+            | "pty_attach_listener"
+            | "pty_detach_listener"
+            | "output_buffer_get"
+            | "get_pane_history"
+            | "pty_raw_replay"
+    )
+}
+
+/// Extract the pane id a command operates on, using the wire key that command
+/// expects. Most commands use `id`; the output/history/replay readers use the
+/// camelCase `paneId` the frontend bridge sends on the wire (Tauri's
+/// camelCase→snake_case rename applies only on the desktop invoke path; the
+/// relay reads raw JSON, so the key must match what the bridge actually sends).
+pub fn pane_id_of(cmd: &str, args: &serde_json::Value) -> Option<String> {
+    let key = match cmd {
+        "output_buffer_get" | "get_pane_history" | "pty_raw_replay" => "paneId",
+        _ => "id",
+    };
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+}
+
+/// Decide whether a command + args may proceed on the relay, given the panes
+/// this phone spawned (`owned`) and the panes the desktop shared (`shared`).
+///
+/// Returns `Ok(())` when authorized, `Err(reason)` otherwise. This is the
+/// single authorization boundary the `ws.rs` session loop applies to every
+/// `invoke` frame. It is kept as a pure function so the security gate is
+/// directly testable without a live socket: a command must be allowlisted AND,
+/// if it is pane-scoped, target a pane the phone owns or the desktop shared.
+pub fn authorize_command(
+    cmd: &str,
+    args: &serde_json::Value,
+    owned: &HashSet<String>,
+    shared: &HashSet<String>,
+) -> Result<(), String> {
+    if !command_allowed(cmd) {
+        return Err(format!(
+            "relay command not available in read-only mode: {cmd}"
+        ));
+    }
+    if pane_scoped_command(cmd) {
+        let pane_id = pane_id_of(cmd, args);
+        let authorized = pane_id
+            .as_ref()
+            .is_some_and(|pane| owned.contains(pane) || shared.contains(pane));
+        if !authorized {
+            return Err(format!(
+                "relay pane is not shared: {}",
+                pane_id.as_deref().unwrap_or("<missing pane id>")
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Store values needed to boot/render the existing frontend. Keep this
@@ -925,6 +1052,7 @@ mod tests {
             "athena_chat",
             "fs_read_file",
             "fs_write_file",
+            "relay_request_pane_share",
         ] {
             assert!(
                 command_allowed(command),
@@ -944,12 +1072,13 @@ mod tests {
     }
 
     #[test]
-    fn mobile_allowlist_rejects_store_delete() {
-        // store_delete is not in command_allowed today, but the dispatch arm
-        // also gates on mobile_store_key_allowed so the guard is defense-in-depth:
-        // even if the command is ever allowlisted, arbitrary store keys remain
-        // protected at the dispatch layer.
+    fn mobile_allowlist_rejects_store_mutations() {
+        // store_delete / store_has are not in command_allowed today, but their
+        // dispatch arms also gate on mobile_store_key_allowed so the guard is
+        // defense-in-depth: even if the command is ever allowlisted, arbitrary
+        // store keys remain protected at the dispatch layer.
         assert!(!command_allowed("store_delete"));
+        assert!(!command_allowed("store_has"));
     }
 
     #[test]
@@ -988,5 +1117,143 @@ mod tests {
         for key in ["llm.api_key", "relay_token", "workspace.trusted_roots"] {
             assert!(!mobile_store_key_allowed(key));
         }
+    }
+
+    // ── The live-socket authorization boundary, tested as a pure function ────
+    // `session_loop` funnels every invoke frame through `authorize_command`;
+    // these tests assert the exact reject/accept decisions without spinning up
+    // a real WebSocket.
+
+    fn owned(pane: &str) -> HashSet<String> {
+        HashSet::from([pane.to_string()])
+    }
+
+    #[test]
+    fn authorize_rejects_non_allowlisted_commands() {
+        // window_close / store_api_key are not in `command_allowed`, so they
+        // must be rejected even though their dispatch arms exist.
+        let owned = HashSet::new();
+        let shared = HashSet::new();
+        assert!(
+            authorize_command("window_close", &serde_json::json!({}), &owned, &shared).is_err()
+        );
+        assert!(authorize_command(
+            "store_api_key",
+            &serde_json::json!({ "key": "x" }),
+            &owned,
+            &shared
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn authorize_rejects_pane_scoped_command_on_unowned_unshared_pane() {
+        let owned = owned("pane-a");
+        let shared = HashSet::from(["pane-b".to_string()]);
+        let args = serde_json::json!({ "id": "pane-c", "data": "ls\n" });
+        assert!(authorize_command("pty_write", &args, &owned, &shared).is_err());
+    }
+
+    #[test]
+    fn authorize_rejects_pane_scoped_command_with_missing_pane_id() {
+        let owned = HashSet::new();
+        let shared = HashSet::new();
+        // pty_write requires an `id`; omitting it must be denied, not panicked.
+        assert!(authorize_command(
+            "pty_write",
+            &serde_json::json!({ "data": "ls\n" }),
+            &owned,
+            &shared
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn authorize_allows_pane_scoped_command_on_owned_pane() {
+        let owned = owned("pane-a");
+        let shared = HashSet::new();
+        let args = serde_json::json!({ "id": "pane-a", "data": "ls\n" });
+        assert!(authorize_command("pty_write", &args, &owned, &shared).is_ok());
+    }
+
+    #[test]
+    fn authorize_allows_pane_scoped_command_on_shared_pane() {
+        let owned = HashSet::new();
+        let shared = HashSet::from(["pane-b".to_string()]);
+        let args = serde_json::json!({ "id": "pane-b", "data": "ls\n" });
+        assert!(authorize_command("pty_write", &args, &owned, &shared).is_ok());
+    }
+
+    #[test]
+    fn authorize_allows_non_pane_scoped_allowlisted_commands() {
+        let owned = HashSet::new();
+        let shared = HashSet::new();
+        assert!(
+            authorize_command("pty_default_shell", &serde_json::json!({}), &owned, &shared).is_ok()
+        );
+        assert!(authorize_command(
+            "athena_chat",
+            &serde_json::json!({ "message": "hi" }),
+            &owned,
+            &shared
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn pane_id_of_trims_whitespace_so_id_format_drift_cannot_bypass_the_gate() {
+        assert_eq!(
+            pane_id_of("pty_write", &serde_json::json!({ "id": "  pane-a  " })),
+            Some("pane-a".to_string())
+        );
+        // The bridge sends camelCase `paneId` on the wire; the relay reads raw
+        // JSON, so the pane-scoped readers must key on `paneId` (not `pane_id`)
+        // or the gate would see a missing id and reject every owned pane.
+        assert_eq!(
+            pane_id_of(
+                "output_buffer_get",
+                &serde_json::json!({ "paneId": "  pane-b  " })
+            ),
+            Some("pane-b".to_string())
+        );
+        assert_eq!(
+            pane_id_of("pty_raw_replay", &serde_json::json!({ "paneId": "pane-c" })),
+            Some("pane-c".to_string())
+        );
+        assert_eq!(pane_id_of("pty_write", &serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn authorize_allows_raw_replay_only_for_owned_or_shared_panes() {
+        let owned = owned("pane-a");
+        let shared = HashSet::from(["pane-b".to_string()]);
+        // Owned pane → allowed.
+        assert!(authorize_command(
+            "pty_raw_replay",
+            &serde_json::json!({ "paneId": "pane-a" }),
+            &owned,
+            &shared
+        )
+        .is_ok());
+        // Desktop-shared pane → allowed.
+        assert!(authorize_command(
+            "pty_raw_replay",
+            &serde_json::json!({ "paneId": "pane-b" }),
+            &owned,
+            &shared
+        )
+        .is_ok());
+        // Neither owned nor shared → denied (raw bytes are terminal content).
+        assert!(authorize_command(
+            "pty_raw_replay",
+            &serde_json::json!({ "paneId": "pane-c" }),
+            &owned,
+            &shared
+        )
+        .is_err());
+        // Missing pane id → denied, not panicked.
+        assert!(
+            authorize_command("pty_raw_replay", &serde_json::json!({}), &owned, &shared).is_err()
+        );
     }
 }

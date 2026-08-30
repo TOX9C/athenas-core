@@ -22,14 +22,23 @@ pub fn output_buffer_get(
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<String, String> {
-    let options = athena_core::output_buffer::GetOutputOptions {
-        limit,
-        offset,
-        since_line: None,
-        since_time: None,
-        raw: None,
+    // A bounded request without an explicit offset is a tail request in every
+    // current UI caller (mobile replay fallback and Athena context previews).
+    // Read it directly from the end so a 5,000-line buffer does not get cloned
+    // and then discarded on every request.
+    let lines = match (limit, offset) {
+        (Some(limit), None) => state.output_buffer.get_output_tail(&pane_id, limit),
+        _ => {
+            let options = athena_core::output_buffer::GetOutputOptions {
+                limit,
+                offset,
+                since_line: None,
+                since_time: None,
+                raw: None,
+            };
+            state.output_buffer.get_output(&pane_id, Some(&options))
+        }
     };
-    let lines = state.output_buffer.get_output(&pane_id, Some(&options));
     serde_json::to_string(&lines).map_err(|e| e.to_string())
 }
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pty-stage-drop-file"
+description = "Enables the pty_stage_drop_file command without any pre-configured scope."
+commands.allow = ["pty_stage_drop_file"]
+
+[[permission]]
+identifier = "deny-pty-stage-drop-file"
+description = "Denies the pty_stage_drop_file command without any pre-configured scope."
+commands.deny = ["pty_stage_drop_file"]

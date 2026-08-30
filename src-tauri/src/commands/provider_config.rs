@@ -90,7 +90,7 @@ pub async fn llm_list_models(
                         .and_then(|entry| entry.get_password().ok());
                 }
             }
-            if resolved.as_ref().map_or(true, |k| k.is_empty()) {
+            if resolved.as_ref().is_none_or(|k| k.is_empty()) {
                 resolved = keyring::Entry::new("athena", "api_key")
                     .ok()
                     .and_then(|entry| entry.get_password().ok());
@@ -99,8 +99,7 @@ pub async fn llm_list_models(
         }
     };
 
-    let result =
-        athena_core::llm_models::list_models(&base_url, resolved_key.as_deref()).await;
+    let result = athena_core::llm_models::list_models(&base_url, resolved_key.as_deref()).await;
     let payload = match result {
         Ok(models) => serde_json::json!({
             "ok": true,

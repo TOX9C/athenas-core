@@ -73,6 +73,17 @@ pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, Comm
                 return Ok("set".to_string());
             }
         }
+        // Last fallback: the orchestrator itself accepts a bare
+        // ANTHROPIC_API_KEY from the process environment when no keyring key
+        // exists (see athena-core orchestrator_stream / orchestrator request
+        // builders). Report "set" in that case too, so the composer doesn't
+        // block chats that would actually work.
+        if std::env::var("ANTHROPIC_API_KEY")
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return Ok("set".to_string());
+        }
         return Ok("not_set".to_string());
     }
 
@@ -85,7 +96,11 @@ pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, Comm
 
 /// Set a value in the persistent key-value store.
 #[tauri::command]
-pub fn store_set(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+pub async fn store_set(
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
     caps::validate_key(&key)?;
     // Block writes to sensitive key namespaces from the frontend to prevent
     // key tampering and unauthorized secrets storage.
@@ -131,7 +146,8 @@ pub fn store_set(state: State<'_, AppState>, key: String, value: String) -> Resu
 
     state
         .store
-        .set_sync(&key, &value)
+        .set(&key, &value)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -181,7 +197,8 @@ fn resolve_key_slot(store: &athena_store::KeyValueStore) -> (String, String) {
         if provider.trim() != "custom" {
             let scoped = format!("llm.api_key.{provider}");
             if let Some(slot) = api_key_target(&scoped) {
-                let scoped_set = matches!(store.get::<String>(&slot.1), Ok(Some(ref s)) if s == "set");
+                let scoped_set =
+                    matches!(store.get::<String>(&slot.1), Ok(Some(ref s)) if s == "set");
                 if scoped_set {
                     return slot;
                 }

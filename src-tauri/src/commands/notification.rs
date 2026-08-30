@@ -37,6 +37,10 @@ pub fn notification_push(
         metadata: None,
         actions: None,
         request_id: None,
+        event_key: None,
+        run_id: None,
+        pane_id: None,
+        requires_action: false,
     };
     let record = state.notification_service.push_notification(event);
     serde_json::to_string(&record).map_err(|e| e.to_string())
@@ -98,6 +102,18 @@ pub fn notification_dismiss(
 #[tauri::command]
 pub fn notification_clear_all(state: State<'_, AppState>) -> usize {
     state.notification_service.clear_all()
+}
+
+/// Resolve an actionable notification while preserving its history.
+#[tauri::command]
+pub fn notification_resolve(
+    state: State<'_, AppState>,
+    notification_id: String,
+) -> Result<bool, String> {
+    state
+        .notification_service
+        .resolve(&notification_id)
+        .map_err(|e| e.to_string())
 }
 
 /// Get a breakdown of notification counts by type.

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Athena uses the microphone to capture voice input for the chat assistant. Audio is processed on-device and never leaves your Mac.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Athena uses on-device speech recognition to convert your voice input into text for the chat assistant. Recognition happens locally on your Mac.</string>
+</dict>
+</plist>

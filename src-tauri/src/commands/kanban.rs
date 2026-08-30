@@ -17,11 +17,15 @@ pub async fn kanban_get_tasks(state: State<'_, AppState>) -> Result<String, Stri
 
 /// Create a new kanban task in the active workspace. The task gets a generated
 /// UUID, the current timestamp, and the default `Todo` status.
+///
+/// `plan_step_id` optionally back-links the card to a plan step (Kanban ↔ plan
+/// deep link) so the card can jump back to the step in the Athena plan.
 #[tauri::command]
 pub async fn kanban_create_task(
     state: State<'_, AppState>,
     title: String,
     description: Option<String>,
+    plan_step_id: Option<String>,
 ) -> Result<String, String> {
     let workspace_id = state
         .kanban_backend
@@ -40,6 +44,7 @@ pub async fn kanban_create_task(
         status: athena_core::kanban::KanbanBackendStatus::Todo,
         order: 0,
         created_at: now,
+        plan_step_id,
     };
     let created = state
         .kanban_backend

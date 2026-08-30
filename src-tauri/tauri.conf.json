@@ -13,7 +13,8 @@
     "windows": [
       {
         "label": "main",
-        "title": "",
+        "title": "Athena's Core",
+        "hiddenTitle": true,
         "width": 1400,
         "height": 900,
         "maximized": true,
@@ -52,8 +53,7 @@
       "../frontend/dist/mobile.html": "./mobile.html",
       "../frontend/dist/mobile.css": "./mobile.css",
       "../frontend/dist/manifest.webmanifest": "./manifest.webmanifest",
-      "../frontend/dist/sw.js": "./sw.js",
-      "../frontend/dist/art/": "./art/"
+      "../frontend/dist/sw.js": "./sw.js"
     }
   },
   "plugins": {}

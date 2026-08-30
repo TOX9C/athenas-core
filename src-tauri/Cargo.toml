@@ -36,6 +36,8 @@ keyring = { version = "3", features = [
     "crypto-rust",
 ] }
 env_logger = "0.11"
+# Used for platform-native log and diagnostics export locations.
+dirs = "6"
 libc = "0.2"
 parking_lot = { version = "0.12", features = ["send_guard"] }
 athena-core = { path = "../crates/athena-core" }
@@ -50,8 +52,9 @@ tauri-plugin-webdriver-automation = "0.1.3"
 # ── Mobile mirror relay ───────────────────────────────────────────────────────
 # Serves the desktop frontend dist + WS bridge to the real command handlers,
 # so a phone WebView on the same network loads the ACTUAL app interface.
-# Bound to 0.0.0.0:8787 for trusted-LAN pairing. Runtime-toggled from Settings
-# (persisted, default off) — see the `relay_*` Tauri commands and
+# Bound to an ephemeral port on 0.0.0.0 (fresh per start) for trusted-LAN
+# pairing; the pairing token is likewise regenerated per start. Runtime-toggled
+# from Settings (persisted, default off) — see the `relay_*` Tauri commands and
 # `relay::RelayHandle`. This is experimental and must not be exposed to the
 # public internet.
 axum = { version = "0.7", features = ["ws"] }
@@ -61,6 +64,20 @@ qrcode = { version = "0.14", features = ["svg"] }
 local-ip-address = "0.6"
 futures-util = "0.3"
 mdns-sd = "0.11"
+
+# ── Athena voice input ───────────────────────────────────────────────────────
+# Microphone capture (cpal) → WAV (hound) → macOS on-device speech recognition
+# (Apple Speech framework via the auto-generated objc2 bindings — pure
+# Objective-C, no Swift runtime, so it works on macOS 13–26 without bundling
+# Swift dylibs; macOS-26 dropped the Swift concurrency runtime from the OS).
+cpal = "0.14"
+hound = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSBundle", "NSError", "NSString", "NSURL"] }
+objc2-speech = "0.3"
 
 [features]
 default = []

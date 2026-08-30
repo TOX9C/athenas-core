@@ -429,6 +429,12 @@
           "markdownDescription": "Enables the agent_get_token command without any pre-configured scope."
         },
         {
+          "description": "Enables the agent_notify_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-notify-install",
+          "markdownDescription": "Enables the agent_notify_install command without any pre-configured scope."
+        },
+        {
           "description": "Enables the agent_respond_input command without any pre-configured scope.",
           "type": "string",
           "const": "allow-agent-respond-input",
@@ -541,6 +547,12 @@
           "type": "string",
           "const": "allow-clear-api-key",
           "markdownDescription": "Enables the clear_api_key command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the diagnostics_export command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnostics-export",
+          "markdownDescription": "Enables the diagnostics_export command without any pre-configured scope."
         },
         {
           "description": "Enables the fs_exists command without any pre-configured scope.",
@@ -703,6 +715,12 @@
           "type": "string",
           "const": "allow-notification-push",
           "markdownDescription": "Enables the notification_push command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notification_resolve command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notification-resolve",
+          "markdownDescription": "Enables the notification_resolve command without any pre-configured scope."
         },
         {
           "description": "Enables the output_buffer_append command without any pre-configured scope.",
@@ -915,6 +933,12 @@
           "markdownDescription": "Enables the pty_kill command without any pre-configured scope."
         },
         {
+          "description": "Enables the pty_raw_replay command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pty-raw-replay",
+          "markdownDescription": "Enables the pty_raw_replay command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pty_resize command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pty-resize",
@@ -939,6 +963,12 @@
           "markdownDescription": "Enables the pty_spawn_agent command without any pre-configured scope."
         },
         {
+          "description": "Enables the pty_stage_drop_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pty-stage-drop-file",
+          "markdownDescription": "Enables the pty_stage_drop_file command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pty_write command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pty-write",
@@ -949,6 +979,24 @@
           "type": "string",
           "const": "allow-read-clipboard-text",
           "markdownDescription": "Enables the read_clipboard_text command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the relay_list_shared_panes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-relay-list-shared-panes",
+          "markdownDescription": "Enables the relay_list_shared_panes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the relay_pairing_respond command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-relay-pairing-respond",
+          "markdownDescription": "Enables the relay_pairing_respond command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the relay_set_pane_shared command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-relay-set-pane-shared",
+          "markdownDescription": "Enables the relay_set_pane_shared command without any pre-configured scope."
         },
         {
           "description": "Enables the relay_start command without any pre-configured scope.",
@@ -1143,6 +1191,18 @@
           "markdownDescription": "Enables the test_llm_api_key command without any pre-configured scope."
         },
         {
+          "description": "Enables the voice_record_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-voice-record-start",
+          "markdownDescription": "Enables the voice_record_start command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the voice_record_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-voice-record-stop",
+          "markdownDescription": "Enables the voice_record_stop command without any pre-configured scope."
+        },
+        {
           "description": "Enables the window_close command without any pre-configured scope.",
           "type": "string",
           "const": "allow-window-close",
@@ -1231,6 +1291,12 @@
           "type": "string",
           "const": "deny-agent-get-token",
           "markdownDescription": "Denies the agent_get_token command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the agent_notify_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-notify-install",
+          "markdownDescription": "Denies the agent_notify_install command without any pre-configured scope."
         },
         {
           "description": "Denies the agent_respond_input command without any pre-configured scope.",
@@ -1345,6 +1411,12 @@
           "type": "string",
           "const": "deny-clear-api-key",
           "markdownDescription": "Denies the clear_api_key command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnostics_export command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnostics-export",
+          "markdownDescription": "Denies the diagnostics_export command without any pre-configured scope."
         },
         {
           "description": "Denies the fs_exists command without any pre-configured scope.",
@@ -1507,6 +1579,12 @@
           "type": "string",
           "const": "deny-notification-push",
           "markdownDescription": "Denies the notification_push command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notification_resolve command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notification-resolve",
+          "markdownDescription": "Denies the notification_resolve command without any pre-configured scope."
         },
         {
           "description": "Denies the output_buffer_append command without any pre-configured scope.",
@@ -1719,6 +1797,12 @@
           "markdownDescription": "Denies the pty_kill command without any pre-configured scope."
         },
         {
+          "description": "Denies the pty_raw_replay command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pty-raw-replay",
+          "markdownDescription": "Denies the pty_raw_replay command without any pre-configured scope."
+        },
+        {
           "description": "Denies the pty_resize command without any pre-configured scope.",
           "type": "string",
           "const": "deny-pty-resize",
@@ -1743,6 +1827,12 @@
           "markdownDescription": "Denies the pty_spawn_agent command without any pre-configured scope."
         },
         {
+          "description": "Denies the pty_stage_drop_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pty-stage-drop-file",
+          "markdownDescription": "Denies the pty_stage_drop_file command without any pre-configured scope."
+        },
+        {
           "description": "Denies the pty_write command without any pre-configured scope.",
           "type": "string",
           "const": "deny-pty-write",
@@ -1753,6 +1843,24 @@
           "type": "string",
           "const": "deny-read-clipboard-text",
           "markdownDescription": "Denies the read_clipboard_text command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the relay_list_shared_panes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-relay-list-shared-panes",
+          "markdownDescription": "Denies the relay_list_shared_panes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the relay_pairing_respond command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-relay-pairing-respond",
+          "markdownDescription": "Denies the relay_pairing_respond command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the relay_set_pane_shared command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-relay-set-pane-shared",
+          "markdownDescription": "Denies the relay_set_pane_shared command without any pre-configured scope."
         },
         {
           "description": "Denies the relay_start command without any pre-configured scope.",
@@ -1945,6 +2053,18 @@
           "type": "string",
           "const": "deny-test-llm-api-key",
           "markdownDescription": "Denies the test_llm_api_key command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the voice_record_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-voice-record-start",
+          "markdownDescription": "Denies the voice_record_start command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the voice_record_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-voice-record-stop",
+          "markdownDescription": "Denies the voice_record_stop command without any pre-configured scope."
         },
         {
           "description": "Denies the window_close command without any pre-configured scope.",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-notify-install"
+description = "Enables the agent_notify_install command without any pre-configured scope."
+commands.allow = ["agent_notify_install"]
+
+[[permission]]
+identifier = "deny-agent-notify-install"
+description = "Denies the agent_notify_install command without any pre-configured scope."
+commands.deny = ["agent_notify_install"]

@@ -7,10 +7,13 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
+mod agent_notify;
 mod agents;
 mod athena;
 mod browser;
 pub mod caps;
+mod diagnostics;
+mod drop;
 mod filesystem;
 mod kanban;
 mod mcp;
@@ -27,9 +30,11 @@ mod session;
 mod shell;
 mod store;
 mod swarm;
+pub(crate) mod voice;
 mod window;
 mod workspace;
 
+pub use agent_notify::agent_notify_install;
 pub use agents::{
     agent_cancel_input, agent_comms_send, agent_comms_sessions, agent_comms_token,
     agent_disconnect, agent_get_status, agent_get_token, agent_respond_input, agent_send_message,
@@ -46,6 +51,8 @@ pub use browser::{
     browser_back, browser_forward, browser_hide, browser_navigate, browser_reload,
     browser_set_bounds, browser_show, shutdown_browser_children,
 };
+pub use diagnostics::diagnostics_export;
+pub use drop::pty_stage_drop_file;
 pub use filesystem::{
     fs_exists, fs_list_dir, fs_read_file, fs_read_file_as_base64, fs_search_files,
     fs_show_image_dialog, fs_show_open_dialog, fs_write_file,
@@ -55,13 +62,13 @@ pub use mcp::{mcp_broadcast, mcp_handle_request, mcp_init, mcp_shutdown, mcp_too
 pub use notification::{
     notification_clear_all, notification_count, notification_counts, notification_dismiss,
     notification_history, notification_mark_all_read, notification_mark_read, notification_push,
+    notification_resolve,
 };
 pub use output::{
     get_pane_history, output_buffer_append, output_buffer_clear, output_buffer_get,
     output_buffer_list,
 };
 pub use plan::{plan_create, plan_get, plan_update_step};
-pub use provider_config::llm_list_models;
 pub use plugin::{
     plugin_disable, plugin_enable, plugin_get, plugin_get_config, plugin_host_discover_plugins,
     plugin_host_emit_event, plugin_host_get_session, plugin_host_list_sessions,
@@ -69,13 +76,20 @@ pub use plugin::{
     plugin_host_unregister_session, plugin_host_update_status, plugin_list, plugin_register,
     plugin_set_config, plugin_set_error, plugin_unregister,
 };
-pub(crate) use pty::{now_ms, pty_read_loop, session_foreground_label};
+pub use provider_config::llm_list_models;
+pub(crate) use pty::{
+    now_ms, pty_attach_listener_relay, pty_read_loop, session_foreground_label, RelayReplayStore,
+};
 pub use pty::{
     pty_agent_info, pty_attach_listener, pty_default_shell, pty_detach_listener,
     pty_foreground_process, pty_get_cwd, pty_get_history, pty_has_session, pty_is_ready, pty_kill,
-    pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write, read_clipboard_text,
+    pty_raw_replay, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write,
+    read_clipboard_text,
 };
-pub use relay::{relay_start, relay_status, relay_stop};
+pub use relay::{
+    relay_list_shared_panes, relay_pairing_respond, relay_request_pane_share,
+    relay_set_pane_shared, relay_start, relay_status, relay_stop,
+};
 pub use relay::{relay_token, RELAY_ENABLED_KEY};
 pub use resume::capture_resume_ids_on_exit;
 #[cfg(test)]
@@ -93,6 +107,7 @@ pub use swarm::{
     swarm_create, swarm_create_task, swarm_read_mailbox, swarm_read_state, swarm_send_message,
     swarm_set_status, swarm_start_watch, swarm_stop_watch, swarm_update_agent, swarm_update_task,
 };
+pub use voice::{voice_record_start, voice_record_stop};
 pub use window::{
     window_close, window_is_maximized, window_maximize, window_minimize, window_platform,
 };
@@ -244,6 +259,67 @@ fn load_trusted_roots(store: &athena_store::KeyValueStore) -> Vec<std::path::Pat
             })
             .collect(),
         None => Vec::new(),
+    }
+}
+
+/// Log a one-time startup diagnostic explaining why macOS may re-prompt for
+/// "Files and Folders" (Documents / Desktop / Downloads) permissions.
+///
+/// macOS keys these grants to the app's code signature. Locally-built bundles
+/// are ad-hoc signed (`tauri build` without `APPLE_SIGNING_IDENTITY`), and an
+/// ad-hoc signature changes on every rebuild, so macOS treats each build as a
+/// new app and re-prompts. That is a signing/distribution property, not a bug
+/// in the file-access code. Surfacing it here makes the symptom diagnosable
+/// from the app's own logs. Local builds should use a stable signing identity
+/// when macOS permission persistence matters.
+#[cfg(target_os = "macos")]
+pub(crate) fn log_macos_permission_diagnostics(store: &athena_store::KeyValueStore) {
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "<unknown>".to_string());
+
+    // A bare `target/debug/athenas-core` binary has no app-bundle identity for
+    // macOS TCC to key a grant against; a `.app` running from a transient
+    // (quarantined / DMG-mounted) location behaves the same way.
+    let is_bundle = exe.contains("/Contents/MacOS/");
+
+    let home = std::env::var("HOME").ok();
+    let in_protected_folder = |p: &std::path::Path| -> bool {
+        let Some(home) = home.as_deref() else {
+            return false;
+        };
+        let base = std::path::Path::new(home);
+        ["Documents", "Desktop", "Downloads"]
+            .iter()
+            .any(|d| p.starts_with(base.join(d)))
+    };
+
+    let mut protected: Vec<String> = Vec::new();
+    if let Ok(root) = get_workspace_root() {
+        if in_protected_folder(&root) {
+            protected.push(root.to_string_lossy().into_owned());
+        }
+    }
+    for root in load_trusted_roots(store) {
+        if in_protected_folder(&root) {
+            protected.push(root.to_string_lossy().into_owned());
+        }
+    }
+
+    if !is_bundle {
+        log::warn!(
+            "[permissions] running outside an app bundle ('{}'); macOS cannot persist TCC grants for a bare executable",
+            exe
+        );
+    }
+    if !protected.is_empty() {
+        log::warn!(
+            "[permissions] workspace/trusted roots live in a macOS-protected folder (Documents/Desktop/Downloads): {:?}",
+            protected
+        );
+        log::warn!(
+            "[permissions] if this build is ad-hoc signed (check `codesign -dv`), the Files & Folders prompt reappears after every rebuild; sign with a stable Developer ID identity to persist the grant"
+        );
     }
 }
 

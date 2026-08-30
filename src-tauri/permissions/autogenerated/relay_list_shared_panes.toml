@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-relay-list-shared-panes"
+description = "Enables the relay_list_shared_panes command without any pre-configured scope."
+commands.allow = ["relay_list_shared_panes"]
+
+[[permission]]
+identifier = "deny-relay-list-shared-panes"
+description = "Denies the relay_list_shared_panes command without any pre-configured scope."
+commands.deny = ["relay_list_shared_panes"]

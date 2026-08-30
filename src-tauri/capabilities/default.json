@@ -25,6 +25,7 @@
     "allow-window-maximize",
     "allow-window-close",
     "allow-window-is-maximized",
+    "allow-diagnostics-export",
     "allow-fs-read-file",
     "allow-fs-list-dir",
     "allow-fs-write-file",
@@ -43,11 +44,13 @@
     "allow-session-delete",
     "allow-session-update",
     "allow-session-add-message",
+    "allow-pty-stage-drop-file",
     "allow-pty-spawn",
     "allow-pty-write",
     "allow-pty-kill",
     "allow-pty-resize",
     "allow-pty-get-history",
+    "allow-pty-raw-replay",
     "allow-pty-has-session",
     "allow-pty-is-ready",
     "allow-pty-get-cwd",
@@ -81,6 +84,7 @@
     "allow-notification-mark-all-read",
     "allow-notification-dismiss",
     "allow-notification-clear-all",
+    "allow-notification-resolve",
     "allow-notification-counts",
     "allow-plan-create",
     "allow-plan-get",
@@ -154,6 +158,12 @@
     "allow-workspace-list-trusted-roots",
     "allow-relay-start",
     "allow-relay-stop",
-    "allow-relay-status"
+    "allow-relay-status",
+    "allow-relay-set-pane-shared",
+    "allow-relay-list-shared-panes",
+    "allow-relay-pairing-respond",
+    "allow-voice-record-start",
+    "allow-voice-record-stop",
+    "allow-agent-notify-install"
   ]
 }
