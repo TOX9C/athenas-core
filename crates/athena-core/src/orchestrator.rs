@@ -34,10 +34,13 @@ pub use orchestrator_support::ProviderConfig;
 use orchestrator_support::{
     build_anthropic_content, build_openai_content, estimate_tokens, json_to_tool_input, RateLimiter,
 };
-// Crate-visible re-exports so top-level modules (e.g. `llm_models`) can reuse
-// the same request-safety helpers without duplicating them. The re-export also
-// keeps the names in scope here and for child modules (`super::…`).
-pub(crate) use orchestrator_support::{sanitize_error_message, validate_base_url};
+// `sanitize_error_message` is the crate's canonical content-level redactor.
+// Re-exported publicly so the Tauri logging backend (`src-tauri/src/main.rs`)
+// can reuse it as a log-message safety net instead of duplicating the
+// credential-matching regex set (duplicated regex sets are how divergent
+// redaction drifts). `validate_base_url` stays crate-visible only.
+pub use orchestrator_support::sanitize_error_message;
+pub(crate) use orchestrator_support::validate_base_url;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -60,7 +63,7 @@ Each request ends with a STATE SNAPSHOT showing the active workspace, the curren
 ## Launching work
 - Use launch_builtin_agent for the standard agents (claude, codex, opencode, gemini, shell). Omit task_prompt to open an interactive shell.
 - Use launch_custom_agent only for a user-defined CLI agent.
-- For any multi-step task, call create_execution_plan first, then dispatch_plan_step for each step, then evaluate_results. Give every step a unique id and a self-contained description (the description is what the agent receives as its prompt).
+- For any multi-step task, call create_execution_plan first, then dispatch_plan_step for each step, then evaluate_results. Give every step a unique id, a self-contained description (the description is what the agent receives as its prompt), and an agent_type (claude, codex, opencode, gemini, or shell — use shell to run the description as a shell command; omit to default to claude).
 - Never launch an agent the user didn't ask for. If asked for N agents but only M exist or are defined, use ask_user to resolve the gap before launching.
 
 ## Talking to agents & terminals
@@ -81,11 +84,16 @@ Be terse. Lead with the answer — no preamble, no recap of the question. Prefer
 
 /// The Athena orchestrator that dispatches messages to LLM providers
 /// and executes tool calls via the `ToolExecutor`.
+/// Pending auto-save slot: (session id, JoinHandle of the detached save task).
+/// A reschedule for the SAME session aborts and replaces the pending task;
+/// a reschedule for a DIFFERENT session leaves the old task running detached.
+type AutoSaveSlot = (String, tokio::task::JoinHandle<()>);
+
 pub struct AthenaOrchestrator {
     anthropic_messages: Arc<parking_lot::Mutex<Vec<AnthropicMessage>>>,
     openai_messages: Arc<parking_lot::Mutex<Vec<OpenAIMessage>>>,
     current_session_id: Arc<parking_lot::Mutex<Option<String>>>,
-    tool_executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>,
+    tool_executor: Option<Arc<parking_lot::RwLock<ToolExecutor>>>,
     http_client: reqwest::Client,
     /// Base URL for the Anthropic Messages API. Overridable in tests so the
     /// LLM calls can be mocked with wiremock.
@@ -118,10 +126,21 @@ pub struct AthenaOrchestrator {
     conversation_lock: Arc<tokio::sync::Mutex<()>>,
     /// Optional callback used by the application adapter to emit stream events.
     stream_emitter: Arc<parking_lot::Mutex<Option<crate::types::StreamEmitter>>>,
+    /// Coalesces per-chunk Delta events into fewer, larger events before
+    /// they reach `stream_emitter`.
+    stream_coalescer: crate::types::StreamDeltaCoalescer,
     /// Event sender handle used to cancel blocking UI tools without waiting on
     /// the executor mutex.
     tool_event_sender:
         Arc<parking_lot::Mutex<Option<Arc<dyn crate::tool_executor::ToolEventSender>>>>,
+    /// Debounced auto-save: `try_auto_save` schedules the store write ~2 s
+    /// out instead of synchronously per turn, so rapid consecutive turns
+    /// coalesce into one full-file rewrite. The slot carries the session id
+    /// the save is for: a reschedule for the SAME session aborts and
+    /// replaces the pending task (newer snapshot wins); a reschedule for a
+    /// DIFFERENT session leaves the old task running detached — its
+    /// snapshot is self-contained and must still be persisted.
+    auto_save_task: Arc<parking_lot::Mutex<Option<AutoSaveSlot>>>,
 }
 
 impl Default for AthenaOrchestrator {
@@ -131,6 +150,17 @@ impl Default for AthenaOrchestrator {
 }
 
 impl AthenaOrchestrator {
+    /// Build the shared HTTP client used for every provider call.
+    ///
+    /// Panics only if the system TLS stack fails to initialize — a
+    /// startup-fatal condition in every environment this app supports.
+    fn build_http_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .expect("HTTP client init failed (system TLS unavailable)")
+    }
+
     /// Create a new orchestrator without a tool executor.
     ///
     /// Tool calls from the LLM will still be detected but will return
@@ -141,10 +171,7 @@ impl AthenaOrchestrator {
             openai_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             current_session_id: Arc::new(parking_lot::Mutex::new(None)),
             tool_executor: None,
-            http_client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()
-                .expect("Failed to build HTTP client"),
+            http_client: Self::build_http_client(),
             anthropic_base_url: "https://api.anthropic.com/v1".to_string(),
             provider_config: Arc::new(parking_lot::Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
@@ -159,7 +186,9 @@ impl AthenaOrchestrator {
             active_requests: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             conversation_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_emitter: Arc::new(parking_lot::Mutex::new(None)),
+            stream_coalescer: crate::types::StreamDeltaCoalescer::default(),
             tool_event_sender: Arc::new(parking_lot::Mutex::new(None)),
+            auto_save_task: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -176,7 +205,7 @@ impl AthenaOrchestrator {
     /// Create an orchestrator with service references for building
     /// the app state snapshot injected before every LLM call.
     pub fn with_context(
-        executor: Arc<parking_lot::Mutex<ToolExecutor>>,
+        executor: Arc<parking_lot::RwLock<ToolExecutor>>,
         output_buffer: Arc<crate::output_buffer::OutputBuffer>,
         plan_manager: Arc<crate::plan_manager::PlanManager>,
         agent_comms: Arc<crate::agent_comms::AgentComms>,
@@ -184,16 +213,13 @@ impl AthenaOrchestrator {
         kv_store: Option<Arc<athena_store::KeyValueStore>>,
         notification_service: Option<Arc<crate::notification::NotificationService>>,
     ) -> Self {
-        let tool_event_sender = executor.lock().event_sender_handle();
+        let tool_event_sender = executor.read().event_sender_handle();
         Self {
             anthropic_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             openai_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             current_session_id: Arc::new(parking_lot::Mutex::new(None)),
             tool_executor: Some(executor),
-            http_client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()
-                .expect("Failed to build HTTP client"),
+            http_client: Self::build_http_client(),
             anthropic_base_url: "https://api.anthropic.com/v1".to_string(),
             provider_config: Arc::new(parking_lot::Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000),
@@ -208,7 +234,9 @@ impl AthenaOrchestrator {
             active_requests: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             conversation_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_emitter: Arc::new(parking_lot::Mutex::new(None)),
+            stream_coalescer: crate::types::StreamDeltaCoalescer::default(),
             tool_event_sender: Arc::new(parking_lot::Mutex::new(Some(tool_event_sender))),
+            auto_save_task: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -217,17 +245,14 @@ impl AthenaOrchestrator {
     /// When the LLM returns `tool_use` / `tool_calls`, the executor
     /// dispatches them and the results are fed back into the conversation
     /// loop automatically.
-    pub fn new_with_executor(executor: Arc<parking_lot::Mutex<ToolExecutor>>) -> Self {
-        let tool_event_sender = executor.lock().event_sender_handle();
+    pub fn new_with_executor(executor: Arc<parking_lot::RwLock<ToolExecutor>>) -> Self {
+        let tool_event_sender = executor.read().event_sender_handle();
         Self {
             anthropic_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             openai_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             current_session_id: Arc::new(parking_lot::Mutex::new(None)),
             tool_executor: Some(executor),
-            http_client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()
-                .expect("Failed to build HTTP client"),
+            http_client: Self::build_http_client(),
             anthropic_base_url: "https://api.anthropic.com/v1".to_string(),
             provider_config: Arc::new(parking_lot::Mutex::new(None)),
             rate_limiter: RateLimiter::new(1000), // 1 second minimum between requests
@@ -242,15 +267,17 @@ impl AthenaOrchestrator {
             active_requests: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             conversation_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_emitter: Arc::new(parking_lot::Mutex::new(None)),
+            stream_coalescer: crate::types::StreamDeltaCoalescer::default(),
             tool_event_sender: Arc::new(parking_lot::Mutex::new(Some(tool_event_sender))),
+            auto_save_task: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
     /// Replace or clear the tool executor at runtime.
-    pub fn set_tool_executor(&mut self, executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>) {
+    pub fn set_tool_executor(&mut self, executor: Option<Arc<parking_lot::RwLock<ToolExecutor>>>) {
         let sender = executor
             .as_ref()
-            .map(|value| value.lock().event_sender_handle());
+            .map(|value| value.read().event_sender_handle());
         *self.tool_event_sender.lock() = sender;
         self.tool_executor = executor;
     }
@@ -371,9 +398,9 @@ impl AthenaOrchestrator {
         }
 
         let resolved_base_url = match &provider {
-            LLMProvider::NvidiaNim => Some(
-                base_url.unwrap_or_else(|| "https://integrate.api.nvidia.com/v1".to_string()),
-            ),
+            LLMProvider::NvidiaNim => {
+                Some(base_url.unwrap_or_else(|| "https://integrate.api.nvidia.com/v1".to_string()))
+            }
             LLMProvider::OpenAI => {
                 // User custom base_url takes precedence over hardcoded default.
                 Some(base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()))
@@ -403,7 +430,7 @@ impl AthenaOrchestrator {
         };
 
         if result.is_ok() {
-            if let Err(e) = self.try_auto_save().await {
+            if let Err(e) = self.flush_auto_save().await {
                 log::warn!("Failed to auto-save conversation: {}", e);
             }
         }
@@ -889,7 +916,7 @@ mod tests {
             Arc::new(athena_store::KeyValueStore::new_empty()),
             None,
         );
-        AthenaOrchestrator::new_with_executor(Arc::new(parking_lot::Mutex::new(executor)))
+        AthenaOrchestrator::new_with_executor(Arc::new(parking_lot::RwLock::new(executor)))
     }
 
     /// Verify that `execute_tool` does not block the Tokio runtime when
@@ -1303,7 +1330,7 @@ mod snapshot_tests {
         let ac = Arc::new(AgentComms::new());
         let store = Arc::new(athena_store::KeyValueStore::new_empty());
 
-        let executor = Arc::new(parking_lot::Mutex::new(ToolExecutor::new(
+        let executor = Arc::new(parking_lot::RwLock::new(ToolExecutor::new(
             Arc::clone(&ob),
             Arc::clone(&pm),
             Arc::clone(&ac),
@@ -1355,7 +1382,7 @@ mod snapshot_tests {
             .unwrap();
 
         let orch = AthenaOrchestrator::with_context(
-            Arc::new(parking_lot::Mutex::new(ToolExecutor::new(
+            Arc::new(parking_lot::RwLock::new(ToolExecutor::new(
                 Arc::clone(&ob),
                 Arc::clone(&pm),
                 Arc::clone(&ac),

@@ -3,7 +3,7 @@ use base64::Engine as _;
 use serde_json;
 use sha2::{Digest, Sha256};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -13,6 +13,26 @@ fn content_hash(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+fn validate_path_component(value: &str, kind: &str) -> Result<(), SessionStoreError> {
+    let path = Path::new(value);
+    let is_single_normal_component = path.components().count() == 1
+        && matches!(
+            path.components().next(),
+            Some(std::path::Component::Normal(_))
+        );
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.as_bytes().contains(&0)
+        || value.contains('/')
+        || value.contains('\\')
+        || !is_single_normal_component
+    {
+        return Err(SessionStoreError::InvalidData(format!("invalid {kind}")));
+    }
+    Ok(())
 }
 
 #[derive(Error, Debug)]
@@ -33,6 +53,7 @@ pub enum SessionStoreError {
 pub struct SessionStore {
     sessions_dir: PathBuf,
     images_dir: PathBuf,
+    update_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SessionStore {
@@ -47,6 +68,7 @@ impl SessionStore {
         SessionStore {
             sessions_dir,
             images_dir,
+            update_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -63,6 +85,7 @@ impl SessionStore {
         Ok(SessionStore {
             sessions_dir,
             images_dir,
+            update_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -85,6 +108,7 @@ impl SessionStore {
         Ok(SessionStore {
             sessions_dir,
             images_dir,
+            update_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -101,15 +125,18 @@ impl SessionStore {
         SessionStore {
             sessions_dir,
             images_dir,
+            update_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
-    fn session_path(&self, id: &str) -> PathBuf {
-        self.sessions_dir.join(format!("{id}.json"))
+    fn session_path(&self, id: &str) -> Result<PathBuf, SessionStoreError> {
+        validate_path_component(id, "session ID")?;
+        Ok(self.sessions_dir.join(format!("{id}.json")))
     }
 
-    fn image_path(&self, image_id: &str) -> PathBuf {
-        self.images_dir.join(format!("{image_id}.bin"))
+    fn image_path(&self, image_id: &str) -> Result<PathBuf, SessionStoreError> {
+        validate_path_component(image_id, "image ID")?;
+        Ok(self.images_dir.join(format!("{image_id}.bin")))
     }
 
     /// Save an image (base64 string) to disk and return its reference.
@@ -128,7 +155,7 @@ impl SessionStore {
             .decode(base64_str)
             .map_err(|e| SessionStoreError::InvalidData(e.to_string()))?;
         let image_id = content_hash(&buffer);
-        let path = self.image_path(&image_id);
+        let path = self.image_path(&image_id)?;
         let path_clone = path.clone();
         // Only write if the file doesn't already exist — dedup at the FS level.
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
@@ -153,7 +180,7 @@ impl SessionStore {
     /// the hash change used UUIDs — those still resolve correctly because the
     /// `image_path` helper builds `<id>.bin` for any string.
     pub async fn load_image(&self, image_id: &str) -> Result<Option<String>, SessionStoreError> {
-        let path = self.image_path(image_id);
+        let path = self.image_path(image_id)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -168,7 +195,7 @@ impl SessionStore {
 
     /// Delete an image file from disk. Swallows errors.
     pub async fn delete_image(&self, image_id: &str) -> Result<(), SessionStoreError> {
-        let path = self.image_path(image_id);
+        let path = self.image_path(image_id)?;
         if path.exists() {
             let path_clone = path.clone();
             tokio::task::spawn_blocking(move || std::fs::remove_file(&path_clone))
@@ -194,8 +221,12 @@ impl SessionStore {
             updated_at: now,
             messages: Vec::new(),
         };
-        let json = serde_json::to_string_pretty(&session)?;
-        let path = self.session_path(&session.id);
+        // Compact serialization: this file is read back only by the app,
+        // and sessions are fully rewritten on every message, so the ~25%
+        // size saving from dropping pretty-printing compounds across a
+        // conversation's lifetime.
+        let json = serde_json::to_string(&session)?;
+        let path = self.session_path(&session.id)?;
         let path_clone = path.clone();
         tokio::task::spawn_blocking(move || write_file_durable(&path_clone, json.as_bytes(), true))
             .await
@@ -205,7 +236,7 @@ impl SessionStore {
 
     /// Retrieve a session by its ID.
     pub async fn get_session(&self, id: &str) -> Result<Option<ChatSession>, SessionStoreError> {
-        let path = self.session_path(id);
+        let path = self.session_path(id)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -227,6 +258,7 @@ impl SessionStore {
         title: Option<&str>,
         messages: Option<Vec<SessionMessage>>,
     ) -> Result<Option<ChatSession>, SessionStoreError> {
+        let _update_guard = self.update_lock.lock().await;
         let mut session = self
             .get_session(id)
             .await?
@@ -241,8 +273,12 @@ impl SessionStore {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let json = serde_json::to_string_pretty(&session)?;
-        let path = self.session_path(id);
+        // Compact serialization: this file is read back only by the app,
+        // and sessions are fully rewritten on every message, so the ~25%
+        // size saving from dropping pretty-printing compounds across a
+        // conversation's lifetime.
+        let json = serde_json::to_string(&session)?;
+        let path = self.session_path(id)?;
         let path_clone = path.clone();
         tokio::task::spawn_blocking(move || write_file_durable(&path_clone, json.as_bytes(), true))
             .await
@@ -252,27 +288,13 @@ impl SessionStore {
 
     /// Delete a session and its associated images.
     pub async fn delete_session(&self, id: &str) -> Result<bool, SessionStoreError> {
-        if let Some(session) = self.get_session(id).await? {
-            // Collect all image refs from messages
-            let all_refs: Vec<&str> = session
-                .messages
-                .iter()
-                .flat_map(|m| {
-                    m.image_refs
-                        .as_ref()
-                        .map(|refs| refs.iter().map(|r| r.image_id.as_str()))
-                        .into_iter()
-                        .flatten()
-                })
-                .collect();
-            for image_id in all_refs {
-                let _ = self.delete_image(image_id).await;
-            }
-            let path = self.session_path(id);
+        if self.get_session(id).await?.is_some() {
+            let path = self.session_path(id)?;
             let path_clone = path.clone();
             tokio::task::spawn_blocking(move || std::fs::remove_file(&path_clone))
                 .await
                 .map_err(|e| SessionStoreError::InvalidData(e.to_string()))??;
+            let _ = self.cleanup_orphaned_images().await;
             Ok(true)
         } else {
             Ok(false)
@@ -472,6 +494,7 @@ mod tests {
         let store = SessionStore {
             sessions_dir,
             images_dir,
+            update_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         };
         (store, dir)
     }
@@ -483,6 +506,7 @@ mod tests {
     fn count_files_in_store(store: &SessionStore) -> usize {
         let dir = store
             .image_path("__probe__")
+            .unwrap()
             .parent()
             .unwrap()
             .to_path_buf();

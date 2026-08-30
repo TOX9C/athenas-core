@@ -36,6 +36,10 @@ impl ToolExecutor {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
+                agent_type: s
+                    .get("agent_type")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string()),
             })
             .collect();
 
@@ -101,10 +105,14 @@ impl ToolExecutor {
             }
         };
 
-        // Dispatch the agent — default to "claude" as the agent type
-        // since the plan step does not carry its own agent_type field.
-        let default_agent_type = "claude";
-        let agent_cmd = build_agent_command(default_agent_type, Some(&step.description));
+        // Dispatch the agent. The step carries an optional agent_type so a
+        // plan can target shell/codex/gemini agents; default to "claude".
+        let agent_type = step
+            .agent_type
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("claude");
+        let agent_cmd = build_agent_command(agent_type, Some(&step.description));
         let pane_id = format!(
             "plan-{}-{}-{}",
             plan.id,
@@ -112,7 +120,7 @@ impl ToolExecutor {
             &Uuid::new_v4().to_string()[..8]
         );
         self.event_sender
-            .agent_spawned(&pane_id, default_agent_type, &agent_cmd);
+            .agent_spawned(&pane_id, agent_type, &agent_cmd);
 
         self.plan_manager
             .update_step_status(step_id, StepStatus::InProgress, Some(&pane_id))?;
@@ -152,31 +160,11 @@ impl ToolExecutor {
             }
         };
 
-        // Update step statuses
-        if let Some(ref evals) = args.step_evaluations {
-            for eval_item in evals {
-                let step_id = eval_item
-                    .get("step_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let status_str = eval_item
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("failure");
+        let overall_status = args
+            .overall_status
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("overall_status".to_string()))?;
 
-                let step_status = if status_str == "success" {
-                    StepStatus::Completed
-                } else {
-                    StepStatus::Failed
-                };
-
-                let _ = self
-                    .plan_manager
-                    .update_step_status(step_id, step_status, None);
-            }
-        }
-
-        // Update plan status
         let status_map: HashMap<&str, PlanStatus> = {
             let mut m = HashMap::new();
             m.insert("success", PlanStatus::Completed);
@@ -186,14 +174,52 @@ impl ToolExecutor {
             m
         };
 
-        let plan_status = args
-            .overall_status
-            .as_deref()
-            .and_then(|s| status_map.get(s))
-            .copied()
-            .unwrap_or(PlanStatus::Completed);
+        let plan_status = status_map.get(overall_status).copied().ok_or_else(|| {
+            ToolExecutorError::InvalidParam(
+                "overall_status must be one of: success, partial_success, failure, needs_replanning"
+                    .to_string(),
+            )
+        })?;
 
-        let _ = self.plan_manager.update_plan_status(plan_status);
+        // Single pass: validate and collect typed results before mutating
+        // the plan. A malformed entry errors out before any step changes,
+        // and the apply loop below consumes only pre-validated values.
+        let evals = args.step_evaluations.as_deref().unwrap_or(&[]);
+        let mut validated: Vec<(&str, StepStatus)> = Vec::with_capacity(evals.len());
+        for (index, eval_item) in evals.iter().enumerate() {
+            let step_id = eval_item
+                .get("step_id")
+                .and_then(|v| v.as_str())
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    ToolExecutorError::InvalidParam(format!(
+                        "step_evaluations[{index}].step_id must be a non-empty string"
+                    ))
+                })?;
+            let step_status = match eval_item.get("status").and_then(|v| v.as_str()) {
+                Some("success") => StepStatus::Completed,
+                Some("failure") => StepStatus::Failed,
+                _ => {
+                    return Err(ToolExecutorError::InvalidParam(format!(
+                        "step_evaluations[{index}].status must be success or failure"
+                    )));
+                }
+            };
+            if !plan.steps.iter().any(|step| step.id == step_id) {
+                return Err(crate::plan_manager::PlanManagerError::StepNotFound(
+                    step_id.to_string(),
+                )
+                .into());
+            }
+            validated.push((step_id, step_status));
+        }
+
+        for (step_id, step_status) in validated {
+            self.plan_manager
+                .update_step_status(step_id, step_status, None)?;
+        }
+
+        self.plan_manager.update_plan_status(plan_status)?;
 
         let updated_plan = match self.plan_manager.get_active_plan() {
             Some(p) => p,
@@ -210,7 +236,7 @@ impl ToolExecutor {
         let evals = args.step_evaluations.as_deref().unwrap_or(&[]);
         self.event_sender.plan_evaluated(
             &plan.id,
-            args.overall_status.as_deref().unwrap_or("unknown"),
+            overall_status,
             evals,
             args.next_action.as_deref().unwrap_or("done"),
             args.reasoning.as_deref().unwrap_or(""),
@@ -237,8 +263,7 @@ impl ToolExecutor {
         Ok(ToolCallResult {
             text: format!(
                 "Evaluation recorded. Overall: {}. Next: {}",
-                args.overall_status.as_deref().unwrap_or("unknown"),
-                instruction
+                overall_status, instruction
             ),
             is_error: None,
         })

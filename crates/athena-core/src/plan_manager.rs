@@ -29,6 +29,11 @@ pub enum StepStatus {
 pub struct PlanStep {
     pub id: String,
     pub description: String,
+    /// Agent type this step should be dispatched to ("claude", "codex",
+    /// "opencode", "gemini", or "shell"). Defaults to "claude" at dispatch
+    /// time when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
     pub status: StepStatus,
     pub assigned_pane_id: Option<String>,
 }
@@ -57,6 +62,8 @@ pub struct PlanInput {
 pub struct PlanStepInput {
     pub id: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
 }
 
 /// Errors for the plan manager.
@@ -153,6 +160,7 @@ impl PlanManager {
                 .map(|s| PlanStep {
                     id: s.id,
                     description: s.description,
+                    agent_type: s.agent_type,
                     status: StepStatus::Pending,
                     assigned_pane_id: None,
                 })

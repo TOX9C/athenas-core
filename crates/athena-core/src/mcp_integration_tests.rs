@@ -39,8 +39,8 @@ impl ToolEventSender for NoopEventSender {
     }
 }
 
-fn test_tool_executor() -> std::sync::Arc<parking_lot::Mutex<ToolExecutor>> {
-    std::sync::Arc::new(parking_lot::Mutex::new(ToolExecutor::new(
+fn test_tool_executor() -> std::sync::Arc<parking_lot::RwLock<ToolExecutor>> {
+    std::sync::Arc::new(parking_lot::RwLock::new(ToolExecutor::new(
         std::sync::Arc::new(OutputBuffer::new()),
         std::sync::Arc::new(PlanManager::new()),
         std::sync::Arc::new(AgentComms::new()),
@@ -247,7 +247,7 @@ fn legacy_mcp_arguments_are_normalized_for_the_executor() {
         "spaceId": "space-1",
         "tasks": [{ "title": "External task", "description": "Created over MCP" }]
     });
-    let created = super::execute_mcp_tool_call(&executor.lock(), "create_tasks", &create_tasks)
+    let created = super::execute_mcp_tool_call(&executor.read(), "create_tasks", &create_tasks)
         .expect("create_tasks should normalize to kanban_create_task");
     assert!(created.text.contains("Task created: External task"));
 
@@ -255,7 +255,7 @@ fn legacy_mcp_arguments_are_normalized_for_the_executor() {
         "count": 2,
         "instruction": "Run the external verification"
     });
-    let spawned = super::execute_mcp_tool_call(&executor.lock(), "spawn_agents", &spawn_agents)
+    let spawned = super::execute_mcp_tool_call(&executor.read(), "spawn_agents", &spawn_agents)
         .expect("spawn_agents should normalize count/instruction");
     assert!(spawned.text.contains("launched 2 claude agents"));
 }

@@ -288,6 +288,85 @@ pub fn classify_foreground_ps(stdout: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Foreground process group cache
+// ---------------------------------------------------------------------------
+
+/// How long a `ps` classification for one process group stays fresh. The
+/// heartbeat loop probes every 1.5 s per pane and the frontend issues
+/// `pty_agent_info` / `pty_foreground_process` in bursts; within one TTL
+/// window all of them share a single `ps` spawn per pgid.
+const FG_CACHE_TTL: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Cached classification for one process group: (label, probed_at).
+type FgCacheEntry = (String, std::time::Instant);
+
+static FG_CACHE: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<i32, FgCacheEntry>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// Resolve the foreground label for a PTY session: `tcgetpgrp(master_fd)`
+/// for the live foreground process group, then a TTL-cached
+/// [`classify_foreground_ps`] probe of `ps -o command= -g <pgid>`.
+///
+/// Returns `None` when the session has no controlling terminal or the
+/// process group is gone — callers fall back to `"shell"`.
+pub fn resolve_foreground_label(master_fd: i32, fallback_pgid: i32) -> Option<String> {
+    let mut pgid = fallback_pgid;
+    if master_fd >= 0 {
+        let fg_pgid = unsafe { libc::tcgetpgrp(master_fd) };
+        if fg_pgid > 0 {
+            pgid = fg_pgid;
+        }
+    }
+    if pgid <= 0 {
+        return None;
+    }
+    let now = std::time::Instant::now();
+    if let Some((label, probed_at)) = FG_CACHE.lock().get(&pgid) {
+        if now.duration_since(*probed_at) < FG_CACHE_TTL {
+            return Some(label.clone());
+        }
+    }
+    let output = std::process::Command::new("ps")
+        .args(["-o", "command=", "-g", &pgid.to_string()])
+        .output();
+    let label = match output {
+        Ok(out) if out.status.success() => {
+            classify_foreground_ps(std::str::from_utf8(&out.stdout).unwrap_or(""))
+        }
+        _ => "shell".to_string(),
+    };
+    FG_CACHE.lock().insert(pgid, (label.clone(), now));
+    // Bounded growth: pgids are recycled slowly; drop entries older than a
+    // few TTLs so long-lived apps don't accumulate dead groups forever.
+    FG_CACHE
+        .lock()
+        .retain(|_, (_, probed_at)| now.duration_since(*probed_at) < FG_CACHE_TTL * 4);
+    Some(label)
+}
+
+/// Drop the cached classification for one process group. Called when a PTY
+/// session is killed so a recycled pgid cannot inherit the dead session's
+/// label for up to one TTL window.
+pub fn invalidate_foreground_cache(pgid: i32) {
+    FG_CACHE.lock().remove(&pgid);
+}
+
+#[cfg(test)]
+pub(crate) fn fg_cache_clear() {
+    FG_CACHE.lock().clear();
+}
+
+#[cfg(test)]
+pub(crate) fn fg_cache_len() -> usize {
+    FG_CACHE.lock().len()
+}
+
+// ---------------------------------------------------------------------------
+// History scrapers
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // History scrapers
 // ---------------------------------------------------------------------------
 
@@ -1025,5 +1104,40 @@ mod tests {
             return;
         };
         assert_eq!(classified, "sleep");
+    }
+
+    #[test]
+    fn foreground_cache_dedupes_within_ttl() {
+        fg_cache_clear();
+        // Probe our own process group: always exists, label is whatever the
+        // test binary's comm is (stable within one run). The contract under
+        // test is caching behavior, not any particular label.
+        let pgid = std::process::id() as i32;
+        let no_fd = -1; // fall back to the explicit pgid path
+        let first = resolve_foreground_label(no_fd, pgid).expect("own pgid resolves");
+        let second = resolve_foreground_label(no_fd, pgid).expect("cached");
+        assert_eq!(first, second);
+        // Two calls, one entry: the second was served from the cache.
+        assert_eq!(fg_cache_len(), 1);
+        fg_cache_clear();
+        let third = resolve_foreground_label(no_fd, pgid).expect("re-probed");
+        assert_eq!(third, first);
+        assert_eq!(fg_cache_len(), 1);
+    }
+
+    #[test]
+    fn invalidation_forces_reprobe_for_recycled_pgid() {
+        fg_cache_clear();
+        let pgid = std::process::id() as i32;
+        let no_fd = -1;
+        let first = resolve_foreground_label(no_fd, pgid).expect("own pgid resolves");
+        assert_eq!(fg_cache_len(), 1);
+        // Simulate a killed pane: the entry must be gone so a recycled pgid
+        // cannot inherit the dead session's label within the TTL window.
+        invalidate_foreground_cache(pgid);
+        assert_eq!(fg_cache_len(), 0);
+        let second = resolve_foreground_label(no_fd, pgid).expect("re-probed");
+        assert_eq!(second, first);
+        assert_eq!(fg_cache_len(), 1, "re-probe repopulated exactly one entry");
     }
 }

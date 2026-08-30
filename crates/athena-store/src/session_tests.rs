@@ -1,4 +1,4 @@
-use crate::session::SessionStore;
+use crate::session::{SessionStore, SessionStoreError};
 use crate::types::{ImageRef, MessageRole, SessionMessage};
 use base64::Engine;
 
@@ -45,6 +45,24 @@ async fn test_get_session() {
     let retrieved = store.get_session(&session.id).await.unwrap().unwrap();
     assert_eq!(retrieved.title, "Get Test");
     assert_eq!(retrieved.id, session.id);
+}
+
+#[tokio::test]
+async fn test_rejects_path_traversal_session_id() {
+    let (store, _dir) = temp_store();
+
+    let result = store.get_session("../outside").await;
+
+    assert!(matches!(result, Err(SessionStoreError::InvalidData(_))));
+}
+
+#[tokio::test]
+async fn test_rejects_path_traversal_image_id() {
+    let (store, _dir) = temp_store();
+
+    let result = store.load_image("../outside").await;
+
+    assert!(matches!(result, Err(SessionStoreError::InvalidData(_))));
 }
 
 #[tokio::test]
@@ -107,6 +125,80 @@ async fn test_session_with_images() {
     let loaded = store.load_image(&image_ref.image_id).await.unwrap();
     assert!(loaded.is_some());
     assert_eq!(loaded.unwrap(), base64_data);
+}
+
+#[tokio::test]
+async fn test_delete_session_keeps_images_referenced_by_another_session() {
+    let (store, _dir) = temp_store();
+    let image_ref = store
+        .save_image(
+            &make_image_base64(),
+            "image/png",
+            Some("shared.png".to_string()),
+        )
+        .await
+        .unwrap();
+    let first = store.create_session(Some("First")).await.unwrap();
+    let second = store.create_session(Some("Second")).await.unwrap();
+    let message = make_session_message_with_image(image_ref.clone());
+
+    store
+        .update_session(&first.id, None, Some(vec![message.clone()]))
+        .await
+        .unwrap();
+    store
+        .update_session(&second.id, None, Some(vec![message]))
+        .await
+        .unwrap();
+
+    store.delete_session(&first.id).await.unwrap();
+
+    assert!(store
+        .load_image(&image_ref.image_id)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn test_concurrent_updates_preserve_non_overlapping_changes() {
+    let (store, _dir) = temp_store();
+    let session = store.create_session(Some("Original")).await.unwrap();
+    let store = std::sync::Arc::new(store);
+    let title_store = std::sync::Arc::clone(&store);
+    let message_store = std::sync::Arc::clone(&store);
+    let session_id = session.id.clone();
+    let message_session_id = session.id.clone();
+
+    let (title_update, message_update) = tokio::join!(
+        async move {
+            title_store
+                .update_session(&session_id, Some("Updated"), None)
+                .await
+        },
+        async move {
+            message_store
+                .update_session(
+                    &message_session_id,
+                    None,
+                    Some(vec![SessionMessage {
+                        id: "message-1".to_string(),
+                        role: MessageRole::User,
+                        content: "content".to_string(),
+                        timestamp: 1,
+                        is_error: None,
+                        image_refs: None,
+                    }]),
+                )
+                .await
+        }
+    );
+    title_update.unwrap();
+    message_update.unwrap();
+
+    let updated = store.get_session(&session.id).await.unwrap().unwrap();
+    assert_eq!(updated.title, "Updated");
+    assert_eq!(updated.messages.len(), 1);
 }
 
 #[tokio::test]

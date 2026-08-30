@@ -48,6 +48,23 @@ mod output_buffer_tests {
     }
 
     #[test]
+    fn test_get_output_tail_reads_newest_lines_only() {
+        let buf = make_buffer();
+        for i in 0..100 {
+            buf.append_output("pane-tail", &format!("line {}", i), Some("agent"));
+        }
+        let lines = buf.get_output_tail("pane-tail", 3);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["line 97", "line 98", "line 99"]
+        );
+        assert!(buf.get_output_tail("pane-tail", 0).is_empty());
+    }
+
+    #[test]
     fn test_get_output_with_since_line() {
         let buf = make_buffer();
         for i in 0..10 {
@@ -186,10 +203,12 @@ mod plan_manager_tests {
                 PlanStepInput {
                     id: "step-1".to_string(),
                     description: "First step".to_string(),
+                    agent_type: None,
                 },
                 PlanStepInput {
                     id: "step-2".to_string(),
                     description: "Second step".to_string(),
+                    agent_type: None,
                 },
             ],
         }
@@ -248,14 +267,17 @@ mod plan_manager_tests {
                 PlanStepInput {
                     id: "setup".to_string(),
                     description: "Setup environment".to_string(),
+                    agent_type: None,
                 },
                 PlanStepInput {
                     id: "build".to_string(),
                     description: "Build project".to_string(),
+                    agent_type: None,
                 },
                 PlanStepInput {
                     id: "test".to_string(),
                     description: "Run tests".to_string(),
+                    agent_type: None,
                 },
             ],
         };
@@ -264,6 +286,22 @@ mod plan_manager_tests {
         assert_eq!(plan.steps[0].id, "setup");
         assert_eq!(plan.steps[1].id, "build");
         assert_eq!(plan.steps[2].id, "test");
+    }
+
+    #[test]
+    fn test_plan_step_preserves_agent_type() {
+        let mgr = make_manager();
+        let input = PlanInput {
+            goal: "Shell plan".to_string(),
+            reasoning: "run a command".to_string(),
+            steps: vec![PlanStepInput {
+                id: "step-1".to_string(),
+                description: "pwd".to_string(),
+                agent_type: Some("shell".to_string()),
+            }],
+        };
+        let plan = mgr.set_active_plan(input).unwrap();
+        assert_eq!(plan.steps[0].agent_type.as_deref(), Some("shell"));
     }
 
     #[test]
@@ -337,6 +375,10 @@ mod notification_tests {
             metadata: None,
             actions: None,
             request_id: None,
+            event_key: None,
+            run_id: None,
+            pane_id: None,
+            requires_action: false,
         }
     }
 
@@ -458,6 +500,60 @@ mod notification_tests {
         let history = svc.get_history(Some(&opts));
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].title, "unread");
+    }
+
+    #[test]
+    fn test_event_key_deduplicates_unresolved_lifecycle_event() {
+        let svc = make_service();
+        let mut first = make_event(NotificationType::TaskComplete, "finished");
+        first.event_key = Some("run-1:finished".to_string());
+        let first_record = svc.push_notification(first.clone());
+        let second_record = svc.push_notification(first);
+        assert_eq!(first_record.id, second_record.id);
+        assert_eq!(svc.get_all_history().len(), 1);
+    }
+
+    #[test]
+    fn concurrent_event_key_pushes_are_inserted_once() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let svc = Arc::new(make_service());
+        let start = Arc::new(Barrier::new(32));
+        thread::scope(|scope| {
+            for index in 0..32 {
+                let svc = Arc::clone(&svc);
+                let start = Arc::clone(&start);
+                scope.spawn(move || {
+                    let mut event = make_event(NotificationType::Info, &format!("event-{index}"));
+                    event.event_key = Some("run-1:finished".to_string());
+                    start.wait();
+                    svc.push_notification(event);
+                });
+            }
+        });
+
+        assert_eq!(svc.get_all_history().len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_preserves_history_and_allows_new_run() {
+        let svc = make_service();
+        let mut event = make_event(NotificationType::NeedsInput, "input");
+        event.event_key = Some("run-1:input".to_string());
+        event.requires_action = true;
+        let record = svc.push_notification(event.clone());
+        svc.resolve(&record.id).unwrap();
+        let resolved = svc.get_all_history();
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved[0].resolved_at.is_some());
+        assert!(resolved[0].read);
+
+        // A later run may reuse the same logical lifecycle label after the
+        // prior request has been resolved.
+        let replacement = svc.push_notification(event);
+        assert_ne!(replacement.id, record.id);
+        assert_eq!(svc.get_all_history().len(), 2);
     }
 }
 

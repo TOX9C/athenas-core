@@ -434,6 +434,20 @@ impl OutputBuffer {
         result
     }
 
+    /// Read only the newest `limit` lines without cloning the older retained
+    /// history. This is the hot path for heartbeat/context previews, where a
+    /// full-buffer clone turns a small tail request into O(buffer size) work.
+    pub fn get_output_tail(&self, pane_id: &str, limit: usize) -> Vec<OutputLine> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let buffers = self.buffers.read();
+        let Some(buf) = buffers.get(pane_id) else {
+            return Vec::new();
+        };
+        buf.lines.iter().rev().take(limit).rev().cloned().collect()
+    }
+
     /// Get a list of all agents (panes) with their metadata.
     pub fn get_agent_list(&self) -> Vec<AgentListEntry> {
         let buffers = self.buffers.read();

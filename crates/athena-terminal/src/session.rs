@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::CString;
 use std::io::{self, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::io::{IntoRawFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -77,16 +78,35 @@ pub struct TerminalUpdate {
 /// A PTY session combining a shell process, PTY file descriptor, and terminal grid.
 static STARTUP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+#[derive(Clone)]
+struct ResizeTestProbe {
+    acquired: Arc<tokio::sync::Notify>,
+    continue_after_acquire: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+impl ResizeTestProbe {
+    fn new() -> Self {
+        Self {
+            acquired: Arc::new(tokio::sync::Notify::new()),
+            continue_after_acquire: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
 pub struct TerminalSession {
     pub id: String,
     pub grid: Arc<Mutex<Grid>>,
     /// Atomic FD sentinel. Holds the master PTY fd, or `-1` once the fd has
-    /// been closed. Using an atomic (rather than a separate `fd_closed` bool
-    /// plus a raw `RawFd`) closes the TOCTOU window: `read`/`write`/`resize`
-    /// load the fd under `Acquire`, and `close_fd` swaps in `-1` under
-    /// `AcqRel`. After `close_fd` returns, no other thread can observe a
-    /// stale, potentially-recycled fd.
+    /// been closed. PTY operations duplicate this fd into an `OwnedFd` while
+    /// holding `fd_lifecycle_lock`, so closing the master cannot recycle the
+    /// integer used by an in-flight syscall.
     pub master_fd: AtomicI32,
+    /// Serializes master-fd duplication with closing the master fd. Each
+    /// operation owns its duplicate for the duration of its syscall, so this
+    /// lock is not held across blocking I/O.
+    fd_lifecycle_lock: std::sync::Mutex<()>,
     pub shell_pid: nix::unistd::Pid,
     /// The process group ID of the shell. Explicitly stored because it is only
     /// equal to `shell_pid` if `setsid()` succeeded. If `setsid()` failed, the
@@ -156,6 +176,12 @@ pub struct TerminalSession {
     /// the same time and complete out of order. Keeping one writer in flight
     /// preserves the byte order the user generated.
     write_lock: Mutex<()>,
+    /// Serializes PTY window-size updates. Without this lock, an older
+    /// `TIOCSWINSZ` task can finish after a newer request and leave the shell
+    /// at dimensions that no longer match xterm.js.
+    resize_lock: Mutex<()>,
+    #[cfg(test)]
+    resize_test_probe: std::sync::Mutex<Option<ResizeTestProbe>>,
     /// Persistent VTE parser state.
     ///
     /// VTE's `Parser` is a state machine that tracks partial escape sequences
@@ -173,7 +199,7 @@ pub struct TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        self.close_fd();
+        self.close_fd_with_reason("session_drop");
         // Signal AND reap. Without `waitpid` the signaled shell becomes a
         // zombie until process exit; over a long app session that leaks the
         // process table. The grace-then-SIGKILL escalation also handles
@@ -217,6 +243,7 @@ impl TerminalSession {
             id,
             grid: Arc::new(Mutex::new(Grid::new(cols, rows))),
             master_fd: AtomicI32::new(master_fd),
+            fd_lifecycle_lock: std::sync::Mutex::new(()),
             shell_pid,
             pgid,
             shell,
@@ -230,25 +257,66 @@ impl TerminalSession {
             listener_owner: std::sync::Mutex::new(None),
             listener_owner_detached: std::sync::Mutex::new(false),
             pending_listener_owner: std::sync::Mutex::new(None),
-            startup_pause_deadline: std::sync::Mutex::new(None),
             rejected_startup_owner: std::sync::Mutex::new(None),
             reader_started: AtomicBool::new(false),
             startup_cleanup_path,
+            startup_pause_deadline: std::sync::Mutex::new(None),
             pending_writes: Mutex::new(VecDeque::new()),
             write_lock: Mutex::new(()),
+            resize_lock: Mutex::new(()),
+            #[cfg(test)]
+            resize_test_probe: std::sync::Mutex::new(None),
             parser: Mutex::new(Parser::new()),
         }
     }
 
+    /// Duplicate the live master fd while synchronizing with close. The
+    /// returned descriptor is independently owned and remains valid even if
+    /// `close_fd` recycles the original master-fd number before the syscall
+    /// using this descriptor begins.
+    fn duplicate_master_fd(&self) -> io::Result<OwnedFd> {
+        let _fd_guard = self
+            .fd_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let fd = self.master_fd.load(Ordering::Acquire);
+        if fd < 0 {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "fd closed"));
+        }
+        let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if duplicate < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fcntl returned a newly-owned descriptor on success.
+        Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
+    }
+
+    #[cfg(test)]
+    fn install_resize_test_probe(&self, probe: ResizeTestProbe) {
+        *self
+            .resize_test_probe
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(probe);
+    }
+
     /// Atomically close the master fd. Idempotent: subsequent calls are no-ops
     /// because the sentinel `-1` is swapped back to itself. The first caller
-    /// to swap wins and is responsible for the `libc::close` call. After this
-    /// returns, no other thread can observe a valid fd on this session
-    /// (every read/write/resize loads the sentinel under `Acquire`).
+    /// to swap wins and is responsible for the `libc::close` call. In-flight
+    /// operations use independent owned duplicates and therefore remain safe
+    /// if the kernel reuses the master-fd integer after this returns.
     ///
     /// Returns `true` if this call actually closed an open fd, `false` if
     /// the fd was already closed.
+    #[cfg(test)]
     fn close_fd(&self) -> bool {
+        self.close_fd_with_reason("test")
+    }
+
+    fn close_fd_with_reason(&self, reason: &'static str) -> bool {
+        let _fd_guard = self
+            .fd_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let old = self.master_fd.swap(-1, Ordering::AcqRel);
         if old >= 0 {
             // SAFETY: `old` was a valid fd owned by this session; we are
@@ -257,6 +325,11 @@ impl TerminalSession {
             // after this returns — callers must reload the atomic to
             // observe the new `-1` sentinel.
             unsafe { libc::close(old as RawFd) };
+            log::debug!(
+                "PTY master fd closed: session={} reason={}",
+                self.id,
+                reason
+            );
             true
         } else {
             false
@@ -285,14 +358,48 @@ impl TerminalSession {
 
     /// Internal: perform the actual write to the PTY master fd.
     async fn do_write(&self, data: &[u8]) -> io::Result<usize> {
-        // Load the atomic fd sentinel. A negative value means `close_fd`
-        // has already run (or the session was never given a real fd).
-        let fd = self.master_fd.load(Ordering::Acquire);
-        if fd < 0 {
-            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "fd closed"));
+        let owned_fd = self.duplicate_master_fd()?;
+        // Keystroke fast path: the master is O_NONBLOCK and writable for
+        // virtually every interactive write, so attempt the write inline
+        // instead of paying a `spawn_blocking` dispatch plus a buffer copy
+        // per keystroke. The fd is this call's own dup'd lease, so close-race
+        // safety is identical to the blocking path.
+        let fd = owned_fd.as_raw_fd();
+        let first = unsafe { libc::write(fd, data.as_ptr() as *const _, data.len()) };
+        if first >= 0 {
+            let written = first as usize;
+            if written == data.len() {
+                return Ok(written);
+            }
+            // Rare partial write of a large paste: finish on the blocking
+            // pool where polling POLLOUT is allowed.
+            return self.do_write_blocked(owned_fd, data, written).await;
         }
-        let buf = data.to_vec();
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            // Interrupted or pipe full: continue on the blocking path, which
+            // polls for POLLOUT and retries.
+            // EWOULDBLOCK == EAGAIN on macOS/Linux, so a single pattern
+            // covers both.
+            Some(libc::EINTR) | Some(libc::EAGAIN) => {
+                self.do_write_blocked(owned_fd, data, 0).await
+            }
+            _ => Err(err),
+        }
+    }
+
+    /// Slow path for `do_write`: write `data[done..]` from the blocking pool,
+    /// polling POLLOUT when the PTY buffer is full. `owned_fd` is the
+    /// caller's fd lease, moved in so close-race safety is unchanged.
+    async fn do_write_blocked(
+        &self,
+        owned_fd: OwnedFd,
+        data: &[u8],
+        done: usize,
+    ) -> io::Result<usize> {
+        let buf = data[done..].to_vec();
         tokio::task::spawn_blocking(move || {
+            let fd = owned_fd.as_raw_fd();
             let mut total_written = 0usize;
             // The master fd is O_NONBLOCK (set at spawn time), so the kernel
             // returns EAGAIN/EWOULDBLOCK when the PTY pipe buffer fills mid-write.
@@ -348,7 +455,7 @@ impl TerminalSession {
                 }
                 total_written += written as usize;
             }
-            Ok(total_written)
+            Ok(done + total_written)
         })
         .await
         .map_err(io::Error::other)?
@@ -498,6 +605,8 @@ impl TerminalSession {
             return None;
         }
         if current_owner.as_deref() == Some(owner.as_str()) && !paused {
+            // Same-owner reattach (duplicate attach call): keep the existing
+            // generation; a remount of the same owner is idempotent.
             return Some(self.listener_generation.load(Ordering::Acquire));
         }
         let generation = self.listener_generation.fetch_add(1, Ordering::AcqRel) + 1;
@@ -509,6 +618,8 @@ impl TerminalSession {
             .rejected_startup_owner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        // Unpause only after the ownership handshake is complete: the first
+        // bytes the read loop releases must already belong to the new owner.
         self.raw_paused.store(false, Ordering::Release);
         Some(generation)
     }
@@ -589,8 +700,45 @@ impl TerminalSession {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         drop(current_owner);
+        // Pause so in-flight flushes cannot emit to a detached listener; the
+        // read loop only flushes while `raw_paused` is false.
         self.raw_paused.store(true, Ordering::Release);
         true
+    }
+
+    /// Return whether a resize request belongs to a live or pending frontend
+    /// mount. Unowned callers remain supported for relay/legacy paths.
+    pub fn can_resize_for_owner(&self, owner: Option<&str>) -> bool {
+        let Some(owner) = owner else {
+            return true;
+        };
+        let _lifecycle_guard = self
+            .listener_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let current_owner = self
+            .listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pending_owner = self
+            .pending_listener_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let owner_detached = *self
+            .listener_owner_detached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        pending_owner.as_deref() == Some(owner)
+            || (current_owner.as_deref() == Some(owner) && !owner_detached)
+            // A remount has detached the current owner and keeps output
+            // paused while the replacement measures its container. Permit
+            // that replacement's initial resize before it calls attach;
+            // attach_listener still performs the authoritative ownership
+            // handoff under the lifecycle lock.
+            || (self.raw_paused.load(Ordering::Acquire)
+                && owner_detached
+                && current_owner.as_deref() != Some(owner))
     }
 
     /// Claim ownership of the session's background PTY reader.
@@ -1066,7 +1214,7 @@ impl SessionManager {
                 // and a future contributor re-introduces a release point
                 // between the initial check and this insert.
                 if let Some(existing) = sessions.get(&id).cloned() {
-                    session.close_fd();
+                    session.close_fd_with_reason("duplicate_session");
                     let _ =
                         nix::sys::signal::killpg(session.pgid, nix::sys::signal::Signal::SIGTERM);
                     let _ =
@@ -1092,7 +1240,7 @@ impl SessionManager {
     pub async fn kill(&self, id: &str) -> io::Result<()> {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.remove(id) {
-            session.close_fd();
+            session.close_fd_with_reason("explicit_kill");
             // Reap on kill too (mirrors Drop) so explicit kills don't leak
             // zombies either.
             reap_process_group(session.shell_pid, session.pgid);
@@ -1174,7 +1322,7 @@ impl SessionManager {
         // Phase 3 — force reap. close_fd first so the read loop observes EOF
         // and exits cleanly, then signal+reap the process group.
         for session in sessions {
-            session.close_fd();
+            session.close_fd_with_reason("shutdown_all");
             reap_process_group(session.shell_pid, session.pgid);
         }
         info!("shutdown_all: all PTY sessions reaped");
@@ -1194,22 +1342,49 @@ impl SessionManager {
         }
     }
 
-    pub async fn resize(&self, id: &str, cols: u16, rows: u16) -> io::Result<()> {
+    pub async fn resize(
+        &self,
+        id: &str,
+        cols: u16,
+        rows: u16,
+        owner: Option<&str>,
+    ) -> io::Result<()> {
         if let Some(session) = self.get_session(id).await {
+            // Serialize the complete ioctl + grid update so the dimensions
+            // observed by the backend parser cannot move backward while a
+            // newer resize is being applied.
+            let _resize_guard = session.resize_lock.lock().await;
+
+            #[cfg(test)]
+            let resize_test_probe = {
+                let mut probe = session
+                    .resize_test_probe
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                probe.take()
+            };
+
+            #[cfg(test)]
+            if let Some(probe) = resize_test_probe {
+                probe.acquired.notify_one();
+                probe.continue_after_acquire.notified().await;
+            }
+
+            if !session.can_resize_for_owner(owner) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "stale PTY resize owner",
+                ));
+            }
             let ws = libc::winsize {
                 ws_row: rows,
                 ws_col: cols,
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             };
-            // Load the atomic fd sentinel. If it's been swapped to -1
-            // (closed), the ioctl would target an invalid fd, so bail out.
-            let fd = session.master_fd.load(Ordering::Acquire);
-            if fd < 0 {
-                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "fd closed"));
-            }
+            let owned_fd = session.duplicate_master_fd()?;
             let result = tokio::task::spawn_blocking(move || unsafe {
-                libc::ioctl(fd, libc::TIOCSWINSZ, &ws)
+                libc::ioctl(owned_fd.as_raw_fd(), libc::TIOCSWINSZ, &ws)
             })
             .await;
             match result {
@@ -1264,29 +1439,191 @@ impl Default for SessionManager {
 /// Returns TerminalUpdate if there were cell changes.
 impl TerminalSession {
     /// Read raw bytes from the PTY master fd without parsing.
-    /// Returns the number of bytes read (`0` means the fd is non-blocking and
-    /// currently has no data; callers should `continue` or sleep).
+    /// Returns the number of bytes read (`0` means no data was available
+    /// within `wait_ms`).
+    ///
+    /// F10: when the non-blocking fd returns EAGAIN, the call parks in
+    /// `poll(2)` for up to `wait_ms` waiting for POLLIN readiness instead of
+    /// returning immediately and letting the caller sleep-and-retry. An idle
+    /// pane therefore costs one parked syscall per `wait_ms` window (no
+    /// dup+read spin), and arriving data wakes the poll instantly — keystroke
+    /// latency is bounded by the kernel wakeup, not the wait window.
     ///
     /// This is the entry point for raw byte consumers (e.g. an xterm.js
     /// subscriber) that want the bytes *before* the VTE parser rewrites them
-    /// into cell deltas. Pair with `parse_bytes` if you also need the legacy
-    /// grid update.
-    pub async fn read_bytes(&self, buf: &mut [u8]) -> io::Result<usize> {
-        // Load the atomic fd sentinel. A negative value means `close_fd`
-        // has already run, so there is no valid fd to read from.
-        let fd = self.master_fd.load(Ordering::Acquire);
-        if fd < 0 {
-            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "fd closed"));
+    /// into cell deltas.
+    #[allow(dead_code)] // kept for the F10 poll-semantics tests; the read loop uses spawn_reader
+    pub async fn read_bytes(&self, buf: &mut [u8], wait_ms: u64) -> io::Result<usize> {
+        let owned_fd = self.duplicate_master_fd()?;
+        // The read itself is O_NONBLOCK: it completes immediately (data,
+        // EAGAIN, or error), so it never parks the runtime worker and —
+        // critically for select! cancellation — it finishes before any
+        // await point. Only the poll parks; the poll closure touches no
+        // caller memory (it receives the fd by value as a lease), so a
+        // dropped future leaves at worst an orphan that polls and closes an
+        // owned dup — harmless.
+        let nbytes =
+            unsafe { libc::read(owned_fd.as_raw_fd(), buf.as_mut_ptr() as *mut _, buf.len()) };
+        if nbytes >= 0 {
+            return Ok(nbytes as usize);
         }
-        let nbytes = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
-        if nbytes < 0 {
-            let e = io::Error::last_os_error();
-            if e.kind() == io::ErrorKind::WouldBlock || e.raw_os_error() == Some(libc::EAGAIN) {
-                return Ok(0);
-            }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::WouldBlock && e.raw_os_error() != Some(libc::EAGAIN) {
             return Err(e);
         }
-        Ok(nbytes as usize)
+        // EAGAIN: park in poll(2) on a blocking thread until POLLIN
+        // readiness or the window expires. Runs off the worker so a
+        // multi-pane idle fleet cannot starve the runtime (Tauri commands
+        // share it); same pattern as `do_write`. The closure returns a
+        // readiness verdict only — the consuming read happens below, inline,
+        // where the `buf` borrow is live and cancellation-safe.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Wait {
+            Ready,
+            TimedOut,
+        }
+        let ready = tokio::task::spawn_blocking(move || {
+            let fd = owned_fd.as_raw_fd();
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let pr = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, wait_ms as i32) };
+            if pr < 0 {
+                let perr = io::Error::last_os_error();
+                // EINTR: treat as timeout; the caller's loop retries.
+                return if perr.raw_os_error() == Some(libc::EINTR) {
+                    Ok(Wait::TimedOut)
+                } else {
+                    Err(perr)
+                };
+            }
+            if pr > 0 && pfd.revents & libc::POLLIN != 0 {
+                Ok(Wait::Ready)
+            } else {
+                Ok(Wait::TimedOut)
+            }
+        })
+        .await
+        .map_err(io::Error::other)??;
+        if ready != Wait::Ready {
+            return Ok(0);
+        }
+        // Readiness confirmed: consume inline. The poll closure consumed the
+        // first lease, so take a fresh one — if the session closed while we
+        // waited, duplicate_master_fd surfaces BrokenPipe and the caller's
+        // loop terminates. A spurious EAGAIN (another reader won the race)
+        // reports no data for this round.
+        let lease = self.duplicate_master_fd()?;
+        let nbytes =
+            unsafe { libc::read(lease.as_raw_fd(), buf.as_mut_ptr() as *mut _, buf.len()) };
+        if nbytes >= 0 {
+            return Ok(nbytes as usize);
+        }
+        let e2 = io::Error::last_os_error();
+        if e2.kind() == io::ErrorKind::WouldBlock || e2.raw_os_error() == Some(libc::EAGAIN) {
+            return Ok(0);
+        }
+        Err(e2)
+    }
+
+    /// Spawn a dedicated blocking reader thread for this session and return
+    /// a channel receiver of `Ok(chunk)` / terminal `Err`.
+    ///
+    /// The thread owns one dup of the master fd and blocks in `poll(2)` —
+    /// no wake-up machinery on the tokio blocking pool, no adaptive backoff
+    /// loop, and no per-read fd duplication. An idle pane costs exactly one
+    /// parked `poll` syscall and one 100 ms deadline tick (used to notice a
+    /// dropped receiver so the thread never outlives its consumer).
+    ///
+    /// Termination:
+    /// - slave side closed / child reaped → read returns 0 or EIO →
+    ///   thread exits → the receiver yields `None`;
+    /// - consumer dropped → the next send fails (or a deadline tick sees
+    ///   `is_closed`) → thread exits;
+    /// - real errors are forwarded once, then the thread exits.
+    pub fn spawn_reader(
+        self: &std::sync::Arc<Self>,
+    ) -> tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>> {
+        let (tx, rx) = tokio::sync::mpsc::channel::<io::Result<Vec<u8>>>(8);
+        let session = std::sync::Arc::clone(self);
+        let thread_name = format!("pty-reader-{}", session.id);
+        // Kept in case the thread cannot even be spawned — the error is
+        // delivered through the channel so the caller takes its normal
+        // error path.
+        let fallback_tx = tx.clone();
+        let spawned = std::thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || {
+                let owned_fd = match session.duplicate_master_fd() {
+                    Ok(fd) => fd,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(e));
+                        return;
+                    }
+                };
+                let fd = owned_fd.as_raw_fd();
+                let mut buf = vec![0u8; 16 * 1024];
+                loop {
+                    let mut pfd = libc::pollfd {
+                        fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    let rc = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, 100) };
+                    if rc < 0 {
+                        let e = io::Error::last_os_error();
+                        if e.raw_os_error() == Some(libc::EINTR) {
+                            continue;
+                        }
+                        let _ = tx.blocking_send(Err(e));
+                        return;
+                    }
+                    if rc == 0 {
+                        // Deadline tick: exit when the consumer is gone.
+                        if tx.is_closed() {
+                            return;
+                        }
+                        continue;
+                    }
+                    let nbytes = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+                    if nbytes > 0 {
+                        if tx
+                            .blocking_send(Ok(buf[..nbytes as usize].to_vec()))
+                            .is_err()
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+                    if nbytes == 0 {
+                        // EOF: the child closed the slave end.
+                        return;
+                    }
+                    let e = io::Error::last_os_error();
+                    match e.raw_os_error() {
+                        // The master fd is O_NONBLOCK; a POLLIN read raced
+                        // with another consumer. Retry.
+                        Some(libc::EAGAIN) | Some(libc::EINTR) => continue,
+                        // Slave side gone (kill or exit).
+                        Some(libc::EIO) => return,
+                        _ => {
+                            let _ = tx.blocking_send(Err(e));
+                            return;
+                        }
+                    }
+                }
+            });
+        match spawned {
+            Ok(_handle) => rx,
+            Err(e) => {
+                // Thread spawn failure: deliver the error through the channel
+                // so the caller's loop takes its normal error path.
+                let _ = fallback_tx.blocking_send(Err(io::Error::other(e)));
+                rx
+            }
+        }
     }
 
     /// Feed raw bytes through the persistent VTE parser and apply the
@@ -1340,23 +1677,51 @@ impl TerminalSession {
         drop(grid_guard);
         Ok((update, responses))
     }
-
-    /// Convenience wrapper: `read_bytes` + `parse_bytes` in one call.
-    /// Prefer the split methods when you need access to the raw bytes
-    /// alongside the parsed deltas (e.g. to fan out to both an xterm.js
-    /// subscriber and a legacy grid listener).
-    pub async fn read_and_parse(&self, buf: &mut [u8]) -> io::Result<Option<TerminalUpdate>> {
-        let n = self.read_bytes(buf).await?;
-        if n == 0 {
-            return Ok(None);
-        }
-        self.parse_bytes(&buf[..n]).await
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes tests that recycle raw fd numbers (dup2) — concurrent
+    /// tests opening/closing descriptors would race on the recycled number.
+    static FD_RECYCLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_reader_delivers_echoed_bytes() {
+        let manager = SessionManager::new();
+        let session = manager
+            .spawn("reader-test".to_string(), "/bin/cat", "/", 80, 24)
+            .await
+            .expect("spawn /bin/cat");
+        let session = std::sync::Arc::new(session);
+        let mut rx = session.spawn_reader();
+        // Writes queue until the child has exec'd; /bin/cat can't echo what
+        // never reaches the fd.
+        session.mark_ready().await;
+        session
+            .write(b"reader-probe\n")
+            .await
+            .expect("write probe bytes");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut collected = Vec::new();
+        loop {
+            match tokio::time::timeout_at(deadline.into(), rx.recv()).await {
+                Ok(Some(Ok(chunk))) => {
+                    collected.extend_from_slice(&chunk);
+                    if collected
+                        .windows(12)
+                        .any(|w| w == b"reader-probe".as_slice())
+                    {
+                        break;
+                    }
+                }
+                Ok(Some(Err(e))) => panic!("reader error: {e}"),
+                Ok(None) => panic!("reader closed early, collected {} bytes", collected.len()),
+                Err(_) => panic!("timeout: collected {} bytes", collected.len()),
+            }
+        }
+        assert!(String::from_utf8_lossy(&collected).contains("reader-probe"));
+    }
 
     #[test]
     fn zsh_startup_bootstrap_rejects_stale_omz_path() {
@@ -1604,6 +1969,177 @@ mod tests {
     }
 
     #[test]
+    fn resize_owner_gate_accepts_current_and_pending_mounts_only() {
+        let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
+        let foreign_pgid = nix::unistd::Pid::from_raw(1);
+        let session = TerminalSession::new(
+            "resize-owner-gate".to_string(),
+            read_end.into_raw_fd(),
+            foreign_pgid,
+            foreign_pgid,
+            "/bin/sh".to_string(),
+            "/".to_string(),
+            80,
+            24,
+        );
+
+        // Legacy/relay callers remain supported when no owner is supplied.
+        assert!(session.can_resize_for_owner(None));
+        assert!(!session.can_resize_for_owner(Some("owner-a")));
+
+        session.begin_startup_pause(Some("owner-a".to_string()));
+        assert!(session.can_resize_for_owner(Some("owner-a")));
+        assert!(!session.can_resize_for_owner(Some("owner-b")));
+        let generation = session
+            .attach_listener("owner-a".to_string(), false)
+            .expect("startup owner should attach");
+        assert!(session.can_resize_for_owner(Some("owner-a")));
+        assert!(!session.can_resize_for_owner(Some("owner-b")));
+
+        assert!(session.detach_listener("owner-a", generation));
+        // A replacement may resize while the old owner is detached and output
+        // remains paused, before it completes the listener handoff.
+        assert!(session.can_resize_for_owner(Some("owner-b")));
+        assert!(!session.can_resize_for_owner(Some("owner-a")));
+        session.close_fd();
+    }
+
+    #[test]
+    fn owned_fd_lease_survives_close_and_master_fd_reuse() {
+        let _guard = FD_RECYCLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
+        let raw_fd = read_end.into_raw_fd();
+        let foreign_pgid = nix::unistd::Pid::from_raw(1);
+        let session = TerminalSession::new(
+            "fd-lease".to_string(),
+            raw_fd,
+            foreign_pgid,
+            foreign_pgid,
+            "/bin/sh".to_string(),
+            "/".to_string(),
+            80,
+            24,
+        );
+
+        let leased_fd = session
+            .duplicate_master_fd()
+            .expect("duplicating the live master fd should succeed");
+        let flags = unsafe { libc::fcntl(leased_fd.as_raw_fd(), libc::F_GETFL) };
+        assert!(
+            flags >= 0,
+            "F_GETFL should succeed: {}",
+            io::Error::last_os_error()
+        );
+        assert_eq!(
+            unsafe {
+                libc::fcntl(
+                    leased_fd.as_raw_fd(),
+                    libc::F_SETFL,
+                    flags | libc::O_NONBLOCK,
+                )
+            },
+            0,
+            "setting O_NONBLOCK should succeed"
+        );
+
+        assert!(session.close_fd());
+
+        // Recycle the session's old integer for an unrelated pipe endpoint.
+        // dup2 makes this deterministic even if another test has allocated a
+        // descriptor between close_fd and pipe().
+        let (replacement_read, replacement_write) =
+            nix::unistd::pipe().expect("replacement pipe() should succeed");
+        if replacement_read.as_raw_fd() != raw_fd {
+            assert_eq!(
+                unsafe { libc::dup2(replacement_read.as_raw_fd(), raw_fd) },
+                raw_fd,
+                "dup2 should recycle the old master fd number"
+            );
+        }
+        let byte = [b'x'];
+        assert_eq!(
+            unsafe {
+                libc::write(
+                    replacement_write.as_raw_fd(),
+                    byte.as_ptr() as *const libc::c_void,
+                    byte.len(),
+                )
+            },
+            1
+        );
+
+        let mut buf = [0u8; 1];
+        let read_result = unsafe {
+            libc::read(
+                leased_fd.as_raw_fd(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            )
+        };
+        assert_eq!(
+            read_result, -1,
+            "the owned lease must not follow the recycled raw fd"
+        );
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN),
+            "the original endpoint should still be empty and non-blocking"
+        );
+        assert_eq!(
+            unsafe { libc::read(raw_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(),) },
+            1,
+            "the recycled raw fd should refer to the replacement pipe"
+        );
+
+        if replacement_read.as_raw_fd() != raw_fd {
+            unsafe { libc::close(raw_fd) };
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resize_rechecks_owner_after_waiting_for_resize_lock() {
+        let manager = Arc::new(SessionManager::new());
+        let session = manager
+            .spawn("resize-owner-race".to_string(), "/bin/sh", "/", 80, 24)
+            .await
+            .expect("spawn should succeed");
+        let generation = session
+            .attach_listener("owner-a".to_string(), false)
+            .expect("owner-a should attach");
+
+        let probe = ResizeTestProbe::new();
+        session.install_resize_test_probe(probe.clone());
+        let resize_guard = session.resize_lock.lock().await;
+        let acquired = probe.acquired.notified();
+        let resize_manager = manager.clone();
+        let resize_task = tokio::spawn(async move {
+            resize_manager
+                .resize("resize-owner-race", 100, 30, Some("owner-a"))
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        drop(resize_guard);
+        acquired.await;
+
+        assert!(session.detach_listener("owner-a", generation));
+        assert!(session
+            .attach_listener("owner-b".to_string(), false)
+            .is_some());
+        probe.continue_after_acquire.notify_one();
+
+        let error = resize_task
+            .await
+            .expect("resize task should not panic")
+            .expect_err("owner-a must be rejected after owner-b takes over");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        manager
+            .kill("resize-owner-race")
+            .await
+            .expect("kill should succeed");
+    }
+
+    #[test]
     fn cancelled_startup_owner_cannot_reclaim() {
         let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
         let foreign_pgid = nix::unistd::Pid::from_raw(1);
@@ -1770,7 +2306,9 @@ mod tests {
             // killed at the end of the test.
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
-                match tokio::time::timeout_at(deadline, drain_session.read_bytes(&mut buf)).await {
+                match tokio::time::timeout_at(deadline, drain_session.read_bytes(&mut buf, 50))
+                    .await
+                {
                     Err(_) => break,     // deadline elapsed
                     Ok(Err(_)) => break, // fd closed
                     Ok(Ok(_)) => continue,
@@ -1801,5 +2339,73 @@ mod tests {
         // Cleanup: kill the session and let the drain reader exit.
         let _ = manager.kill("large_paste").await;
         let _ = drain_handle.await;
+    }
+    /// F10: `read_bytes` parks in poll(2) instead of spinning. An idle fd
+    /// returns `Ok(0)` after ~`wait_ms` (not immediately), and data written
+    /// mid-window wakes the poll promptly — the read must not wait out the
+    /// full window once bytes are ready.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn read_bytes_parks_on_eagain_and_wakes_on_data() {
+        let manager = SessionManager::new();
+        let session = manager
+            .spawn("f10_poll".to_string(), "/bin/cat", "/", 80, 24)
+            .await
+            .expect("spawn should succeed");
+
+        // Flush the Spawning gate: without mark_ready, write() queues to
+        // pending_writes forever in a unit test (nothing runs the read loop
+        // that normally flips the status).
+        session.mark_ready().await;
+
+        let mut buf = [0u8; 4096];
+        // Phase 1 — data mid-window: write, then read with a long window.
+        // The poll must wake on readiness well before the window expires.
+        // (Done first: proves echo works before the idle phase runs.)
+        session
+            .write(b"ping\n")
+            .await
+            .expect("write should succeed");
+        let echo_start = std::time::Instant::now();
+        let echo_deadline = echo_start + std::time::Duration::from_secs(5);
+        let n = loop {
+            let n = session
+                .read_bytes(&mut buf, 1_000)
+                .await
+                .expect("data read should not error");
+            if n > 0 || std::time::Instant::now() >= echo_deadline {
+                break n;
+            }
+        };
+        assert!(n > 0, "read should see the echoed bytes");
+        assert!(
+            echo_start.elapsed() < std::time::Duration::from_millis(900),
+            "echo took {:?}; poll readiness wake is broken",
+            echo_start.elapsed()
+        );
+
+        // Phase 2 — idle: drain any residual echo, then a 300 ms window on
+        // a quiet fd must NOT return instantly (the old EAGAIN path returned
+        // Ok(0) immediately); it should park for roughly the window.
+        let quiet_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while session
+            .read_bytes(&mut buf, 50)
+            .await
+            .expect("drain read should not error")
+            > 0
+            && std::time::Instant::now() < quiet_deadline
+        {}
+        let idle_start = std::time::Instant::now();
+        let n = session
+            .read_bytes(&mut buf, 300)
+            .await
+            .expect("idle read should not error");
+        assert_eq!(n, 0, "idle fd should report no data");
+        assert!(
+            idle_start.elapsed() >= std::time::Duration::from_millis(250),
+            "idle read returned after {:?}; poll wait was skipped",
+            idle_start.elapsed()
+        );
+
+        let _ = manager.kill("f10_poll").await;
     }
 }

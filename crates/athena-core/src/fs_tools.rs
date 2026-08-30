@@ -29,7 +29,9 @@ impl ToolExecutor {
         let validator = PathValidator::new(&root).map_err(|e| {
             ToolExecutorError::PathTraversal(format!("failed to initialize path validator: {}", e))
         })?;
-        // TODO: opt-in allowlist for extra roots
+        let validator = validator
+            .with_extra_roots(self.fs_extra_roots.iter())
+            .map_err(|e| ToolExecutorError::PathTraversal(format!("invalid extra root: {}", e)))?;
         validator
             .validate(&path)
             .map_err(|e| ToolExecutorError::PathTraversal(e.to_string()))
@@ -201,7 +203,9 @@ impl ToolExecutor {
                 })
             }
             Err(e) => Ok(ToolCallResult {
-                text: format!("Search failed: {e}. Check the path and search pattern, then try again."),
+                text: format!(
+                    "Search failed: {e}. Check the path and search pattern, then try again."
+                ),
                 is_error: Some(true),
             }),
         }

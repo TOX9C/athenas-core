@@ -146,7 +146,12 @@ mod tests {
     #[tokio::test]
     async fn list_models_accepts_http_loopback_only() {
         // A public http host must be rejected before any request is made.
-        let err = list_models("http://api.example.com/v1", Some("key")).await.unwrap_err();
-        assert!(err.contains("HTTPS"), "expected HTTPS rejection, got: {err}");
+        let err = list_models("http://api.example.com/v1", Some("key"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("HTTPS"),
+            "expected HTTPS rejection, got: {err}"
+        );
     }
 }

@@ -917,4 +917,67 @@ mod tests {
         // auth-gate contract — that an authenticated initialize succeeds —
         // is fully covered by the response assertion above.
     }
+
+    #[test]
+    fn oversized_line_disconnect_still_cleans_up_session() {
+        use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let emitter: EventEmitter = Arc::new(Mutex::new(None));
+        let token = "test-token-oversized-line".to_string();
+
+        let sessions_t = Arc::clone(&sessions);
+        let pending_t = Arc::clone(&pending);
+        let emitter_t = Arc::clone(&emitter);
+        let token_t = token.clone();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            agent_comms_connection::handle_connection(
+                stream, sessions_t, pending_t, token_t, emitter_t,
+            );
+        });
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        let init = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "init-1",
+            "method": "initialize",
+            "params": { "data": { "token": token, "agentId": "big-line-agent" } }
+        });
+        client.write_all(format!("{}\n", init).as_bytes()).unwrap();
+        client.flush().unwrap();
+
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(
+            response["result"]["sessionId"].is_string(),
+            "initialize should succeed, got: {line}"
+        );
+
+        // One line larger than MAX_AGENT_LINE_BYTES: the server must
+        // disconnect AND still run cleanup_connection for this peer.
+        let oversized = vec![b'x'; MAX_AGENT_LINE_BYTES + 1];
+        client.write_all(&oversized).unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        drop(reader);
+        drop(client);
+        server.join().expect("server thread panicked");
+
+        // Fails before the fix: the early `return` on the oversized-line
+        // path skipped cleanup_connection, leaving the session in the map.
+        assert!(
+            sessions.lock().unwrap().is_empty(),
+            "session must be evicted after an oversized-line disconnect"
+        );
+        assert!(pending.lock().unwrap().is_empty());
+    }
 }

@@ -84,6 +84,8 @@ impl ToolExecutor {
             status,
             order: 0,
             created_at: self.get_current_time_ms(),
+            // Tool-created cards have no plan-step back-link.
+            plan_step_id: None,
         };
 
         match self.kanban_backend.create_task(space_id, task) {

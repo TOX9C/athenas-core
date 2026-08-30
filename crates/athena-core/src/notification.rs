@@ -38,6 +38,15 @@ pub struct NotificationEvent {
     pub metadata: Option<serde_json::Value>,
     pub actions: Option<Vec<NotificationAction>>,
     pub request_id: Option<String>,
+    /// Stable lifecycle key used to make repeated transport events idempotent.
+    pub event_key: Option<String>,
+    /// Agent turn/run identity when the producer can provide one.
+    pub run_id: Option<String>,
+    /// Frontend pane identity. Kept separate from agent_id for remote/plugin sessions.
+    pub pane_id: Option<String>,
+    /// Whether the notification remains actionable until explicitly resolved.
+    #[serde(default)]
+    pub requires_action: bool,
 }
 
 /// A persisted notification record.
@@ -54,6 +63,16 @@ pub struct NotificationRecord {
     pub metadata: Option<serde_json::Value>,
     pub actions: Option<Vec<NotificationAction>>,
     pub request_id: Option<String>,
+    #[serde(default)]
+    pub event_key: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub pane_id: Option<String>,
+    #[serde(default)]
+    pub requires_action: bool,
+    #[serde(default)]
+    pub resolved_at: Option<u64>,
     pub read: bool,
     pub dismissed_at: Option<u64>,
 }
@@ -235,11 +254,20 @@ impl NotificationService {
             metadata: None,
             actions: None,
             request_id: None,
+            event_key: None,
+            run_id: None,
+            pane_id: None,
+            requires_action: false,
         };
         self.push_notification(event)
     }
 
     /// Push a new notification to the history.
+    ///
+    /// Producers may provide an `event_key` when the same lifecycle event can
+    /// arrive through more than one transport (for example shell integration
+    /// and a plugin status update). An unresolved record with the same key is
+    /// returned without emitting a second notification.
     pub fn push_notification(&self, event: NotificationEvent) -> NotificationRecord {
         let record = NotificationRecord {
             id: Self::generate_id(),
@@ -253,11 +281,25 @@ impl NotificationService {
             metadata: event.metadata,
             actions: event.actions,
             request_id: event.request_id,
+            event_key: event.event_key,
+            run_id: event.run_id,
+            pane_id: event.pane_id,
+            requires_action: event.requires_action,
+            resolved_at: None,
             read: false,
             dismissed_at: None,
         };
 
         let mut history = self.history.write();
+        if let Some(event_key) = record.event_key.as_deref() {
+            if let Some(existing) = history.iter().find(|existing| {
+                existing.event_key.as_deref() == Some(event_key)
+                    && existing.resolved_at.is_none()
+                    && existing.dismissed_at.is_none()
+            }) {
+                return existing.clone();
+            }
+        }
         history.push(record.clone());
 
         // Trim to max history
@@ -281,6 +323,11 @@ impl NotificationService {
                 "metadata": record.metadata,
                 "actions": record.actions,
                 "requestId": record.request_id,
+                "eventKey": record.event_key,
+                "runId": record.run_id,
+                "paneId": record.pane_id,
+                "requiresAction": record.requires_action,
+                "resolvedAt": record.resolved_at,
                 "read": record.read,
                 "timestamp": record.timestamp,
             }),
@@ -368,6 +415,26 @@ impl NotificationService {
             );
         }
         count
+    }
+
+    /// Resolve an actionable notification without deleting its history.
+    pub fn resolve(&self, notification_id: &str) -> Result<bool, NotificationError> {
+        let mut history = self.history.write();
+        let record = history
+            .iter_mut()
+            .find(|n| n.id == notification_id)
+            .ok_or_else(|| NotificationError::NotFound(notification_id.to_string()))?;
+        record.resolved_at = Some(Self::now());
+        record.read = true;
+        let record_id = record.id.clone();
+        let resolved_at = record.resolved_at;
+        drop(history);
+        self.persist();
+        self.emit_event(
+            "notifications:resolved",
+            &serde_json::json!({ "id": record_id, "resolvedAt": resolved_at }),
+        );
+        Ok(true)
     }
 
     /// Dismiss (remove) a notification by its ID.

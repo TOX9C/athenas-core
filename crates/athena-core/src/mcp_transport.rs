@@ -82,7 +82,7 @@ pub(super) async fn accept_loop(
     spawn_handler: Option<SpawnHandler>,
     output_handler: Option<OutputHandler>,
     agent_comms_handler: Option<AgentCommsHandler>,
-    tool_executor: Option<Arc<parking_lot::Mutex<super::ToolExecutor>>>,
+    tool_executor: Option<Arc<parking_lot::RwLock<super::ToolExecutor>>>,
 ) {
     let _stopped_guard = StoppedGuard(Arc::clone(&stopped));
     let connection_slots = Arc::new(tokio::sync::Semaphore::new(MCP_MAX_CONNECTIONS));
@@ -160,7 +160,7 @@ struct ConnectionHandler {
     spawn_handler: Option<SpawnHandler>,
     output_handler: Option<OutputHandler>,
     agent_comms_handler: Option<AgentCommsHandler>,
-    tool_executor: Option<Arc<parking_lot::Mutex<super::ToolExecutor>>>,
+    tool_executor: Option<Arc<parking_lot::RwLock<super::ToolExecutor>>>,
     authenticated: AtomicBool,
     // Held for the entire connection lifetime; dropping the handler releases
     // the slot even when setup or I/O fails before authentication.

@@ -31,6 +31,17 @@ pub enum StoreError {
 /// in-memory: `set_sync`/`flush_if_dirty`/`Drop` are no-ops for disk and the
 /// data is lost on process exit. Use `is_in_memory()` to detect this
 /// condition.
+///
+/// # Durability contract (F13)
+///
+/// The debounce creates a crash window: mutations accepted since the last
+/// flush are in memory only and are lost if the process dies before
+/// `flush_if_dirty`/`Drop` runs. The on-disk snapshot itself is durable —
+/// `atomic_write` fsyncs the file and the directory entry before the rename
+/// replaces the destination — so a crash never yields a torn or partially
+/// updated file, only an older one. This is acceptable because the store
+/// holds preferences/UI state, not authoritative data. Revisit (WAL or
+/// write-through) only if it ever becomes the system of record.
 pub struct KeyValueStore {
     path: Option<PathBuf>,
     data: Arc<parking_lot::Mutex<std::collections::HashMap<String, serde_json::Value>>>,
@@ -255,6 +266,13 @@ impl KeyValueStore {
         self.dirty.store(true, Ordering::SeqCst);
     }
 
+    /// Monotonic mutation counter: bumped on every `set`/`delete`/sync
+    /// persist. Callers that poll a hot key (e.g. the 1.5 s heartbeat) can
+    /// cache the parsed value and re-parse only when this changes.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::SeqCst)
+    }
+
     /// Returns `true` if there are pending writes that have not been flushed.
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(Ordering::SeqCst)
@@ -305,7 +323,10 @@ impl KeyValueStore {
         let revision = self.revision.load(Ordering::SeqCst);
         let json = {
             let map = self.data.lock();
-            serde_json::to_string_pretty(&*map)?
+            // Compact: machine-written, machine-read (values go through
+            // get/set APIs); pretty-printing costs ~25% more bytes and a
+            // slower serde pass on every persist.
+            serde_json::to_string(&*map)?
         };
         atomic_write(&path, json.as_bytes())?;
         if self.revision.load(Ordering::SeqCst) == revision {
@@ -338,7 +359,7 @@ impl PersistenceHandle {
         let revision = self.revision.load(Ordering::SeqCst);
         let json = {
             let map = self.data.lock();
-            serde_json::to_string_pretty(&*map)?
+            serde_json::to_string(&*map)?
         };
         atomic_write(&path, json.as_bytes())?;
         if self.revision.load(Ordering::SeqCst) == revision {

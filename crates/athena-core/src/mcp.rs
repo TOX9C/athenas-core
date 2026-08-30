@@ -57,7 +57,7 @@ pub struct McpServer {
     pub output_handler: Option<OutputHandler>,
     pub agent_comms_handler: Option<AgentCommsHandler>,
     /// Optional reference to the tool executor for delegating tool calls
-    pub tool_executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>,
+    pub tool_executor: Option<Arc<parking_lot::RwLock<ToolExecutor>>>,
 }
 
 impl std::fmt::Debug for McpServer {
@@ -370,7 +370,7 @@ pub(super) async fn run_stdio_loop<R, W>(
     spawn_handler: Option<SpawnHandler>,
     output_handler: Option<OutputHandler>,
     agent_comms_handler: Option<AgentCommsHandler>,
-    tool_executor: Option<Arc<parking_lot::Mutex<ToolExecutor>>>,
+    tool_executor: Option<Arc<parking_lot::RwLock<ToolExecutor>>>,
 ) -> std::io::Result<()>
 where
     R: tokio::io::AsyncBufRead + Unpin,
@@ -434,7 +434,7 @@ pub(super) async fn handle_request_with_executor(
     spawn_handler: &Option<SpawnHandler>,
     output_handler: &Option<OutputHandler>,
     agent_comms_handler: &Option<AgentCommsHandler>,
-    tool_executor: Option<&Arc<parking_lot::Mutex<ToolExecutor>>>,
+    tool_executor: Option<&Arc<parking_lot::RwLock<ToolExecutor>>>,
 ) -> JsonRpcResponse {
     if req.method == "tools/list" {
         let tools = if tool_executor.is_some() {
@@ -463,7 +463,7 @@ pub(super) async fn handle_request_with_executor(
                 let executor = Arc::clone(tool_executor);
                 let tool_name = name.to_string();
                 let result = tokio::task::spawn_blocking(move || {
-                    let executor = executor.lock();
+                    let executor = executor.read();
                     execute_mcp_tool_call(&executor, &tool_name, &args)
                 })
                 .await;

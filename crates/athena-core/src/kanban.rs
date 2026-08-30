@@ -48,6 +48,12 @@ pub struct KanbanBackendTask {
     pub status: KanbanBackendStatus,
     pub order: usize,
     pub created_at: i64,
+    /// Optional back-link to the plan step this card was created from
+    /// (Kanban ↔ plan deep link). `None` for manually-created cards.
+    /// `#[serde(default)]` keeps older persisted JSON (without the field)
+    /// deserializable.
+    #[serde(default)]
+    pub plan_step_id: Option<String>,
 }
 
 impl KanbanBackendStatus {
@@ -195,6 +201,7 @@ mod tests {
             status: KanbanBackendStatus::Todo,
             order: 0,
             created_at: 0,
+            plan_step_id: None,
         };
         backend.create_task("ws1", task.clone()).unwrap();
         let tasks = backend.get_tasks("ws1").unwrap();

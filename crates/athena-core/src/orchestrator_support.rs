@@ -118,7 +118,18 @@ impl<'de> serde::Deserialize<'de> for ProviderConfig {
     }
 }
 
-pub(crate) fn sanitize_error_message(msg: &str) -> String {
+/// Redact credential-shaped substrings from an arbitrary message.
+///
+/// This is the crate's central content-level redactor. It is applied to HTTP
+/// error-response bodies before they become return values (see the call sites
+/// in `orchestrator.rs`, `orchestrator_stream.rs`, and `llm_models.rs`), and it
+/// is also reused by the Tauri logging backend as a safety-net filter so that
+/// any `log::debug!`/`info!`/… that accidentally interpolates a secret is
+/// scrubbed before the line is flushed to the log file or webview console.
+///
+/// Kept as a self-contained pure function (no traits, no allocations beyond
+/// the result) so it can run inside a `fern` formatter closure.
+pub fn sanitize_error_message(msg: &str) -> String {
     let patterns = [
         (r"sk-[a-zA-Z0-9]{20,}", "sk-[REDACTED]"),
         (r"x-api-key: [^\s]+", "x-api-key: [REDACTED]"),

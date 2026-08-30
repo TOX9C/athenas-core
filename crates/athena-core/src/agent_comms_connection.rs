@@ -68,7 +68,7 @@ pub(super) fn handle_connection(
     // (rather than BufRead::lines()) is what lets us enforce the cap before
     // the full line is materialized.
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
-    loop {
+    'conn: loop {
         buf.clear();
         let mut total: usize = 0;
         let line_result = loop {
@@ -82,8 +82,12 @@ pub(super) fn handle_connection(
                             peer,
                             MAX_AGENT_LINE_BYTES
                         );
-                        // Drop the connection; the oversized line is discarded.
-                        return;
+                        // Drop the connection; the oversized line is
+                        // discarded. Exit through the same cleanup path as
+                        // a normal close so the session entry, pending
+                        // inputs, and the renderer's `agents:disconnected`
+                        // are all handled.
+                        break 'conn;
                     }
                     if buf.last() == Some(&b'\n') {
                         // Complete line.
@@ -449,7 +453,7 @@ pub(super) fn handle_request_input(
     event_emitter: &EventEmitter,
 ) {
     let session = find_session_by_stream(sessions, stream);
-    if session.is_none() {
+    let Some(session) = session else {
         send_to_socket(
             stream,
             &serde_json::json!({
@@ -462,9 +466,7 @@ pub(super) fn handle_request_input(
             }),
         );
         return;
-    }
-
-    let session = session.unwrap();
+    };
     update_activity_by_session_id(sessions, &session.id);
     update_session_status(sessions, &session.id, SessionStatus::WaitingInput);
 

@@ -346,3 +346,31 @@ async fn test_new_empty_delete_sync_is_noop() {
     let v: Option<String> = store.get("k").unwrap();
     assert_eq!(v, None, "in-memory delete_sync removes the in-memory key");
 }
+
+#[test]
+fn test_revision_bumps_on_mutation_and_gates_cache_reads() {
+    let store = KeyValueStore::new_empty();
+    let r0 = store.revision();
+    store.set_sync("k", &"v1".to_string()).unwrap();
+    let r1 = store.revision();
+    assert!(r1 > r0, "set_sync must bump revision");
+
+    // Cache-holder pattern: re-read only when the revision changes.
+    let mut cached_rev = None;
+    let mut reads = 0;
+    for _ in 0..3 {
+        let rev = store.revision();
+        if cached_rev != Some(rev) {
+            let _ = store.get::<String>("k").unwrap();
+            reads += 1;
+            cached_rev = Some(rev);
+        }
+    }
+    assert_eq!(reads, 1, "steady-state ticks must not re-read");
+
+    store.set_sync("k", &"v2".to_string()).unwrap();
+    let rev = store.revision();
+    assert_ne!(cached_rev, Some(rev), "write must invalidate the cache");
+    let v = store.get::<String>("k").unwrap();
+    assert_eq!(v.as_deref(), Some("v2"));
+}

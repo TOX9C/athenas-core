@@ -38,6 +38,128 @@ pub enum AthenaStreamEvent {
 /// Callback used by the Tauri adapter to forward stream events.
 pub type StreamEmitter = Arc<dyn Fn(AthenaStreamEvent) + Send + Sync>;
 
+/// Batch size (bytes) and staleness window for coalesced Delta events.
+const DELTA_FLUSH_BYTES: usize = 256;
+const DELTA_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// Amortizes per-chunk stream Delta events into fewer, larger events.
+///
+/// Providers deliver assistant text as many tiny SSE fragments (often
+/// 1–10 chars); emitting one event per fragment saturates the IPC bridge
+/// and the frontend scheduler. Batches flush when they reach
+/// [`DELTA_FLUSH_BYTES`] or when the pending batch is at least
+/// [`DELTA_FLUSH_INTERVAL`] old at the next push — whichever comes first —
+/// bounding the event rate near `throughput / DELTA_FLUSH_BYTES` without
+/// adding threads or delaying text beyond one inter-chunk gap.
+///
+/// Ordering invariant: Delta pushes hold the internal lock while appending,
+/// and every non-Delta event MUST go through [`StreamDeltaCoalescer::emit`],
+/// which flushes any pending batch before emitting. Because all emissions
+/// happen under the same lock in arrival order, downstream observers see
+/// Deltas interleaved with Status/Completed/Error exactly as produced.
+/// Switching to a different request ID also flushes, so late events from a
+/// superseded turn cannot bleed into a newer turn's batch.
+#[derive(Default)]
+pub struct StreamDeltaCoalescer {
+    inner: Mutex<CoalescerInner>,
+}
+
+#[derive(Default)]
+struct CoalescerInner {
+    /// Swapped by `set_stream_emitter`; `None` discards all events.
+    emit: Option<StreamEmitter>,
+    /// Pending Delta batch: (request_id, accumulated text, first-push time).
+    pending: Option<(String, String, std::time::Instant)>,
+}
+
+impl StreamDeltaCoalescer {
+    /// Buffer one Delta fragment, flushing the batch when it is large
+    /// enough or stale relative to [`DELTA_FLUSH_INTERVAL`].
+    ///
+    /// Ordering: callers MUST serialize `push`/`emit` for a given stream
+    /// (stream_message holds the orchestrator's conversation_lock, which
+    /// already serializes every turn). This type does not order concurrent
+    /// pushes from different threads.
+    pub fn push(&self, request_id: &str, text: &str) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if inner.emit.is_none() {
+            return; // Nobody listens; do not buffer (matches emit_stream).
+        }
+        let mut flush_now: Option<(String, String)> = None;
+        match &mut inner.pending {
+            Some((id, buffer, opened_at)) if id == request_id => {
+                buffer.push_str(text);
+                if buffer.len() >= DELTA_FLUSH_BYTES || opened_at.elapsed() >= DELTA_FLUSH_INTERVAL
+                {
+                    if let Some((id, buffer, _)) = inner.pending.take() {
+                        flush_now = Some((id, buffer));
+                    }
+                }
+            }
+            _ => {
+                // A batch from another request ID (or none): flush the
+                // foreign batch first, then open a fresh one with this
+                // fragment so late chunks never merge across turns.
+                if let Some((id, buffer, _)) = inner.pending.take() {
+                    flush_now = Some((id, buffer));
+                }
+                inner.pending = Some((
+                    request_id.to_string(),
+                    text.to_string(),
+                    std::time::Instant::now(),
+                ));
+            }
+        }
+        let emitter = inner.emit.clone();
+        drop(inner);
+        if let Some((request_id, text)) = flush_now {
+            Self::call(&emitter, AthenaStreamEvent::Delta { request_id, text });
+        }
+    }
+
+    /// Flush any pending batch, then emit a non-Delta event.
+    pub fn emit(&self, event: AthenaStreamEvent) {
+        let (batch, emitter) = {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (inner.pending.take(), inner.emit.clone())
+        };
+        if let Some((request_id, text, _)) = batch {
+            Self::call(&emitter, AthenaStreamEvent::Delta { request_id, text });
+        }
+        Self::call(&emitter, event);
+    }
+
+    /// Replace the underlying emitter. Any pending batch is flushed with
+    /// the outgoing emitter first so no text is lost across the swap.
+    pub fn set_emitter(&self, emit: Option<StreamEmitter>) {
+        let (batch, outgoing) = {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let batch = inner.pending.take();
+            let outgoing = inner.emit.clone();
+            inner.emit = emit;
+            (batch, outgoing)
+        };
+        if let Some((request_id, text, _)) = batch {
+            Self::call(&outgoing, AthenaStreamEvent::Delta { request_id, text });
+        }
+    }
+
+    fn call(emitter: &Option<StreamEmitter>, event: AthenaStreamEvent) {
+        if let Some(emit) = emitter {
+            emit(event);
+        }
+    }
+}
+
 /// Handle for cancelling one in-flight assistant request.
 #[derive(Clone)]
 pub struct AthenaRequest {
@@ -233,4 +355,90 @@ pub enum OrchestratorError {
     /// A generic error with a human-readable message.
     #[error("{0}")]
     Generic(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn small_fragments_coalesce_until_byte_threshold() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&count);
+        let coalescer = StreamDeltaCoalescer::default();
+        coalescer.set_emitter(Some(Arc::new(move |_event| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        })));
+        // 32 fragments x 10 chars = 320 bytes >= 256: one threshold flush
+        // inside the loop; the final fragment stays pending.
+        for _ in 0..32 {
+            coalescer.push("req", "0123456789");
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        coalescer.emit(AthenaStreamEvent::Completed {
+            request_id: "req".to_string(),
+            text: String::new(),
+        });
+        assert_eq!(count.load(Ordering::SeqCst), 3); // flushed Delta + Completed
+    }
+
+    #[test]
+    fn stale_batch_flushes_on_next_push() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&count);
+        let coalescer = StreamDeltaCoalescer::default();
+        coalescer.set_emitter(Some(Arc::new(move |_event| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        })));
+        coalescer.push("req", "a");
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        std::thread::sleep(DELTA_FLUSH_INTERVAL * 2);
+        coalescer.push("req", "b");
+        // First push flushed (stale); "b" opens a fresh, still-pending batch.
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn foreign_request_id_flushes_before_new_batch() {
+        let events = Arc::new(parking_lot::Mutex::<Vec<AthenaStreamEvent>>::default());
+        let sink = Arc::clone(&events);
+        let coalescer = StreamDeltaCoalescer::default();
+        coalescer.set_emitter(Some(Arc::new(move |event| {
+            sink.lock().push(event);
+        })));
+        coalescer.push("old-request", "late chunk");
+        coalescer.push("new-request", "first");
+        coalescer.emit(AthenaStreamEvent::Completed {
+            request_id: "new-request".to_string(),
+            text: String::new(),
+        });
+        let guard = events.lock();
+        let ids: Vec<&str> = guard
+            .iter()
+            .map(|event| match event {
+                AthenaStreamEvent::Started { request_id, .. }
+                | AthenaStreamEvent::Delta { request_id, .. }
+                | AthenaStreamEvent::Status { request_id, .. }
+                | AthenaStreamEvent::Completed { request_id, .. }
+                | AthenaStreamEvent::Error { request_id, .. } => request_id.as_str(),
+            })
+            .collect();
+        // Order: flushed old-request Delta, flushed new-request Delta,
+        // then the Completed event itself.
+        assert_eq!(ids, vec!["old-request", "new-request", "new-request"]);
+    }
+
+    #[test]
+    fn cleared_emitter_discards_without_panic() {
+        let coalescer = StreamDeltaCoalescer::default();
+        coalescer.push("req", "text"); // no emitter set: dropped silently
+        coalescer.set_emitter(None);
+        coalescer.push("req", "more");
+        coalescer.emit(AthenaStreamEvent::Error {
+            request_id: "req".to_string(),
+            message: "boom".to_string(),
+            cancelled: false,
+        });
+    }
 }

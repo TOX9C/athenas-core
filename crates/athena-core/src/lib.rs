@@ -1,6 +1,7 @@
 pub mod agent_activity;
 pub mod agent_comms;
 pub mod agent_detection;
+pub mod agent_lifecycle;
 pub mod kanban;
 pub mod llm_models;
 pub mod mcp;
@@ -18,6 +19,7 @@ mod tool_schema;
 pub mod types;
 
 pub use orchestrator::AthenaOrchestrator;
+pub use orchestrator::ProviderConfig;
 pub use search::{search_code, search_files};
 pub use types::*;
 

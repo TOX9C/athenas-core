@@ -52,6 +52,8 @@ pub enum ToolExecutorError {
     Notification(String),
     #[error("Missing required parameter: {0}")]
     MissingParam(String),
+    #[error("Invalid parameter: {0}")]
+    InvalidParam(String),
     #[error("Request cancelled")]
     Cancelled,
     #[error("Lock poisoned")]
@@ -142,6 +144,10 @@ pub struct ToolExecutor {
     /// `get_workspace_root` returns this path directly.
     #[allow(dead_code)]
     workspace_root_override: Option<PathBuf>,
+    /// Opt-in extra filesystem roots the sandbox accepts on top of the
+    /// workspace root. Empty by default; callers widen the sandbox only
+    /// when the user has granted additional directories.
+    pub(super) fs_extra_roots: Vec<PathBuf>,
 }
 
 impl std::fmt::Debug for ToolExecutor {
@@ -169,7 +175,15 @@ impl ToolExecutor {
             store,
             notification_service,
             workspace_root_override: None,
+            fs_extra_roots: Vec::new(),
         }
+    }
+    /// Grant extra filesystem sandbox roots (in addition to the workspace
+    /// root). Construction-time opt-in: there is no runtime mutation, so a
+    /// tool call can never widen its own sandbox.
+    pub fn with_fs_extra_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.fs_extra_roots = roots;
+        self
     }
 
     /// Set the workspace root override (for tests).  Avoids mutating the
@@ -532,6 +546,161 @@ mod tests {
             store_handle.get::<String>("workspace.active").unwrap(),
             None,
             "the orphan workspace.active key must not be written"
+        );
+    }
+
+    /// A step with `agent_type: "shell"` must dispatch as a shell agent and
+    /// carry the raw prompt, not be force-wrapped in `claude -p`.
+    #[test]
+    fn dispatch_plan_step_uses_step_agent_type() {
+        use std::sync::Mutex as StdMutex;
+
+        struct RecordingSender {
+            calls: Arc<StdMutex<Vec<(String, String, String)>>>,
+        }
+        impl ToolEventSender for RecordingSender {
+            fn agent_spawned(&self, id: &str, agent_type: &str, agent_cmd: &str) {
+                self.calls.lock().unwrap().push((
+                    id.to_string(),
+                    agent_type.to_string(),
+                    agent_cmd.to_string(),
+                ));
+            }
+            fn close_panes(&self, _pane_ids: &[String]) {}
+            fn pty_write(&self, _pane_id: &str, _data: &str) {}
+            fn has_session(&self, _pane_id: &str) -> bool {
+                false
+            }
+            fn ask_user(
+                &self,
+                _request_id: &str,
+                _question: &str,
+                _options: &[serde_json::Value],
+            ) -> String {
+                String::new()
+            }
+            fn plan_update(&self, _plan: &ExecutionPlan) {}
+            fn plan_evaluated(
+                &self,
+                _plan_id: &str,
+                _overall_status: &str,
+                _step_evaluations: &[serde_json::Value],
+                _next_action: &str,
+                _reasoning: &str,
+            ) {
+            }
+        }
+
+        let calls: Arc<StdMutex<Vec<(String, String, String)>>> =
+            Arc::new(StdMutex::new(Vec::new()));
+        let sender: Arc<dyn ToolEventSender> = Arc::new(RecordingSender {
+            calls: Arc::clone(&calls),
+        });
+        let executor = ToolExecutor::new(
+            Arc::new(OutputBuffer::new()),
+            Arc::new(PlanManager::new()),
+            Arc::new(AgentComms::new()),
+            sender,
+            Arc::new(athena_store::KeyValueStore::new_empty()),
+            None,
+        );
+
+        executor
+            .execute_tool_call(
+                "create_execution_plan",
+                &serde_json::from_value(serde_json::json!({
+                    "goal": "run pwd",
+                    "reasoning": "test shell dispatch",
+                    "steps": [
+                        { "id": "step-1", "description": "pwd", "agent_type": "shell" }
+                    ]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        executor
+            .execute_tool_call(
+                "dispatch_plan_step",
+                &serde_json::from_value(serde_json::json!({ "step_id": "step-1" })).unwrap(),
+            )
+            .unwrap();
+
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "expected one agent spawn");
+        assert_eq!(
+            recorded[0].1, "shell",
+            "step must dispatch as a shell agent"
+        );
+        assert_eq!(
+            recorded[0].2, "pwd",
+            "shell agent command must be the raw prompt"
+        );
+    }
+
+    #[test]
+    fn evaluate_results_requires_a_known_overall_status_before_mutating_plan() {
+        let executor = create_executor();
+        executor
+            .execute_tool_call(
+                "create_execution_plan",
+                &serde_json::from_value(serde_json::json!({
+                    "goal": "validate results",
+                    "reasoning": "test invalid evaluation",
+                    "steps": [{"id": "step-1", "description": "run test"}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let result = executor.execute_tool_call(
+            "evaluate_results",
+            &serde_json::from_value(serde_json::json!({
+                "step_evaluations": []
+            }))
+            .unwrap(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(ToolExecutorError::MissingParam(ref name)) if name == "overall_status"
+        ));
+        assert_eq!(
+            executor.plan_manager.get_active_plan().unwrap().status,
+            crate::plan_manager::PlanStatus::Pending
+        );
+    }
+
+    #[test]
+    fn evaluate_results_rejects_unknown_step_ids_without_mutating_plan() {
+        let executor = create_executor();
+        executor
+            .execute_tool_call(
+                "create_execution_plan",
+                &serde_json::from_value(serde_json::json!({
+                    "goal": "validate step ids",
+                    "reasoning": "test invalid evaluation",
+                    "steps": [{"id": "step-1", "description": "run test"}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let result = executor.execute_tool_call(
+            "evaluate_results",
+            &serde_json::from_value(serde_json::json!({
+                "overall_status": "success",
+                "step_evaluations": [{"step_id": "missing", "status": "success"}]
+            }))
+            .unwrap(),
+        );
+
+        assert!(matches!(result, Err(ToolExecutorError::PlanManager(_))));
+        let plan = executor.plan_manager.get_active_plan().unwrap();
+        assert_eq!(plan.status, crate::plan_manager::PlanStatus::Pending);
+        assert_eq!(
+            plan.steps[0].status,
+            crate::plan_manager::StepStatus::Pending
         );
     }
 }

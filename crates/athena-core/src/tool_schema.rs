@@ -199,7 +199,8 @@ pub fn orchestrator_tools() -> Vec<ToolDefinition> {
                             "type": "object",
                             "properties": {
                                 "id": { "type": "string", "description": "Unique identifier for this step (e.g. 'step-1'). You reference it later in dispatch_plan_step and evaluate_results." },
-                                "description": { "type": "string", "description": "Self-contained instruction for this step. This exact text is sent to the agent as its prompt — keep each step distinct." }
+                                "description": { "type": "string", "description": "Self-contained instruction for this step. This exact text is sent to the agent as its prompt — keep each step distinct." },
+                                "agent_type": { "type": "string", "enum": ["claude", "codex", "opencode", "gemini", "shell"], "description": "Which agent to dispatch this step to via dispatch_plan_step. Use 'shell' to run the description as a shell command. Defaults to 'claude'." }
                             },
                             "required": ["id", "description"]
                         }
@@ -443,11 +444,21 @@ pub fn shell_escape(arg: &str) -> String {
 
 /// Build the agent command string for the given agent type and optional prompt.
 pub fn build_agent_command(agent_type: &str, task_prompt: Option<&str>) -> String {
+    // A "shell" agent is a plain shell, not a CLI with a `-p` flag. Its
+    // "prompt" is the command to type into the shell. Previously this arm
+    // returned an empty string unconditionally, silently discarding the task
+    // prompt so a shell agent opened blank instead of running the request.
+    if agent_type == "shell" {
+        return match task_prompt {
+            Some(prompt) if !prompt.is_empty() => prompt.to_string(),
+            _ => String::new(),
+        };
+    }
+
     let base_cmd = match agent_type {
         "codex" => "codex",
         "opencode" => "opencode",
         "gemini" => "gemini",
-        "shell" => return String::new(),
         _ => "claude",
     };
 
@@ -456,5 +467,33 @@ pub fn build_agent_command(agent_type: &str, task_prompt: Option<&str>) -> Strin
             format!("{} -p {}", base_cmd, shell_escape(prompt))
         }
         _ => base_cmd.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_agent_command;
+
+    #[test]
+    fn shell_agent_keeps_its_task_prompt() {
+        // Regression: launching a "shell" agent with a task prompt used to
+        // return an empty string, so the shell opened blank and the prompt
+        // was silently discarded.
+        assert_eq!(build_agent_command("shell", Some("pwd")), "pwd");
+    }
+
+    #[test]
+    fn shell_agent_without_prompt_is_plain_interactive_shell() {
+        assert_eq!(build_agent_command("shell", None), "");
+        assert_eq!(build_agent_command("shell", Some("")), "");
+    }
+
+    #[test]
+    fn cli_agents_still_wrap_the_prompt() {
+        assert_eq!(
+            build_agent_command("claude", Some("hello world")),
+            "claude -p 'hello world'"
+        );
+        assert_eq!(build_agent_command("codex", None), "codex");
     }
 }

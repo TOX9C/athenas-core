@@ -27,6 +27,10 @@ pub enum PathValidationError {
 #[derive(Debug, Clone)]
 pub struct PathValidator {
     root: PathBuf,
+    /// Opt-in extra sandbox roots granted on top of the primary `root`.
+    /// Each entry is canonicalized before being stored. Empty by default —
+    /// the sandbox stays single-root unless the caller explicitly widens it.
+    extra_roots: Vec<PathBuf>,
 }
 
 impl PathValidator {
@@ -38,7 +42,32 @@ impl PathValidator {
         let root = root.canonicalize().map_err(|e| {
             PathValidationError::InvalidPath(format!("cannot canonicalize root: {}", e))
         })?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            extra_roots: Vec::new(),
+        })
+    }
+    /// Grant additional canonical sandbox roots. Paths under any of these
+    /// are accepted alongside the primary root. Roots that do not exist
+    /// fail construction so a typo cannot silently widen the sandbox.
+    pub fn with_extra_roots<I, P>(mut self, roots: I) -> Result<Self, PathValidationError>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut extra = Vec::new();
+        for root in roots {
+            let root = root.as_ref().canonicalize().map_err(|e| {
+                PathValidationError::InvalidPath(format!(
+                    "cannot canonicalize extra root {:?}: {}",
+                    root.as_ref(),
+                    e
+                ))
+            })?;
+            extra.push(root);
+        }
+        self.extra_roots = extra;
+        Ok(self)
     }
 
     /// Validate that `path` is within the sandbox root.
@@ -87,7 +116,9 @@ impl PathValidator {
     /// Validate that the canonicalized `path` starts with the canonicalized
     /// root.
     fn validate_canonical(&self, canonical: &Path) -> Result<PathBuf, PathValidationError> {
-        if !canonical.starts_with(&self.root) {
+        let allowed = canonical.starts_with(&self.root)
+            || self.extra_roots.iter().any(|r| canonical.starts_with(r));
+        if !allowed {
             return Err(PathValidationError::PathTraversal(format!(
                 "path {:?} is outside sandbox root {:?}",
                 canonical, self.root
@@ -175,5 +206,40 @@ mod tests {
         let evil = temp.join("..").join("..").join("etc").join("passwd");
         let result = validator.validate_write(&evil);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extra_roots_accept_paths_under_additional_root() {
+        let base = std::env::temp_dir();
+        let primary = base.join("athena_test_primary");
+        let extra = base.join("athena_test_extra");
+        fs::create_dir_all(&primary).unwrap();
+        fs::create_dir_all(&extra).unwrap();
+        let validator = PathValidator::new(&primary)
+            .unwrap()
+            .with_extra_roots([&extra])
+            .expect("extra root should exist");
+        assert!(validator.validate(&extra).is_ok());
+        assert!(validator.validate(&primary).is_ok());
+        // A sibling that is neither root nor extra stays blocked.
+        let other = base.join("athena_test_other");
+        fs::create_dir_all(&other).unwrap();
+        assert!(validator.validate(&other).is_err());
+        for dir in [&primary, &extra, &other] {
+            fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
+    fn test_extra_roots_rejects_nonexistent_root() {
+        let base = std::env::temp_dir();
+        let primary = base.join("athena_test_primary2");
+        fs::create_dir_all(&primary).unwrap();
+        let missing = base.join("athena_test_missing_root");
+        let result = PathValidator::new(&primary)
+            .unwrap()
+            .with_extra_roots([&missing]);
+        assert!(result.is_err(), "nonexistent extra root must be rejected");
+        fs::remove_dir_all(&primary).ok();
     }
 }

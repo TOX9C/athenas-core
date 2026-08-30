@@ -14,6 +14,7 @@
 use crate::agent_detection::{
     agent_label, command_contains_agent, AgentHistoryStatus, HistorySnapshot,
 };
+use crate::agent_lifecycle::{AgentLifecycleEvent, AgentLifecycleKind};
 use crate::notification::{NotificationEvent, NotificationService, NotificationType};
 use crate::EventEmitter;
 use std::collections::{HashMap, HashSet};
@@ -81,6 +82,18 @@ pub enum NotifyKind {
     NeedsAttention,
     Error,
     Cancelled,
+}
+
+impl NotifyKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            NotifyKind::Started => "started",
+            NotifyKind::Finished => "finished",
+            NotifyKind::NeedsAttention => "needs_attention",
+            NotifyKind::Error => "error",
+            NotifyKind::Cancelled => "cancelled",
+        }
+    }
 }
 
 /// Per-type notification toggle, persisted by the frontend under the KV key
@@ -445,6 +458,65 @@ impl AgentActivityTracker {
         });
     }
 
+    /// Push an authoritative lifecycle transition reported by the agent itself
+    /// via the OSC 6337 notification protocol (or a plugin adapter). Unlike the
+    /// heartbeat heuristics, this fires immediately — no poll — and skips the
+    /// min-work gate, because an explicit agent signal is always trustworthy.
+    /// Generation-aware: a stale read loop must not move a newer pane.
+    pub fn on_agent_lifecycle(
+        &self,
+        pane_id: &str,
+        event: &AgentLifecycleEvent,
+        generation: Option<u64>,
+        now_ms: u64,
+    ) {
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        if !self.generation_is_current(pane_id, generation) {
+            return;
+        }
+        if self
+            .retired_panes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(pane_id)
+        {
+            return;
+        }
+        self.entry_or_insert(pane_id);
+        let mut changed = false;
+        self.update(pane_id, |e| {
+            if e.plugin_connected {
+                return;
+            }
+            // Adopt the agent key from the event when the foreground
+            // classifier hasn't caught up yet, so the notification carries a
+            // real label and the pane is treated as an agent going forward.
+            if let Some(key) = event.agent.as_deref() {
+                if crate::agent_detection::is_known_agent_key(key) && e.agent_key.is_none() {
+                    e.agent_key = Some(key.to_string());
+                    if e.raw_fg.is_none() {
+                        e.raw_fg = Some(key.to_string());
+                    }
+                }
+            }
+            if let Some(session_id) = event.session_id.as_deref() {
+                if e.session_id.as_deref() != Some(session_id) {
+                    e.session_id = Some(session_id.to_string());
+                }
+            }
+            let status = match event.kind {
+                AgentLifecycleKind::Complete => AgentHistoryStatus::Completed,
+                AgentLifecycleKind::Request => AgentHistoryStatus::WaitingForInput,
+                AgentLifecycleKind::Error => AgentHistoryStatus::Error,
+            };
+            changed = self.apply_pushed_status(e, status, now_ms);
+        });
+        drop(_lifecycle);
+        if changed {
+            self.emit_status(pane_id);
+        }
+    }
+
     /// PTY output arrived. An active agent goes Idle → Thinking on its first
     /// output pulse, then Thinking → Working once output is sustained, and
     /// WaitingForInput → Working when the user answers. The Thinking state
@@ -781,6 +853,30 @@ impl AgentActivityTracker {
         status: AgentHistoryStatus,
         now_ms: u64,
     ) -> bool {
+        // Heartbeat-path reconciliation honors the min-work gate so a
+        // short-lived startup probe cannot produce a "finished" alert.
+        self.apply_status(entry, status, now_ms, true)
+    }
+
+    /// Apply an authoritative status pushed by the agent itself (OSC 6337).
+    /// Same transitions as [`Self::apply_history_status`], but the min-work
+    /// gate is bypassed — an explicit agent signal is always trustworthy.
+    fn apply_pushed_status(
+        &self,
+        entry: &mut PaneActivity,
+        status: AgentHistoryStatus,
+        now_ms: u64,
+    ) -> bool {
+        self.apply_status(entry, status, now_ms, false)
+    }
+
+    fn apply_status(
+        &self,
+        entry: &mut PaneActivity,
+        status: AgentHistoryStatus,
+        now_ms: u64,
+        gate_min_work: bool,
+    ) -> bool {
         match status {
             AgentHistoryStatus::Working => {
                 // A durable log can say that the turn is still in flight while
@@ -803,11 +899,24 @@ impl AgentActivityTracker {
                 if entry.status == AgentActivityStatus::Completed {
                     return false;
                 }
-                let work_ok = entry
-                    .work_started_at
-                    .map(|start| now_ms.saturating_sub(start) >= self.min_work_ms)
-                    .unwrap_or(false);
-                if entry.status == AgentActivityStatus::Working && work_ok {
+                if gate_min_work {
+                    let work_ok = entry
+                        .work_started_at
+                        .map(|start| now_ms.saturating_sub(start) >= self.min_work_ms)
+                        .unwrap_or(false);
+                    // WaitingForInput follows real work: the turn_end marker
+                    // or the waiting-tail heuristic can move the pane off
+                    // Working before the session-log poll observes the
+                    // settled turn. Requiring Working here made the faster
+                    // signal permanently cannibalize the "finished" alert.
+                    let was_active = matches!(
+                        entry.status,
+                        AgentActivityStatus::Working | AgentActivityStatus::WaitingForInput
+                    );
+                    if was_active && work_ok {
+                        self.notify_locked(entry, NotifyKind::Finished, now_ms);
+                    }
+                } else {
                     self.notify_locked(entry, NotifyKind::Finished, now_ms);
                 }
                 entry.status = AgentActivityStatus::Completed;
@@ -895,6 +1004,24 @@ impl AgentActivityTracker {
             metadata: None,
             actions: None,
             request_id: None,
+            // Include the run/session identity when available. For PTY-only
+            // agents without a session id, the work start (or event timestamp)
+            // distinguishes separate turns; a pane-wide key would suppress
+            // every later completion after the first one.
+            event_key: Some(format!(
+                "agent:{}:{}:{}:{}",
+                e.pane_id,
+                kind.as_str(),
+                e.session_id.as_deref().unwrap_or("unknown"),
+                // Persistent TUIs reuse a session id across many turns. The
+                // work-start identity is therefore part of the event key;
+                // otherwise the first unresolved completion would suppress
+                // every later completion in that session.
+                e.work_started_at.unwrap_or(now_ms)
+            )),
+            run_id: e.session_id.clone(),
+            pane_id: Some(e.pane_id.clone()),
+            requires_action: matches!(kind, NotifyKind::NeedsAttention),
         };
         svc.push_notification(event);
     }
@@ -981,6 +1108,17 @@ impl AgentActivityTracker {
         }
     }
 
+    /// Evict a pane's tracking entry after its PTY is gone. Emits one final
+    /// status (so the frontend clears any pill badge), then removes the map
+    /// entry — without this, entries accumulate for the process lifetime.
+    pub fn forget_pane(&self, pane_id: &str) {
+        self.cancel_pane(pane_id, now_ms());
+        self.panes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(pane_id);
+    }
+
     /// Snapshot of all tracked panes (tests + diagnostics).
     pub fn snapshot(&self) -> Vec<PaneActivitySnapshot> {
         let guard = self.panes.lock().unwrap_or_else(|p| p.into_inner());
@@ -1004,6 +1142,30 @@ impl AgentActivityTracker {
             .keys()
             .cloned()
             .collect()
+    }
+
+    /// Belt-and-braces leak guard: silently evict entries whose last output
+    /// predates `now_ms - max_idle_ms`. A pane whose PTY teardown path never
+    /// ran (crashed reader, missed exit event) would otherwise persist
+    /// forever. Deliberately NOT `forget_pane`: this is a janitor for panes
+    /// that are almost certainly dead, not a user-visible cancellation, so
+    /// no Cancelled alert fires and no final status is emitted. The caller
+    /// owns the threshold (24 h per the audit plan); `idle_after_ms` (30 s)
+    /// would evict live quiet panes every tick.
+    /// Returns the evicted pane ids.
+    pub fn prune_stale_panes(&self, now_ms: u64, max_idle_ms: u64) -> Vec<String> {
+        let cutoff = now_ms.saturating_sub(max_idle_ms);
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.panes.lock().unwrap_or_else(|p| p.into_inner());
+        let stale: Vec<String> = guard
+            .values()
+            .filter(|e| e.last_output_at > 0 && e.last_output_at < cutoff)
+            .map(|e| e.pane_id.clone())
+            .collect();
+        for pane_id in &stale {
+            guard.remove(pane_id);
+        }
+        stale
     }
 }
 
@@ -1390,6 +1552,43 @@ mod tests {
     }
 
     #[test]
+    fn persistent_session_allows_multiple_turn_completion_notifications() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        let working_one = HistorySnapshot {
+            task_title: "first task".into(),
+            session_id: "persistent-session".into(),
+            timestamp_ms: 1000,
+            raw_prompt: "first task".into(),
+            activity: Some(AgentHistoryStatus::Working),
+        };
+        let completed_one = HistorySnapshot {
+            activity: Some(AgentHistoryStatus::Completed),
+            timestamp_ms: 2000,
+            ..working_one.clone()
+        };
+        let working_two = HistorySnapshot {
+            task_title: "second task".into(),
+            timestamp_ms: 3000,
+            raw_prompt: "second task".into(),
+            activity: Some(AgentHistoryStatus::Working),
+            ..working_one.clone()
+        };
+        let completed_two = HistorySnapshot {
+            activity: Some(AgentHistoryStatus::Completed),
+            timestamp_ms: 4000,
+            ..working_two.clone()
+        };
+
+        t.heartbeat("p1", Some("omp"), Some(&working_one), None, 1000);
+        t.heartbeat("p1", Some("omp"), Some(&completed_one), None, 2000);
+        t.heartbeat("p1", Some("omp"), Some(&working_two), None, 3000);
+        t.heartbeat("p1", Some("omp"), Some(&completed_two), None, 4000);
+
+        assert_eq!(svc.get_history(None).len(), 2);
+    }
+
+    #[test]
     fn authoritative_working_does_not_clear_permission_wait() {
         let (t, _events) = tracker();
         let working = HistorySnapshot {
@@ -1415,6 +1614,44 @@ mod tests {
             2500,
         );
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+    }
+
+    #[test]
+    fn waiting_state_does_not_cannibalize_finished_notification() {
+        // The waiting-for-input signal (tail matcher or turn_end marker) is
+        // faster than the session-log poll: by the time the settled turn is
+        // observed, the pane is already WaitingForInput. Completion must
+        // still produce the "finished" notification.
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        let working = HistorySnapshot {
+            task_title: "task".into(),
+            session_id: "omp-race".into(),
+            timestamp_ms: 1000,
+            raw_prompt: "task".into(),
+            activity: Some(AgentHistoryStatus::Working),
+        };
+        let completed = HistorySnapshot {
+            activity: Some(AgentHistoryStatus::Completed),
+            timestamp_ms: 2000,
+            ..working.clone()
+        };
+
+        t.heartbeat(
+            "p1",
+            Some("omp"),
+            Some(&working),
+            Some("Do you want to continue? (y/n)"),
+            1000,
+        );
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+        t.heartbeat("p1", Some("omp"), Some(&completed), None, 2000);
+
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        assert!(svc
+            .get_history(None)
+            .iter()
+            .any(|n| n.title == "Agent finished"));
     }
 
     #[test]
@@ -1486,6 +1723,62 @@ mod tests {
     }
 
     #[test]
+    fn forget_pane_evicts_entry_after_final_status() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        t.notify_agent_started("p1", "codex", 1000);
+        t.heartbeat("p1", Some("codex"), None, None, 1050);
+        t.on_pty_output("p1", 1100);
+        t.on_pty_output("p1", 1101);
+        t.forget_pane("p1");
+        // Entry removed from the map entirely.
+        assert!(t.pane_ids().is_empty());
+        assert!(t.snapshot().is_empty());
+        // Final cancellation status was still emitted before eviction.
+        // get_history is newest-first.
+        let history = svc.get_history(None);
+        assert_eq!(
+            history.first().map(|n| n.title.as_str()),
+            Some("Agent cancelled")
+        );
+        t.forget_pane("never-registered");
+    }
+
+    #[test]
+    fn prune_stale_panes_evicts_only_past_cutoff() {
+        let (t, events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        t.notify_agent_started("quiet-agent", "codex", 1000);
+        t.on_pty_output("quiet-agent", 86_400_000 + 5_000);
+        t.heartbeat("fresh", None, None, None, 0);
+        t.on_pty_output("fresh", 86_400_000 + 5_000);
+        let history_len = svc.get_history(None).len();
+
+        // 24 h cutoff at now = 24h + 20s: cutoff = 20 s. Both panes last
+        // output 5 s after the 24 h mark → live, must SURVIVE.
+        let evicted = t.prune_stale_panes(86_400_000 + 20_000, 24 * 60 * 60 * 1000);
+        assert!(evicted.is_empty());
+        assert!(t.pane_ids().contains(&"quiet-agent".to_string()));
+        assert!(t.pane_ids().contains(&"fresh".to_string()));
+
+        // A day later: both age out, silently — no new notifications, no
+        // Cancelled alert for the agent pane, no state churn.
+        let evicted = t.prune_stale_panes(2 * 86_400_000 + 20_000, 24 * 60 * 60 * 1000);
+        assert_eq!(evicted.len(), 2);
+        assert!(t.pane_ids().is_empty());
+        assert_eq!(svc.get_history(None).len(), history_len);
+        let emitted = events.lock().unwrap().len();
+
+        // Never-output panes (last_output_at == 0) are not evicted by time.
+        t.heartbeat("silent", None, None, None, 0);
+        assert!(t
+            .prune_stale_panes(90_000_000, 24 * 60 * 60 * 1000)
+            .is_empty());
+        assert!(t.pane_ids().contains(&"silent".to_string()));
+        assert_eq!(events.lock().unwrap().len(), emitted);
+    }
+
+    #[test]
     fn status_round_trips() {
         for s in [
             AgentActivityStatus::Idle,
@@ -1545,5 +1838,126 @@ mod tests {
         t.register_pane("p1");
         assert!(t.remove_pane_if_generation("p1", Some(new_generation)));
         assert!(t.snapshot().is_empty());
+    }
+
+    fn lifecycle_event(kind: AgentLifecycleKind, agent: Option<&str>) -> AgentLifecycleEvent {
+        AgentLifecycleEvent {
+            kind,
+            agent: agent.map(str::to_string),
+            session_id: None,
+            message: None,
+        }
+    }
+
+    #[test]
+    fn pushed_complete_notifies_immediately_without_prior_working() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        // The heartbeat never observed the agent working, yet an explicit
+        // push must still fire a "finished" notification — the min-work gate
+        // is bypassed for agent-pushed signals.
+        t.on_agent_lifecycle(
+            "p1",
+            &lifecycle_event(AgentLifecycleKind::Complete, Some("claude")),
+            None,
+            1000,
+        );
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        let history = svc.get_history(None);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].title, "Agent finished");
+    }
+
+    #[test]
+    fn pushed_request_notifies_needs_attention() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        t.on_agent_lifecycle(
+            "p1",
+            &lifecycle_event(AgentLifecycleKind::Request, Some("claude")),
+            None,
+            1000,
+        );
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+        let history = svc.get_history(None);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].r#type, NotificationType::NeedsInput);
+        assert!(history[0].requires_action);
+    }
+
+    #[test]
+    fn pushed_error_notifies_error() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        t.on_agent_lifecycle(
+            "p1",
+            &lifecycle_event(AgentLifecycleKind::Error, Some("codex")),
+            None,
+            1000,
+        );
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Error);
+        let history = svc.get_history(None);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].r#type, NotificationType::TaskError);
+    }
+
+    #[test]
+    fn pushed_lifecycle_is_generation_aware() {
+        let (t, _events) = tracker();
+        let old_gen = t.register_pane_with_generation("p1");
+        let new_gen = t.register_pane_with_generation("p1");
+        let ev = lifecycle_event(AgentLifecycleKind::Complete, Some("claude"));
+        // A stale read loop cannot move the newer pane.
+        t.on_agent_lifecycle("p1", &ev, Some(old_gen), 1000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
+        // The current loop can.
+        t.on_agent_lifecycle("p1", &ev, Some(new_gen), 1000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+    }
+
+    #[test]
+    fn pushed_lifecycle_adopts_agent_key_for_label() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        // No heartbeat classified the pane yet; the event's agent key is
+        // adopted so the notification carries the real label.
+        t.on_agent_lifecycle(
+            "p1",
+            &lifecycle_event(AgentLifecycleKind::Request, Some("freebuff")),
+            None,
+            1000,
+        );
+        let history = svc.get_history(None);
+        assert_eq!(history.len(), 1);
+        assert!(history[0].message.contains("Freebuff"));
+    }
+
+    #[test]
+    fn pushed_complete_is_idempotent() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        let ev = lifecycle_event(AgentLifecycleKind::Complete, Some("claude"));
+        t.on_agent_lifecycle("p1", &ev, None, 1000);
+        t.on_agent_lifecycle("p1", &ev, None, 1100);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        assert_eq!(svc.get_history(None).len(), 1);
+    }
+
+    #[test]
+    fn pushed_status_ignored_when_plugin_connected() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        // The pane must be tracked first: set_plugin_connected only updates an
+        // existing entry (the PTY read loop registers the pane at spawn).
+        t.register_pane("p1");
+        t.set_plugin_connected("p1", true);
+        t.on_agent_lifecycle(
+            "p1",
+            &lifecycle_event(AgentLifecycleKind::Request, Some("claude")),
+            None,
+            1000,
+        );
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
+        assert_eq!(svc.get_history(None).len(), 0);
     }
 }
