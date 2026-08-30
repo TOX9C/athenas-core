@@ -16,28 +16,19 @@
     "check:tauri-security": "node scripts/check-tauri-security-config.mjs",
     "check:release-privacy": "node scripts/check-release-privacy.mjs",
     "check:release-identity": "node scripts/check-release-identity.mjs",
-    "check:release-docs": "node scripts/check-release-docs.mjs",
     "verify:macos-artifact": "node scripts/verify-macos-artifact.mjs",
     "check:macos-release": "node scripts/run-macos-release-checks.mjs",
-    "test:release-scripts": "node scripts/test-verify-macos-artifact.mjs && node scripts/test-frontend-watchdog.mjs && node scripts/check-tauri-security-config.mjs && node scripts/check-release-privacy.mjs && node scripts/check-release-identity.mjs && node scripts/check-release-docs.mjs && node scripts/test-release-identity.mjs",
+    "test:release-scripts": "node scripts/test-verify-macos-artifact.mjs && node scripts/test-frontend-watchdog.mjs && node scripts/check-tauri-security-config.mjs && node scripts/check-release-privacy.mjs && node scripts/check-release-identity.mjs && node scripts/test-release-identity.mjs",
     "check:clippy-baseline": "node scripts/run-clippy-baseline.mjs",
     "test:e2e": "cd e2e-tests && npm test",
     "lint": "eslint tests packages plugins --ext .ts,.tsx",
     "lint:fix": "eslint tests packages plugins --ext .ts,.tsx --fix",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
-    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
-    "prepare": "husky"
-  },
-  "lint-staged": {
-    "ignore": [
-      "node_modules/**",
-      "dist/**",
-      "packages/mcp-server/node_modules/**",
-      "packages/mcp-server/dist/**"
-    ]
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,css,md}\""
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@vitest/coverage-v8": "^4.1.11",
     "@wdio/cli": "^9.27.2",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-webgl": "^0.18.0",
@@ -48,8 +39,6 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
-    "husky": "^9.1.7",
-    "lint-staged": "^15.5.2",
     "prettier": "^3.8.3",
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.59.1",

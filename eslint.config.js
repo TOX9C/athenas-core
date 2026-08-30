@@ -108,7 +108,7 @@ module.exports = tseslint.config(
     },
   },
   {
-    files: ['electron/**/*.ts', 'plugins/**/*.ts'],
+    files: ['plugins/**/*.ts'],
     rules: {
       'react-refresh/only-export-components': 'off',
     },
@@ -118,27 +118,6 @@ module.exports = tseslint.config(
     rules: {
       'react-refresh/only-export-components': 'off',
       'react/no-unescaped-entities': 'off',
-    },
-  },
-  {
-    files: ['src/utils/commandParser.ts', 'src/utils/ansi.ts'],
-    rules: {
-      'no-useless-escape': 'off',
-      'no-control-regex': 'off',
-    },
-  },
-  {
-    files: ['electron/**/*.ts'],
-    rules: {
-      'no-control-regex': 'off',
-      '@typescript-eslint/no-require-imports': 'warn',
-    },
-  },
-  {
-    files: ['src/**/*.{ts,tsx}'],
-    rules: {
-      'react/no-unescaped-entities': 'off',
-      'no-control-regex': 'off',
     },
   },
   {

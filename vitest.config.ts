@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts', 'packages/*/test/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       include: ['packages/mcp-server/src/**/*.ts'],
