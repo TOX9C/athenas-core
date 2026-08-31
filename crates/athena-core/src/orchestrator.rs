@@ -12,7 +12,7 @@ use athena_store::MessageRole as StoreMessageRole;
 use athena_store::SessionMessage as StoreMessage;
 
 /// Default model used when no provider config is set (env-key fallback path).
-pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
+pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
 
 #[path = "orchestrator_messages.rs"]
 mod orchestrator_messages;
