@@ -12,7 +12,7 @@ const suppliedVersion =
   (process.env.GITHUB_REF_TYPE === 'tag'
     ? process.env.GITHUB_REF_NAME?.replace(/^v/, '')
     : undefined)
-const tag = suppliedVersion ?? '0.3.0'
+const tag = suppliedVersion ?? '3.3.0'
 const failures = []
 const fail = (name, detail) => failures.push(`${name}: ${detail}`)
 

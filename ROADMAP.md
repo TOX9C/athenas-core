@@ -140,7 +140,7 @@ Complete verification of every automated gate in the repo. Results:
 | `npm run check:plugin-integration` | ✅ passed (12 lint warnings, 0 errors) |
 | `npm run check:tauri-security` | ✅ 5 invariants passed |
 | `npm run check:release-privacy` | ✅ 23 invariants passed |
-| `npm run check:release-identity` | ✅ Athena's Core 0.3.0 (macOS Apple Silicon DMG scope) |
+| `npm run check:release-identity` | ✅ Athena's Core 3.3.0 (macOS Apple Silicon DMG scope) |
 | `npm run lint` | ⚠️ 45 warnings, 0 errors (all `no-explicit-any` / unused-vars in plugins + tests — cosmetic) |
 | `frontend/build-dist.sh` | ✅ dist built (sw.js, xterm vendor addons) |
 | E2E suite (18 specs) | ⚠️ requires `tauri-wd` driver running on port 4444 — environment gate, not a code defect; specs themselves unchanged and healthy |
