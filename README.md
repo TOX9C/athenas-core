@@ -22,7 +22,7 @@
 - **An AI that knows your workspace** — chat with Claude, OpenAI, NVIDIA NIM, or local models, attach screenshots, and let Athena run commands, search your code, and manage your tasks.
 - **A task board** — keep work in To Do → In Progress → In Review → Complete.
 - **An agent team** — launch a swarm of agents that coordinate on a shared goal while you watch.
-- **Everything else nearby** — an embedded browser, plugins, 16 themes, and notifications that keep you posted.
+- **Everything else nearby** — an embedded browser, plugins, six themes, and notifications that keep you posted.
 
 ## Screenshots
 
@@ -40,6 +40,8 @@
 
 **macOS 13+ on Apple Silicon.**
 
+The release build exposes 144 IPC commands.
+
 1. Open the [Releases](https://github.com/TOX9C/athenas-core/releases) page.
 2. Download the latest `.dmg`.
 3. Drag Athena's Core into **Applications** and launch.
@@ -48,7 +50,6 @@
 
 | Shortcut                              | Action                        |
 | ------------------------------------- | ----------------------------- |
-| `Cmd+K` / `Cmd+P`                     | Show command palette          |
 | `Cmd+J` / `Cmd+\`                     | Toggle right sidebar          |
 | `Cmd+B`                               | Toggle left sidebar           |
 | `Cmd+T`                               | New workspace                 |
@@ -74,17 +75,7 @@ bash frontend/build-dist.sh
 cargo run --manifest-path src-tauri/Cargo.toml
 ```
 
-See [`docs/development-guide.md`](docs/development-guide.md) for the full setup.
-
----
-
-## Documentation
-
-Everything else — architecture, plugin and MCP guides, contributing — lives in [`docs/`](docs/README.md).
-
-## Privacy and support
-
-Before you start connecting providers or sharing the app, take a look at the [Privacy Notice](docs/release/PRIVACY_NOTICE.md). If something goes wrong, the [Support Runbook](docs/release/SUPPORT_RUNBOOK.md) walks you through safe troubleshooting. And please never post API keys or credentials in an issue.
+See [`ROADMAP.md`](ROADMAP.md) for the current project status. Please never post API keys or credentials in an issue.
 
 ## License
 
