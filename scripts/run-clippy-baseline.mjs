@@ -1,13 +1,24 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 
 const baselinePath = process.env.CLIPPY_WARNING_BASELINE ?? 'scripts/clippy-warning-baseline.txt'
 const logPath = process.env.CLIPPY_BASELINE_PATH ?? 'clippy-baseline.log'
+
+// Warm cargo caches omit diagnostics for cached crates, which made a dirty
+// tree pass locally while cold CI flagged new warnings. Compile in a
+// dedicated target dir that is wiped first so every run sees the full
+// warning set, exactly like a cold CI machine. Set CLIPPY_SKIP_CLEAN=1 for
+// quick local iteration when you know the risk.
+const targetDir = process.env.CLIPPY_TARGET_DIR ?? 'target/clippy-baseline'
+if (process.env.CLIPPY_SKIP_CLEAN !== '1') {
+  rmSync(targetDir, { recursive: true, force: true })
+}
 const result = spawnSync('cargo', ['clippy', '--workspace', '--locked', '--message-format=json'], {
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'pipe'],
+  env: { ...process.env, CARGO_TARGET_DIR: targetDir },
 })
 
 const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
