@@ -14,7 +14,7 @@ on:
       version:
         description: 'Version to build for a manual dispatch (for example 0.3.0)'
         required: true
-        default: '0.3.0'
+        default: '3.3.0'
         type: string
 
 permissions:
@@ -98,7 +98,9 @@ jobs:
           npm test
           npm run test:mcp
           npm run test:release-scripts
-          npm run check:release-identity
+          # workflow_dispatch supplies inputs.version; tag pushes resolve via
+          # GITHUB_REF_NAME inside the script.
+          RELEASE_VERSION="${{ inputs.version }}" npm run check:release-identity
           npm run lint
           npm audit --omit=dev --audit-level=high
           node scripts/check-tauri-command-drift.mjs

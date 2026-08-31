@@ -8,7 +8,9 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const read = (relative) => readFileSync(resolve(root, relative), 'utf8')
 const json = (relative) => JSON.parse(read(relative))
 const suppliedVersion =
-  process.env.RELEASE_VERSION ??
+  (process.env.RELEASE_VERSION && process.env.RELEASE_VERSION.trim() !== ''
+    ? process.env.RELEASE_VERSION
+    : undefined) ??
   (process.env.GITHUB_REF_TYPE === 'tag'
     ? process.env.GITHUB_REF_NAME?.replace(/^v/, '')
     : undefined)
@@ -16,7 +18,10 @@ const tag = suppliedVersion ?? '3.3.0'
 const failures = []
 const fail = (name, detail) => failures.push(`${name}: ${detail}`)
 
-if (process.env.CI && !suppliedVersion) {
+// Only tag runs must carry an explicit version (local dev and branch CI runs
+// legitimately fall back to the package.json default). Branch pushes have
+// GITHUB_REF_TYPE=branch, so a CI-env failure no longer fires there.
+if (process.env.CI && !suppliedVersion && process.env.GITHUB_REF_TYPE === 'tag') {
   fail('version source', 'CI release identity requires RELEASE_VERSION or GITHUB_REF_NAME')
 }
 
