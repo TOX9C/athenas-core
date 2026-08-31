@@ -2006,6 +2006,22 @@ mod tests {
 
     #[test]
     fn owned_fd_lease_survives_close_and_master_fd_reuse() {
+        // The body below recycles a freed fd number with dup2. That is only
+        // race-free when no other thread is allocating descriptors, which
+        // parallel `cargo test` cannot guarantee (other tests spawn PTYs
+        // without the FD_RECYCLE_LOCK). Re-run the assertions in a fresh
+        // single-test subprocess so fd allocation is deterministic.
+        if std::env::var_os("ATHENA_FD_LEASE_TEST_CHILD").is_none() {
+            let exe = std::env::current_exe().expect("current test binary");
+            let status = std::process::Command::new(exe)
+                .arg("--exact")
+                .arg("session::tests::owned_fd_lease_survives_close_and_master_fd_reuse")
+                .env("ATHENA_FD_LEASE_TEST_CHILD", "1")
+                .status()
+                .expect("spawning fd-lease child test should succeed");
+            assert!(status.success(), "fd-lease child test failed");
+            return;
+        }
         let _guard = FD_RECYCLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (read_end, _write_end) = nix::unistd::pipe().expect("pipe() should succeed");
         let raw_fd = read_end.into_raw_fd();
