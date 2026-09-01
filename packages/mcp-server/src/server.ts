@@ -276,7 +276,8 @@ export class AthenaMcpServer {
         sinceTimestamp: athenaGetOutputSinceSchema.shape.sinceTimestamp,
         sinceLine: athenaGetOutputSinceSchema.shape.sinceLine,
       },
-      async (params) => athenaGetOutputSince(this.outputBuffer, params as AthenaGetOutputSinceInput),
+      async (params) =>
+        athenaGetOutputSince(this.outputBuffer, params as AthenaGetOutputSinceInput),
     )
 
     // -- Search tools ---
