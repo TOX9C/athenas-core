@@ -130,7 +130,11 @@ jobs:
 
       - name: Build unsigned DMG for internal workflow dispatch only
         if: ${{ github.event_name == 'workflow_dispatch' && env.APPLE_SIGNING_IDENTITY == '' }}
-        run: cargo tauri build --bundles dmg
+        # The workflow-level env defines APPLE_SIGNING_IDENTITY as an EMPTY
+        # string when the secret is unset, and an empty identity makes Tauri
+        # invoke codesign with '' ("The specified item could not be found in
+        # the keychain"). Drop the variable entirely for unsigned builds.
+        run: env -u APPLE_SIGNING_IDENTITY cargo tauri build --bundles dmg
 
       - name: Build signed, notarized, and stapled DMG
         if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
