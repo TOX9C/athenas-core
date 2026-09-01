@@ -88,13 +88,16 @@ jobs:
 
       - name: Run release checks
         run: |
+          # Build the frontend FIRST: cargo check runs the tauri build script,
+          # which validates bundle resource paths under frontend/dist (they do
+          # not exist on a fresh checkout until build-dist has run).
+          bash frontend/build-dist.sh
           cargo check --workspace --locked
           cargo audit
           # Informational warnings are captured, but compiler/command failures
           # remain blocking. The generated baseline is uploaded with the run.
           node scripts/run-clippy-baseline.mjs
           rustfmt --edition 2021 --check crates/athena-core/src/mcp_transport.rs
-          bash frontend/build-dist.sh
           npm test
           npm run test:mcp
           npm run test:release-scripts
