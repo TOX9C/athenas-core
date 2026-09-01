@@ -1106,8 +1106,18 @@ mod tests {
         assert_eq!(classified, "sleep");
     }
 
+    // The foreground-label cache is process-global; the two tests below share
+    // it and must not interleave (currently git blame shows a real CI flake:
+    // one test's `fg_cache_clear()` landed between another's probe and its
+    // `fg_cache_len() == 1` assertion). Serializing them is cheaper than
+    // isolating the cache per test.
+    static FG_CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn foreground_cache_dedupes_within_ttl() {
+        let _guard = FG_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         fg_cache_clear();
         // Probe our own process group: always exists, label is whatever the
         // test binary's comm is (stable within one run). The contract under
@@ -1127,6 +1137,9 @@ mod tests {
 
     #[test]
     fn invalidation_forces_reprobe_for_recycled_pgid() {
+        let _guard = FG_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         fg_cache_clear();
         let pgid = std::process::id() as i32;
         let no_fd = -1;
