@@ -1,7 +1,51 @@
 # Athenas-Core Roadmap
 
 > Comprehensive tracking of bugs, issues, and fixes discovered during deep-dive audit and refactoring sessions.
-> Last updated: 2026-08-30 (full verification pass + flaky-test fix)
+> Last updated: 2026-09-01 (v3.3.0 release + CI/release hardening pass)
+
+---
+
+## 🚀 2026-09-01 — v3.3.0 release + CI/release hardening
+
+Version bumped from 0.3.0 → **3.3.0** across `package.json`, `package-lock.json`,
+`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `frontend/Cargo.toml`.
+
+**Bugs found by CI this pass (all fixed):**
+
+- [x] `alsa-sys` build failure on Ubuntu CI — `cpal` (voice input) needs `libasound2-dev`; added to all three CI apt lines.
+- [x] **RUSTSEC-2026-0258** — `h2 0.4.14 → 0.4.19` (unbounded empty DATA frames).
+- [x] Release identity script: CI-env guard fired on every branch run after
+  `test:release-scripts` invoked it bare; now only tag runs require an explicit
+  version, and empty `RELEASE_VERSION` is treated as unset.
+- [x] `check-release-identity` in workflow_dispatch had no version source —
+  release workflow now forwards `inputs.version`.
+- [x] Inline release-identity check read `$GITHUB_ENV` within the same step
+  (never applied) — now passes `RELEASE_VERSION=…` directly to the node invocation.
+- [x] `dx build` strip step died on GitHub macOS runners (`libLLVM.dylib`
+  missing) — release workflow now installs the `llvm-tools` rustup component.
+- [x] MCP `search-files` tests failed on the macOS release runner — needs
+  `brew install ripgrep`; added.
+- [x] Tauri build script failed on fresh checkouts (`resource path
+  ../frontend/dist/mobile.html doesn't exist`): ubuntu rust jobs materialize a
+  placeholder dist; release workflow builds the real dist before `cargo check`.
+- [x] Flaky `agent_detection::foreground_cache_dedupes_within_ttl` —
+  both cache tests share a process-global cache; serialized with a test mutex.
+- [x] Root prettier drift in `packages/mcp-server/src/server.ts`.
+
+**This session also closed earlier roadmap items:**
+
+- F1 (fd-reuse flake) — subprocess isolation (commit `8837202`)
+- P1 (clippy warm-cache blind spot) — dedicated, wiped `target/clippy-baseline` (commit `651fd49`)
+- D1 (theme count) + D2 (palette shortcut) — README corrected
+
+**Still open (needs user action):**
+
+- [ ] **Apple signing** — no repo secrets (`APPLE_SIGNING_IDENTITY`, API key)
+  configured; v3.3.0 release run will stop at the signing gate by design.
+- [ ] **Deprecation UX**: the app has no signal when the *selected provider
+  model* is retired upstream; user hit `410 Gone` mid-session today
+  (z-ai/glm-5.2 EOL). Consider: on 410/404 model errors, surface a
+  "model unavailable — pick another" prompt instead of a bare error toast.
 
 ---
 
