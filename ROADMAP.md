@@ -40,8 +40,11 @@ Version bumped from 0.3.0 → **3.3.0** across `package.json`, `package-lock.jso
 
 **Still open (needs user action):**
 
-- [ ] **Apple signing** — no repo secrets (`APPLE_SIGNING_IDENTITY`, API key)
-  configured; v3.3.0 release run will stop at the signing gate by design.
+- [x] **Apple signing** — decision (2026-09-02): ship **unsigned**. The
+  release workflow now publishes an unsigned DMG on tag push (signing-gate
+  hard-fail removed, publish step no longer conditioned on
+  `APPLE_SIGNING_IDENTITY`); users bypass Gatekeeper via right-click → Open.
+  Restore signing + notarization when secrets are configured.
 - [x] **Deprecation UX** — provider responses classified centrally (`orchestrator_support::classify_api_error`): HTTP 410, or 404 with a model-scoped body, now return `OrchestratorError::ModelUnavailable`, which emits `AthenaStreamEvent::Error{ model_unavailable: true }` with guidance text; the desktop Athena panel (`athena_panel.rs`) detects the flag and opens the Settings modal so the user picks another model. Covered by `model_gone_yields_model_unavailable_error_event` (stream contract) + three classifier unit tests (2026-09-02).
 
 ---

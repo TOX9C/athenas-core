@@ -122,14 +122,15 @@ jobs:
           node scripts/check-plugin-integration.mjs
           cargo test --workspace --locked
 
-      - name: Require signing credentials for release publication
-        if: ${{ github.event_name == 'push' && env.APPLE_SIGNING_IDENTITY == '' }}
+      - name: Note unsigned release path
+        if: ${{ env.APPLE_SIGNING_IDENTITY == '' }}
         run: |
-          echo 'Refusing to process a public tag without Apple signing credentials.' >&2
-          exit 1
+          echo 'No Apple signing credentials configured — publishing an UNSIGNED DMG.' >&2
+          echo 'Users must right-click -> Open to bypass the Gatekeeper warning.' >&2
+          echo 'Configure APPLE_SIGNING_IDENTITY + cert secrets to ship a signed, notarized build.' >&2
 
-      - name: Build unsigned DMG for internal workflow dispatch only
-        if: ${{ github.event_name == 'workflow_dispatch' && env.APPLE_SIGNING_IDENTITY == '' }}
+      - name: Build unsigned DMG
+        if: ${{ env.APPLE_SIGNING_IDENTITY == '' }}
         # The workflow-level env defines APPLE_SIGNING_IDENTITY as an EMPTY
         # string when the secret is unset, and an empty identity makes Tauri
         # invoke codesign with '' ("The specified item could not be found in
@@ -217,10 +218,13 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
-        # Never publish an unsigned DMG. Unsigned tag builds remain available
-        # as CI artifacts for internal testing, but public distribution requires
-        # the signing/notarization branch above to have run successfully.
-        if: ${{ env.APPLE_SIGNING_IDENTITY != '' && (github.event_name == 'push' || inputs.publish == true) }}
+        # Decision (2026-09-02): unsigned DMGs ARE published to the public release
+        # — no Apple Developer secrets are configured yet and shipping unsigned
+        # beats shipping nothing. The DMG still passes the integrity/architecture
+        # verification above; users bypass Gatekeeper via right-click -> Open.
+        # Restore the `env.APPLE_SIGNING_IDENTITY != ''` guard on this step when
+        # signing secrets exist so a regression to unsigned never publishes silently.
+        if: ${{ github.event_name == 'push' || inputs.publish == true }}
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
