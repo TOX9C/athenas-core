@@ -37,6 +37,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install ripgrep (MCP search tests shell out to rg)
+        run: brew install ripgrep
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
