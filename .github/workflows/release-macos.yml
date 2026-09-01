@@ -39,6 +39,11 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # dx build strips the WASM bundle via rust-objcopy, which dynamically
+          # links libLLVM from the llvm-tools component — without it, bundling
+          # dies with "Library not loaded: @rpath/libLLVM.dylib".
+          components: llvm-tools
 
       - name: Install Node.js
         uses: actions/setup-node@v4
