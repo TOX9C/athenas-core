@@ -1025,6 +1025,47 @@ pub async fn get_pane_history(pane_id: &str) -> TauriResult<Vec<OutputLine>> {
 pub struct PtyRawListener {
     /// Event-mode unlisten closure.
     pub unlisten: Option<Box<dyn FnOnce()>>,
+    /// Relay binary-mode unlisten closure (shim `relayRaw.listen`). Present
+    /// only when running over the mobile-mirror relay.
+    pub unlisten_raw: Option<Box<dyn FnOnce()>>,
+}
+
+/// Register a relay binary-frame sink for `pane` when the shim exposes
+/// `__TAURI__.relayRaw` (mobile mirror only). Returns `None` on the desktop
+/// webview (no shim) or if the call fails.
+///
+/// The callback closure is intentionally leaked (`forget`) — the sink must
+/// stay callable for the whole relay session, matching the leak-for-lifetime
+/// pattern used by the text event listener registration.
+fn relay_raw_listen(
+    pane: &str,
+    mut callback: impl FnMut(Vec<u8>) + 'static,
+) -> Option<Box<dyn FnOnce()>> {
+    let window = web_sys::window()?;
+    let tauri = js_sys::Reflect::get(&window, &JsValue::from_str("__TAURI__")).ok()?;
+    let relay_raw = js_sys::Reflect::get(&tauri, &JsValue::from_str("relayRaw")).ok()?;
+    let listen_fn = js_sys::Reflect::get(&relay_raw, &JsValue::from_str("listen"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let cb = Closure::wrap(Box::new(move |data: js_sys::Uint8Array| {
+        let mut bytes = vec![0u8; data.length() as usize];
+        data.copy_to(&mut bytes);
+        callback(bytes);
+    }) as Box<dyn FnMut(js_sys::Uint8Array)>);
+    let unlisten = listen_fn
+        .call2(
+            &relay_raw,
+            &JsValue::from_str(pane),
+            cb.as_ref().unchecked_ref(),
+        )
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    cb.forget();
+    Some(Box::new(move || {
+        let _ = unlisten.call0(&JsValue::NULL);
+    }))
 }
 
 /// Subscribe to raw PTY byte chunks for a session.
@@ -1034,14 +1075,43 @@ pub struct PtyRawListener {
 /// per flush rather than per read.
 pub fn pty_listen_raw(
     id: &str,
-    mut callback: impl FnMut(Vec<u8>) + 'static,
+    callback: impl FnMut(Vec<u8>) + 'static,
 ) -> Result<PtyRawListener, TauriBridgeError> {
     let event_name = format!("pty:raw:{id}");
-    let unlisten = listen(&event_name, move |payload_str: String| {
-        let parsed: serde_json::Value = match serde_json::from_str(&payload_str) {
+
+    // Shared cell so the relay binary sink and the legacy text listener can
+    // both invoke the caller's callback (only one path actually fires: under
+    // the relay the payload crosses as binary frames; on the desktop webview
+    // the text event carries base64).
+    let callback = std::rc::Rc::new(std::cell::RefCell::new(callback));
+
+    // Relay (mobile mirror) fast path: the relay converts `pty:raw:<id>`
+    // events into binary WS frames; the shim routes them to a per-pane sink
+    // as raw bytes — no JSON parse, no base64, no per-flush atob on the phone.
+    // The text event listener below is STILL registered: the relay keys the
+    // backend's per-pane subscription (and the ownership forward gate) off
+    // the `listen` frame, so skipping it would silence the binary stream too.
+    let unlisten_raw = relay_raw_listen(id, {
+        let callback = callback.clone();
+        move |bytes| (callback.borrow_mut())(bytes)
+    });
+
+    let unlisten = listen(&event_name, {
+        let callback = callback.clone();
+        move |payload_str: String| {
+        // The backend emits this event with a String payload, which the IPC
+        // layer JSON-quotes — parse again when we land on a quoted string
+        // instead of the object.
+        let mut parsed: serde_json::Value = match serde_json::from_str(&payload_str) {
             Ok(v) => v,
             Err(_) => return,
         };
+        if let serde_json::Value::String(inner) = &parsed {
+            parsed = match serde_json::from_str(inner) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+        }
         let data_b64 = match parsed.get("data").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return,
@@ -1073,11 +1143,13 @@ pub fn pty_listen_raw(
             bytes.push(c as u8);
         }
 
-        callback(bytes);
+        (callback.borrow_mut())(bytes);
+        }
     })?;
 
     Ok(PtyRawListener {
         unlisten: Some(unlisten),
+        unlisten_raw,
     })
 }
 

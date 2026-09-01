@@ -97,6 +97,7 @@ pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, Comm
 /// Set a value in the persistent key-value store.
 #[tauri::command]
 pub async fn store_set(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     key: String,
     value: String,
@@ -148,7 +149,17 @@ pub async fn store_set(
         .store
         .set(&key, &value)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Workspace writes (desktop or paired phone, same code path) broadcast a
+    // change event so every other surface holding an in-memory copy reloads
+    // instead of silently working from stale state. `workspace:changed` is in
+    // the relay's event allowlist, so paired phones receive it too.
+    if key == "workspaces" {
+        use tauri::Emitter;
+        let _ = app.emit(super::workspace::WORKSPACE_CHANGED_EVENT, value);
+    }
+    Ok(())
 }
 
 /// Check whether a key exists in the persistent key-value store.

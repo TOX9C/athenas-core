@@ -42,10 +42,7 @@ Version bumped from 0.3.0 → **3.3.0** across `package.json`, `package-lock.jso
 
 - [ ] **Apple signing** — no repo secrets (`APPLE_SIGNING_IDENTITY`, API key)
   configured; v3.3.0 release run will stop at the signing gate by design.
-- [ ] **Deprecation UX**: the app has no signal when the *selected provider
-  model* is retired upstream; user hit `410 Gone` mid-session today
-  (z-ai/glm-5.2 EOL). Consider: on 410/404 model errors, surface a
-  "model unavailable — pick another" prompt instead of a bare error toast.
+- [x] **Deprecation UX** — provider responses classified centrally (`orchestrator_support::classify_api_error`): HTTP 410, or 404 with a model-scoped body, now return `OrchestratorError::ModelUnavailable`, which emits `AthenaStreamEvent::Error{ model_unavailable: true }` with guidance text; the desktop Athena panel (`athena_panel.rs`) detects the flag and opens the Settings modal so the user picks another model. Covered by `model_gone_yields_model_unavailable_error_event` (stream contract) + three classifier unit tests (2026-09-02).
 
 ---
 
@@ -189,15 +186,13 @@ Complete verification of every automated gate in the repo. Results:
 | `frontend/build-dist.sh` | ✅ dist built (sw.js, xterm vendor addons) |
 | E2E suite (18 specs) | ⚠️ requires `tauri-wd` driver running on port 4444 — environment gate, not a code defect; specs themselves unchanged and healthy |
 
-### 🟡 Medium — found this pass
-
-- [ ] **F1 — Flaky test `owned_fd_lease_survives_close_and_master_fd_reuse`** (`crates/athena-terminal/src/session.rs:2060`): the `libc::write(replacement_write, ...)` assert expects `1` but intermittently gets `-1` (~1 in 6–20 runs of the full `--lib` suite; never fails in isolation). Root cause hypothesis: another test's PTY/pipe fd allocation races between `close_fd()` and the replacement `pipe()`, so the recycled fd number can be re-claimed by a concurrent allocation before `dup2` pins it — the write then targets a dead fd. Fix direction: hold the same `FD_RECYCLE_LOCK`-protected ordering for the replacement pipe, or capture `errno` in the assert message so the next failure is diagnosable.
-- [ ] **F2 — E2E runs require manual `tauri-wd` start**: document `tauri-wd &` (port 4444) + `cargo build` of the debug binary in `e2e-tests/README.md`, or add an npm script `test:e2e:local` that boots the driver automatically. Currently `npm run test:e2e` fails with "Unable to connect to localhost:4444" which reads like a test failure but is an environment setup step.
+- [x] **F1 — Flaky test `owned_fd_lease_survives_close_and_master_fd_reuse`** — fixed via subprocess isolation (commit `8837202`).
+- [x] **F2 — E2E setup docs** — `e2e-tests/README.md` now documents `tauri-wd` install/start, the debug-binary build, the 4444 port expectation, and the "Unable to connect" failure meaning (2026-09-02).
 
 ### 🟢 Low — found this pass
 
-- [ ] **F3 — `npm run lint` warning cleanup**: 45 warnings (all `@typescript-eslint/no-explicit-any` + 2 unused vars in `plugins/shared/setup.ts`: `PLUGIN_IDS`, `agentType`). Zero errors; cosmetic only. Rename unused to `_`-prefixed and type the `any`s as `unknown` + narrow.
-- [ ] **F4 — `postcss.config.js` module-type warning**: Node logs `MODULE_TYPELESS_PACKAGE_JSON` on every vitest run. Either add `"type": "module"` to package.json (verify no CJS consumers break) or rename to `postcss.config.mjs`.
+- [x] **F3 — `plugins/shared/setup.ts` warnings fixed** — unused `PLUGIN_IDS` import and unused `writeMcpConfig` `agentType` param removed; `Record<string, any>` → `Record<string, unknown>`; `catch (err: any)` → `unknown` + `instanceof Error` (2026-09-02).
+- [x] **F4 — `postcss.config.js` renamed to `postcss.config.mjs`** — `MODULE_TYPELESS_PACKAGE_JSON` warning gone; vitest 184/184 still green (2026-09-02).
 ### 🐛 Fixed during this pass (independent audit)
 
 - [x] **F5 — IPC metrics double-counted** (`frontend/src/tauri_bridge.rs`): `invoke()` called `record_ipc()` and then delegated to `invoke_js_value()`, which recorded the same call again — every JSON invoke was counted twice in `window.__athenaMetrics`. The function also built a dead `invoke_fn` handle (Reflect lookup + downcast, never used). Fixed: `invoke()` now only parses args and delegates; each call counts once.
@@ -205,15 +200,15 @@ Complete verification of every automated gate in the repo. Results:
 
 ### 📄 Docs drift — found this pass
 
-- [ ] **D1 — README theme count**: README claims "16 themes"; `ALL_THEMES` in `frontend/src/themes/definitions.rs` has **6** (nyx, aegis, erebus, pentelic, olive, sky). Fix the claim or ship more themes.
-- [ ] **D2 — Command palette advertised but removed**: README shortcuts table lists `Cmd+K`/`Cmd+P` "Show command palette", yet the palette is gone from the frontend — `keybindings.rs` test `removed_command_palette_shortcuts_are_not_global_actions` asserts both keys classify to `None`. Decide: restore the palette or fix the README.
-- [ ] **D3 — husky/lint-staged/CLAUDE.md removal needs a contributor note**: verified no dangling references (package.json, docs, CI are clean), but there is no longer any local pre-commit lint guard; CI is the only gate. One line in contributor docs would prevent surprise CI failures.
+- [x] **D1 — README theme count** (closed: README corrected in v3.3.0 pass): README claims "16 themes"; `ALL_THEMES` in `frontend/src/themes/definitions.rs` has **6** (nyx, aegis, erebus, pentelic, olive, sky). Fix the claim or ship more themes.
+- [x] **D2 — Command palette advertised but removed** (closed: README corrected in v3.3.0 pass): README shortcuts table lists `Cmd+K`/`Cmd+P` "Show command palette", yet the palette is gone from the frontend — `keybindings.rs` test `removed_command_palette_shortcuts_are_not_global_actions` asserts both keys classify to `None`. Decide: restore the palette or fix the README.
+- [x] **D3 — contributor note added** — README "Build from source" now states there are no local pre-commit hooks and CI is the only lint gate (2026-09-02).
 
 ### 🛠 Tooling findings — found this pass
 
-- [ ] **P1 — Clippy baseline script is warm-cache blind**: `run-clippy-baseline.mjs` compares `cargo clippy --message-format=json` output against the baseline, but on a warm `target/` the JSON stream omits cached-crate diagnostics, so a dirty tree can pass locally and fail on cold CI (observed this session: first run flagged 2 new warnings, all subsequent warm runs reported the baseline current). Fix: clean the checked packages in the script (or use a dedicated `CARGO_TARGET_DIR`) before each run.
-- [ ] **P2 — Baseline script misses `--all-targets`**: test-code warnings (e.g. `field_reassign_with_default` in `frontend/src/utils/open_link.rs` tests, `useless_format` in `athena-resume-scanner` tests) never reach the gate. Either add `--all-targets` or fix the ~7 test-code warnings.
-- [ ] **P3 — Perf metrics always compiled into production**: `perf_metrics.rs` permanently exposes `window.__athenaMetrics` in release builds. Cheap (relaxed atomics), but consider gating to debug builds once the render-isolation work ships.
+- [x] **P1 — Clippy baseline script is warm-cache blind** (closed: dedicated wiped target dir, commit 651fd49): `run-clippy-baseline.mjs` compares `cargo clippy --message-format=json` output against the baseline, but on a warm `target/` the JSON stream omits cached-crate diagnostics, so a dirty tree can pass locally and fail on cold CI (observed this session: first run flagged 2 new warnings, all subsequent warm runs reported the baseline current). Fix: clean the checked packages in the script (or use a dedicated `CARGO_TARGET_DIR`) before each run.
+- [x] **P2 — baseline script now passes `--all-targets`**; test-code warnings fixed (`field_reassign_with_default` via struct-update in `open_link.rs`, `useless_format`/`format_in_format_args` in `athena-resume-scanner` / `orchestrator_stream_contract` tests). One pre-existing `needless_question_mark` in `frontend/src/components/mobile_xterm.rs` remains — part of the in-flight mobile-relay diff, owned by that workstream (2026-09-02).
+- [x] **P3 — Perf metrics gated to debug builds** — `install_window_snapshot` + the 2 s refresh interval now live behind `#[cfg(debug_assertions)]` in `frontend/src/lib.rs`; e2e metrics specs run against the debug binary and are unaffected (2026-09-02).
 
 ### 🧪 Coverage gaps — ranked by launch impact
 

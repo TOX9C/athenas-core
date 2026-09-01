@@ -2,6 +2,10 @@ use super::{load_trusted_roots, TRUSTED_ROOTS_KEY};
 use crate::state::AppState;
 use tauri::State;
 
+/// Event name emitted (from `store_set`) when the workspace store changes.
+/// Kept here so the relay's event allowlist and the store command agree.
+pub(crate) const WORKSPACE_CHANGED_EVENT: &str = "workspace:changed";
+
 /// Add a directory to the set of trusted workspace roots.
 ///
 /// This is the authorization gesture that lets a terminal or AI agent operate

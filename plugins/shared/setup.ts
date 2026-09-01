@@ -3,7 +3,7 @@ import * as path from 'path'
 import * as os from 'os'
 import * as net from 'net'
 import type { PluginDiscoveryResult, PluginSetupOptions, PluginSetupResult } from './types'
-import { MCP_PORT, MCP_HOST, PLUGIN_IDS, buildProxyCommand } from './types'
+import { MCP_PORT, MCP_HOST, buildProxyCommand } from './types'
 
 export { McpConnection, createMcpConnection } from './connection'
 
@@ -104,18 +104,17 @@ export function discoverAll(projectRoot?: string): PluginDiscoveryResult[] {
 
 export function setupOpenCode(options: PluginSetupOptions): PluginSetupResult {
   const discovery = discoverOpenCode(options.projectRoot)
-  return writeMcpConfig(discovery, options, 'opencode')
+  return writeMcpConfig(discovery, options)
 }
 
 export function setupClaudeCode(options: PluginSetupOptions): PluginSetupResult {
   const discovery = discoverClaudeCode(options.projectRoot)
-  return writeMcpConfig(discovery, options, 'claude-code')
+  return writeMcpConfig(discovery, options)
 }
 
 function writeMcpConfig(
   discovery: PluginDiscoveryResult,
   options: PluginSetupOptions,
-  agentType: 'opencode' | 'claude-code',
 ): PluginSetupResult {
   const proxyPath = resolveProxyPath()
   const { command, args } = buildProxyCommand(proxyPath)
@@ -135,7 +134,7 @@ function writeMcpConfig(
     env,
   }
 
-  let existing: Record<string, any> = {}
+  let existing: Record<string, unknown> = {}
   if (discovery.configExists && discovery.configPath) {
     try {
       existing = JSON.parse(fs.readFileSync(discovery.configPath, 'utf8'))
@@ -185,13 +184,13 @@ export function removeMcpEntry(
     fs.renameSync(tmpPath, discovery.configPath)
 
     return { success: true, configPath: discovery.configPath, created: false, updated: true }
-  } catch (err: any) {
+  } catch (err) {
     return {
       success: false,
       configPath: discovery.configPath,
       created: false,
       updated: false,
-      error: err.message,
+      error: err instanceof Error ? err.message : String(err),
     }
   }
 }

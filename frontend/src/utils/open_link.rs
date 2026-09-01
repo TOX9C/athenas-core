@@ -44,10 +44,12 @@ mod tests {
 
     #[test]
     fn open_link_docks_a_main_area_browser_back_to_the_sidebar() {
-        let mut ui = UIState::default();
         // Browser currently expanded in the main content area.
-        ui.panel = Panel::Browser;
-        ui.right_sidebar_open = false;
+        let mut ui = UIState {
+            panel: Panel::Browser,
+            right_sidebar_open: false,
+            ..UIState::default()
+        };
         let mut panel = PanelManagerState::new();
         panel.active_right_panel = RightPanel::Assistant;
 
@@ -66,8 +68,10 @@ mod tests {
 
     #[test]
     fn open_link_switches_away_from_the_assistant_tab() {
-        let mut ui = UIState::default();
-        ui.right_sidebar_open = true;
+        let mut ui = UIState {
+            right_sidebar_open: true,
+            ..UIState::default()
+        };
         let mut panel = PanelManagerState::new();
         panel.active_right_panel = RightPanel::Assistant;
 

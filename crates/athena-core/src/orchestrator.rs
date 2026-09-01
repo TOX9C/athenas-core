@@ -527,10 +527,9 @@ impl AthenaOrchestrator {
                 let status = response.status();
                 let err_text = response.text().await.unwrap_or_default();
                 let sanitized = sanitize_error_message(&err_text);
-                return Err(OrchestratorError::Generic(format!(
-                    "Anthropic API error {}: {}",
-                    status, sanitized
-                )));
+                return Err(orchestrator_support::classify_api_error(
+                    "Anthropic", status, sanitized,
+                ));
             }
 
             let json: serde_json::Value = response.json().await?;
@@ -737,10 +736,9 @@ impl AthenaOrchestrator {
                 let sanitized = sanitize_error_message(&err_text);
                 let mut msgs = self.openai_messages.lock();
                 msgs.truncate(user_msg_index);
-                return Err(OrchestratorError::Generic(format!(
-                    "OpenAI API error {}: {}",
-                    status, sanitized
-                )));
+                return Err(orchestrator_support::classify_api_error(
+                    "OpenAI", status, sanitized,
+                ));
             }
 
             let json: serde_json::Value = response.json().await?;

@@ -182,10 +182,57 @@ async fn http_error_yields_error_event_and_returns_err() {
             request_id,
             message,
             cancelled,
+            model_unavailable: _,
         }) => {
             assert_eq!(request_id, "req-500");
             assert!(message.contains("500"));
             assert!(!cancelled, "API failures are not user cancellations");
+        }
+        other => panic!("last event must be Error, got {other:?}"),
+    }
+}
+
+/// Observable contract: a provider reporting the configured model as retired
+/// (HTTP 410 Gone — seen with z-ai/glm model EOL) must surface a dedicated
+/// `model_unavailable` error so the desktop can route the user to Settings
+/// instead of showing a bare toast.
+#[tokio::test]
+async fn model_gone_yields_model_unavailable_error_event() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CHAT_PATH))
+        .respond_with(ResponseTemplate::new(410).set_body_string(
+            r#"{"error":{"message":"model glm-5.2 has been retired"}}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let orch = AthenaOrchestrator::new();
+    orch.set_provider_config(openai_config(server.uri()));
+    let events: EventSink = Arc::default();
+    {
+        let sink = Arc::clone(&events);
+        orch.set_stream_emitter(Some(Arc::new(move |event| {
+            sink.lock().unwrap().push(event);
+        })));
+    }
+
+    let result = run_stream(&orch, "req-410", "sess-1", CancellationToken::new()).await;
+    let message = match &result {
+        Ok(reply) => panic!("expected failure, got Ok({reply:?})"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        message.contains("unavailable"),
+        "410 should read as model-unavailable guidance: {message}"
+    );
+
+    let events = events.lock().unwrap().clone();
+    match events.last() {
+        Some(AthenaStreamEvent::Error {
+            model_unavailable, ..
+        }) => {
+            assert!(model_unavailable, "410 must set the model_unavailable flag");
         }
         other => panic!("last event must be Error, got {other:?}"),
     }
@@ -199,8 +246,8 @@ async fn malformed_sse_json_fails_after_emitting_prior_deltas_in_order() {
     Mock::given(method("POST"))
         .and(path(CHAT_PATH))
         .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-            "{}data: {{broken json}}\n\n",
-            format!("data: {}\n\n", content_delta("partial"))
+            "data: {}\n\ndata: {{broken json}}\n\n",
+            content_delta("partial")
         )))
         .mount(&server)
         .await;

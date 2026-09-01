@@ -90,20 +90,33 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "athena_chat_stream" => {
+            // camelCase wire keys — the bridge sends `sessionId`/`requestId`
+            // for Tauri's desktop rename; the relay reads raw JSON (see
+            // pty_set_xterm). Accept both.
             let message = opts.req::<String>("message")?;
-            let session_id = opts.req::<String>("session_id")?;
-            let request_id = opts.req::<String>("request_id")?;
+            let session_id = opts
+                .req::<String>("sessionId")
+                .or_else(|_| opts.req::<String>("session_id"))?;
+            let request_id = opts
+                .req::<String>("requestId")
+                .or_else(|_| opts.req::<String>("request_id"))?;
             let out = commands::athena_chat_stream(state, message, session_id, request_id).await?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "athena_cancel_stream" => {
-            let request_id = opts.req::<String>("request_id")?;
+            // camelCase wire key — see athena_chat_stream.
+            let request_id = opts
+                .req::<String>("requestId")
+                .or_else(|_| opts.req::<String>("request_id"))?;
             let out = commands::athena_cancel_stream(state, request_id)?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "athena_chat_with_session" => {
             let message = opts.req::<String>("message")?;
-            let session_id = opts.req::<String>("session_id")?;
+            // camelCase wire key — see athena_chat_stream.
+            let session_id = opts
+                .req::<String>("sessionId")
+                .or_else(|_| opts.req::<String>("session_id"))?;
             let out = commands::athena_chat_with_session(state, message, session_id).await?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
@@ -130,7 +143,10 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             Ok(Value::Null)
         }
         "athena_user_answer" => {
-            let request_id = opts.req::<String>("request_id")?;
+            // camelCase wire key — see athena_chat_stream.
+            let request_id = opts
+                .req::<String>("requestId")
+                .or_else(|_| opts.req::<String>("request_id"))?;
             let answer = opts.req::<String>("answer")?;
             let out = commands::athena_user_answer(state, request_id, answer)?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
@@ -700,7 +716,7 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             if !mobile_store_key_allowed(&key) {
                 return Err(format!("relay store key is not available: {key}"));
             }
-            commands::store_set(state, key, value).await?;
+            commands::store_set(app.clone(), state, key, value).await?;
             Ok(Value::Null)
         }
         "store_has" => {
@@ -862,6 +878,17 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
     }
 }
 
+/// Commands whose responses take a full model turn (or otherwise run long).
+/// The relay runs these as background tasks so a stalled provider cannot
+/// freeze every later invoke on the phone's socket (see ws.rs session_loop).
+pub const BACKGROUND_COMMANDS: &[&str] = &[
+    "athena_chat",
+    "athena_chat_stream",
+    "athena_chat_with_session",
+    "athena_chat_with_images",
+    "summarize_agent_title",
+];
+
 /// Commands available to the mobile mirror. Mutating, secret-bearing, native
 /// dialog, process, and window-control commands stay desktop-only even after
 /// the relay token is presented.
@@ -908,6 +935,9 @@ pub fn command_allowed(cmd: &str) -> bool {
             | "pty_foreground_process"
             | "pty_raw_replay"
             | "session_list"
+            // Mobile chat binds one persistent session per phone.
+            | "session_create"
+            | "session_get"
             | "relay_request_pane_share"
     )
 }
@@ -972,9 +1002,15 @@ pub fn authorize_command(
     }
     if pane_scoped_command(cmd) {
         let pane_id = pane_id_of(cmd, args);
+        // `mobile-` panes are mirror-created by definition — only the relay
+        // can spawn them. Ownership tracking is per-connection, so a phone
+        // reconnect (page reload) would otherwise orphan its own terminals
+        // behind the share gate. The pairing handshake is the trust boundary;
+        // co-owning mirror-created panes across connections costs nothing in
+        // the LAN trust model.
         let authorized = pane_id
             .as_ref()
-            .is_some_and(|pane| owned.contains(pane) || shared.contains(pane));
+            .is_some_and(|pane| owned.contains(pane) || shared.contains(pane) || pane.starts_with("mobile-"));
         if !authorized {
             return Err(format!(
                 "relay pane is not shared: {}",
@@ -1182,6 +1218,20 @@ mod tests {
         let shared = HashSet::from(["pane-b".to_string()]);
         let args = serde_json::json!({ "id": "pane-b", "data": "ls\n" });
         assert!(authorize_command("pty_write", &args, &owned, &shared).is_ok());
+    }
+
+    #[test]
+    fn mobile_prefixed_panes_are_co_owned_across_reconnections() {
+        // A phone's own panes outlive its WS connection; a reconnected mirror
+        // must re-attach them without a desktop-side share approval.
+        let owned = HashSet::new();
+        let shared = HashSet::new();
+        let args = serde_json::json!({ "id": "mobile-abc123", "data": "ls\n" });
+        assert!(authorize_command("pty_write", &args, &owned, &shared).is_ok());
+        // Non-mobile pane without ownership stays denied — the prefix rule is
+        // not a blanket allowance.
+        let denied = serde_json::json!({ "id": "shell-abc123", "data": "ls\n" });
+        assert!(authorize_command("pty_write", &denied, &owned, &shared).is_err());
     }
 
     #[test]

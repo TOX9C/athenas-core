@@ -76,6 +76,7 @@ fn schedule_stream_flush(
 #[component]
 pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
     let mut athena_state = use_athena_store();
+    let ui_state = crate::stores::ui::use_ui_store();
     let mut mounted = use_signal(|| false);
     let stream_delta_queue: Rc<RefCell<Vec<(String, String)>>> =
         use_hook(|| Rc::new(RefCell::new(Vec::new())));
@@ -101,6 +102,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         mounted.set(true);
 
         let store = athena_state;
+        let mut ui_state_for_listener = ui_state;
         let stream_delta_queue_for_listener = stream_delta_queue.clone();
         let stream_delta_scheduled_for_listener = stream_delta_scheduled.clone();
 
@@ -156,6 +158,18 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     stream_store
                         .write()
                         .fail_stream(request_id, message.to_string(), cancelled);
+                    // Provider reports the configured model as retired (410 /
+                    // model-scoped 404): the bubble alone hid this behind a
+                    // generic failure — open Settings so the user picks
+                    // another model immediately.
+                    if !cancelled
+                        && event
+                            .get("model_unavailable")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                    {
+                        ui_state_for_listener.write().show_settings_modal = true;
+                    }
                 }
                 _ => {}
             }

@@ -77,6 +77,8 @@ cargo run --manifest-path src-tauri/Cargo.toml
 
 See [`ROADMAP.md`](ROADMAP.md) for the current project status. Please never post API keys or credentials in an issue.
 
+> **Note for contributors:** there are no local pre-commit hooks (husky/lint-staged were removed in August 2026). CI — `cargo clippy` against the baseline, ESLint, and the consistency checks — is the only gate, so run `npm run lint` and `cargo clippy --workspace` before pushing to avoid surprise CI failures.
+
 ## License
 
 Athena's Core is released under the [MIT License](LICENSE).

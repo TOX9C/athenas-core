@@ -90,6 +90,7 @@ impl AthenaOrchestrator {
                 request_id: request_id.clone(),
                 message: error.to_string(),
                 cancelled: false,
+                model_unavailable: false,
             });
             if let Some(sender) = self.tool_event_sender.lock().clone() {
                 sender.finish_request(&request_id);
@@ -106,6 +107,7 @@ impl AthenaOrchestrator {
                     request_id: request_id.clone(),
                     message: error.to_string(),
                     cancelled: false,
+                    model_unavailable: false,
                 });
                 if let Some(sender) = self.tool_event_sender.lock().clone() {
                     sender.finish_request(&request_id);
@@ -120,6 +122,7 @@ impl AthenaOrchestrator {
                     request_id: request_id.clone(),
                     message: error.to_string(),
                     cancelled: false,
+                    model_unavailable: false,
                 });
                 if let Some(executor) = self.tool_executor.as_ref() {
                     let executor = executor.read();
@@ -138,6 +141,7 @@ impl AthenaOrchestrator {
                 request_id: request_id.clone(),
                 message: error.to_string(),
                 cancelled: false,
+                model_unavailable: false,
             });
             if let Some(executor) = self.tool_executor.as_ref() {
                 let executor = executor.read();
@@ -201,6 +205,7 @@ impl AthenaOrchestrator {
                     request_id: request_id.clone(),
                     message: error.to_string(),
                     cancelled: matches!(error, OrchestratorError::UserCancellation),
+                    model_unavailable: matches!(error, OrchestratorError::ModelUnavailable { .. }),
                 });
             }
         }
@@ -340,10 +345,9 @@ impl AthenaOrchestrator {
             if !response.status().is_success() {
                 let status = response.status();
                 let error = sanitize_error_message(&response.text().await.unwrap_or_default());
-                return Err(OrchestratorError::Generic(format!(
-                    "OpenAI API error {}: {}",
-                    status, error
-                )));
+                return Err(super::orchestrator_support::classify_api_error(
+                    "OpenAI", status, error,
+                ));
             }
 
             let mut stream = response.bytes_stream();
@@ -590,11 +594,11 @@ impl AthenaOrchestrator {
             };
             if !response.status().is_success() {
                 let status = response.status();
-                return Err(OrchestratorError::Generic(format!(
-                    "Anthropic API error {}: {}",
+                return Err(super::orchestrator_support::classify_api_error(
+                    "Anthropic",
                     status,
-                    sanitize_error_message(&response.text().await.unwrap_or_default())
-                )));
+                    sanitize_error_message(&response.text().await.unwrap_or_default()),
+                ));
             }
             let mut stream = response.bytes_stream();
             let mut pending = Vec::<u8>::new();

@@ -102,6 +102,10 @@ fn shim_js() -> String {
   var listenerRegistered = {};
   var listenerSeq = 0;
   var readyQ = [];
+  // pane-id -> callback for raw PTY bytes delivered as binary WS frames.
+  // Bypasses JSON/base64 entirely on the terminal hot path.
+  var rawSinks = {};
+  var utf8 = new TextDecoder();
 
   function newId() { seq += 1; return 'c' + seq; }
 
@@ -121,7 +125,15 @@ fn shim_js() -> String {
       || new URLSearchParams((location.hash || '').replace(/^#/, '?')).get('token') || '';
     var protocols = token ? ['athena-relay.' + token] : [];
     ws = new WebSocket(proto + '//' + location.host + '/ws', protocols);
+    ws.binaryType = 'arraybuffer';
+    // If the desktop pairing prompt sits unanswered (or the relay restarted),
+    // the socket can sit in CONNECTING indefinitely; close it so onclose's
+    // reconnect produces a fresh pairing prompt.
+    var pairTimer = setTimeout(function () {
+      if (ws && ws.readyState === WebSocket.CONNECTING) ws.close();
+    }, 15000);
     ws.onopen = function () {
+      clearTimeout(pairTimer);
       var q = readyQ; readyQ = [];
       for (var i = 0; i < q.length; i++) { try { q[i](); } catch (e) {} }
       Object.keys(listeners).forEach(function (ev) {
@@ -133,6 +145,20 @@ fn shim_js() -> String {
       });
     };
     ws.onmessage = function (evt) {
+      if (typeof evt.data !== 'string') {
+        // Binary frame: [u16 LE pane-id length][pane id][raw VT bytes].
+        var buf = evt.data;
+        if (buf.byteLength < 2) return;
+        var view = new DataView(buf);
+        var paneLen = view.getUint16(0, true);
+        if (buf.byteLength < 2 + paneLen) return;
+        var pane = utf8.decode(new Uint8Array(buf, 2, paneLen));
+        var sink = rawSinks[pane];
+        if (sink) {
+          try { sink(new Uint8Array(buf, 2 + paneLen)); } catch (e) {}
+        }
+        return;
+      }
       var msg;
       try { msg = JSON.parse(evt.data); } catch (e) { return; }
       if (msg.t === 'resp') {
@@ -218,6 +244,17 @@ fn shim_js() -> String {
 
   if (!window.__TAURI__) window.__TAURI__ = {};
   window.__TAURI__.core = { invoke: invoke };
+  // Binary raw-PTY subscription used by mobile xterm mounts. `cb` receives a
+  // Uint8Array view of the frame payload; the view aliases the frame buffer,
+  // so handlers must copy if they retain bytes across frames.
+  window.__TAURI__.relayRaw = {
+    listen: function (pane, cb) {
+      rawSinks[pane] = cb;
+      return function unlistenRaw() {
+        if (rawSinks[pane] === cb) delete rawSinks[pane];
+      };
+    }
+  };
   if (!window.__TAURI__.event) window.__TAURI__.event = {};
   window.__TAURI__.event.listen = listen;
   connect();

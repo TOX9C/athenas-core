@@ -145,6 +145,31 @@ pub fn sanitize_error_message(msg: &str) -> String {
     result
 }
 
+/// Classify a non-success provider HTTP response into an orchestrator error.
+///
+/// 410 Gone — and 404 when the (already sanitized) body names a model — mean
+/// the configured model was retired upstream. Those become
+/// [`OrchestratorError::ModelUnavailable`] so the UI can send the user to
+/// Settings instead of showing a bare toast. Everything else keeps the
+/// historical `"{provider} API error {status}: {body}"` shape.
+pub(super) fn classify_api_error(
+    provider: &str,
+    status: reqwest::StatusCode,
+    sanitized: String,
+) -> OrchestratorError {
+    if status == reqwest::StatusCode::GONE
+        || (status == reqwest::StatusCode::NOT_FOUND
+            && sanitized.to_lowercase().contains("model"))
+    {
+        OrchestratorError::ModelUnavailable {
+            status: status.as_u16(),
+            detail: sanitized,
+        }
+    } else {
+        OrchestratorError::Generic(format!("{provider} API error {status}: {sanitized}"))
+    }
+}
+
 pub(super) fn build_anthropic_content(
     text: &str,
     images: Option<&[ImageData]>,
@@ -402,5 +427,49 @@ pub(super) fn heuristic_fallback_title(raw: &str) -> String {
         "working".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_api_error;
+    use crate::OrchestratorError;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn gone_is_model_unavailable() {
+        match classify_api_error("OpenAI", StatusCode::GONE, "retired".into()) {
+            OrchestratorError::ModelUnavailable { status, .. } => assert_eq!(status, 410),
+            other => panic!("expected ModelUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn model_scoped_not_found_is_unavailable_but_plain_404_is_generic() {
+        assert!(matches!(
+            classify_api_error("OpenAI", StatusCode::NOT_FOUND, "model not found".into()),
+            OrchestratorError::ModelUnavailable { status: 404, .. }
+        ));
+        let generic = classify_api_error("Anthropic", StatusCode::NOT_FOUND, "unknown endpoint".into());
+        assert!(
+            matches!(generic, OrchestratorError::Generic(_)),
+            "plain 404 keeps the legacy generic shape: {generic:?}"
+        );
+        assert!(generic.to_string().contains("Anthropic API error 404"));
+    }
+
+    #[test]
+    fn rate_limit_and_server_errors_stay_generic() {
+        for code in [401u16, 429, 500] {
+            let err = classify_api_error(
+                "Anthropic",
+                StatusCode::from_u16(code).unwrap(),
+                "boom".into(),
+            );
+            assert!(
+                matches!(err, OrchestratorError::Generic(_)),
+                "{code} must stay generic: {err:?}"
+            );
+        }
     }
 }

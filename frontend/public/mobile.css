@@ -12,6 +12,41 @@ body {
   background: var(--bg);
   color: var(--text);
 }
+
+/* Form controls: raised dark field, gold focus ring. Without this they fall
+   back to the platform default (white background, black text) which reads
+   unfinished against the dark shell. `color-scheme: dark` keeps autofill,
+   scrollbars, and the iOS keyboard accessories dark too. */
+.mobile-app-shell {
+  color-scheme: dark;
+}
+.mobile-app-shell input,
+.mobile-app-shell textarea,
+.mobile-app-shell select {
+  background: var(--bgTertiary);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  caret-color: var(--accent);
+  font-family: inherit;
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+.mobile-app-shell input::placeholder,
+.mobile-app-shell textarea::placeholder {
+  color: var(--textDim);
+}
+.mobile-app-shell input:focus,
+.mobile-app-shell textarea:focus,
+.mobile-app-shell select:focus {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
 button,
 input,
 textarea {
@@ -370,6 +405,32 @@ button {
   background: var(--accent);
   color: var(--bg);
 }
+.mobile-pane-add {
+  border-style: dashed;
+  color: var(--textMuted);
+  padding: 0 10px;
+}
+.mobile-pane-add:active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.mobile-frame-close-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--textDim);
+  cursor: pointer;
+}
+.mobile-frame-close-button:active {
+  color: #e06c60;
+  border-color: rgba(224, 108, 96, 0.4);
+}
 .mobile-terminal-frame {
   display: flex;
   min-height: 0;
@@ -431,6 +492,51 @@ button {
 .mobile-frame-request-button:active {
   color: var(--accent);
   border-color: var(--accent);
+}
+.mobile-xterm-wrap {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+.mobile-keybar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 7px 10px;
+  overflow-x: auto;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.mobile-keybar::-webkit-scrollbar {
+  display: none;
+}
+.mobile-keybar-key {
+  flex: 0 0 auto;
+  min-width: 38px;
+  padding: 7px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--textMuted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  touch-action: manipulation;
+}
+.mobile-keybar-key:active {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--fg);
+}
+.mobile-keybar-key.is-armed {
+  border-color: var(--accent);
+  background: var(--accentSubtle, rgba(201, 162, 75, 0.16));
+  color: var(--accent);
 }
 .mobile-xterm-mount {
   min-height: 0;

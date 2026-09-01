@@ -107,13 +107,19 @@ pub fn App() -> Element {
     // pre-computed status strings, and RSX construction). Uses
     // `js_sys::Date::now` (ms) — same clock the terminal store uses.
     let _render_start = js_sys::Date::now();
-    crate::utils::perf_metrics::install_window_snapshot();
-    // Keep the snapshot fresh without per-render work (2s cadence).
-    let _metrics_refresh = use_signal(|| {
-        Interval::new(2_000, || {
-            crate::utils::perf_metrics::refresh_window_snapshot();
-        })
-    });
+    // Perf metrics (`window.__athenaMetrics`) are debug-only: the e2e
+    // perf-metrics spec runs against the debug binary, and production builds
+    // should not expose instrumentation globals (P3).
+    #[cfg(debug_assertions)]
+    {
+        crate::utils::perf_metrics::install_window_snapshot();
+        // Keep the snapshot fresh without per-render work (2s cadence).
+        let _metrics_refresh = use_signal(|| {
+            Interval::new(2_000, || {
+                crate::utils::perf_metrics::refresh_window_snapshot();
+            })
+        });
+    }
 
     let _watchdog_heartbeat = use_signal(|| {
         Interval::new(5000, || {
@@ -161,6 +167,24 @@ pub fn App() -> Element {
     let mut ui_state = use_ui_store();
     let workspace = use_workspace_store();
     let mut workspace_mut = use_workspace_store();
+
+    // Cross-surface workspace sync: a paired phone (or this app) writing
+    // `workspaces` through store_set emits `workspace:changed` with the new
+    // serialized state. Apply it to the local store so panes/workspaces
+    // created from the mirror appear without a reload. The comparison guards
+    // against echo loops: this listener consumes, never saves.
+    let mut workspace_sync = use_workspace_store();
+    use_effect(move || {
+        let _unlisten = tauri_bridge::listen("workspace:changed", move |payload: String| {
+            if let Ok(state) =
+                serde_json::from_str::<stores::workspace::WorkspaceState>(&payload)
+            {
+                if *workspace_sync.peek() != state {
+                    workspace_sync.set(state);
+                }
+            }
+        });
+    });
     let mut athena_state = use_athena_store();
     let mut panel_state = use_panel_manager_store();
     let mut notification_overlay = use_notification_overlay_store();

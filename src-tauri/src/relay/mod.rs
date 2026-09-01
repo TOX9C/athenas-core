@@ -126,12 +126,11 @@ static RELAY_LIFECYCLE: Mutex<()> = Mutex::new(());
 /// launch CWD (dev `cargo run`, bundled app, etc.).
 pub fn resolve_dist_dir(resource: &std::path::Path, exe_dir: &std::path::Path) -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
+    // Dev candidates first: `tauri dev` mirrors frontend/dist into
+    // target/debug, but that mirror lags/omits assets (observed: fonts/ never
+    // lands), and the relay must serve the real build output. In packaged
+    // .app runs the cwd candidates don't exist, so packaged paths still win.
     let candidates = [
-        resource.join("frontend").join("dist"),
-        // packaged Tauri resources map frontend/dist files directly under the
-        // resource root (see tauri.conf.json).
-        resource.to_path_buf(),
-        resource.join("dist"),
         // dev: <workspace>/frontend/dist (CWD is the workspace root)
         cwd.join("frontend").join("dist"),
         // dev: <workspace>/src-tauri/../frontend/dist
@@ -143,6 +142,11 @@ pub fn resolve_dist_dir(resource: &std::path::Path, exe_dir: &std::path::Path) -
             .join("..")
             .join("frontend")
             .join("dist"),
+        resource.join("frontend").join("dist"),
+        // packaged Tauri resources map frontend/dist files directly under the
+        // resource root (see tauri.conf.json).
+        resource.to_path_buf(),
+        resource.join("dist"),
     ];
     candidates
         .iter()

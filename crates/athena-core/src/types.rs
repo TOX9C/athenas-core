@@ -32,6 +32,11 @@ pub enum AthenaStreamEvent {
         request_id: String,
         message: String,
         cancelled: bool,
+        /// True when the provider reports the configured model as retired or
+        /// removed (410 Gone, or a model-scoped 404). The frontend uses this
+        /// to open model selection instead of just showing the error bubble.
+        #[serde(default)]
+        model_unavailable: bool,
     },
 }
 
@@ -352,6 +357,11 @@ pub enum OrchestratorError {
         timeout: u32,
         partial_result: String,
     },
+    /// The provider says the configured model is retired/removed (HTTP 410,
+    /// or a model-scoped 404). Kept distinct from `Generic` so the frontend
+    /// can route the user to model selection instead of a bare error message.
+    #[error("The selected model is unavailable (HTTP {status}): {detail}. Pick another model in Settings.")]
+    ModelUnavailable { status: u16, detail: String },
     /// A generic error with a human-readable message.
     #[error("{0}")]
     Generic(String),
@@ -439,6 +449,7 @@ mod tests {
             request_id: "req".to_string(),
             message: "boom".to_string(),
             cancelled: false,
+            model_unavailable: false,
         });
     }
 }

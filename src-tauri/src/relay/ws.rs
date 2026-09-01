@@ -143,6 +143,45 @@ pub async fn handle_upgrade(
         })
 }
 
+/// Convert a `pty:raw:<pane>` event payload (`{"sessionId":…,"data":"<base64>"}`)
+/// into a binary WS frame: `[u16 LE pane len][pane id][raw VT bytes]`.
+/// Decoding here keeps the phone's hot path free of base64 + JSON: the shim
+/// hands the payload slice straight to xterm.js as a Uint8Array. On any parse
+/// failure the frame falls back to the JSON text form so the event is never
+/// lost.
+fn raw_binary_frame(pane: &str, payload: &str) -> axum::extract::ws::Message {
+    use base64::Engine;
+    // The backend emits `pty:raw` with a *String* payload, which Tauri
+    // JSON-quotes before delivery — so `payload` is `"{\"sessionId\":…}"` and
+    // needs a second parse to reach the object.
+    let parsed = serde_json::from_str::<serde_json::Value>(payload).ok();
+    let parsed = match &parsed {
+        Some(serde_json::Value::String(inner)) => serde_json::from_str::<serde_json::Value>(inner).ok(),
+        other => other.clone(),
+    };
+    let decoded: Option<Vec<u8>> = parsed
+        .and_then(|v| v.get("data").and_then(|d| d.as_str()).map(str::to_string))
+        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok());
+    match decoded {
+        Some(bytes) => {
+            let pane_bytes = pane.as_bytes();
+            let mut frame = Vec::with_capacity(2 + pane_bytes.len() + bytes.len());
+            frame.extend_from_slice(&(pane_bytes.len() as u16).to_le_bytes());
+            frame.extend_from_slice(pane_bytes);
+            frame.extend_from_slice(&bytes);
+            axum::extract::ws::Message::Binary(frame)
+        }
+        None => {
+            let out = serde_json::json!({
+                "t": "event",
+                "event": format!("pty:raw:{pane}"),
+                "payload": payload,
+            });
+            axum::extract::ws::Message::Text(out.to_string())
+        }
+    }
+}
+
 /// Human-readable description of the connecting peer for the desktop pairing
 /// prompt. Uses the User-Agent (browser/OS) because the relay runs plaintext
 /// HTTP without a TLS client cert to identify the device. The remote IP is not
@@ -178,7 +217,7 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
     // Event callbacks run outside this async session task. The bounded queue
     // prevents a slow phone from turning terminal output into unbounded memory
     // growth; event frames are dropped when the phone cannot keep up.
-    let (tx, mut rx) = mpsc::channel::<String>(RELAY_WRITER_QUEUE);
+    let (tx, mut rx) = mpsc::channel::<axum::extract::ws::Message>(RELAY_WRITER_QUEUE);
     let overloaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let overload_notify = Arc::new(Notify::new());
     let writer_overload_notify = Arc::clone(&overload_notify);
@@ -188,7 +227,7 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
     // Writer task: drains the mpsc channel and pushes frames to the sink.
     let writer = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
-            if sink.send(Message::Text(frame)).await.is_err() {
+            if sink.send(frame).await.is_err() {
                 writer_overload_notify.notify_one();
                 break;
             }
@@ -292,6 +331,36 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
                     let owned = owned_pane_ids.lock();
                     dispatch::authorize_command(&cmd, &args, &owned, &shared_pane_ids(&app))
                 };
+                // Chat commands resolve only when the model turn finishes —
+                // a slow or hung provider turn would otherwise seize the
+                // session loop and freeze every later invoke on this socket.
+                // They produce no response the phone depends on for ordering
+                // (results arrive via `athena:stream` events), so they run as
+                // unordered background tasks. Terminal-pane invokes stay
+                // inline and ordered: pty_write bytes must not interleave.
+                if dispatch::BACKGROUND_COMMANDS.contains(&cmd.as_str()) {
+                    if let Err(reason) = authorization {
+                        send_invoke_error(&tx, &id, reason);
+                        continue;
+                    }
+                    let ctx_bg = ctx.clone();
+                    let tx_bg = tx.clone();
+                    tokio::spawn(async move {
+                        let result = dispatch::dispatch(&ctx_bg, &cmd, args).await;
+                        let resp = match result {
+                            Ok(v) => serde_json::json!({
+                                "t": "resp", "id": id, "ok": true, "result": v
+                            }),
+                            Err(e) => serde_json::json!({
+                                "t": "resp", "id": id, "ok": false, "error": e
+                            }),
+                        };
+                        let _ = tx_bg
+                            .try_send(axum::extract::ws::Message::Text(resp.to_string()))
+                            .map_err(|_| log::warn!("[relay] response queue full for chat invoke"));
+                    });
+                    continue;
+                }
                 let result = match authorization {
                     Ok(()) => dispatch::dispatch(&ctx, &cmd, args).await,
                     Err(reason) => Err(reason),
@@ -323,7 +392,8 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
                 } else {
                     serde_json::json!({ "t": "resp", "id": id, "ok": false, "error": value })
                 };
-                if tx.try_send(resp.to_string()).is_err() {
+                if tx.try_send(axum::extract::ws::Message::Text(resp.to_string())).is_err()
+                {
                     log::warn!("[relay] response queue full; closing slow client");
                     break;
                 }
@@ -392,21 +462,33 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
                             .map(|id| {
                                 owned_for_filter.lock().contains(&id)
                                     || shared_pane_ids(&app_for_filter).contains(&id)
+                                    // Mirror-created panes stay reachable after
+                                    // a phone reconnect (see dispatch.rs auth).
+                                    || id.starts_with("mobile-")
                             })
                             .unwrap_or(false);
                         if !owns {
                             return;
                         }
                     }
-                    let out = serde_json::json!({
-                        "t": "event",
-                        "event": event_name,
-                        "payload": payload,
-                    });
+                    // PTY raw output crosses as a binary frame — no JSON, no
+                    // base64 on the phone's hot path. Frame layout:
+                    //   [u16 LE pane-id byte length][pane id][raw VT bytes]
+                    // The shim routes by pane to the xterm instance. All other
+                    // events keep the JSON text form.
+                    let frame = if let Some(pane) = event_name.strip_prefix("pty:raw:") {
+                        raw_binary_frame(pane, &payload)
+                    } else {
+                        let out = serde_json::json!({
+                            "t": "event",
+                            "event": event_name,
+                            "payload": payload,
+                        });
+                        axum::extract::ws::Message::Text(out.to_string())
+                    };
                     // Terminal bytes are stateful: never drop a frame or call
-                    // blocking_send from a runtime callback. The unbounded
-                    // sender is consumed by the dedicated socket writer.
-                    if tx_clone.try_send(out.to_string()).is_err() {
+                    // blocking_send from a runtime callback.
+                    if tx_clone.try_send(frame).is_err() {
                         // Do not keep a stateful terminal stream alive after a
                         // frame is dropped. The reader observes this flag and
                         // closes the slow client on its next turn.
@@ -456,6 +538,18 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
     let _ = writer.await;
 
     log::info!("[relay] ws session ended");
+}
+
+/// Push an authorization failure as the invoke response without running the
+/// command. Used on the background-dispatch path, which continues the loop
+/// before the command executes.
+fn send_invoke_error(
+    tx: &tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+    id: &str,
+    reason: String,
+) {
+    let resp = serde_json::json!({ "t": "resp", "id": id, "ok": false, "error": reason });
+    let _ = tx.try_send(axum::extract::ws::Message::Text(resp.to_string()));
 }
 
 struct RelayConnectionGuard;
@@ -567,6 +661,7 @@ fn event_allowed(event: &str) -> bool {
             | "athena:askUser"
             | "athena:planUpdate"
             | "athena:planEvaluated"
+            | "workspace:changed"
             | "terminal:exit"
             // NOTE: event_allowed is an allowlist of event NAMES, while the
             // forwarding callback applies the per-pane workspace/ownership
@@ -580,7 +675,8 @@ fn event_allowed(event: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_subprotocol_matches, event_allowed, peer_description, terminal_event_pane_id,
+        auth_subprotocol_matches, event_allowed, peer_description, raw_binary_frame,
+        terminal_event_pane_id,
     };
     use axum::http::{header, HeaderMap, HeaderValue};
 
@@ -604,6 +700,50 @@ mod tests {
         assert!(event_allowed("output-capture:batch"));
         assert!(event_allowed("notifications:new"));
         assert!(event_allowed("fs:change:/workspace/file"));
+    }
+
+    #[test]
+    fn workspace_change_event_is_relayable() {
+        assert!(event_allowed("workspace:changed"));
+    }
+
+    #[test]
+    fn raw_binary_frame_layout_round_trips() {
+        use base64::Engine;
+        // Real wire shape: Tauri JSON-quotes the String payload.
+        let inner = serde_json::json!({
+            "sessionId": "pane-7",
+            "data": base64::engine::general_purpose::STANDARD.encode(b"\x1b[31mhi"),
+        })
+        .to_string();
+        let payload = serde_json::to_string(&inner).unwrap();
+        let axum::extract::ws::Message::Binary(bytes) = raw_binary_frame("pane-7", &payload)
+        else {
+            panic!("pty:raw payload must cross as a binary frame");
+        };
+        let pane_len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+        assert_eq!(&bytes[2..2 + pane_len], b"pane-7");
+        assert_eq!(&bytes[2 + pane_len..], b"\x1b[31mhi");
+    }
+
+    #[test]
+    fn raw_binary_frame_accepts_unquoted_object_too() {
+        use base64::Engine;
+        let payload = serde_json::json!({
+            "sessionId": "pane-7",
+            "data": base64::engine::general_purpose::STANDARD.encode(b"hi"),
+        })
+        .to_string();
+        assert!(matches!(
+            raw_binary_frame("pane-7", &payload),
+            axum::extract::ws::Message::Binary(_)
+        ));
+    }
+
+    #[test]
+    fn raw_binary_frame_falls_back_to_text_on_bad_payload() {
+        let frame = raw_binary_frame("pane-7", "not json");
+        assert!(matches!(frame, axum::extract::ws::Message::Text(_)));
     }
 
     #[test]

@@ -51,6 +51,11 @@ fn new_addon(window: &web_sys::Window, name: &str, term: &JsValue) -> Option<JsV
     Some(addon)
 }
 
+/// Enqueue terminal input. Everything queued at drain time is concatenated
+/// into ONE `pty_write` — over the relay each write is a WS round trip, so
+/// batching collapses a burst of keystrokes (or a paste) into a single frame
+/// while preserving byte order. Per-keystroke latency is unchanged (first
+/// byte still starts the drain immediately).
 fn enqueue_input(
     queue: &Rc<RefCell<VecDeque<String>>>,
     draining: &Rc<RefCell<bool>>,
@@ -79,18 +84,44 @@ fn enqueue_input(
                 return;
             }
 
-            let next = queue.borrow_mut().pop_front();
-            let Some(data) = next else {
-                *draining.borrow_mut() = false;
-                return;
+            // Drain everything pending into one ordered write.
+            let batch = {
+                let mut q = queue.borrow_mut();
+                if q.is_empty() {
+                    *draining.borrow_mut() = false;
+                    return;
+                }
+                let total: usize = q.iter().map(|s| s.len()).sum();
+                let mut batch = String::with_capacity(total);
+                for part in q.drain(..) {
+                    batch.push_str(&part);
+                }
+                batch
             };
-            if let Err(error) = tauri_bridge::pty_write(&pane_id, &data).await {
+            if let Err(error) = tauri_bridge::pty_write(&pane_id, &batch).await {
                 web_sys::console::error_1(
                     &format!("[mobile xterm] pty_write failed: {error:?}").into(),
                 );
             }
         }
     });
+}
+
+/// Map a keybar character through the armed Ctrl modifier: `c` → 0x03, etc.
+fn ctrl_modified(data: &str) -> Option<String> {
+    if data.chars().count() != 1 {
+        return None;
+    }
+    let c = data.chars().next()?;
+    if c.is_ascii_lowercase() || c.is_ascii_uppercase() {
+        let code = (c.to_ascii_lowercase() as u8) & 0x1f;
+        return String::from_utf8(vec![code]).ok();
+    }
+    match c {
+        '[' => Some("\x1b".to_string()),
+        ']' => Some("\x1d".to_string()),
+        _ => None,
+    }
 }
 
 /// Owns the JavaScript callbacks and observer resources for one mobile
@@ -101,6 +132,11 @@ fn enqueue_input(
 struct MobileXtermCleanup {
     term: JsValue,
     unlisten: Option<Box<dyn FnOnce()>>,
+    /// Relay binary-mode sink deregistration (paired with `unlisten`).
+    unlisten_raw: Option<Box<dyn FnOnce()>>,
+    /// WebGL renderer addon instance — retained so the addon (and its GPU
+    /// context) outlives the setup task.
+    _webgl: Option<JsValue>,
     _on_data: JsValue,
     _on_resize: JsValue,
     resize_observer: Option<JsValue>,
@@ -130,12 +166,35 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
     let mounted = use_hook(|| Rc::new(RefCell::new(false)));
     let active = use_hook(|| Rc::new(RefCell::new(true)));
     let active_for_drop = active.clone();
+    // Input plumbing lives at component scope so both xterm's onData and the
+    // on-screen keybar feed the same batched writer.
+    let input_queue: Rc<RefCell<VecDeque<String>>> =
+        use_hook(|| Rc::new(RefCell::new(VecDeque::new())));
+    let input_draining = use_hook(|| Rc::new(RefCell::new(false)));
+    // One-shot Ctrl modifier for the keybar (tap Ctrl, then a key).
+    let mut ctrl_armed = use_signal(|| false);
+    let ctrl_cell = use_hook(|| Rc::new(std::cell::Cell::new(false)));
+    // Mirror the Cell so the JS callback path sees taps (plain comment —
+    // `///` on a statement is a lint error).
+    #[allow(unused)]
+    let _ = ctrl_cell.clone();
+    ctrl_cell.set(ctrl_armed());
 
+    let pane_id_for_keybar = pane_id.clone();
+    let active_for_keybar = active.clone();
+    let input_queue_for_effect = input_queue.clone();
+    let input_draining_for_effect = input_draining.clone();
+    let ctrl_for_effect = ctrl_cell.clone();
     use_effect(move || {
         if *mounted.borrow() {
             return;
         }
         *mounted.borrow_mut() = true;
+        // Re-clone per effect run: the async task below moves these, and the
+        // effect closure is FnMut (re-runnable).
+        let input_queue_for_effect = input_queue_for_effect.clone();
+        let input_draining_for_effect = input_draining_for_effect.clone();
+        let ctrl_for_effect = ctrl_for_effect.clone();
 
         let Some(window) = web_sys::window() else {
             return;
@@ -225,15 +284,36 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             };
 
             // Mark the session xterm-managed before installing the raw
-            // listener. Listener output is resumed by the generation lease
-            // immediately after subscription; unlike the old unscoped pause
-            // command, teardown cannot pause a newer mobile mount.
-            if tauri_bridge::pty_set_xterm(&pane_id_for_task, true)
-                .await
-                .is_ok()
-            {
+            // listener. Over the relay this call is pane-share-gated: while
+            // the desktop considers a "Request access" approval, the phone
+            // must RETRY instead of permanently stranding the mount. ~20 s of
+            // retries covers the human approval window without spinning.
+            let mut xterm_claimed = false;
+            for attempt in 0..14 {
+                if !*active_for_task.borrow() {
+                    return;
+                }
+                match tauri_bridge::pty_set_xterm(&pane_id_for_task, true).await {
+                    Ok(()) => {
+                        xterm_claimed = true;
+                        break;
+                    }
+                    Err(error) => {
+                        if attempt == 0 || attempt % 5 == 4 {
+                            web_sys::console::log_1(
+                                &format!("[mobile xterm] awaiting pane share: {error:?}").into(),
+                            );
+                        }
+                        gloo::timers::future::TimeoutFuture::new(1_500).await;
+                    }
+                }
+            }
+            if xterm_claimed {
                 // continue with terminal setup
             } else {
+                web_sys::console::warn_1(
+                    &"[mobile xterm] pane never became xterm-accessible (share declined?)".into(),
+                );
                 return;
             }
 
@@ -297,6 +377,11 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                 fit(addon);
             }
 
+            // GPU renderer: same confidence order as the desktop — WebGL
+            // first, xterm's DOM renderer as silent fallback (older WebViews
+            // or exhausted GL contexts simply return None here).
+            let webgl_addon = new_addon(&window_for_task, "WebglAddon", &term);
+
             // Replay best-effort scrollback before resuming the raw VT stream.
             // Raw replay (when present) is exact VT state; text history is the
             // ANSI-stripped fallback. Either way this is history, not a claimed
@@ -354,6 +439,7 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             let generation_for_attach = listener_generation.clone();
             let active_for_attach = active_for_task.clone();
             let unlisten = listener.unlisten;
+            let unlisten_raw = listener.unlisten_raw;
             wasm_bindgen_futures::spawn_local(async move {
                 for attempt in 0..4 {
                     if !*active_for_attach.borrow() {
@@ -406,13 +492,20 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                 }
             });
 
-            let input_queue = Rc::new(RefCell::new(VecDeque::<String>::new()));
-            let input_draining = Rc::new(RefCell::new(false));
-            let on_data_queue = input_queue.clone();
-            let on_data_draining = input_draining.clone();
+            let on_data_queue = input_queue_for_effect.clone();
+            let on_data_draining = input_draining_for_effect.clone();
             let on_data_active = active_for_task.clone();
             let pane_for_data = pane_id_for_task.clone();
+            let ctrl_for_data = ctrl_for_effect.clone();
             let on_data = Closure::wrap(Box::new(move |data: String| {
+                // Keybar Ctrl is a one-shot modifier: when armed, translate a
+                // single character to its control byte (c → 0x03) and disarm.
+                let data = if ctrl_for_data.get() {
+                    ctrl_for_data.set(false);
+                    ctrl_modified(&data).unwrap_or(data)
+                } else {
+                    data
+                };
                 enqueue_input(
                     &on_data_queue,
                     &on_data_draining,
@@ -482,6 +575,8 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             cleanup.set(Some(MobileXtermCleanup {
                 term,
                 unlisten,
+                unlisten_raw,
+                _webgl: webgl_addon,
                 _on_data: on_data_js,
                 _on_resize: on_resize_js,
                 resize_observer,
@@ -513,6 +608,9 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             if let Some(unlisten) = mounted.unlisten.take() {
                 unlisten();
             }
+            if let Some(unlisten_raw) = mounted.unlisten_raw.take() {
+                unlisten_raw();
+            }
             if let Some(observer) = mounted.resize_observer.take() {
                 if let Ok(disconnect) =
                     js_sys::Reflect::get(&observer, &JsValue::from_str("disconnect"))
@@ -543,12 +641,89 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
         }
     });
 
+    // Shared send closure for the on-screen keybar: Esc/Tab/arrows and the
+    // Ctrl one-shot modifier all feed the same batched input queue as xterm's
+    // onData (hardware/soft keyboard input).
+    let send_key = {
+        let queue = input_queue.clone();
+        let draining = input_draining.clone();
+        let active_for_keybar = active_for_keybar.clone();
+        let pane_id_for_keybar = pane_id_for_keybar.clone();
+        Rc::new(move |data: &str| {
+            enqueue_input(
+                &queue,
+                &draining,
+                &active_for_keybar,
+                &pane_id_for_keybar,
+                data.to_string(),
+            );
+        })
+    };
+
+    let ctrl_on = ctrl_armed();
     rsx! {
-        div {
-            id: "{mount_id}",
-            class: "mobile-xterm-mount",
-            role: "application",
-            aria_label: "Live terminal",
+        div { class: "mobile-xterm-wrap",
+            div { class: "mobile-keybar", role: "toolbar", aria_label: "Terminal keys",
+                button {
+                    class: "mobile-keybar-key",
+                    // Keep focus in the terminal; don't let the tap blur xterm.
+                    onmousedown: move |e| e.prevent_default(),
+                    onclick: {
+                        let send = send_key.clone();
+                        move |_| send("\x1b")
+                    },
+                    "esc"
+                }
+                button {
+                    class: "mobile-keybar-key",
+                    onmousedown: move |e| e.prevent_default(),
+                    onclick: {
+                        let send = send_key.clone();
+                        move |_| send("\t")
+                    },
+                    "tab"
+                }
+                button {
+                    class: if ctrl_on { "mobile-keybar-key is-armed" } else { "mobile-keybar-key" },
+                    onmousedown: move |e| e.prevent_default(),
+                    onclick: move |_| {
+                        let next = !ctrl_armed();
+                        ctrl_armed.set(next);
+                        ctrl_cell.set(next);
+                    },
+                    "ctrl"
+                }
+                for (label, seq) in [("←", "\x1b[D"), ("↓", "\x1b[B"), ("↑", "\x1b[A"), ("→", "\x1b[C")] {
+                    button {
+                        key: "key-{label}",
+                        class: "mobile-keybar-key",
+                        onmousedown: move |e| e.prevent_default(),
+                        onclick: {
+                            let send = send_key.clone();
+                            move |_| send(seq)
+                        },
+                        "{label}"
+                    }
+                }
+                for (label, seq) in [("-", "-"), ("_", "_"), ("|", "|"), ("~", "~"), ("/", "/")] {
+                    button {
+                        key: "key-{label}",
+                        class: "mobile-keybar-key",
+                        onmousedown: move |e| e.prevent_default(),
+                        onclick: {
+                            let send = send_key.clone();
+                            move |_| send(seq)
+                        },
+                        "{label}"
+                    }
+                }
+            }
+            div {
+                id: "{mount_id}",
+                class: "mobile-xterm-mount",
+                role: "application",
+                aria_label: "Live terminal",
+            }
         }
     }
 }

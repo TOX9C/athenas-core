@@ -89,7 +89,7 @@ fn scan_strips_ansi_before_matching() {
     assert_eq!(prefix, "claude --resume");
     assert_eq!(id, CLAUDE_ID);
 
-    let osc = format!("\x1b]0;title\x07omp --resume abc-1");
+    let osc = "\x1b]0;title\x07omp --resume abc-1".to_string();
     assert_eq!(
         scan_text_for_resume_id(&osc).unwrap(),
         ("omp --resume".into(), "abc-1".into())
@@ -144,7 +144,7 @@ fn rolling_window_keeps_tail_hint_findable() {
     let filler = "x".repeat(4096);
     assert!(scanner.feed(&filler).is_none());
     let (prefix, id) = scanner
-        .feed(&format!("\nomp --resume tail-hint-1\n"))
+        .feed("\nomp --resume tail-hint-1\n")
         .expect("hint at tail survives trimming");
     assert_eq!(prefix, "omp --resume");
     assert_eq!(id, "tail-hint-1");
@@ -152,8 +152,8 @@ fn rolling_window_keeps_tail_hint_findable() {
 
 #[test]
 fn redraw_alternating_ids_are_each_reported_once() {
-    let a = format!("claude --resume id-aaa-1\n");
-    let b = format!("claude --resume id-bbb-2\n");
+    let a = "claude --resume id-aaa-1\n".to_string();
+    let b = "claude --resume id-bbb-2\n".to_string();
     let mut scanner = ResumeScanner::new();
     assert!(scanner.feed(&a).is_some());
     assert!(scanner.feed(&b).is_some());

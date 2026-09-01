@@ -15,7 +15,9 @@ const targetDir = process.env.CLIPPY_TARGET_DIR ?? 'target/clippy-baseline'
 if (process.env.CLIPPY_SKIP_CLEAN !== '1') {
   rmSync(targetDir, { recursive: true, force: true })
 }
-const result = spawnSync('cargo', ['clippy', '--workspace', '--locked', '--message-format=json'], {
+// --all-targets so test/bench code participates: test-code warnings used to
+// escape the baseline gate entirely (P2).
+const result = spawnSync('cargo', ['clippy', '--workspace', '--all-targets', '--locked', '--message-format=json'], {
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'pipe'],
   env: { ...process.env, CARGO_TARGET_DIR: targetDir },
