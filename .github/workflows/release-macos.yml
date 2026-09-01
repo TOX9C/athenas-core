@@ -72,7 +72,10 @@ jobs:
           test -n "$expected_version"
           printf 'RELEASE_VERSION=%s\n' "$expected_version" >> "$GITHUB_ENV"
           RELEASE_VERSION="$expected_version" node scripts/check-release-identity.mjs
-          node - <<'NODE'
+          # $GITHUB_ENV only applies to LATER steps — the inline check below is
+          # in the same step, so RELEASE_VERSION must be passed on the env of
+          # the node invocation itself.
+          RELEASE_VERSION="$expected_version" node - <<'NODE'
           const fs = require('node:fs')
           const expected = process.env.RELEASE_VERSION
           const packageVersion = require('./package.json').version
