@@ -2,6 +2,22 @@ use super::provider_config::{build_provider_config_from_store, ProviderConfigErr
 use crate::state::AppState;
 use std::sync::Arc;
 use tauri::State;
+/// Convert an orchestrator error for the IPC boundary, clearing a stale
+/// API-key status flag when the provider rejected the request (see
+/// [`super::store::clear_api_key_flag_on_provider_error`]). Central so every
+/// non-streaming chat command shares the recovery contract; streaming turns
+/// additionally clear via the stream-event bridge in `state.rs`.
+fn provider_chat_error(state: &AppState, error: athena_core::types::OrchestratorError) -> String {
+    let model_unavailable =
+        matches!(error, athena_core::types::OrchestratorError::ModelUnavailable { .. });
+    let message = error.to_string();
+    super::store::clear_api_key_flag_on_provider_error(
+        &state.store,
+        model_unavailable,
+        &message,
+    );
+    message
+}
 
 /// Send a text message to the configured LLM provider and return the response.
 #[tauri::command]
@@ -19,7 +35,7 @@ pub async fn athena_chat(state: State<'_, AppState>, message: String) -> Result<
     orchestrator
         .send_message(message, None)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| provider_chat_error(&state, e))
 }
 
 /// Start a request-scoped streaming chat turn. Chunks and lifecycle events are
@@ -51,7 +67,7 @@ pub async fn athena_chat_stream(
     orchestrator
         .stream_message(request_id, session_id, message, None, cancel)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| provider_chat_error(&state, e))
 }
 
 /// Cancel an in-flight streaming chat request.
@@ -80,7 +96,7 @@ pub async fn athena_chat_with_session(
     orchestrator
         .send_message_with_session(session_id, message, None)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| provider_chat_error(&state, e))
 }
 
 /// Send a message with image attachments to the LLM provider.
@@ -102,7 +118,7 @@ pub async fn athena_chat_with_images(
     orchestrator
         .send_message(message, Some(image_data))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| provider_chat_error(&state, e))
 }
 
 pub(crate) fn prompt_is_sensitive(raw_prompt: &str) -> bool {
@@ -179,7 +195,7 @@ pub async fn summarize_agent_title(
         .summarize_title(&raw_prompt)
         .await
         .map(|t| t.trim().to_string())
-        .map_err(|e| e.to_string())
+        .map_err(|e| provider_chat_error(&state, e))
 }
 
 /// Clear all conversation history from the orchestrator.

@@ -787,14 +787,34 @@ impl AppState {
         // payload is already typed in athena-core; serialize exactly once at
         // the IPC boundary so the frontend can ignore stale request IDs.
         let stream_handle = handle.clone();
+        let stream_store = Arc::clone(&self.store);
         self.orchestrator.set_stream_emitter(Some(Arc::new(
-            move |event| match serde_json::to_string(&event) {
-                Ok(payload) => {
-                    if let Err(error) = stream_handle.emit("athena:stream", payload) {
-                        log::warn!("failed to emit athena stream event: {error}");
-                    }
+            move |event| {
+                // Stale-flag recovery: if the provider rejected the request
+                // (401 / model unavailable), drop the persisted "set" flag so
+                // the next store_get re-checks the keyring instead of trusting
+                // a keychain entry that was deleted out-of-band. Runs before
+                // serialization so the frontend's very next status read sees it.
+                if let athena_core::types::AthenaStreamEvent::Error {
+                    message,
+                    model_unavailable,
+                    ..
+                } = &event
+                {
+                    crate::commands::store::clear_api_key_flag_on_provider_error(
+                        &stream_store,
+                        *model_unavailable,
+                        message,
+                    );
                 }
-                Err(error) => log::warn!("failed to serialize athena stream event: {error}"),
+                match serde_json::to_string(&event) {
+                    Ok(payload) => {
+                        if let Err(error) = stream_handle.emit("athena:stream", payload) {
+                            log::warn!("failed to emit athena stream event: {error}");
+                        }
+                    }
+                    Err(error) => log::warn!("failed to serialize athena stream event: {error}"),
+                }
             },
         )));
 

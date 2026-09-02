@@ -28,7 +28,7 @@ mod resume;
 mod search;
 mod session;
 mod shell;
-mod store;
+pub(crate) mod store;
 mod swarm;
 pub(crate) mod voice;
 mod window;

@@ -227,6 +227,39 @@ fn resolve_key_slot(store: &athena_store::KeyValueStore) -> (String, String) {
     ("api_key".to_string(), "llm.api_key_status".to_string())
 }
 
+/// Recovery contract for stale API-key status flags.
+///
+/// `store_get` deliberately answers from the persisted flag first (avoids
+/// keychain lockout / permission races on panel mount), so a keychain entry
+/// deleted out-of-band leaves a stale `"set"` flag behind. When a chat call
+/// then fails at the provider with HTTP 401 — or `ModelUnavailable`, which
+/// is emitted for retired/upstream-removed configurations and treated the
+/// same so the user is re-prompted — this clears the corresponding
+/// `llm.api_key_status[.<provider>]` flag (resolved through
+/// [`resolve_key_slot`], i.e. the same slot the chat path uses). The next
+/// `store_get` then falls through to the real keyring check and reports
+/// `"not_set"` instead of trusting the stale flag.
+///
+/// Called from the stream-event bridge (`state.rs`) so every chat surface —
+/// desktop, relay phone, plugins — shares the recovery, and from the command
+/// error paths in `athena.rs` for non-streaming calls that never produce a
+/// stream event.
+pub(crate) fn clear_api_key_flag_on_provider_error(
+    store: &athena_store::KeyValueStore,
+    model_unavailable: bool,
+    message: &str,
+) {
+    if !model_unavailable && !message.contains("401") {
+        return;
+    }
+    let (_, status_key) = resolve_key_slot(store);
+    let _ = store.delete_sync(&status_key);
+    log::warn!(
+        "[store] cleared {status_key}: chat failed with model-unavailable/401; \
+         Settings will re-prompt for the API key"
+    );
+}
+
 /// Test whether the LLM API key can be read from the keyring and return a
 /// structured result for the Settings UI to display.
 #[tauri::command]
@@ -401,6 +434,69 @@ mod tests {
         assert_eq!(
             resolve_key_slot(&store),
             ("api_key".to_string(), "llm.api_key_status".to_string())
+        );
+    }
+    /// 401-equivalent path: a provider auth failure clears the resolved
+    /// status flag, so the next `store_get` falls through to the keyring
+    /// instead of trusting the stale "set" flag (out-of-band keychain
+    /// deletion recovery contract).
+    #[test]
+    fn clear_api_key_flag_on_provider_error_clears_flag_on_401() {
+        let store = athena_store::KeyValueStore::new_empty();
+        store.set_sync("llm.api_key_status", &"set").unwrap();
+        clear_api_key_flag_on_provider_error(
+            &store,
+            false,
+            "Anthropic API error 401: invalid x-api-key",
+        );
+        assert_eq!(store.get::<String>("llm.api_key_status").unwrap(), None);
+    }
+
+    /// ModelUnavailable (retired/removed upstream configuration) is treated
+    /// like a 401: the flag is cleared so Settings re-prompts.
+    #[test]
+    fn clear_api_key_flag_on_provider_error_clears_flag_on_model_unavailable() {
+        let store = athena_store::KeyValueStore::new_empty();
+        store.set_sync("llm.provider", &"openai").unwrap();
+        store.set_sync("llm.api_key_status.openai", &"set").unwrap();
+        clear_api_key_flag_on_provider_error(&store, true, "");
+        assert_eq!(
+            store.get::<String>("llm.api_key_status.openai").unwrap(),
+            None,
+            "scoped flag for the routed provider must be cleared"
+        );
+    }
+
+    /// Success / unrelated failures leave the flag untouched — only
+    /// auth-shaped failures trigger the recovery.
+    #[test]
+    fn clear_api_key_flag_on_provider_error_keeps_flag_on_other_errors() {
+        let store = athena_store::KeyValueStore::new_empty();
+        store.set_sync("llm.api_key_status", &"set").unwrap();
+        clear_api_key_flag_on_provider_error(&store, false, "OpenAI API error 500: boom");
+        clear_api_key_flag_on_provider_error(&store, false, "");
+        assert_eq!(
+            store.get::<String>("llm.api_key_status").unwrap(),
+            Some("set".to_string())
+        );
+    }
+
+    /// Non-API-key paths are untouched: the recovery only ever deletes the
+    /// resolved status flag and leaves neighbouring keys alone.
+    #[test]
+    fn clear_api_key_flag_on_provider_error_leaves_other_keys_untouched() {
+        let store = athena_store::KeyValueStore::new_empty();
+        store.set_sync("llm.api_key_status", &"set").unwrap();
+        store.set_sync("llm.model", &"gpt-4o").unwrap();
+        store.set_sync("theme", &"dark").unwrap();
+        clear_api_key_flag_on_provider_error(&store, false, "OpenAI API error 401: nope");
+        assert_eq!(
+            store.get::<String>("llm.model").unwrap(),
+            Some("gpt-4o".to_string())
+        );
+        assert_eq!(
+            store.get::<String>("theme").unwrap(),
+            Some("dark".to_string())
         );
     }
 }
