@@ -51,6 +51,7 @@ The release build exposes 144 IPC commands.
 | Shortcut                              | Action                        |
 | ------------------------------------- | ----------------------------- |
 | `Cmd+J` / `Cmd+\`                     | Toggle right sidebar          |
+| `Cmd+K` / `Cmd+Shift+P`               | Command palette               |
 | `Cmd+B`                               | Toggle left sidebar           |
 | `Cmd+T`                               | New workspace                 |
 | `Cmd+Shift+A`                         | Add shell pane                |
@@ -78,6 +79,18 @@ cargo run --manifest-path src-tauri/Cargo.toml
 See [`ROADMAP.md`](ROADMAP.md) for the current project status. Please never post API keys or credentials in an issue.
 
 > **Note for contributors:** there are no local pre-commit hooks (husky/lint-staged were removed in August 2026). CI — `cargo clippy` against the baseline, ESLint, and the consistency checks — is the only gate, so run `npm run lint` and `cargo clippy --workspace` before pushing to avoid surprise CI failures.
+
+## Testing and QA
+
+Every push runs the JS suites (`npm test`, `npm run test:mcp`, the release-script tests) and `cargo test` across the Rust workspace on GitHub's Ubuntu runners. One exception: the `athena-terminal` test binary reproducibly kills the Ubuntu runner VM (a shutdown signal mid-run, even with the fork-based session tests skipped), so CI excludes it via `cargo test --workspace --exclude athena-terminal --locked`. Run the terminal crate's suite locally:
+
+```bash
+cargo test -p athena-terminal
+```
+
+It also still runs in full in the macOS release workflow (`macos-14`), where the shutdown trigger does not occur.
+
+End-to-end coverage lives in WebdriverIO specs that drive the real app through `tauri-wd` (macOS only), in two modes: the default headless run (`npm run test:e2e` from the repo root) and a headed mode with a visible window (`cd e2e-tests && npm run test:headed`) for watching a spec misbehave. Setup, the debug-binary build, and authoring conventions are documented in [`e2e-tests/README.md`](e2e-tests/README.md).
 
 ## License
 

@@ -40,7 +40,7 @@ Version bumped from 0.3.0 → **3.3.0** across `package.json`, `package-lock.jso
 
 **Still open (needs user action):**
 
-- [x] **Apple signing** — decision (2026-09-02): ship **unsigned**. The
+- [x] **Apple signing** — decision (2026-09-02): ship **unsigned**. **Release published 2026-09-02**: tag `v3.3.0` → `a2371ca`, CI `macOS Release` run 33573856164 succeeded; public (non-draft) GitHub release carries `Athena.s.Core_3.3.0_aarch64.dmg` (~10 MB) + sha256. Post-ship fix landed in that tag: `byte_char_slices` (clippy 1.98, CI stable is newer than local 1.95 gate — toolchain drift remains a risk; consider pinning `rust-toolchain.toml`). The
   release workflow now publishes an unsigned DMG on tag push (signing-gate
   hard-fail removed, publish step no longer conditioned on
   `APPLE_SIGNING_IDENTITY`); users bypass Gatekeeper via right-click → Open.
