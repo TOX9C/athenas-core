@@ -8,6 +8,7 @@ use dioxus::prelude::{Key, Modifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalKeyAction {
+    ToggleCommandPalette,
     ToggleRightSidebar,
     ShowNewSpace,
     ToggleSidebar,
@@ -55,6 +56,9 @@ pub fn classify(key: &Key, modifiers: Modifiers) -> Option<GlobalKeyAction> {
 
     if meta && !shift {
         return match key {
+            Key::Character(c) if c == "k" || c == "p" => {
+                Some(GlobalKeyAction::ToggleCommandPalette)
+            }
             Key::Character(c) if c == "j" || c == "\\" => Some(GlobalKeyAction::ToggleRightSidebar),
             Key::Character(c) if c == "t" => Some(GlobalKeyAction::ShowNewSpace),
             Key::Character(c) if c == "b" => Some(GlobalKeyAction::ToggleSidebar),
@@ -72,6 +76,7 @@ pub fn classify(key: &Key, modifiers: Modifiers) -> Option<GlobalKeyAction> {
     if meta && shift {
         return match key {
             Key::Character(c) if c == "S" => Some(GlobalKeyAction::ShowSwarmModal),
+            Key::Character(c) if c == "P" => Some(GlobalKeyAction::ToggleCommandPalette),
             Key::Character(c) if c == "A" => Some(GlobalKeyAction::AddShell),
             Key::Character(c) if c == "R" => Some(GlobalKeyAction::ResetWorkspaceView),
             _ => None,
@@ -191,15 +196,22 @@ mod tests {
     }
 
     #[test]
-    fn removed_command_palette_shortcuts_are_not_global_actions() {
+    fn classifies_command_palette_shortcuts() {
         for modifier in [Modifiers::META, Modifiers::CONTROL] {
             for key in ["k", "p"] {
                 assert_eq!(
                     classify(&Key::Character(key.into()), modifier),
-                    None,
-                    "{modifier:?}+{key} must not dispatch a missing palette action"
+                    Some(GlobalKeyAction::ToggleCommandPalette),
+                    "{modifier:?}+{key} must toggle the command palette"
                 );
             }
         }
+        assert_eq!(
+            classify(
+                &Key::Character("P".into()),
+                Modifiers::META | Modifiers::SHIFT
+            ),
+            Some(GlobalKeyAction::ToggleCommandPalette)
+        );
     }
 }

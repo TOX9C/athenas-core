@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod athena;
+pub mod command_palette;
 pub mod kanban;
 pub mod mobile;
 pub mod mobile_xterm;

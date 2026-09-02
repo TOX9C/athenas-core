@@ -5,6 +5,7 @@
 //! Dioxus hook ordering remains stable.
 
 use crate::stores::ui::UITheme;
+use crate::stores::command::{use_command_store, CommandState};
 use crate::stores::workspace::WorkspaceState;
 use crate::utils::font_size::{parse_persisted_font_size, persist_font_size};
 use crate::utils::settings_migration::migrate_smart_pane_titles;
@@ -164,6 +165,16 @@ pub fn use_startup_bootstrap(
                         .into(),
                     );
                 }
+            });
+        });
+    }
+
+    // Restore recent command IDs.
+    {
+        let mut cmd = use_command_store();
+        use_effect(move || {
+            spawn(async move {
+                cmd.write().recent_ids = CommandState::load_recent().await;
             });
         });
     }

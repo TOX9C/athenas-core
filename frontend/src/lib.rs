@@ -9,6 +9,8 @@ pub mod utils;
 use components::agents::agent_inspector::AgentInspector;
 use components::agents::output_event_bus::OutputEventBus;
 use components::kanban::kanban_board::KanbanBoard;
+use components::command_palette::CommandPalette;
+use components::settings::theme_picker::apply_theme_and_persist;
 use components::mobile::{should_render_mobile_app, MobileApp};
 use components::notifications::notification_bell::{
     provide_notification_overlay_store, use_notification_overlay_store, NotificationBell,
@@ -53,12 +55,15 @@ use stores::agent_status::provide_agent_status_store;
 use stores::athena::{provide_athena_store, use_athena_store};
 use stores::editor::provide_editor_store;
 use stores::notification::provide_notification_store;
+use stores::command::{
+    provide_command_store, use_command_store, Command, CommandCategory, CommandHandlers,
+};
 use stores::panel_manager::{provide_panel_manager_store, use_panel_manager_store};
 use stores::session::provide_session_store;
 use stores::swarm::provide_swarm_store;
 use stores::task::provide_task_store;
 use stores::terminal::provide_terminal_store;
-use stores::ui::{provide_ui_store, use_ui_store, Panel, SidebarSection};
+use stores::ui::{provide_ui_store, use_ui_store, Panel, SidebarSection, UITheme};
 use utils::font_size::{adjust_font_size, persist_font_size};
 use utils::keybindings::{classify, GlobalKeyAction};
 use utils::startup_bootstrap::use_startup_bootstrap;
@@ -149,6 +154,7 @@ pub fn App() -> Element {
     provide_ui_store();
     provide_workspace_store();
     provide_athena_store();
+    provide_command_store();
     provide_notification_store();
     provide_notification_overlay_store();
     provide_modal_overlay_store();
@@ -188,6 +194,83 @@ pub fn App() -> Element {
     let mut athena_state = use_athena_store();
     let mut panel_state = use_panel_manager_store();
     let mut notification_overlay = use_notification_overlay_store();
+
+    // Command palette wiring. The store holds open/query/registered-command
+    // state; handlers are a callback table keyed by `Command::handler_key`,
+    // registered here because App owns the signals they mutate.
+    let mut command_state = use_command_store();
+    let handlers = use_hook(move || {
+        let mut handlers: std::collections::HashMap<String, Callback<()>> =
+            std::collections::HashMap::new();
+        let mut commands: Vec<Command> = Vec::new();
+
+        handlers.insert(
+            "new_chat".to_string(),
+            Callback::new(move |_| {
+                let mut athena = athena_state.write();
+                athena.set_session_id(None);
+                athena.clear_messages();
+                athena.set_open(true);
+            }),
+        );
+        commands.push(Command {
+            id: "new-chat".to_string(),
+            label: "New Chat".to_string(),
+            category: CommandCategory::Athena,
+            description: Some("Start a fresh Athena conversation".to_string()),
+            keywords: vec!["chat".to_string(), "clear".to_string(), "session".to_string()],
+            shortcut: None,
+            handler_key: "new_chat".to_string(),
+            when_key: None,
+        });
+
+        for theme in UITheme::all() {
+            let theme = *theme;
+            let handler_key = format!("theme_{}", theme.name());
+            handlers.insert(
+                handler_key.clone(),
+                Callback::new(move |_| {
+                    ui_state.write().theme = theme;
+                    apply_theme_and_persist(theme);
+                }),
+            );
+            commands.push(Command {
+                id: format!("theme-{}", theme.name()),
+                label: format!("Theme: {}", theme.label()),
+                category: CommandCategory::Settings,
+                description: Some("Switch the app theme".to_string()),
+                keywords: vec![
+                    "theme".to_string(),
+                    "appearance".to_string(),
+                    theme.name().to_string(),
+                ],
+                shortcut: None,
+                handler_key,
+                when_key: None,
+            });
+        }
+
+        handlers.insert(
+            "open_settings".to_string(),
+            Callback::new(move |_| {
+                ui_state.write().show_settings_modal = true;
+            }),
+        );
+        commands.push(Command {
+            id: "open-settings".to_string(),
+            label: "Open Settings".to_string(),
+            category: CommandCategory::Settings,
+            description: Some("Open the settings dialog".to_string()),
+            keywords: vec!["settings".to_string(), "preferences".to_string()],
+            shortcut: Some("Cmd+,".to_string()),
+            handler_key: "open_settings".to_string(),
+            when_key: None,
+        });
+
+        command_state.write().register_commands(commands);
+        CommandHandlers(Rc::new(handlers))
+    });
+    use_context_provider(|| handlers);
 
     // Capture keyboard shortcuts before xterm.js receives them. The bubbling
     // Dioxus handler below still performs the app action; this listener only
@@ -363,6 +446,10 @@ pub fn App() -> Element {
                         let should_be_open = panel_state.write().toggle_right_sidebar(is_open);
                         ui_state.write().right_sidebar_open = should_be_open;
                     }
+                    Some(GlobalKeyAction::ToggleCommandPalette) => {
+                        notification_overlay.set(false);
+                        command_state.write().toggle();
+                    }
                     Some(GlobalKeyAction::ShowNewSpace) => {
                         notification_overlay.set(false);
                         ui_state.write().show_new_space_modal = true;
@@ -444,6 +531,7 @@ pub fn App() -> Element {
                         ui.show_new_space_modal = false;
                         ui.show_swarm_modal = false;
                         ui.show_settings_modal = false;
+                        command_state.write().close();
                         athena_state.write().is_open = false;
                         notification_overlay.set(false);
                         e.stop_propagation();
@@ -850,8 +938,12 @@ pub fn App() -> Element {
                     span { style: "width: 5px; height: 5px; border-radius: 50%; background: var(--accent);" }
                     "{theme_label}"
                 }
-            }
+                        }
 
+            ErrorBoundary {
+                fallback_message: "The command palette could not be rendered.".to_string(),
+                CommandPalette {}
+            }
 
             if ui_state.read().show_new_space_modal {
                 ErrorBoundary {

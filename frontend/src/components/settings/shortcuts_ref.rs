@@ -8,6 +8,8 @@ pub fn ShortcutsRef() -> Element {
             "Workspace",
             &[
                 ("\u{2318}T", "New terminal"),
+                ("\u{2318}K", "Command palette"),
+                ("\u{2318}\u{21e7}P", "Command palette (alt)"),
                 ("\u{2318}J", "Toggle right sidebar"),
                 ("\u{2318}B", "Toggle sidebar"),
                 ("\u{2318}1-9", "Switch panel"),
@@ -18,7 +20,7 @@ pub fn ShortcutsRef() -> Element {
         (
             "General",
             &[
-                ("Escape", "Close modal"),
+                ("Escape", "Close modal/palette"),
                 ("\u{2318}\u{21e7}R", "Reset workspace view"),
             ],
         ),
