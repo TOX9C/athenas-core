@@ -122,20 +122,41 @@ jobs:
           node scripts/check-plugin-integration.mjs
           cargo test --workspace --locked
 
-      - name: Note unsigned release path
+      - name: Note ad-hoc signed release path
         if: ${{ env.APPLE_SIGNING_IDENTITY == '' }}
         run: |
-          echo 'No Apple signing credentials configured — publishing an UNSIGNED DMG.' >&2
-          echo 'Users must right-click -> Open to bypass the Gatekeeper warning.' >&2
+          echo 'No Apple signing credentials configured — publishing an AD-HOC signed DMG.' >&2
+          echo 'The app is code signed with identity "-" so Gatekeeper sees a valid,' >&2
+          echo 'sealed bundle; users bypass the unsigned-developer warning with' >&2
+          echo 'right-click -> Open (or System Settings -> Privacy & Security).' >&2
           echo 'Configure APPLE_SIGNING_IDENTITY + cert secrets to ship a signed, notarized build.' >&2
 
-      - name: Build unsigned DMG
+      - name: Build ad-hoc signed DMG
         if: ${{ env.APPLE_SIGNING_IDENTITY == '' }}
-        # The workflow-level env defines APPLE_SIGNING_IDENTITY as an EMPTY
-        # string when the secret is unset, and an empty identity makes Tauri
-        # invoke codesign with '' ("The specified item could not be found in
-        # the keychain"). Drop the variable entirely for unsigned builds.
-        run: env -u APPLE_SIGNING_IDENTITY cargo tauri build --bundles dmg
+        # Passing "-" as the signing identity is Tauri's supported way to build
+        # an ad-hoc signed bundle: the bundler runs codesign --force --sign -
+        # on every nested binary and then the .app itself, which seals
+        # Contents/_CodeSignature before the DMG is created.
+        #
+        # The previous unsigned path dropped the variable entirely. That left
+        # the shipped .app with only the linker's Mach-O ad-hoc signature on
+        # the main executable ("linkedit-signed") and NO Contents/_CodeSignature
+        # directory — `codesign --verify --deep --strict` fails with "code has
+        # no resources but signature indicates they must be present", and
+        # Gatekeeper reports the app as "damaged" with right-click -> Open NOT
+        # working. v3.3.0 shipped in exactly that state.
+        #
+        # (Do NOT reintroduce `env -u APPLE_SIGNING_IDENTITY`: an empty string
+        # identity is also invalid — codesign is invoked with '' — so the two
+        # valid states for this variable are "-" here or a real identity below.)
+        #
+        # APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID must also be UNSET here, not
+        # merely empty: the bundler notarizes whenever it can resolve those
+        # three variables at all (std::env::var_os — an empty string still
+        # counts), and a notarytool submission with empty credentials would
+        # fail the build. This step runs only when the signing secrets are
+        # absent, so unsetting them is lossless.
+        run: env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID APPLE_SIGNING_IDENTITY='-' cargo tauri build --bundles dmg
 
       - name: Build signed, notarized, and stapled DMG
         if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
@@ -196,6 +217,20 @@ jobs:
             --expected-name "$expected" \
             --sha256 "${{ steps.artifact.outputs.path }}.sha256"
 
+      - name: Verify ad-hoc signed artifact
+        # Hard gate for the unsigned branch: the app INSIDE the shipped DMG must
+        # pass `codesign --verify --deep --strict` (the exact check that failed
+        # for v3.3.0's "damaged" DMG). spctl --assess is run for observability;
+        # its rejection of an ad-hoc build is expected and not fatal.
+        if: ${{ env.APPLE_SIGNING_IDENTITY == '' }}
+        run: |
+          expected="Athena's Core_${RELEASE_VERSION}_aarch64.dmg"
+          node scripts/verify-macos-artifact.mjs \
+            --artifact "${{ steps.artifact.outputs.path }}" \
+            --expected-name "$expected" \
+            --sha256 "${{ steps.artifact.outputs.path }}.sha256" \
+            --require-ad-hoc
+
       - name: Verify signed artifact
         if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
         run: |
@@ -219,9 +254,11 @@ jobs:
 
       - name: Publish GitHub release
         # Decision (2026-09-02): unsigned DMGs ARE published to the public release
-        # — no Apple Developer secrets are configured yet and shipping unsigned
-        # beats shipping nothing. The DMG still passes the integrity/architecture
-        # verification above; users bypass Gatekeeper via right-click -> Open.
+        # — no Apple Developer secrets are configured yet and shipping without
+        # Developer ID notarization beats shipping nothing. The DMG is ad-hoc
+        # signed so its signature is structurally valid (so the "damaged"
+        # Gatekeeper failure class cannot occur); users dismiss the
+        # "not from an identified developer" warning via right-click -> Open.
         # Restore the `env.APPLE_SIGNING_IDENTITY != ''` guard on this step when
         # signing secrets exist so a regression to unsigned never publishes silently.
         if: ${{ github.event_name == 'push' || inputs.publish == true }}

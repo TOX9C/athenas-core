@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 
 function usage() {
@@ -16,6 +16,10 @@ Options:
   --require-app              Require exactly one .app bundle in the DMG
   --require-arm64            Require the app executable to contain an arm64 slice
   --require-signing          Verify the mounted app with codesign and spctl
+  --require-ad-hoc           Require a valid ad-hoc signature (code signed with '-'):
+                             hard-fails on any codesign integrity problem; the
+                             expected Gatekeeper rejection for unsigned-by-Apple
+                             builds is logged but not fatal
   --require-notarization     Verify a stapled notarization ticket
   --help                     Show this help
 `)
@@ -28,6 +32,11 @@ function argumentValue(args, name) {
 
 function run(command, args) {
   return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+}
+
+function runCaptureAll(command, args) {
+  const result = spawnSync(command, args, { encoding: 'utf8' })
+  return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
 }
 
 function sha256(path) {
@@ -46,6 +55,7 @@ const expectedName = argumentValue(args, '--expected-name')
 const requireApp = args.includes('--require-app')
 const requireArm64 = args.includes('--require-arm64')
 const requireSigning = args.includes('--require-signing')
+const requireAdHoc = args.includes('--require-ad-hoc')
 const requireNotarization = args.includes('--require-notarization')
 
 if (!artifact) {
@@ -96,7 +106,7 @@ try {
   process.exit(1)
 }
 
-if (requireApp || requireArm64 || requireSigning || requireNotarization) {
+if (requireApp || requireArm64 || requireSigning || requireNotarization || requireAdHoc) {
   const mountPoint = mkdtempSync(join(tmpdir(), 'athena-dmg-'))
   let attached = false
   try {
@@ -148,6 +158,30 @@ if (requireApp || requireArm64 || requireSigning || requireNotarization) {
       run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', app])
       run('spctl', ['--assess', '--type', 'execute', '--verbose', app])
       console.log('signing: codesign and spctl passed')
+    }
+    if (requireAdHoc) {
+      // Hard gate: the bundle signature must be complete and valid. The broken
+      // v3.3.0 DMG (Mach-O linkedit signature with no sealed resources and no
+      // Contents/_CodeSignature) fails right here — that is the "damaged, move
+      // to Bin" class of failure and must never ship again.
+      run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', app])
+      // Hard gate: this branch must be ad-hoc signed (identity "-"), never
+      // misrouted into the Developer-ID branch or left unsigned.
+      const details = runCaptureAll('codesign', ['-dvv', app])
+      if (details.status !== 0 || !/\bSignature=adhoc\b/.test(details.output)) {
+        throw new Error(
+          `expected an ad-hoc signature (Signature=adhoc) on the app, got: ${details.output.trim()}`,
+        )
+      }
+      console.log('signing: codesign --verify --deep --strict passed (Signature=adhoc)')
+      // Informational: Gatekeeper assessment. An ad-hoc signed app is NEVER
+      // accepted by spctl (no Developer ID, no notarization ticket), so a
+      // rejection here is expected and NOT fatal — users launch the app via
+      // right-click -> Open once the signature itself is valid.
+      const assess = runCaptureAll('spctl', ['--assess', '--type', 'execute', '--verbose', app])
+      console.log(
+        `gatekeeper: spctl exited ${assess.status} (expected non-zero for ad-hoc builds; right-click -> Open bypass applies once the signature is valid)`,
+      )
     }
     if (requireNotarization) {
       run('xcrun', ['stapler', 'validate', app])
