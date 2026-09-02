@@ -42,7 +42,7 @@ pub fn PluginDashboard() -> Element {
                                     .and_then(|v| v.as_str())
                                     .map(|s| s == "enabled")
                                     .unwrap_or(false);
-                                bus.write().upsert_plugin(id, name, version, enabled);
+                                bus.write().upsert_plugin(id, name, version, enabled, None);
                             }
                         }
                     }

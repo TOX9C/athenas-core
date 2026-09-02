@@ -1327,4 +1327,105 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("absolute"));
     }
+
+    // -- Wire-contract tests --------------------------------------------------
+    //
+    // These payload keys are the contract with
+    // `frontend/src/components/plugin/plugin_event_bus.rs` (`parse_plugin_bus_event`)
+    // and with paired phones (the relay in `src-tauri/src/relay/ws.rs`
+    // forwards these payloads verbatim). If a key changes here, both
+    // consumers must change in the same commit.
+
+    fn capture_emitted_events(
+        mgr: &PluginManager,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&captured);
+        mgr.set_event_emitter(move |channel, data| {
+            if let Ok(mut events) = sink.lock() {
+                events.push((channel.to_string(), data.clone()));
+            }
+        });
+        captured
+    }
+
+    #[test]
+    fn lifecycle_events_key_plugin_id_as_pluginId() {
+        let mgr = PluginManager::new();
+        let captured = capture_emitted_events(&mgr);
+
+        mgr.register_plugin(sample_manifest("p1")).unwrap();
+        mgr.enable_plugin("p1").unwrap();
+        // `plugin:disabled` only fires when disabling an enabled plugin.
+        mgr.disable_plugin("p1").unwrap();
+        mgr.enable_plugin("p1").unwrap();
+        mgr.set_plugin_error("p1", "boom").unwrap();
+
+        let events = captured.lock().expect("capture mutex poisoned");
+        for channel in [
+            "plugin:registered",
+            "plugin:disabled",
+            "plugin:enabled",
+            "plugin:error",
+        ] {
+            let payload = events
+                .iter()
+                .find(|(c, _)| c == channel)
+                .unwrap_or_else(|| panic!("{channel} was not emitted"))
+                .1
+                .clone();
+            assert!(
+                payload.get("pluginId").and_then(|v| v.as_str()) == Some("p1"),
+                "{channel} payload must key the plugin id as `pluginId` \
+                 (frontend parser contract); got {payload}"
+            );
+            assert!(
+                payload.get("id").is_none(),
+                "{channel} payload must not key the plugin id as bare `id`"
+            );
+        }
+
+        let error_payload = events
+            .iter()
+            .find(|(c, _)| c == "plugin:error")
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(error_payload.get("error").and_then(|v| v.as_str()), Some("boom"));
+    }
+
+    #[test]
+    fn registry_updated_wraps_entries_in_registry_key() {
+        let mgr = PluginManager::new();
+        let captured = capture_emitted_events(&mgr);
+
+        mgr.register_plugin(sample_manifest("p1")).unwrap();
+
+        let events = captured.lock().expect("capture mutex poisoned");
+        let payload = events
+            .iter()
+            .find(|(c, _)| c == "plugin:registryUpdated")
+            .expect("plugin:registryUpdated was not emitted")
+            .1
+            .clone();
+        assert!(
+            payload.is_object(),
+            "registryUpdated payload must be an object wrapping `registry`; \
+             got {payload}"
+        );
+        let registry = payload
+            .get("registry")
+            .and_then(|v| v.as_array())
+            .expect("registryUpdated payload must contain a `registry` array");
+        let entry = registry
+            .iter()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some("p1"))
+            .expect("registry entries must key plugins by `id`");
+        // Entries carry a snake_case `status` string, not an `enabled`
+        // boolean; the frontend derives enabledness from it.
+        assert_eq!(
+            entry.get("status").and_then(|v| v.as_str()),
+            Some("installed")
+        );
+    }
 }

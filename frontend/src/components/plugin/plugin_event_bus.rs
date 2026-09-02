@@ -29,18 +29,58 @@ impl PluginBusState {
         }
     }
 
-    pub fn upsert_plugin(&mut self, id: String, name: String, version: String, enabled: bool) {
+    /// Apply a parsed backend plugin event to the store.
+    pub fn apply_plugin_event(&mut self, event: &PluginBusEvent) {
+        match event {
+            PluginBusEvent::RegistryUpdated(entries) => {
+                for entry in entries {
+                    self.upsert_plugin(
+                        entry.id.clone(),
+                        entry.name.clone(),
+                        entry.version.clone(),
+                        entry.enabled,
+                        entry.error.clone(),
+                    );
+                }
+            }
+            PluginBusEvent::Registered { id, name, version } => {
+                self.upsert_plugin(id.clone(), name.clone(), version.clone(), true, None);
+            }
+            PluginBusEvent::Enabled { id } => {
+                self.set_plugin_enabled(id, true);
+            }
+            PluginBusEvent::Disabled { id } => {
+                self.set_plugin_enabled(id, false);
+            }
+            PluginBusEvent::Error { id, error } => {
+                self.set_plugin_error(id, error.clone());
+            }
+            PluginBusEvent::AddEvent(payload) => {
+                self.add_event(payload.clone());
+            }
+        }
+    }
+
+    pub fn upsert_plugin(
+        &mut self,
+        id: String,
+        name: String,
+        version: String,
+        enabled: bool,
+        error: Option<String>,
+    ) {
         if let Some(p) = self.plugins.iter_mut().find(|p| p.id == id) {
             p.name = name;
             p.version = version;
             p.enabled = enabled;
+            p.error = error;
         } else {
             self.plugins.push(PluginEntry {
                 id,
                 name,
                 version,
                 enabled,
-                error: None,
+                error,
             });
         }
     }
@@ -102,6 +142,98 @@ enum PluginBusEvent {
     AddEvent(String),
 }
 
+/// Parse a Tauri event payload from the backend plugin manager into a bus
+/// event.
+///
+/// Wire contract: the emitter is `crates/athena-plugins`, where
+/// `plugin:registered` / `plugin:enabled` / `plugin:disabled` / `plugin:error`
+/// identify the plugin with the key `pluginId` (NOT `id`), and
+/// `plugin:registryUpdated` wraps its entries in `{ "registry": [...] }`.
+/// Registry entries carry `status` ("installed" | "enabled" | "disabled" |
+/// "error") rather than an `enabled` boolean. The relay in
+/// `src-tauri/src/relay/ws.rs` forwards these same payloads verbatim to paired
+/// phones, so both consumers parse this exact shape — changing it requires
+/// changing all three sides.
+///
+/// Payloads that do not match the emitted shape return `None` (event
+/// dropped), which is what made the previous `id`-keyed parser silently skip
+/// every live plugin update.
+fn parse_plugin_bus_event(channel: &str, payload: &str) -> Option<PluginBusEvent> {
+    // `plugin:event` is consumed verbatim (its inner payload is a plugin
+    // event object with its own `id`, see runtime.rs `emit_plugin_event`).
+    if channel == "plugin:event" {
+        return Some(PluginBusEvent::AddEvent(payload.to_string()));
+    }
+
+    let val: serde_json::Value = serde_json::from_str(payload).ok()?;
+
+    let plugin_id = |v: &serde_json::Value| -> Option<String> {
+        v.get("pluginId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|id| !id.is_empty())
+    };
+
+    match channel {
+        "plugin:registryUpdated" => {
+            let plugins_arr = val.get("registry")?.as_array()?;
+            let mut entries = Vec::with_capacity(plugins_arr.len());
+            for p in plugins_arr {
+                let id = p.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name = p
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let version = p
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let enabled = p.get("status").and_then(|v| v.as_str()) == Some("enabled");
+                let error = p
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                entries.push(PluginEntry {
+                    id,
+                    name,
+                    version,
+                    enabled,
+                    error,
+                });
+            }
+            Some(PluginBusEvent::RegistryUpdated(entries))
+        }
+        "plugin:registered" => {
+            let id = plugin_id(&val)?;
+            let name = val
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Plugin")
+                .to_string();
+            let version = val
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(PluginBusEvent::Registered { id, name, version })
+        }
+        "plugin:enabled" => plugin_id(&val).map(|id| PluginBusEvent::Enabled { id }),
+        "plugin:disabled" => plugin_id(&val).map(|id| PluginBusEvent::Disabled { id }),
+        "plugin:error" => {
+            let id = plugin_id(&val)?;
+            let error = val
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error")
+                .to_string();
+            Some(PluginBusEvent::Error { id, error })
+        }
+        _ => None,
+    }
+}
+
 /// Plugin event bus component — renders nothing, handles IPC events.
 #[component]
 pub fn PluginEventBus() -> Element {
@@ -119,52 +251,30 @@ pub fn PluginEventBus() -> Element {
             let mut plugin_store = plugin_store;
             let mut toast_store = toast_store;
             while let Ok(event) = rx.recv().await {
-                match event {
-                    PluginBusEvent::RegistryUpdated(entries) => {
-                        for entry in entries {
-                            plugin_store.write().upsert_plugin(
-                                entry.id,
-                                entry.name,
-                                entry.version,
-                                entry.enabled,
-                            );
-                        }
-                    }
-                    PluginBusEvent::Registered { id, name, version } => {
-                        plugin_store
-                            .write()
-                            .upsert_plugin(id.clone(), name.clone(), version, true);
-
-                        let toast = Toast {
-                            id: format!("toast-plugin-{}", chrono::Utc::now().timestamp_millis()),
-                            toast_type: ToastType::Success,
-                            title: "Plugin Connected".to_string(),
-                            message: format!("{} is now connected", name),
-                            duration_ms: 3000,
-                        };
-                        toast_store.write().push(toast);
-                    }
-                    PluginBusEvent::Enabled { id } => {
-                        plugin_store.write().set_plugin_enabled(&id, true);
-                    }
-                    PluginBusEvent::Disabled { id } => {
-                        plugin_store.write().set_plugin_enabled(&id, false);
+                // Toasts need title/message from the payload; capture them
+                // before moving the event into the store.
+                let toast_info = match &event {
+                    PluginBusEvent::Registered { name, .. } => {
+                        Some((ToastType::Success, "Plugin Connected".to_string(), format!("{} is now connected", name), 3000))
                     }
                     PluginBusEvent::Error { id, error } => {
-                        plugin_store.write().set_plugin_error(&id, error.clone());
-
-                        let toast = Toast {
-                            id: format!("toast-error-{}", chrono::Utc::now().timestamp_millis()),
-                            toast_type: ToastType::Error,
-                            title: "Plugin Error".to_string(),
-                            message: format!("{}: {}", id, error),
-                            duration_ms: 5000,
-                        };
-                        toast_store.write().push(toast);
+                        Some((ToastType::Error, "Plugin Error".to_string(), format!("{}: {}", id, error), 5000))
                     }
-                    PluginBusEvent::AddEvent(payload) => {
-                        plugin_store.write().add_event(payload);
-                    }
+                    _ => None,
+                };
+                plugin_store.write().apply_plugin_event(&event);
+                if let Some((toast_type, title, message, duration_ms)) = toast_info {
+                    let toast = Toast {
+                        id: format!(
+                            "toast-plugin-{}",
+                            chrono::Utc::now().timestamp_millis()
+                        ),
+                        toast_type,
+                        title,
+                        message,
+                        duration_ms,
+                    };
+                    toast_store.write().push(toast);
                 }
             }
         },
@@ -177,123 +287,22 @@ pub fn PluginEventBus() -> Element {
         }
         mounted.set(true);
 
-        let registry_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("plugin:registryUpdated", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                if let Some(plugins_arr) = val.as_array() {
-                    let mut entries = Vec::with_capacity(plugins_arr.len());
-                    for p in plugins_arr {
-                        let id = p
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let name = p
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let version = p
-                            .get("version")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let enabled = p.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-                        entries.push(PluginEntry {
-                            id,
-                            name,
-                            version,
-                            enabled,
-                            error: None,
-                        });
-                    }
-                    dispatcher.send(PluginBusEvent::RegistryUpdated(entries));
+        for channel in [
+            "plugin:registryUpdated",
+            "plugin:registered",
+            "plugin:enabled",
+            "plugin:disabled",
+            "plugin:error",
+            "plugin:event",
+        ] {
+            let channel_unlistens = unlistens_effect.clone();
+            if let Ok(u) = tauri_bridge::listen(channel, move |payload: String| {
+                if let Some(event) = parse_plugin_bus_event(channel, &payload) {
+                    dispatcher.send(event);
                 }
+            }) {
+                channel_unlistens.borrow_mut().push(u);
             }
-        }) {
-            registry_unlistens.borrow_mut().push(u);
-        }
-
-        let registered_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("plugin:registered", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let name = val
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Plugin")
-                    .to_string();
-                let version = val
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                dispatcher.send(PluginBusEvent::Registered { id, name, version });
-            }
-        }) {
-            registered_unlistens.borrow_mut().push(u);
-        }
-
-        let enabled_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("plugin:enabled", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !id.is_empty() {
-                    dispatcher.send(PluginBusEvent::Enabled { id });
-                }
-            }
-        }) {
-            enabled_unlistens.borrow_mut().push(u);
-        }
-
-        let disabled_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("plugin:disabled", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !id.is_empty() {
-                    dispatcher.send(PluginBusEvent::Disabled { id });
-                }
-            }
-        }) {
-            disabled_unlistens.borrow_mut().push(u);
-        }
-
-        let error_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("plugin:error", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let id = val
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let error = val
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown error")
-                    .to_string();
-                dispatcher.send(PluginBusEvent::Error { id, error });
-            }
-        }) {
-            error_unlistens.borrow_mut().push(u);
-        }
-
-        let event_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("plugin:event", move |payload: String| {
-            dispatcher.send(PluginBusEvent::AddEvent(payload));
-        }) {
-            event_unlistens.borrow_mut().push(u);
         }
     });
 
@@ -306,4 +315,155 @@ pub fn PluginEventBus() -> Element {
     });
 
     rsx! {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shape emitted by crates/athena-plugins `lifecycle.rs::register_plugin`.
+    const REGISTERED_WIRE: &str = r#"{"pluginId":"p1","name":"Test Plugin"}"#;
+
+    #[test]
+    fn parses_registered_with_plugin_id_key() {
+        let event = parse_plugin_bus_event("plugin:registered", REGISTERED_WIRE)
+            .expect("backend-emitted shape must parse");
+        let PluginBusEvent::Registered { id, name, version } = event else {
+            panic!("expected Registered, got {event:?}");
+        };
+        assert_eq!(id, "p1");
+        assert_eq!(name, "Test Plugin");
+        assert_eq!(version, "");
+    }
+
+    /// Regression: the previously broken key. The backend emits `pluginId`;
+    /// a parser keyed on `id` silently drops every registered/enabled/
+    /// disabled/error event. Pin the emitted key against the parsed key.
+    #[test]
+    fn id_keyed_payload_does_not_masquerade_as_plugin_id() {
+        assert!(parse_plugin_bus_event(
+            "plugin:registered",
+            r#"{"id":"wrong","name":"Wrong"}"#
+        )
+        .is_none());
+        assert!(parse_plugin_bus_event("plugin:enabled", r#"{"id":"p1"}"#).is_none());
+        assert!(parse_plugin_bus_event("plugin:disabled", r#"{"id":"p1"}"#).is_none());
+        assert!(parse_plugin_bus_event("plugin:error", r#"{"id":"p1","error":"boom"}"#)
+            .is_none());
+    }
+
+    #[test]
+    fn parses_enabled_disabled_and_error_with_plugin_id_key() {
+        assert!(matches!(
+            parse_plugin_bus_event("plugin:enabled", r#"{"pluginId":"p1","name":"P"}"#),
+            Some(PluginBusEvent::Enabled { id }) if id == "p1"
+        ));
+        assert!(matches!(
+            parse_plugin_bus_event("plugin:disabled", r#"{"pluginId":"p1"}"#),
+            Some(PluginBusEvent::Disabled { id }) if id == "p1"
+        ));
+        assert!(matches!(
+            parse_plugin_bus_event(
+                "plugin:error",
+                r#"{"pluginId":"p1","error":"crashed"}"#
+            ),
+            Some(PluginBusEvent::Error { id, error }) if id == "p1" && error == "crashed"
+        ));
+    }
+
+    /// Shape emitted by `lifecycle.rs::emit_registry_update`: the plugin
+    /// array is wrapped in `{ "registry": [...] }` and each entry carries a
+    /// snake_case `status` string (not an `enabled` boolean).
+    const REGISTRY_WIRE: &str = r#"{
+        "registry": [
+            {
+                "id": "p1",
+                "name": "Enabled One",
+                "version": "1.0.0",
+                "description": "d",
+                "author": "a",
+                "status": "enabled",
+                "config": {},
+                "error": null
+            },
+            {
+                "id": "p2",
+                "name": "Broken One",
+                "version": "0.2.0",
+                "description": "d",
+                "author": "a",
+                "status": "error",
+                "config": {},
+                "error": "failed to start"
+            }
+        ]
+    }"#;
+
+    #[test]
+    fn parses_registry_updated_wrapped_in_registry_key() {
+        let event = parse_plugin_bus_event("plugin:registryUpdated", REGISTRY_WIRE)
+            .expect("backend-emitted shape must parse");
+        let PluginBusEvent::RegistryUpdated(entries) = event else {
+            panic!("expected RegistryUpdated, got {event:?}");
+        };
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].enabled);
+        assert_eq!(entries[0].id, "p1");
+        assert!(!entries[1].enabled);
+        assert_eq!(entries[1].error.as_deref(), Some("failed to start"));
+    }
+
+    #[test]
+    fn bare_registry_array_does_not_masquerade_as_wrapped() {
+        // The old parser expected a top-level array; the backend wraps it.
+        assert!(parse_plugin_bus_event("plugin:registryUpdated", "[]").is_none());
+    }
+
+    #[test]
+    fn parsed_events_drive_store_updates() {
+        let mut store = PluginBusState::new();
+
+        // Registry update installs enabled/error entries.
+        store.apply_plugin_event(
+            &parse_plugin_bus_event("plugin:registryUpdated", REGISTRY_WIRE).unwrap(),
+        );
+        assert_eq!(store.plugins.len(), 2);
+        assert!(store.plugins.iter().any(|p| p.id == "p1" && p.enabled));
+        assert_eq!(
+            store.plugins.iter().find(|p| p.id == "p2").unwrap().error.as_deref(),
+            Some("failed to start")
+        );
+
+        store.apply_plugin_event(
+            &parse_plugin_bus_event("plugin:registered", REGISTERED_WIRE).unwrap(),
+        );
+        assert!(store.plugins.iter().any(|p| p.id == "p1" && p.name == "Test Plugin"));
+
+        store.apply_plugin_event(
+            &parse_plugin_bus_event("plugin:disabled", r#"{"pluginId":"p1"}"#).unwrap(),
+        );
+        assert!(!store.plugins.iter().find(|p| p.id == "p1").unwrap().enabled);
+
+        store.apply_plugin_event(
+            &parse_plugin_bus_event("plugin:error", r#"{"pluginId":"p1","error":"boom"}"#)
+                .unwrap(),
+        );
+        assert_eq!(
+            store.plugins.iter().find(|p| p.id == "p1").unwrap().error.as_deref(),
+            Some("boom")
+        );
+
+        store.apply_plugin_event(
+            &parse_plugin_bus_event("plugin:event", r#"{"id":"evt-1","type":"status"}"#)
+                .unwrap(),
+        );
+        assert_eq!(store.events.len(), 1);
+    }
+
+    #[test]
+    fn malformed_payloads_are_dropped_not_panicked() {
+        assert!(parse_plugin_bus_event("plugin:registered", "not json").is_none());
+        assert!(parse_plugin_bus_event("plugin:registryUpdated", "{}").is_none());
+        assert!(parse_plugin_bus_event("plugin:unknown", "{}").is_none());
+    }
 }
