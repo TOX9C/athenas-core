@@ -2072,7 +2072,7 @@ mod tests {
                 "dup2 should recycle the old master fd number"
             );
         }
-        let byte = [b'x'];
+        let byte = *b"x";
         assert_eq!(
             unsafe {
                 libc::write(
