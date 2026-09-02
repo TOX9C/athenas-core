@@ -34,6 +34,31 @@ const MARKER = `STUB_OK_${Date.now()}`;
 // deleting it, store_get short-circuits to a stale status from the real
 // config before ever checking the keyring.
 const TOUCHED_KEYS = ['llm.provider', 'llm.model', 'llm.base_url', 'llm.api_key', 'llm.api_key_status'];
+// browser.execute NEVER awaits a returned Promise (WebDriver sync script
+// serialization turns a Promise into `{}`), so Tauri invoke calls must be
+// bridged: fire-and-forget in the page, park the result on localStorage,
+// then poll for it synchronously. (Same pattern as kanban-persistence /
+// settings-round-trip — those specs proved it in CI.)
+let ipcTokenCounter = 0;
+async function ipcInvoke(cmd, args = {}) {
+  const token = `__e2e_ipc_${Date.now()}_${ipcTokenCounter++}`;
+  await browser.execute((t, c, a) => {
+    localStorage.setItem(t, 'PENDING');
+    window.__TAURI__.core.invoke(c, a).then(
+      v => { localStorage.setItem(t, JSON.stringify({ ok: true, value: v === undefined ? null : v })); },
+      e => { localStorage.setItem(t, JSON.stringify({ ok: false, error: typeof e === 'string' ? e : (e && e.message) || String(e) })); },
+    );
+  }, token, cmd, args);
+  for (let i = 0; i < 40; i++) {
+    const raw = await browser.execute(t => localStorage.getItem(t), token);
+    if (raw !== null && raw !== 'PENDING') {
+      await browser.execute(t => localStorage.removeItem(t), token);
+      try { return JSON.parse(raw); } catch { return { ok: false, error: raw }; }
+    }
+    await browser.pause(250);
+  }
+  throw new Error(`invoke(${cmd}) never settled`);
+}
 
 function keyringGet() {
   try {
@@ -99,15 +124,24 @@ describe('Athena chat against a stubbed OpenAI provider', () => {
           if (value === null || key === 'llm.api_key' || key === 'llm.api_key_status') {
             // `llm.api_key` only ever holds the "set"/"not_set" sentinel —
             // the real secret lives in the keyring, restored below.
-            await browser.execute(k => window.__TAURI__.core.invoke('store_delete', { key: k }), key);
+            await ipcInvoke('store_delete', { key });
           } else {
-            await browser.execute(
-              (k, v) => window.__TAURI__.core.invoke('store_set', { key: k, value: v }),
-              key, value,
-            );
+            await ipcInvoke('store_set', { key, value });
           }
         } catch { /* session may be gone already */ }
       }
+      // Prove the restore actually landed: re-read every touched key through
+      // the settled bridge and log the comparison. Silent restore failures
+      // used to pass unnoticed because the unresolved-Promise snapshot was
+      // written back as `{}` and nothing checked the result.
+      try {
+        const restored = {};
+        for (const key of TOUCHED_KEYS) {
+          const r = await ipcInvoke('store_get', { key });
+          restored[key] = r.ok ? r.value : `(error: ${r.error})`;
+        }
+        console.log(`store restore round-trip: ${JSON.stringify(restored)}`);
+      } catch { /* session may be gone already */ }
     }
     // Restore the real keyring entry (or remove the stub write).
     if (prevKey === null) keyringDelete();
@@ -150,10 +184,10 @@ describe('Athena chat against a stubbed OpenAI provider', () => {
       await browser.pause(400);
       expect(await clickButton('Next >')).toBe(true);
       await browser.waitUntil(
-        async () => browser.execute(() => !!document.getElementById('add-claude-code')),
+        async () => browser.execute(() => !!document.getElementById('add-claude')),
         { timeout: 10000, interval: 250, timeoutMsg: 'Agent configuration step did not appear' },
       );
-      await browser.execute(() => document.getElementById('add-claude-code')?.click());
+      await browser.execute(() => document.getElementById('add-claude')?.click());
       expect(await clickButton('Launch Space')).toBe(true);
     }
     await browser.waitUntil(hasPill, {
@@ -163,10 +197,14 @@ describe('Athena chat against a stubbed OpenAI provider', () => {
     // Point the chat backend at the stub through the same command the
     // Settings UI uses. Snapshot the previous values first so `after` can
     // restore the user's real configuration.
-    const storeGet = (key) => browser.execute(k =>
-      window.__TAURI__.core.invoke('store_get', { key: k }).catch(() => null), key);
-    const storeSet = (key, value) => browser.execute((k, v) =>
-      window.__TAURI__.core.invoke('store_set', { key: k, value: v }), key, value);
+    const storeGet = async (key) => {
+      const r = await ipcInvoke('store_get', { key });
+      return r.ok ? r.value : null;
+    };
+    const storeSet = async (key, value) => {
+      const r = await ipcInvoke('store_set', { key, value });
+      if (!r.ok) throw new Error(`store_set(${key}) failed: ${r.error}`);
+    };
     prevStoreValues = {};
     for (const key of TOUCHED_KEYS) {
       prevStoreValues[key] = await storeGet(key);
@@ -174,7 +212,8 @@ describe('Athena chat against a stubbed OpenAI provider', () => {
     await storeSet('llm.provider', 'custom'); // custom => legacy slots are authoritative
     await storeSet('llm.model', 'stub-model');
     await storeSet('llm.base_url', `http://127.0.0.1:${stubPort}/v1`);
-    await browser.execute(k => window.__TAURI__.core.invoke('store_delete', { key: k }), 'llm.api_key_status');
+    const delStatus = await ipcInvoke('store_delete', { key: 'llm.api_key_status' });
+    if (!delStatus.ok) throw new Error(`store_delete(llm.api_key_status) failed: ${delStatus.error}`);
     await storeSet('llm.api_key', STUB_KEY);  // goes to the OS keyring
 
     // Open the Athena panel via its toggle, then wait for the composer.
