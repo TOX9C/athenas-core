@@ -1,0 +1,7 @@
+# Pin the toolchain so local gates (clippy baseline, tests) and CI
+# (`dtolnay/rust-toolchain@stable`) compile the same code — otherwise a new
+# stable's lint promotions pass locally and fail in CI (hit 2026-09-02 with
+# `byte_char_slices` on rust 1.98 while local was 1.95).
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
