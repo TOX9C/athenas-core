@@ -13,6 +13,15 @@ DEADLINE=$(( $(date +%s) + HOURS * 3600 ))
 LOG_DIR=".plans/improve/log"
 mkdir -p "$LOG_DIR"
 
+# Preflight: refuse to start on a dirty tree. Untracked/dirty files would be
+# carried onto the loop branch and could be swept into an iteration commit.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "[loop] ABORT: working tree is not clean:" >&2
+  git status --porcelain >&2
+  echo "[loop] Commit, stash, or discard these first, then re-run." >&2
+  exit 1
+fi
+
 # Isolation: everything lands on a dedicated branch.
 if ! git rev-parse --verify agent/overnight-improve >/dev/null 2>&1; then
   git branch agent/overnight-improve
