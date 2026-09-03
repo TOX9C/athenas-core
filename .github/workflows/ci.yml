@@ -76,6 +76,10 @@ jobs:
         run: |
           if [ -z "$RELEASE_VERSION" ]; then
             RELEASE_VERSION="$(node -p "require('./package.json').version")"
+          else
+            # Tag pushes pass the raw ref name (v3.3.1); the check script only
+            # strips the prefix from GITHUB_REF_NAME, not from RELEASE_VERSION.
+            RELEASE_VERSION="${RELEASE_VERSION#v}"
           fi
           RELEASE_VERSION="$RELEASE_VERSION" npm run check:release-identity
 

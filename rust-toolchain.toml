@@ -4,4 +4,4 @@
 # `byte_char_slices` on rust 1.98 while local was 1.95).
 [toolchain]
 channel = "1.98.0"
-components = ["clippy", "rustfmt"]
+components = ["clippy", "rustfmt", "llvm-tools"]
