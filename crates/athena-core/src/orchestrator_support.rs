@@ -472,4 +472,114 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn sanitize_redacts_every_credential_pattern() {
+        let raw = concat!(
+            "sk-AbCdEfGhIjKlMnOpQrSt ",
+            "x-api-key: sekret123 ",
+            "Bearer to.ken ",
+            "api_key=supersecret ",
+            "apikey:alsosupersecret ",
+        );
+        let out = super::sanitize_error_message(raw);
+        assert!(out.contains("sk-[REDACTED]"), "{out}");
+        assert!(out.contains("x-api-key: [REDACTED]"), "{out}");
+        assert!(out.contains("Bearer [REDACTED]"), "{out}");
+        assert!(out.contains("api_key=[REDACTED]"), "{out}");
+        for secret in [
+            "AbCdEfGhIjKlMnOpQrSt",
+            "sekret123",
+            "to.ken",
+            "supersecret",
+            "alsosupersecret",
+        ] {
+            assert!(!out.contains(secret), "secret leaked: {secret}");
+        }
+    }
+
+    #[test]
+    fn sanitize_leaves_plain_messages_untouched() {
+        let msg = "rate limit exceeded, retry after 30s";
+        assert_eq!(super::sanitize_error_message(msg), msg);
+        // Short sk- fragments below the 20-char threshold are not keys.
+        let short = "prefix sk-short suffix";
+        assert_eq!(super::sanitize_error_message(short), short);
+    }
+
+    #[test]
+    fn url_host_handles_userinfo_port_and_ipv6() {
+        assert_eq!(super::url_host("https://user:pw@example.com:8443/v1").as_deref(), Some("example.com"));
+        assert_eq!(super::url_host("http://[::1]:11434/v1").as_deref(), Some("::1"));
+        assert_eq!(super::url_host("https://[2001:db8::1]/v1").as_deref(), Some("2001:db8::1"));
+        assert_eq!(super::url_host("no-scheme"), None);
+    }
+
+    #[test]
+    fn validate_base_url_accepts_ipv6_and_ip_loopback_http() {
+        assert!(super::validate_base_url("http://[::1]:11434/v1").is_ok());
+        assert!(super::validate_base_url("http://127.0.0.1:1234/v1").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_single_label_and_private_ip_http() {
+        // Public HTTPS hosts need a dot; a bare "ollama" label is a typo.
+        assert!(super::validate_base_url("https://ollama").is_err());
+        // Private but non-loopback IPs (LAN) are not loopback: plain HTTP
+        // would send the key in cleartext across the LAN, so it is rejected.
+        assert!(super::validate_base_url("http://192.168.1.50:11434/v1").is_err());
+    }
+
+    #[test]
+    fn anthropic_content_is_plain_string_without_images() {
+        for images in [None, Some(vec![])] {
+            let v = super::build_anthropic_content("hello", images.as_deref());
+            assert_eq!(v, serde_json::json!("hello"));
+        }
+    }
+
+    #[test]
+    fn anthropic_content_builds_image_blocks_then_text() {
+        let img = crate::types::ImageData {
+            base64: "QUJD".into(),
+            media_type: "image/png".into(),
+        };
+        let v = super::build_anthropic_content("hi", Some(&[img]));
+        let blocks = v.as_array().expect("images produce a block array");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert_eq!(blocks[0]["source"]["data"], "QUJD");
+        assert_eq!(blocks[1], serde_json::json!({"type": "text", "text": "hi"}));
+    }
+
+    #[test]
+    fn openai_content_wraps_image_as_data_url() {
+        let img = crate::types::ImageData {
+            base64: "QUJD".into(),
+            media_type: "image/jpeg".into(),
+        };
+        let v = super::build_openai_content("hi", Some(&[img]));
+        let parts = v.as_array().expect("images produce parts");
+        assert_eq!(parts[0]["image_url"]["url"], "data:image/jpeg;base64,QUJD");
+        assert_eq!(parts[1], serde_json::json!({"type": "text", "text": "hi"}));
+        // No images → plain string, matching Anthropic behaviour.
+        assert_eq!(super::build_openai_content("hi", None), serde_json::json!("hi"));
+    }
+
+    #[test]
+    fn fallback_title_types_stopwords_and_punctuation() {
+        assert_eq!(
+            super::heuristic_fallback_title("Hey, please fix the broken build!"),
+            "fix broken build"
+        );
+        // Stopwords-only input never yields an empty title.
+        assert_eq!(super::heuristic_fallback_title("the an a"), "working");
+        assert_eq!(super::heuristic_fallback_title("!!!"), "working");
+        // At most four content words.
+        assert_eq!(
+            super::heuristic_fallback_title("alpha beta gamma delta epsilon zeta"),
+            "alpha beta gamma delta"
+        );
+    }
 }
