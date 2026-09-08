@@ -1,12 +1,7 @@
 # Reviewed baseline as of 2026-08-08. Format: clippy-code|primary-file.
 clippy::await_holding_lock|src-tauri/src/commands/relay.rs
-clippy::empty_line_after_doc_comments|crates/athena-core/src/orchestrator.rs
 clippy::let_unit_value|src-tauri/src/relay/mod.rs
-clippy::should_implement_trait|crates/athena-core/src/agent_activity.rs
-clippy::too_many_arguments|crates/athena-core/src/mcp_transport.rs
-clippy::type_complexity|crates/athena-core/src/agent_activity.rs
 
 # Reviewed 2026-08-24 (Session C): introduced by provider-preset/modal churn (1e2926b), not test-track code.
 clippy::needless_borrow|src-tauri/src/commands/pty.rs
-clippy::type_complexity|crates/athena-core/src/orchestrator.rs
 clippy::unnecessary_map_or|src-tauri/src/commands/provider_config.rs
