@@ -63,8 +63,6 @@ pub fn Modal(props: ModalProps) -> Element {
     } else {
         "height: 82vh;"
     };
-    let on_close = props.on_close;
-
     rsx! {
         div {
             class: "modal-overlay modal-scrim",
@@ -77,14 +75,14 @@ pub fn Modal(props: ModalProps) -> Element {
             "aria-label": "{props.title}",
             tabindex: "-1",
             style: "position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 72%, transparent); outline: none;",
-            onclick: move |_| on_close.call(()),
+            onclick: move |_| props.on_close.call(()),
             // Escape closes — standard WAI-ARIA dialog behavior. Previously the
             // modal could only be dismissed by clicking the backdrop or X,
             // which is hostile to keyboard users.
             onkeydown: move |e: KeyboardEvent| {
                 if e.key() == Key::Escape {
                     e.prevent_default();
-                    on_close.call(());
+                    props.on_close.call(());
                 }
             },
             div {
@@ -105,7 +103,7 @@ pub fn Modal(props: ModalProps) -> Element {
                     button {
                         class: "icon-btn",
                         "aria-label": "Close dialog",
-                        onclick: move |_| on_close.call(()),
+                        onclick: move |_| props.on_close.call(()),
                         IconClose { size: Some(16), color: Some("currentColor".to_string()) }
                     }
                 }
