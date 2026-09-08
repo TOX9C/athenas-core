@@ -97,7 +97,7 @@ pub fn RightEditorPanel() -> Element {
                             div {
                                 style: "flex: 1; overflow: auto; padding: 8px; background: var(--bg); border-radius: var(--radius-sm); border: 1px solid var(--border);",
                                 pre {
-                                    style: "margin: 0; padding: 0; font-family: var(--fontFamily, 'JetBrains Mono', monospace); font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; tab-size: 4;",
+                                    style: "margin: 0; padding: 0; font-family: var(--fontFamily, 'JetBrains Mono', 'JetBrainsMono Nerd Font', monospace); font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; tab-size: 4;",
                                     "{file.content}"
                                 }
                             }

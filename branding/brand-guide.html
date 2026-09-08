@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Athena's Core — Brand Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#0B0B0C; --ink-deep:#070708; --ink-raised:#16171A; --ink-hover:#1C1D21;
+    --hairline:#1F2024; --gold:#C9A24B; --electrum:#E2C26C; --bronze:#A8742F;
+    --bronze-ink:#8F6023; --marble:#F5F2EA; --marble-warm:#F2EFDF; --parchment:#241F16;
+    --lapis:#4F70B4; --lapis-hi:#5A7CC0; --teal:#4FA39E; --olive:#7BAE5A;
+    --amber:#D2973C; --terracotta:#C5654D; --text:#E6E6E6; --muted:#8A8A90;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--ink-deep);color:var(--text);
+    font-family:'Hanken Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    padding:48px 0 64px}
+  .page{max-width:960px;margin:0 auto;padding:0 32px;display:flex;flex-direction:column;gap:40px}
+
+  /* ── hero ─────────────────────────── */
+  .hero{background:var(--ink);border:1px solid var(--hairline);border-radius:14px;
+    padding:56px 48px;display:flex;align-items:center;gap:44px}
+  .hero .mark{width:148px;height:148px;flex-shrink:0;border-radius:28px;overflow:hidden;
+    box-shadow:0 0 0 1px var(--hairline)}
+  .hero .mark img{width:100%;height:100%;display:block;filter:invert(1)}
+  .kicker{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--lapis-hi)}
+  .wordmark{margin-top:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--gold);font-size:26px;line-height:1.1}
+  .tagline{margin-top:14px;font-size:15px;color:var(--text);max-width:46ch;line-height:1.6}
+  .brandline{margin-top:6px;font-size:13px;color:var(--muted)}
+  .meander{margin-top:26px;height:14px;width:100%;
+    background:
+      repeating-linear-gradient(90deg,var(--gold) 0 2px,transparent 2px 6px);
+    -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14'><path d='M1 13V1h12v6H6v6' fill='none' stroke='black' stroke-width='2'/></svg>");
+    mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14'><path d='M1 13V1h12v6H6v6' fill='none' stroke='black' stroke-width='2'/></svg>");
+    opacity:.7}
+  .hero-cols{display:flex;flex-direction:column}
+
+  /* ── sections ─────────────────────── */
+  h2.sec{font-size:24px;font-weight:600;letter-spacing:.01em;color:var(--text)}
+  .sec-head{display:flex;align-items:baseline;gap:14px}
+  .sec-num{font-size:24px;font-weight:600;color:var(--gold);opacity:.85}
+  .sec-sub{font-size:13px;color:var(--muted);margin-top:6px;max-width:70ch;line-height:1.6}
+
+  /* ── palette ──────────────────────── */
+  .swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:18px}
+  .sw{border-radius:10px;overflow:hidden;border:1px solid var(--hairline);cursor:pointer;transition:transform .12s ease}
+  .sw:hover{transform:translateY(-2px);border-color:var(--gold)}
+  .sw .chip{height:64px}
+  .sw .lab{padding:8px 10px;background:var(--ink-raised)}
+  .sw .name{font-size:12px;font-weight:600;color:var(--text)}
+  .sw .hex{font-size:11px;color:var(--muted);font-family:ui-monospace,'JetBrains Mono',Menlo,monospace;margin-top:2px;letter-spacing:.02em}
+  .sw.light .lab{background:var(--marble)}
+  .sw.light .name{color:var(--parchment)}
+  .sw.light .hex{color:var(--bronze-ink)}
+  .group-label{margin-top:22px;font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--muted);display:flex;align-items:center;gap:10px}
+  .group-label:after{content:"";flex:1;height:1px;background:var(--hairline)}
+
+  /* ── typography ───────────────────── */
+  .typecard{background:var(--ink-raised);border:1px solid var(--hairline);border-radius:14px;padding:28px;margin-top:18px;display:flex;flex-direction:column;gap:22px}
+  .trow{display:flex;justify-content:space-between;align-items:baseline;gap:24px;border-bottom:1px solid var(--hairline);padding-bottom:18px}
+  .trow:last-child{border-bottom:none;padding-bottom:0}
+  .tmeta{font-size:11px;color:var(--muted);text-align:right;line-height:1.6;min-width:190px}
+  .tmeta b{color:var(--gold);font-weight:600}
+  .word-ex{font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);font-size:18px}
+  .h1-ex{font-size:32px;font-weight:600;letter-spacing:.01em}
+  .kick-ex{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--lapis-hi)}
+  .body-ex{font-size:15px;font-weight:400;color:var(--text);max-width:52ch;line-height:1.6}
+  .mono-ex{font-family:'Monaspace Neon','JetBrains Mono',ui-monospace,Menlo,monospace;font-size:13px;color:var(--teal)}
+
+  /* ── icon usage ───────────────────── */
+  .iconrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:18px}
+  .icell{border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:12px;border:1px solid var(--hairline)}
+  .icell .cap{font-size:11px;color:var(--muted);text-align:center;line-height:1.5}
+  .icell .cap b{color:var(--text);font-weight:600}
+  .icell.bg-ink{background:var(--ink)}
+  .icell.bg-marble{background:var(--marble)}
+  .icell.bg-marble .cap{color:var(--bronze-ink)}
+  .icell.bg-marble .cap b{color:var(--parchment)}
+  .icell img{width:84px;height:84px;border-radius:18px}
+  .icell.inv img{filter:invert(1)}
+  .icell.forbid{border:1px dashed var(--terracotta)}
+  .icell.forbid img{width:84px;height:84px;border-radius:18px;filter:hue-rotate(300deg) saturate(3)}
+  .icell.forbid .cap b{color:var(--terracotta)}
+
+  /* ── voice ────────────────────────── */
+  .voice{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}
+  .vcard{border-radius:14px;padding:20px 22px;border:1px solid var(--hairline);background:var(--ink-raised)}
+  .vcard h4{font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:12px}
+  .vcard.yes h4{color:var(--olive)}
+  .vcard.no h4{color:var(--terracotta)}
+  .vcard ul{list-style:none;display:flex;flex-direction:column;gap:8px}
+  .vcard li{font-size:13px;line-height:1.55;color:var(--text)}
+  .vcard.no li{color:var(--muted)}
+  .vcard li .strike{text-decoration:line-through;text-decoration-color:var(--terracotta)}
+
+  /* ── launch surfaces ──────────────── */
+  .tablewrap{margin-top:18px;border:1px solid var(--hairline);border-radius:14px;overflow:hidden}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);
+    text-align:left;padding:10px 14px;background:var(--ink-raised);border-bottom:1px solid var(--hairline)}
+  td{padding:10px 14px;border-bottom:1px solid var(--hairline);color:var(--text)}
+  tr:last-child td{border-bottom:none}
+  td.mono{color:var(--muted);font-family:ui-monospace,'JetBrains Mono',Menlo,monospace;font-size:12px}
+
+  .foot{display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px solid var(--hairline)}
+  .foot .l{font-size:11px;color:var(--muted);letter-spacing:.04em}
+  .foot .r{font-size:11px;color:var(--gold);letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+  .copied{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--gold);color:var(--ink);
+    font-size:12px;font-weight:600;padding:6px 14px;border-radius:999px;opacity:0;transition:opacity .2s;pointer-events:none}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="mark"><img src="mark-256.png" alt="Athena's Core mark"></div>
+    <div class="hero-cols">
+      <div class="kicker">Brand System · v1.0</div>
+      <div class="wordmark">ATHENA'S CORE</div>
+      <div class="tagline">The strategist's workbench. A native macOS workspace — terminal, AI chat,
+        task board and agent team in a single window.</div>
+      <div class="brandline">Black-figure ink · electrum gold · Pentelic marble. The mark never changes; everything else frames it.</div>
+      <div class="meander"></div>
+    </div>
+  </div>
+
+  <!-- PALETTE -->
+  <div>
+    <div class="sec-head"><span class="sec-num">01</span><h2 class="sec">Palette</h2></div>
+    <p class="sec-sub">60 / 30 / 10 — Ink, neutrals, and one metal. Click any swatch to copy its hex. Every pairing in this system passes WCAG AA on its intended surface.</p>
+
+    <div class="group-label">The core three</div>
+    <div class="swatches">
+      <div class="sw"><div class="chip" style="background:#0B0B0C"></div><div class="lab"><div class="name">Ink</div><div class="hex">#0B0B0C</div></div></div>
+      <div class="sw"><div class="chip" style="background:#C9A24B"></div><div class="lab"><div class="name">Attic Gold · primary</div><div class="hex">#C9A24B</div></div></div>
+      <div class="sw light"><div class="chip" style="background:#F5F2EA;border-bottom:1px solid #DDD5C2"></div><div class="lab"><div class="name">Marble</div><div class="hex">#F5F2EA</div></div></div>
+    </div>
+
+    <div class="group-label">Ink &amp; metal</div>
+    <div class="swatches">
+      <div class="sw"><div class="chip" style="background:#070708"></div><div class="lab"><div class="name">Ink Deep</div><div class="hex">#070708</div></div></div>
+      <div class="sw"><div class="chip" style="background:#16171A"></div><div class="lab"><div class="name">Ink Raised</div><div class="hex">#16171A</div></div></div>
+      <div class="sw"><div class="chip" style="background:#1F2024"></div><div class="lab"><div class="name">Hairline</div><div class="hex">#1F2024</div></div></div>
+      <div class="sw"><div class="chip" style="background:#E2C26C"></div><div class="lab"><div class="name">Electrum · hover</div><div class="hex">#E2C26C</div></div></div>
+      <div class="sw"><div class="chip" style="background:#A8742F"></div><div class="lab"><div class="name">Bronze · decor</div><div class="hex">#A8742F</div></div></div>
+      <div class="sw"><div class="chip" style="background:#8F6023"></div><div class="lab"><div class="name">Bronze Ink · AA text</div><div class="hex">#8F6023</div></div></div>
+    </div>
+
+    <div class="group-label">Light surfaces &amp; text</div>
+    <div class="swatches">
+      <div class="sw light"><div class="chip" style="background:#F2EFDF;border-bottom:1px solid #D6D1B9"></div><div class="lab"><div class="name">Marble Warm</div><div class="hex">#F2EFDF</div></div></div>
+      <div class="sw"><div class="chip" style="background:#241F16"></div><div class="lab"><div class="name">Parchment Text</div><div class="hex">#241F16</div></div></div>
+      <div class="sw"><div class="chip" style="background:#E6E6E6"></div><div class="lab"><div class="name">Text on Dark</div><div class="hex">#E6E6E6</div></div></div>
+      <div class="sw"><div class="chip" style="background:#8A8A90"></div><div class="lab"><div class="name">Muted Text</div><div class="hex">#8A8A90</div></div></div>
+    </div>
+
+    <div class="group-label">Supporting &amp; semantic — used sparingly</div>
+    <div class="swatches">
+      <div class="sw"><div class="chip" style="background:#4F70B4"></div><div class="lab"><div class="name">Lapis · fills</div><div class="hex">#4F70B4</div></div></div>
+      <div class="sw"><div class="chip" style="background:#5A7CC0"></div><div class="lab"><div class="name">Lapis Hi · display</div><div class="hex">#5A7CC0</div></div></div>
+      <div class="sw"><div class="chip" style="background:#4FA39E"></div><div class="lab"><div class="name">Teal · tooling</div><div class="hex">#4FA39E</div></div></div>
+      <div class="sw"><div class="chip" style="background:#7BAE5A"></div><div class="lab"><div class="name">Olive · success</div><div class="hex">#7BAE5A</div></div></div>
+      <div class="sw"><div class="chip" style="background:#D2973C"></div><div class="lab"><div class="name">Amber · warning</div><div class="hex">#D2973C</div></div></div>
+      <div class="sw"><div class="chip" style="background:#C5654D"></div><div class="lab"><div class="name">Terracotta · error</div><div class="hex">#C5654D</div></div></div>
+    </div>
+  </div>
+
+  <!-- TYPOGRAPHY -->
+  <div>
+    <div class="sec-head"><span class="sec-num">02</span><h2 class="sec">Typography</h2></div>
+    <p class="sec-sub">Three typefaces, three jobs — the same ones the app ships, so the product is always on-brand.</p>
+    <div class="typecard">
+      <div class="trow">
+        <div class="word-ex">Athena's Core</div>
+        <div class="tmeta"><b>Wordmark</b> — Hanken Grotesk 600 · ALL CAPS · tracking 0.14em · Gold on Ink</div>
+      </div>
+      <div class="trow">
+        <div class="h1-ex">The strategist's workbench.</div>
+        <div class="tmeta"><b>Display</b> — Hanken Grotesk 600 · 32px · tracking 0.01em</div>
+      </div>
+      <div class="trow">
+        <div class="kick-ex">New in v0.3.0 · Agent awareness</div>
+        <div class="tmeta"><b>Kicker</b> — Hanken Grotesk 700 · 11px · ALL CAPS · tracking 0.14em</div>
+      </div>
+      <div class="trow">
+        <div class="body-ex">Athena's Core is a native macOS workspace that puts your terminal, AI chat, task board, and agent team in a single window — so you stop switching between five apps to get one thing done.</div>
+        <div class="tmeta"><b>Body</b> — Hanken Grotesk 400 · 15–16px · line-height 1.6</div>
+      </div>
+      <div class="trow">
+        <div class="mono-ex">cargo build --release &nbsp;# ~15 MB out</div>
+        <div class="tmeta"><b>Code</b> — Monaspace Neon → JetBrains Mono · 13px</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- THE MARK -->
+  <div>
+    <div class="sec-head"><span class="sec-num">03</span><h2 class="sec">The Mark</h2></div>
+    <p class="sec-sub">Pure black ink, engraved. Never recolored, tinted, gradiented, stroked, or shadowed. Clear space = the height of the plume. Minimum 24px.</p>
+    <div class="iconrow">
+      <div class="icell bg-ink inv">
+        <img src="mark-256.png" alt="reversed mark">
+        <div class="cap"><b>Reversed</b><br>white ink on Ink #0B0B0C</div>
+      </div>
+      <div class="icell bg-marble">
+        <img src="mark-256.png" alt="master mark">
+        <div class="cap"><b>Master</b><br>black ink on Marble #F5F2EA</div>
+      </div>
+      <div class="icell" style="background:#FFFFFF">
+        <img src="mark-256.png" alt="on white">
+        <div class="cap"><b>On white</b><br>docs, README, badges</div>
+      </div>
+      <div class="icell forbid">
+        <img src="mark-256.png" alt="forbidden">
+        <div class="cap"><b>Never</b><br>no recolor, no gradient, no effects</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VOICE -->
+  <div>
+    <div class="sec-head"><span class="sec-num">04</span><h2 class="sec">Voice</h2></div>
+    <p class="sec-sub">Calm, exact, unhurried. A strategist briefing a peer.</p>
+    <div class="voice">
+      <div class="vcard yes">
+        <h4>Athena says</h4>
+        <ul>
+          <li>One window. Every tool. No noise.</li>
+          <li>~15 MB. Native. No telemetry.</li>
+          <li>Built in Rust. Finished on purpose.</li>
+          <li>macOS Apple Silicon, for now — Linux and Windows are in progress.</li>
+        </ul>
+      </div>
+      <div class="vcard no">
+        <h4>Never</h4>
+        <ul>
+          <li><span class="strike">Blazingly fast! Revolutionary! Game-changer! 🚀</span></li>
+          <li><span class="strike">Crush your workflow and destroy the competition</span></li>
+          <li>No exclamation marks · no emoji · no hype adjectives</li>
+          <li>No hedging — one honest caveat, stated once</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- SURFACES -->
+  <div>
+    <div class="sec-head"><span class="sec-num">05</span><h2 class="sec">Launch Surfaces</h2></div>
+    <div class="tablewrap">
+      <table>
+        <tr><th>Surface</th><th>Canvas</th><th>Mark</th><th>Accent</th></tr>
+        <tr><td>GitHub social card</td><td class="mono">Ink #0B0B0C</td><td>reversed</td><td class="mono">wordmark in Attic Gold</td></tr>
+        <tr><td>README header</td><td class="mono">white / neutral</td><td>master</td><td class="mono">restrained badges</td></tr>
+        <tr><td>Docs site (light)</td><td class="mono">Marble #F5F2EA</td><td>master</td><td class="mono">Bronze Ink #8F6023 links</td></tr>
+        <tr><td>Release notes</td><td class="mono">Ink Deep #070708</td><td>reversed</td><td class="mono">Electrum highlights · one meander rule</td></tr>
+        <tr><td>Show HN / social asset</td><td class="mono">Ink</td><td>reversed, left-anchored</td><td class="mono">ONE gold element only</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span class="l">brand tokens: DESIGN.md · tokens.json &nbsp;—&nbsp; lint-clean, AA-passing</span>
+    <span class="r">Athena's Core</span>
+  </div>
+</div>
+<div class="copied" id="copied"></div>
+<script>
+  document.querySelectorAll('.sw').forEach(s=>{
+    s.addEventListener('click',()=>{
+      const hex = s.querySelector('.hex').textContent.trim();
+      navigator.clipboard.writeText(hex).catch(()=>{});
+      const t = document.getElementById('copied');
+      t.textContent = hex + ' copied';
+      t.style.opacity = 1;
+      clearTimeout(window.__t); window.__t = setTimeout(()=>t.style.opacity=0, 1100);
+    });
+  });
+</script>
+</body>
+</html>

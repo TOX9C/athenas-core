@@ -401,12 +401,32 @@ pub(crate) async fn wait_for_font_ready(
         return;
     }
 
-    if !font_family.trim().is_empty() {
-        if let Ok(load_val) = js_sys::Reflect::get(&fonts, &JsValue::from_str("load")) {
-            if let Ok(load_fn) = load_val.dyn_into::<js_sys::Function>() {
-                let font_spec =
-                    JsValue::from_str(&format!("{}px {}", font_size.max(1.0), font_family.trim()));
-                if let Ok(promise) = load_fn.call1(&fonts, &font_spec) {
+    // Load each family in the stack individually. FontFaceSet.load() with a
+    // family *list* only guarantees the first available family gets requested
+    // in some WebKit builds; if the primary family is already cached the Nerd
+    // Font fallback face may never be requested, leaving glyph fallback (icon
+    // PUA codepoints) broken for the whole session. Per-family loads also
+    // cover the bold face used for bright/ANSI-bold terminal text.
+    if let Ok(load_val) = js_sys::Reflect::get(&fonts, &JsValue::from_str("load")) {
+        if let Ok(load_fn) = load_val.dyn_into::<js_sys::Function>() {
+            let size = font_size.max(1.0);
+            let specs: Vec<String> = font_family
+                .split(',')
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .flat_map(|f| {
+                    [
+                        format!("{size}px {f}"),
+                        format!("bold {size}px {f}"),
+                    ]
+                })
+                .collect();
+            for spec in specs {
+                if let Ok(promise) =
+                    load_fn.call1(&fonts, &JsValue::from_str(&spec))
+                {
+                    // Rejections are fine: a family name may be a generic
+                    // keyword or an uninstalled font; fallback still works.
                     let _ = JsFuture::from(js_sys::Promise::from(promise)).await;
                 }
             }

@@ -317,6 +317,18 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                 return;
             }
 
+            // Wait for the font faces (incl. the Nerd Font fallback carrying
+            // icon glyphs) before the Terminal measures its cell geometry —
+            // xterm measures synchronously via canvas measureText, so an
+            // unloaded face yields wrong cols/rows at first fit. Same fix as
+            // the desktop mount path.
+            crate::components::workspace::xterm_mount::xterm_helpers::wait_for_font_ready(
+                &window_for_task,
+                "'JetBrains Mono', 'JetBrainsMono Nerd Font', monospace",
+                13.0,
+            )
+            .await;
+
             let Some(term_ctor) =
                 js_sys::Reflect::get(&window_for_task, &JsValue::from_str("Terminal"))
                     .ok()

@@ -18,7 +18,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 #[path = "xterm_helpers.rs"]
-mod xterm_helpers;
+pub(crate) mod xterm_helpers;
 use xterm_helpers::{
     call_fit, force_redraw, is_valid_terminal_dimensions, read_css_var, restore_term_from_session,
     schedule_fit, serialize_buffer, try_activate_addon, try_activate_web_links_addon,
@@ -1750,18 +1750,48 @@ pub fn XtermMount(
             // and refresh() must repaint against that fresh grid — in that order,
             // in one rAF tick. (The old code fit-deferred-then-refresh-now,
             // painting stale rows until the next data burst.)
+            //
+            // The fit must happen AFTER the newly selected fonts finish
+            // loading: xterm measures cell geometry synchronously via
+            // canvas measureText, and measuring against not-yet-loaded faces
+            // (regular for the picked family, bold, or the Nerd Font fallback
+            // carrying icon glyphs) yields wrong cols/rows until the next
+            // data burst. Same class of bug wait_for_font_ready fixes at
+            // mount time.
             if let Some(fit) = fit_ref_for_font() {
                 if let Some(doc) = window.document() {
                     if let Some(el) = doc.get_element_by_id(&mount_id_for_font) {
-                        schedule_fit(
-                            &window,
-                            &fit,
-                            &el,
-                            &term,
-                            &fit_pending_for_font,
-                            &mount_active_for_font,
-                            &viewport_for_font,
-                        );
+                        let family_to_wait = if new_family.is_empty() {
+                            // Family unchanged — wait on the CURRENT full stack
+                            // (covers the size-only change re-measuring bold).
+                            read_css_var(&window, "--fontFamily")
+                        } else {
+                            new_family.clone()
+                        };
+                        let size_px = new_size
+                            .trim_end_matches("px")
+                            .parse::<f64>()
+                            .unwrap_or(14.0);
+                        let window_c = window.clone();
+                        let fit_pending_c = fit_pending_for_font.clone();
+                        let mount_active_c = mount_active_for_font.clone();
+                        let viewport_c = viewport_for_font.clone();
+                        let term_c = term.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            wait_for_font_ready(&window_c, &family_to_wait, size_px).await;
+                            if !*mount_active_c.borrow() {
+                                return;
+                            }
+                            schedule_fit(
+                                &window_c,
+                                &fit,
+                                &el,
+                                &term_c,
+                                &fit_pending_c,
+                                &mount_active_c,
+                                &viewport_c,
+                            );
+                        });
                     }
                 }
             }

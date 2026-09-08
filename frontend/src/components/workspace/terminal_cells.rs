@@ -30,7 +30,7 @@ pub(crate) fn TerminalPaneBody(pane_id: String) -> Element {
         div {
             style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); overflow: hidden; padding: 0;",
             div {
-                style: "font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 11px; line-height: 1.4; color: var(--text); white-space: pre-wrap; overflow-wrap: break-word;",
+                style: "font-family: 'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Fira Code', 'Cascadia Code', monospace; font-size: 11px; line-height: 1.4; color: var(--text); white-space: pre-wrap; overflow-wrap: break-word;",
                 if Bud.is_empty() {
                     "Waiting for output..."
                 } else {

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Athena's Core — Wordmark Lockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#0B0B0C; --ink-deep:#070708; --ink-raised:#16171A;
+    --gold:#C9A24B; --electrum:#E2C26C; --marble:#F5F2EA;
+    --parchment:#241F16; --bronze-ink:#8F6023; --text:#E6E6E6; --muted:#8A8A90;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--ink-deep);font-family:'Hanken Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    padding:40px 0 60px}
+  .page{max-width:900px;margin:0 auto;padding:0 24px;display:flex;flex-direction:column;gap:32px}
+  h1{font-size:22px;font-weight:600;color:var(--text);letter-spacing:.01em}
+  h2{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);margin-top:6px}
+  .rule{height:1px;background:var(--gold);width:64px;margin:8px 0 24px;opacity:.85}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+
+  /* lockup panels */
+  .lockup{border-radius:14px;overflow:hidden;position:relative}
+  .lockup .stage{display:flex;align-items:center;justify-content:center;padding:56px 24px;min-height:200px}
+  .lockup .label{position:absolute;bottom:12px;left:16px;font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;opacity:.7}
+  .lockup .stage.dark{background:var(--ink)}
+  .lockup .stage.light{background:var(--marble)}
+  .lockup .stage.dark .label{color:var(--muted)}
+  .lockup .stage.light .label{color:var(--bronze-ink)}
+
+  /* mark + wordmark compositions */
+  .mark-pair{display:flex;align-items:center;gap:20px}
+  .mark-pair img{width:72px;height:72px;flex-shrink:0}
+  .wm{font-weight:600;letter-spacing:.14em;text-transform:uppercase;line-height:1;font-size:20px}
+  .wm.on-dark{color:var(--gold)}
+  .wm.on-light{color:var(--parchment)}
+  .wm-sub{margin-top:4px;font-size:11px;letter-spacing:.04em;font-weight:500}
+  .wm-sub.on-dark{color:var(--muted)}
+  .wm-sub.on-light{color:var(--bronze-ink)}
+
+  /* stacked variant */
+  .stacked .inner{display:flex;flex-direction:column;align-items:center;gap:16px}
+  .stacked img{width:96px;height:96px}
+
+  /* hero variant */
+  .hero-stage{display:flex;flex-direction:column;align-items:center;gap:20px;padding:64px 32px !important}
+  .hero-stage img{width:128px;height:128px}
+  .hero-wm{font-size:28px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--gold)}
+  .hero-line{font-size:14px;color:var(--text);letter-spacing:.02em;margin-top:2px}
+  .hero-tag{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-top:10px}
+
+  /* in-app context */
+  .context{background:var(--ink-raised);border:1px solid #1F2024;border-radius:10px;padding:18px 20px;display:flex;align-items:center;gap:14px}
+  .context img{width:40px;height:40px}
+  .context .ctx-body{flex:1}
+  .context .ctx-title{font-size:13px;font-weight:600;color:var(--text)}
+  .context .ctx-sub{font-size:11px;color:var(--muted);margin-top:2px}
+  .context .pill{background:var(--ink);border:1px solid #1F2024;color:var(--gold);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:4px 10px;border-radius:999px}
+
+  .note{font-size:12px;color:var(--muted);line-height:1.6;max-width:68ch}
+  .foot{margin-top:8px;padding-top:16px;border-top:1px solid #1F2024;font-size:11px;color:var(--muted);display:flex;justify-content:space-between}
+  .foot .r{color:var(--gold);letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+
+  @media print{body{background:#fff}.lockup .stage{min-height:160px}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div>
+    <h1>Wordmark Lockups</h1>
+    <h2>Approved compositions · placeholder icon (final mark pending sub-agent output)</h2>
+    <div class="rule"></div>
+  </div>
+
+  <div class="grid">
+
+    <!-- horizontal, on dark -->
+    <div class="lockup">
+      <div class="stage dark">
+        <div class="mark-pair">
+          <img src="mark-256.png" alt="mark">
+          <div>
+            <div class="wm on-dark">Athena's Core</div>
+            <div class="wm-sub on-dark">The strategist's workbench</div>
+          </div>
+        </div>
+        <div class="label" style="position:static;margin-top:14px;width:100%">Horizontal · dark · icon links</div>
+      </div>
+    </div>
+
+    <!-- horizontal, on light -->
+    <div class="lockup">
+      <div class="stage light">
+        <div class="mark-pair">
+          <img src="mark-256.png" alt="mark">
+          <div>
+            <div class="wm on-light">Athena's Core</div>
+            <div class="wm-sub on-light">The strategist's workbench</div>
+          </div>
+        </div>
+      </div>
+      <div class="label" style="position:static">Horizontal · light · Bronze Ink secondary text</div>
+    </div>
+
+    <!-- stacked, on dark -->
+    <div class="lockup">
+      <div class="stage dark stacked">
+        <div class="inner">
+          <img src="mark-256.png" alt="mark" style="filter:invert(1)">
+          <div class="wm on-dark">Athena's Core</div>
+          <div class="wm-sub on-dark">One window · every tool</div>
+        </div>
+      </div>
+      <div class="label" style="position:static">Stacked · dark · reversed mark</div>
+    </div>
+
+    <!-- hero -->
+    <div class="lockup">
+      <div class="stage dark hero-stage">
+        <img src="mark-256.png" alt="mark" style="filter:invert(1)">
+        <div class="hero-wm">Athena's Core</div>
+        <div class="hero-line">The strategist's workbench.</div>
+        <div class="hero-tag">macOS · Native · ~15 MB · No telemetry</div>
+      </div>
+      <div class="label" style="position:static">Hero · dark · full lockup</div>
+    </div>
+
+  </div>
+
+  <!-- in-app context -->
+  <div>
+    <h2>In-app context</h2>
+    <div class="rule"></div>
+    <div class="context">
+      <img src="mark-256.png" alt="mark">
+      <div class="ctx-body">
+        <div class="ctx-title">Athena · agent panel</div>
+        <div class="ctx-sub">Where the mark appears next to the workspace chat — Hanken 600, ink-in-dark</div>
+      </div>
+      <span class="pill">Ny x</span>
+    </div>
+  </div>
+
+  <div class="note">
+    Note: these compositions use the current icon as a placeholder. Once the new
+    mark is selected, swap the <code>src</code> in each block — no layout changes needed.
+    The wordmark is always Hanken Grotesk 600, ALL CAPS, tracking 0.14em; on dark it is
+    Attic Gold, on light it is Parchment Text with Bronze Ink for the sub-line.
+    Clear space: mark height = plume height on all sides.
+  </div>
+
+  <div class="foot">
+    <span>usage reference only — see BRAND.md §3 for lockup rules</span>
+    <span class="r">Athena's Core</span>
+  </div>
+
+</div>
+</body>
+</html>
