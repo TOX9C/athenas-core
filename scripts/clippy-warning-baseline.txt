@@ -1,6 +1,5 @@
 # Reviewed baseline as of 2026-08-08. Format: clippy-code|primary-file.
 clippy::await_holding_lock|src-tauri/src/commands/relay.rs
-clippy::double_ended_iterator_last|crates/athena-core/src/agent_activity.rs
 clippy::empty_line_after_doc_comments|crates/athena-core/src/orchestrator.rs
 clippy::let_unit_value|src-tauri/src/relay/mod.rs
 clippy::should_implement_trait|crates/athena-core/src/agent_activity.rs
