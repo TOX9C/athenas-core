@@ -573,7 +573,7 @@ impl BrowserManager {
         let target = panel
             .history
             .go_back(previous)
-            .expect("can_go_back was true but go_back returned None");
+            .ok_or_else(|| BrowserError::NoBackHistory(id.to_string()))?;
 
         panel.current_url = target.clone();
         panel.loading_state = LoadingState::Loading;
@@ -602,7 +602,7 @@ impl BrowserManager {
         let target = panel
             .history
             .go_forward(previous)
-            .expect("can_go_forward was true but go_forward returned None");
+            .ok_or_else(|| BrowserError::NoForwardHistory(id.to_string()))?;
 
         panel.current_url = target.clone();
         panel.loading_state = LoadingState::Loading;
