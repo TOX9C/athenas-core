@@ -88,14 +88,17 @@ describe('pty:raw broadcast race regression', () => {
       }
     })
 
-    expect(collected.errors, `spawn/listener errors: ${JSON.stringify(collected.errors)}`).toEqual(
-      [],
-    )
+    if (collected.errors.length > 0) {
+      throw new Error(`spawn/listener errors: ${JSON.stringify(collected.errors)}`)
+    }
+    expect(collected.errors).toEqual([])
     expect(collected.totalPayloads).toBeGreaterThan(0)
-    expect(
-      collected.uniqueSessionIds,
-      `expected >= 3 distinct sessionIds, got ${JSON.stringify(collected.perIdCount)}`,
-    ).toEqual(expect.arrayContaining(SESSION_IDS))
+    if (collected.uniqueSessionIds.length < 3) {
+      throw new Error(
+        `expected >= 3 distinct sessionIds, got ${JSON.stringify(collected.perIdCount)}`,
+      )
+    }
+    expect(collected.uniqueSessionIds).toEqual(expect.arrayContaining(SESSION_IDS))
   })
 
   after(async () => {

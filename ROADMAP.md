@@ -221,6 +221,15 @@ Complete verification of every automated gate in the repo. Results:
 4. **Plugin failure paths** — malformed manifest / plugin crash isolation is unit-tested but not e2e.
 5. **Settings round-trip** — the new settings codex has no persistence e2e.
 
+### 🟥 Known failing specs (2026-09-10) — RESOLVED same day
+
+All three pre-existing committed-spec failures were **spec issues, not app regressions** (each diagnosed by running under tauri-wd):
+
+- **`pty-broadcast`** — wdio `expect` takes one argument; the second "message" arg threw before any assertion. Fixed (explicit guard + one-arg expect). Green.
+- **`new-space-3-shells`** — `waitUntil` returned an unresolved `browser.execute()` Promise (truthy → never waited), racing the step-2 DOM; the `Agents (3/16)` text was queried before render. Fixed with awaited waits + per-click count assertions (`Agents (initial+3/16)`). Green.
+- **`omp-typing`** — depended on `window.__athenaMetrics`, but P3 gated metrics to `debug_assertions` (2026-09-02, `8eff596`) while `build-dist.sh` always ships a **release** wasm (its `--debug` flag is ignored by design — debug wasm panics WKWebView). Deep finding while fixing: `browser.keys()` delivers **untrusted** keydown/keyup with no IME/input events, which xterm.js never converts to `onData`, so raw keystroke-based drives cannot reach the PTY in this harness (backend + app input path verified healthy; interactive typing unaffected). Spec now exercises the same `onData → input router → pty_write → PTY` pipeline via xterm's `paste()` API and asserts the response in the pane buffer via `__athenaTermMap`. Green.
+- `perf-metrics.mjs` (non-e2e utility) remains unusable in the harness for the same P3 reason — needs a metrics-enabled frontend build if someone revives it.
+
 ---
 
 ## 🔁 2026-08-27 Re-Audit (fresh deep dive)

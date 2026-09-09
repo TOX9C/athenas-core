@@ -49,25 +49,36 @@ describe('New space terminal regression', () => {
     expect(nextResult.ok).toBe(true)
 
     await browser.waitUntil(
-      async () => {
-        return browser.execute(() => !!document.getElementById('add-shell'))
-      },
+      async () => browser.execute(() => !!document.getElementById('add-shell')),
       { timeout: 10000, interval: 250, timeoutMsg: 'Terminal configuration step did not appear' },
     )
 
-    const addResult = await browser.execute(() => {
-      const btn = document.getElementById('add-shell')
-      if (!btn) return { ok: false }
-      for (let i = 0; i < 3; i += 1) {
-        btn.click()
-      }
-      const summary = Array.from(document.querySelectorAll('label, div, span'))
-        .map((el) => (el.textContent || '').trim())
-        .find((text) => text.includes('Agents (3/16)'))
-      return { ok: true, summary: summary || null }
+    // Wait for the count label to settle at its initial value before clicking,
+    // then assert each click bumps the count by one.
+    const readAgentCount = () =>
+      browser.execute(() => {
+        const label = Array.from(document.querySelectorAll('label, div, span'))
+          .map((el) => (el.textContent || '').trim())
+          .find((text) => /^Agents \(\d+\/16\)$/.test(text))
+        const m = label && label.match(/Agents \((\d+)\/16\)/)
+        return m ? Number(m[1]) : null
+      })
+    await browser.waitUntil(async () => (await readAgentCount()) !== null, {
+      timeout: 10000,
+      interval: 250,
+      timeoutMsg: 'Agents count label did not appear',
     })
-    expect(addResult.ok).toBe(true)
-    expect(addResult.summary).toContain('Agents (3/16)')
+    const initial = await readAgentCount()
+    for (let n = 1; n <= 3; n++) {
+      await browser.execute(() => document.getElementById('add-shell')?.click())
+      const expected = initial + n
+      await browser.waitUntil(async () => (await readAgentCount()) >= expected, {
+        timeout: 5000,
+        interval: 250,
+        timeoutMsg: `Agents count did not reach ${expected} after click ${n}`,
+      })
+    }
+    expect(await readAgentCount()).toBe(initial + 3)
 
     const launchResult = await clickButtonByText('Launch Space')
     expect(launchResult.ok).toBe(true)
