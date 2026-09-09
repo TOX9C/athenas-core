@@ -92,6 +92,26 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
     let is_error = msg.is_error;
     // Hook calls must be unconditional — this drives the inline retry action.
     let athena_state = use_athena_store();
+    // One-second heartbeat so the rate-limit countdown on the retry button
+    // re-renders while a cooldown is active. The store's
+    // `retry_not_before_ms` is the source of truth for the displayed number.
+    let tick = use_signal(|| 0u32);
+    use_effect(move || {
+        let _ = tick();
+        // Stop ticking once the cooldown elapses, so an abandoned error bubble
+        // doesn't keep a 1 Hz spawn chain alive.
+        let cooling_down = athena_state
+            .read()
+            .retry_not_before_ms
+            .is_some_and(|nb| nb > chrono::Utc::now().timestamp_millis());
+        if cooling_down {
+            let mut tick = tick;
+            spawn(async move {
+                gloo::timers::future::TimeoutFuture::new(1_000).await;
+                tick += 1;
+            });
+        }
+    });
 
     // Hide empty assistant messages — when Athena is "thinking" but has
     // produced no content yet, don't render an empty card. The thinking
@@ -119,6 +139,17 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
         }
     } else {
         let content_for_copy = msg.content.clone();
+        // Rate-limit cooldown + retry notice: computed here (not inside rsx!)
+        // so the countdown re-reads live values on every re-render tick.
+        let cooldown_left_secs = athena_state
+            .read()
+            .retry_not_before_ms
+            .map(|not_before| {
+                let remaining = not_before - chrono::Utc::now().timestamp_millis();
+                ((remaining as f64) / 1000.0).ceil().max(0.0) as u32
+            })
+            .unwrap_or(0);
+        let retry_notice = athena_state.read().retry_notice.clone();
         rsx! {
             div {
                 class: "athena-chat-row is-assistant",
@@ -165,7 +196,9 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
                     }
 
                     // Inline retry — lives with the failure, not in the
-                    // composer, so the input row never shifts.
+                    // composer, so the input row never shifts. Rate-limited
+                    // failures render a countdown and stay disabled until the
+                    // cooldown parsed from the backend message has elapsed.
                     if is_error {
                         div {
                             style: "display: flex; align-items: center; gap: 8px; padding-top: 2px;",
@@ -173,14 +206,30 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
                                 style: "font-size: var(--text-xs); color: var(--error);",
                                 "This request failed."
                             }
-                            button {
-                                class: "athena-msg-retry",
-                                onclick: move |_| {
-                                    let mut athena_state = athena_state;
-                                    retry_last_message(&mut athena_state);
-                                },
-                                IconRefresh { size: Some(11), color: Some("currentColor".to_string()) }
-                                "Retry"
+                            if cooldown_left_secs > 0 {
+                                button {
+                                    class: "athena-msg-retry",
+                                    disabled: true,
+                                    style: "opacity: 0.5; cursor: default;",
+                                    IconRefresh { size: Some(11), color: Some("currentColor".to_string()) }
+                                    "Retry in {cooldown_left_secs}s"
+                                }
+                            } else {
+                                button {
+                                    class: "athena-msg-retry",
+                                    onclick: move |_| {
+                                        let mut athena_state = athena_state;
+                                        retry_last_message(&mut athena_state);
+                                    },
+                                    IconRefresh { size: Some(11), color: Some("currentColor".to_string()) }
+                                    "Retry"
+                                }
+                            }
+                            if let Some(notice) = retry_notice {
+                                span {
+                                    style: "font-size: var(--text-xs); color: var(--textDim);",
+                                    "{notice}"
+                                }
                             }
                         }
                     }

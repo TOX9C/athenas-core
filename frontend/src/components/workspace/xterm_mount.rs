@@ -2,7 +2,8 @@ use crate::components::right_sidebar::browser_surface::BROWSER_ID;
 use crate::stores::panel_manager::use_panel_manager_store;
 use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
-use crate::stores::workspace::AgentType;
+use crate::stores::workspace::{use_workspace_store, AgentType};
+use crate::utils::resume_scanner::ResumeScanner;
 use crate::tauri_bridge::{
     browser_navigate, pty_attach_listener, pty_default_shell_cached, pty_detach_listener,
     pty_has_session, pty_listen_raw, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent,
@@ -11,7 +12,7 @@ use crate::tauri_bridge::{
 use crate::utils::agent_commands::get_agent_command;
 use crate::utils::open_link::open_link_in_browser;
 use dioxus::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wasm_bindgen::prelude::*;
@@ -21,9 +22,9 @@ use wasm_bindgen::JsCast;
 pub(crate) mod xterm_helpers;
 use xterm_helpers::{
     call_fit, force_redraw, is_valid_terminal_dimensions, read_css_var, restore_term_from_session,
-    schedule_fit, serialize_buffer, try_activate_addon, try_activate_web_links_addon,
-    wait_for_container_size, wait_for_font_ready, write_bytes_to_term, write_str_to_term,
-    ViewportState,
+    schedule_fit, scroll_to_bottom, serialize_buffer, try_activate_addon,
+    try_activate_web_links_addon, viewport_at_bottom, wait_for_container_size, wait_for_font_ready,
+    write_bytes_to_term, write_str_to_term, ViewportState,
 };
 
 static XTERM_MOUNT_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -186,6 +187,8 @@ fn schedule_raw_flush(
     scheduled: &Rc<RefCell<bool>>,
     term: &JsValue,
     ready: &Rc<RefCell<bool>>,
+    follow_until: &Rc<Cell<f64>>,
+    last_bottom_at: &Rc<Cell<f64>>,
 ) {
     if *scheduled.borrow() {
         return;
@@ -196,20 +199,22 @@ fn schedule_raw_flush(
     let s = scheduled.clone();
     let t = term.clone();
     let ready_for_task = ready.clone();
+    let follow_for_task = follow_until.clone();
+    let last_bottom_for_task = last_bottom_at.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let q_for_closure = q.clone();
         let s_for_closure = s.clone();
         let t_for_closure = t.clone();
         let ready_for_closure = ready_for_task.clone();
+        let follow_for_closure = follow_for_task.clone();
+        let last_bottom_for_closure = last_bottom_for_task.clone();
         let closure = Closure::once_into_js(Box::new(move || {
             if !*ready_for_closure.borrow() {
                 *s_for_closure.borrow_mut() = false;
                 return;
             }
             let chunks = q_for_closure.borrow_mut().drain(..).collect::<Vec<_>>();
-            for chunk in chunks {
-                write_bytes_to_term(&t_for_closure, &chunk);
-            }
+            flush_chunks(&t_for_closure, chunks, &follow_for_closure, &last_bottom_for_closure);
             *s_for_closure.borrow_mut() = false;
         }) as Box<dyn FnOnce()>);
 
@@ -225,13 +230,37 @@ fn schedule_raw_flush(
         if raf_failed {
             if *ready_for_task.borrow() {
                 let chunks = q.borrow_mut().drain(..).collect::<Vec<_>>();
-                for chunk in chunks {
-                    write_bytes_to_term(&t, &chunk);
-                }
+                flush_chunks(&t, chunks, &follow_for_task, &last_bottom_for_task);
             }
             *s.borrow_mut() = false;
         }
     });
+}
+
+/// Write a coalesced burst then maintain bottom-follow intent.
+///
+/// A bottom-following pane stays pinned through the deferred redraw burst
+/// (SIGWINCH reprint) that the fit path itself triggers — without this the
+/// restore runs before the burst lands and the viewport sticks mid-buffer
+/// ("scrolled up" after a layout change). Every burst also records when the
+/// viewport was last observed at the bottom, which lets a later fit's capture
+/// treat a transient mid-burst off-bottom frame as still-following.
+fn flush_chunks(
+    term: &JsValue,
+    chunks: Vec<Vec<u8>>,
+    follow_until: &Rc<Cell<f64>>,
+    last_bottom_at: &Rc<Cell<f64>>,
+) {
+    for chunk in &chunks {
+        write_bytes_to_term(term, chunk);
+    }
+    let now = js_sys::Date::now();
+    if now < follow_until.get() {
+        scroll_to_bottom(term);
+    }
+    if viewport_at_bottom(term) {
+        last_bottom_at.set(now);
+    }
 }
 
 fn enqueue_pty_input(
@@ -362,6 +391,19 @@ struct XtermCleanup {
     /// clickable terminal links stay callable until `term.dispose()` runs.
     _web_links_handler: Option<JsValue>,
     _web_links_addon: Option<JsValue>,
+    /// Rooted `@xterm/addon-webgl` instance — the GPU renderer. Rooted so its
+    /// canvas and WebGL context outlive the mount; dropping after
+    /// `term.dispose()` releases the GL context with the terminal.
+    _webgl_addon: Option<JsValue>,
+    /// Rooted `onContextLoss` closure — disposes the WebGL addon on context
+    /// loss so xterm falls back to the DOM renderer.
+    _webgl_ctx_loss_closure: Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>>,
+    /// Wheel/touchmove listeners that cancel module-level follow-bottom on a
+    /// deliberate user scroll gesture during a fit's settle window. Removed
+    /// on unmount (container is dropped with the component).
+    _scroll_intent_container: Option<web_sys::Element>,
+    _scroll_intent_wheel: Option<JsValue>,
+    _scroll_intent_touchmove: Option<JsValue>,
 }
 
 /// Mount an xterm.js Terminal into a div with id `pane_id`.
@@ -410,6 +452,15 @@ pub fn XtermMount(
     let viewport_state: Rc<RefCell<Option<ViewportState>>> =
         use_hook(|| Rc::new(RefCell::new(None)));
     let viewport_for_effect = viewport_state.clone();
+    // Follow-bottom intent shared between the fit path (which arms it at
+    // capture when the pane was following the newest output) and the raw
+    // write flush (which re-pins through the deferred SIGWINCH redraw burst
+    // the resize itself triggers). Wheel/touch gestures cancel it. See
+    // `note_fit_viewport_intent` in xterm_helpers for the rationale.
+    let follow_until: Rc<Cell<f64>> = use_hook(|| Rc::new(Cell::new(0.0)));
+    let last_bottom_at: Rc<Cell<f64>> = use_hook(|| Rc::new(Cell::new(0.0)));
+    let follow_for_effect = follow_until.clone();
+    let last_bottom_for_effect = last_bottom_at.clone();
     // Raw bytes may arrive as soon as the native listener is installed, but
     // xterm must not paint them until its initial fit and matching PTY resize
     // have completed. This closes the startup/remount paint-order race.
@@ -422,6 +473,8 @@ pub fn XtermMount(
     let registry_for_drop = terminal_registry.clone();
     let ui_state = use_ui_store();
     let panel_state = use_panel_manager_store();
+    let workspace_store = use_workspace_store();
+    let workspace_for_effect = workspace_store;
     let mount_active_for_drop = mount_active.clone();
 
     use_effect(move || {
@@ -479,6 +532,9 @@ pub fn XtermMount(
         let mut fit_ref = fit_ref;
         let mount_active_for_task = mount_active.clone();
         let raw_ready_for_task = raw_ready_for_effect.clone();
+        let follow_until_for_task = follow_for_effect.clone();
+        let last_bottom_for_task = last_bottom_for_effect.clone();
+        let workspace_for_task = workspace_for_effect;
         let window = window.clone();
         let container = container.clone();
         // Clone the registry for the spawned task. `TerminalRegistry` is a
@@ -493,6 +549,28 @@ pub fn XtermMount(
         spawn(async move {
             if !*mount_active_for_task.borrow() {
                 return;
+            }
+            // Duplicate-mount detector: every XtermMount renders its own
+            // `.xterm-mount[data-pane-id=…]` container, so a count >1 for the
+            // same pane id means a previous mount failed to dispose — the
+            // exact stale-DOM overlap behind the zsh zle redraw "ghosting"
+            // (old buffer text bleeding through the live terminal). Warn in
+            // the console so the failure is observable instead of silent.
+            if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                let selector =
+                    format!(".xterm-mount[data-pane-id=\"{}\"]", mount_id_for_spawn);
+                if let Ok(mounts) = document.query_selector_all(&selector) {
+                    if mounts.length() > 1 {
+                        web_sys::console::warn_1(
+                            &format!(
+                                "[XtermMount] {} live .xterm-mount nodes for pane {} — stale terminal instance was not disposed",
+                                mounts.length(),
+                                mount_id_for_spawn
+                            )
+                            .into(),
+                        );
+                    }
+                }
             }
             // `terminal_store` and `terminal_registry` are captured at the
             // top of the component ABOVE (use_terminal_store() /
@@ -902,6 +980,29 @@ pub fn XtermMount(
                 true,
             );
 
+            // A deliberate scroll gesture during a fit's follow window means
+            // the user took over the viewport — cancel follow-bottom so we do
+            // not pin back to the bottom mid-gesture. Passive so scrolling
+            // stays on the compositor thread.
+            let scroll_cancel_make = |follow_cell: Rc<Cell<f64>>| {
+                Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                    follow_cell.set(0.0);
+                }) as Box<dyn FnMut(web_sys::Event)>)
+                .into_js_value()
+            };
+            let scroll_wheel_js = scroll_cancel_make(follow_until_for_task.clone());
+            let _ = container.add_event_listener_with_callback_and_bool(
+                "wheel",
+                scroll_wheel_js.as_ref().unchecked_ref(),
+                true,
+            );
+            let scroll_touch_js = scroll_cancel_make(follow_until_for_task.clone());
+            let _ = container.add_event_listener_with_callback_and_bool(
+                "touchmove",
+                scroll_touch_js.as_ref().unchecked_ref(),
+                true,
+            );
+
             // On a brand new PTY, clear once before the first fit-triggered
             // resize to avoid a duplicated initial prompt. When reusing an
             // existing PTY session, do not clear; instead, we restore the
@@ -918,6 +1019,35 @@ pub fn XtermMount(
             // Store terminal reference for focus on click
             term_ref.set(Some(term_val.clone()));
 
+            // E2E/debug: expose live xterm instances (buffer/scroll geometry)
+            // when the e2e flag is set. No-op in normal runs; the flag is only
+            // ever written by WebDriver specs before workspace creation.
+            if let Some(win) = web_sys::window() {
+                let is_e2e = js_sys::Reflect::get(&win, &JsValue::from_str("__athenaE2E"))
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if is_e2e {
+                    let terms = js_sys::Reflect::get(&win, &JsValue::from_str("__athenaTermMap"))
+                        .ok()
+                        .and_then(|v| v.dyn_into::<js_sys::Object>().ok())
+                        .unwrap_or_else(|| {
+                            let map = js_sys::Object::new();
+                            let _ = js_sys::Reflect::set(
+                                &win,
+                                &JsValue::from_str("__athenaTermMap"),
+                                &map,
+                            );
+                            map
+                        });
+                    let _ = js_sys::Reflect::set(
+                        &terms,
+                        &JsValue::from_str(&mount_id),
+                        &term_val,
+                    );
+                }
+            }
+
             // ── Write Coalescing — accumulate PTY bytes and flush on rAF ─────
             let wq_term = term_val.clone();
             let wq_queue: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
@@ -926,13 +1056,24 @@ pub fn XtermMount(
             let wq_queue_for_ready = wq_queue.clone();
             let wq_scheduled_for_ready = wq_scheduled.clone();
             let wq_term_for_ready = wq_term.clone();
+            let follow_for_listener = follow_until_for_task.clone();
+            let last_bottom_for_listener = last_bottom_for_task.clone();
+            let follow_for_ready_a = follow_until_for_task.clone();
+            let last_bottom_for_ready_a = last_bottom_for_task.clone();
+            let follow_for_ready_b = follow_until_for_task.clone();
+            let last_bottom_for_ready_b = last_bottom_for_task.clone();
 
-            // Resume capture intentionally does not run from this raw xterm
-            // callback. PTY bytes include shell echo, readline redraws, and
-            // remount replay; treating those bytes as authoritative agent
-            // completion output caused the workspace persistence storm seen in
-            // production. Resume IDs are captured by the backend lifecycle path
-            // instead, where the output snapshot belongs to an exited agent.
+            // Live resume capture: scan raw PTY output for the harness's
+            // `<cli> --resume <id>` line and persist it to the workspace store.
+            // IMPORTANT for the persistence-storm guard (8a9bb08): the store
+            // is written ONLY on a new scanner match — `ResumeScanner::feed`
+            // deduplicates ids, so each distinct resume id triggers at most
+            // one `update_space` write per mount. No writes happen per chunk.
+            // The backend app-exit path remains as a backstop for sessions
+            // whose agent was killed without printing a resume line.
+            let resume_scanner = Rc::new(RefCell::new(ResumeScanner::new()));
+            let mount_id_for_scan = mount_id.clone();
+            let workspace_for_scan = workspace_for_task;
             if !*mount_active_for_task.borrow() {
                 return;
             }
@@ -941,6 +1082,75 @@ pub fn XtermMount(
             let listener_owner_for_attach = listener_owner_for_task.clone();
             let raw_ready_for_attach = raw_ready_for_listener.clone();
             let raw_listener = match pty_listen_raw(&mount_id, move |bytes: Vec<u8>| {
+                // Match-only write: `feed` returns a value at most once per
+                // distinct id, so this path persists exactly one update per
+                // new resume id — never per output chunk. Scan before the
+                // queue consumes `bytes` to avoid an extra copy.
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                if let Some((prefix, id)) = resume_scanner.borrow_mut().feed(&text) {
+                    // Keep the persisted command identical to the line the
+                    // harness printed: no added shell syntax, matching the
+                    // backend shutdown-capture form.
+                    let full_cmd = format!("{} {}", prefix, &id);
+                    web_sys::console::log_1(
+                        &format!(
+                            "[XtermMount] capture resume id={} cmd={} for pane={}",
+                            id, full_cmd, mount_id_for_scan
+                        )
+                        .into(),
+                    );
+                    let mid = mount_id_for_scan.clone();
+                    let mut ws = workspace_for_scan;
+                    let cmd_for_store = full_cmd.clone();
+                    // IMPORTANT: `wasm_bindgen_futures::spawn_local`, not
+                    // Dioxus `spawn`. This closure runs inside a raw
+                    // pty_listen_raw callback — outside any Dioxus scope — so
+                    // `spawn` panics at current_scope_id(); `spawn_local` does
+                    // not need a scope.
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let mut space_id: Option<String> = None;
+                        {
+                            let ws_guard = ws.read();
+                            for space in &ws_guard.spaces {
+                                if space.panes.iter().any(|p| p.id == mid) {
+                                    space_id = Some(space.id.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(sid) = space_id {
+                            ws.write().update_space(&sid, |space| {
+                                for pane in &mut space.panes {
+                                    if pane.id == mid {
+                                        pane.resume_id = Some(id.clone());
+                                        pane.resume_cmd = Some(cmd_for_store.clone());
+                                        // A new session supersedes any
+                                        // previously dismissed banner: reset
+                                        // so the resume banner reappears for
+                                        // this new id.
+                                        pane.resume_dismissed = Some(false);
+                                        web_sys::console::log_1(
+                                            &format!(
+                                                "[XtermMount] persisted resume_id for pane={}",
+                                                mid
+                                            )
+                                            .into(),
+                                        );
+                                        break;
+                                    }
+                                }
+                            });
+                        } else {
+                            web_sys::console::warn_1(
+                                &format!(
+                                    "[resume-debug] scanner matched pane={} but workspace pane was not found",
+                                    mid
+                                )
+                                .into(),
+                            );
+                        }
+                    });
+                }
                 {
                     let mut q = wq_queue.borrow_mut();
                     q.push(bytes);
@@ -961,7 +1171,14 @@ pub fn XtermMount(
                         q.remove(0);
                     }
                 }
-                schedule_raw_flush(&wq_queue, &wq_scheduled, &wq_term, &raw_ready_for_listener);
+                schedule_raw_flush(
+                    &wq_queue,
+                    &wq_scheduled,
+                    &wq_term,
+                    &raw_ready_for_listener,
+                    &follow_for_listener,
+                    &last_bottom_for_listener,
+                );
             }) {
                 Ok(listener) => {
                     // The component may have been dropped while the native
@@ -1220,11 +1437,6 @@ pub fn XtermMount(
                 let _ = on_resize_fn.call1(&term_val, on_resize_closure_js.as_ref());
             }
 
-            // Keep the default DOM renderer on WKWebView. CanvasAddon uses a
-            // separate backing store whose dimensions can lag behind FitAddon
-            // during flex reflow, producing the exact glyph-overlap artifact
-            // this mount is designed to avoid. We can reintroduce it behind a
-            // measured platform flag after the DOM path is stable.
             // SerializeAddon captures the live buffer (SGR colors, scrollback,
             // alt-screen, DEC modes, cursor) to a VT escape string. Used by
             // `use_drop` (via serialize_buffer) to snapshot the terminal just
@@ -1232,6 +1444,56 @@ pub fn XtermMount(
             // replay it into the fresh terminal — surviving the pane-swap
             // remount (use_drop fires on every swap; see project-swap-remount).
             let serialize_addon = try_activate_addon(&window, "SerializeAddon", &term_val);
+
+            // ── Renderer: WebGL (GPU) first, DOM renderer as fallback ────────
+            // The default DOM renderer keeps stale glyph spans in WKWebView
+            // under zsh zle redraws (zsh-syntax-highlighting history recall
+            // leaves ghost characters; buffer stays correct, the paint does
+            // not). The DOM renderer was deprecated in xterm 5.5 and removed
+            // in 6.0 for exactly this class of bugs. The vendored WebglAddon
+            // rasterizes into one canvas and is immune to span-caching —
+            // the mobile mount already runs WebGL-only successfully.
+            // On WebGL context loss, dispose the addon so xterm falls back
+            // to the DOM renderer instead of painting nothing.
+            let mut webgl_addon_holder: Option<JsValue> = None;
+            let mut webgl_ctx_loss_closure: Option<
+                wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>,
+            > = None;
+            if let Some(webgl_addon) = try_activate_addon(&window, "WebglAddon", &term_val) {
+                if let Ok(on_loss_val) =
+                    js_sys::Reflect::get(&webgl_addon, &JsValue::from_str("onContextLoss"))
+                {
+                    if let Ok(on_loss_fn) = on_loss_val.dyn_into::<js_sys::Function>() {
+                        let addon_for_loss = webgl_addon.clone();
+                        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(
+                            move |_: JsValue| {
+                                if let Ok(dispose_val) = js_sys::Reflect::get(
+                                    &addon_for_loss,
+                                    &JsValue::from_str("dispose"),
+                                ) {
+                                    if let Ok(dispose_fn) =
+                                        dispose_val.dyn_into::<js_sys::Function>()
+                                    {
+                                        web_sys::console::warn_1(
+                                            &"[XtermMount] WebGL context lost; falling back to DOM renderer"
+                                                .into(),
+                                        );
+                                        let _ = dispose_fn.call0(&addon_for_loss);
+                                    }
+                                }
+                            },
+                        )
+                            as Box<dyn FnMut(JsValue)>);
+                        let _ = on_loss_fn.call1(&webgl_addon, closure.as_ref().unchecked_ref());
+                        webgl_ctx_loss_closure = Some(closure);
+                    }
+                }
+                webgl_addon_holder = Some(webgl_addon);
+            } else {
+                web_sys::console::warn_1(
+                    &"[XtermMount] WebglAddon unavailable; using DOM renderer".into(),
+                );
+            }
 
             // ── Clickable links → embedded browser panel ────────────────────
             // The vendored WebLinksAddon's default handler calls window.open()
@@ -1276,6 +1538,8 @@ pub fn XtermMount(
                     &fit_pending_for_task,
                     &mount_active_for_task,
                     &viewport_for_task,
+                    &follow_until_for_task,
+                    &last_bottom_for_task,
                 );
                 let initial_fit = fit_instance.clone();
                 let initial_container = container.clone();
@@ -1284,6 +1548,8 @@ pub fn XtermMount(
                 let initial_ready = raw_ready_for_task.clone();
                 let initial_pane = mount_id.clone();
                 let initial_owner = listener_owner_for_task.clone();
+                let initial_follow = follow_for_ready_a.clone();
+                let initial_last_bottom = last_bottom_for_ready_a.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     // Allow the browser to commit the open/fit layout before
                     // reading the final xterm dimensions. The PTY remains
@@ -1345,6 +1611,8 @@ pub fn XtermMount(
                         &wq_scheduled_for_ready,
                         &wq_term_for_ready,
                         &initial_ready,
+                        &initial_follow,
+                        &initial_last_bottom,
                     );
                 });
                 // Publish the fit addon instance so reactive effects (the font
@@ -1359,6 +1627,8 @@ pub fn XtermMount(
                 let fit_pending_for_ro = fit_pending_for_task.clone();
                 let viewport_for_ro = viewport_for_task.clone();
                 let mount_active_for_ro = mount_active_for_task.clone();
+                let follow_for_ro = follow_until_for_task.clone();
+                let last_bottom_for_ro = last_bottom_for_task.clone();
                 let ro_timer: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
                 let ro_timer_for_cb = ro_timer.clone();
                 let ro_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
@@ -1372,6 +1642,8 @@ pub fn XtermMount(
                         let fit_pending_for_timer = fit_pending_for_ro.clone();
                         let viewport_for_timer = viewport_for_ro.clone();
                         let mount_active_for_timer = mount_active_for_ro.clone();
+                        let follow_for_timer = follow_for_ro.clone();
+                        let last_bottom_for_timer = last_bottom_for_ro.clone();
                         // Single-fire timer closure — once_into_js auto-frees
                         // after the timeout fires, so this no longer leaks one
                         // Closure per resize tick.
@@ -1390,6 +1662,8 @@ pub fn XtermMount(
                                     &fit_pending_for_timer,
                                     &mount_active_for_timer,
                                     &viewport_for_timer,
+                                    &follow_for_timer,
+                                    &last_bottom_for_timer,
                                 );
                             }
                         });
@@ -1442,6 +1716,8 @@ pub fn XtermMount(
                 let initial_ready = raw_ready_for_task.clone();
                 let initial_pane = mount_id.clone();
                 let initial_owner = listener_owner_for_task.clone();
+                let initial_follow = follow_for_ready_b.clone();
+                let initial_last_bottom = last_bottom_for_ready_b.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if !*initial_active.borrow() {
                         return;
@@ -1453,6 +1729,8 @@ pub fn XtermMount(
                         &wq_scheduled_for_ready,
                         &wq_term_for_ready,
                         &initial_ready,
+                        &initial_follow,
+                        &initial_last_bottom,
                     );
                 });
             }
@@ -1474,6 +1752,8 @@ pub fn XtermMount(
             let viewport_for_vis = viewport_for_task.clone();
             let mount_active_for_vis = mount_active_for_task.clone();
             let mount_active_for_pointer = mount_active_for_task.clone();
+            let follow_for_vis = follow_until_for_task.clone();
+            let last_bottom_for_vis = last_bottom_for_task.clone();
             let vis_closure =
                 wasm_bindgen::closure::Closure::wrap(Box::new(move |entries: JsValue| {
                     let Ok(arr) = entries.dyn_into::<js_sys::Array>() else {
@@ -1500,6 +1780,8 @@ pub fn XtermMount(
                                     &fit_pending_for_vis,
                                     &mount_active_for_vis,
                                     &viewport_for_vis,
+                                    &follow_for_vis,
+                                    &last_bottom_for_vis,
                                 );
                             } else {
                                 // No FitAddon on record (activation failed) —
@@ -1635,6 +1917,11 @@ pub fn XtermMount(
                 _serialize_addon: serialize_addon,
                 _web_links_handler: Some(web_links_handler_js),
                 _web_links_addon: web_links_addon,
+                _webgl_addon: webgl_addon_holder,
+                _webgl_ctx_loss_closure: webgl_ctx_loss_closure,
+                _scroll_intent_container: Some(container.clone()),
+                _scroll_intent_wheel: Some(scroll_wheel_js),
+                _scroll_intent_touchmove: Some(scroll_touch_js),
             }));
         });
     });
@@ -1707,6 +1994,8 @@ pub fn XtermMount(
     let fit_ref_for_font = fit_ref;
     let fit_pending_for_font = fit_pending.clone();
     let viewport_for_font = viewport_state.clone();
+    let follow_for_font = follow_until.clone();
+    let last_bottom_for_font = last_bottom_at.clone();
     let mount_id_for_font = pane_id.clone();
     let mount_active_for_font = mount_active_for_drop.clone();
     use_effect(move || {
@@ -1776,6 +2065,8 @@ pub fn XtermMount(
                         let fit_pending_c = fit_pending_for_font.clone();
                         let mount_active_c = mount_active_for_font.clone();
                         let viewport_c = viewport_for_font.clone();
+                        let follow_c = follow_for_font.clone();
+                        let last_bottom_c = last_bottom_for_font.clone();
                         let term_c = term.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             wait_for_font_ready(&window_c, &family_to_wait, size_px).await;
@@ -1790,6 +2081,8 @@ pub fn XtermMount(
                                 &fit_pending_c,
                                 &mount_active_c,
                                 &viewport_c,
+                                &follow_c,
+                                &last_bottom_c,
                             );
                         });
                     }
@@ -1902,6 +2195,22 @@ pub fn XtermMount(
                     pointerdown_handler.as_ref().unchecked_ref(),
                     true,
                 );
+            }
+            if let Some(scroll_container) = c._scroll_intent_container.take() {
+                if let Some(wheel) = c._scroll_intent_wheel.take() {
+                    let _ = scroll_container.remove_event_listener_with_callback_and_bool(
+                        "wheel",
+                        wheel.as_ref().unchecked_ref(),
+                        true,
+                    );
+                }
+                if let Some(touchmove) = c._scroll_intent_touchmove.take() {
+                    let _ = scroll_container.remove_event_listener_with_callback_and_bool(
+                        "touchmove",
+                        touchmove.as_ref().unchecked_ref(),
+                        true,
+                    );
+                }
             }
             if let Some(observer) = c._resize_observer.take() {
                 if let Ok(disconnect_val) =

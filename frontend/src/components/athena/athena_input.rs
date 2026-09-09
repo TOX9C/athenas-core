@@ -247,17 +247,27 @@ fn submit_message(
 /// Replay the last failed turn. Called from the inline Retry action on the
 /// error message — keeping the composer free of transient action buttons.
 pub(crate) fn retry_last_message(athena_state: &mut Signal<AthenaState>) {
-    let text = athena_state
-        .read()
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.role == MessageRole::User)
-        .map(|message| message.content.clone());
-    if let Some(text) = text {
-        if athena_state.write().prepare_retry(&text) {
-            submit_message_text(&text, athena_state);
-        }
+    // Respect an active rate-limit cooldown instead of resubmitting into the
+    // same window the last request just tripped.
+    let cooldown_left_secs = {
+        let state = athena_state.read();
+        state.retry_not_before_ms.and_then(|not_before| {
+            let remaining_ms = not_before - chrono::Utc::now().timestamp_millis();
+            (remaining_ms > 0).then_some((remaining_ms as u64 + 999) / 1000)
+        })
+    };
+    if let Some(wait) = cooldown_left_secs {
+        athena_state
+            .write()
+            .set_retry_notice(Some(format!("Rate limited — retry in {wait}s.")));
+        return;
+    }
+    let retry_text = athena_state.write().prepare_retry();
+    match retry_text {
+        Some(text) if !text.trim().is_empty() => submit_message_text(&text, athena_state),
+        _ => athena_state
+            .write()
+            .set_retry_notice(Some("Nothing to retry.".to_string())),
     }
 }
 

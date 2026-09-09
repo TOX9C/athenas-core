@@ -355,6 +355,33 @@ pub(crate) async fn pty_read_loop(
     let mut flush_interval = tokio::time::interval(tokio::time::Duration::from_millis(8));
     flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    /// Debug VT stream tee for root-causing renderer/redraw bugs: when the
+    /// `ATHENA_PTY_TEE` env var points at a writable directory, every raw
+    /// byte burst destined for the frontend is also appended to
+    /// `<dir>/<session_id>.bin`. Replaying that file reproduces the exact
+    /// stream xterm.js consumed. The env lookup is cached in a `OnceLock`
+    /// so the hot path costs one pointer read when the tee is disabled.
+    fn pty_debug_tee(session_id: &str, bytes: &[u8]) {
+        static TEE_DIR: std::sync::LazyLock<Option<std::path::PathBuf>> =
+            std::sync::LazyLock::new(|| {
+                std::env::var_os("ATHENA_PTY_TEE")
+                    .filter(|p| !p.is_empty())
+                    .map(std::path::PathBuf::from)
+            });
+        let Some(dir) = TEE_DIR.as_ref() else { return };
+        // Pane ids are UUID-like, but scrub separators defensively so a
+        // hostile session id cannot escape the tee directory.
+        let safe_id: String = session_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let path = dir.join(format!("{safe_id}.bin"));
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write as _;
+            let _ = f.write_all(bytes);
+        }
+    }
+
     /// Flush accumulated raw PTY bytes.
     ///
     /// Primary delivery is the attached xterm listener's raw IPC channel
@@ -426,6 +453,7 @@ pub(crate) async fn pty_read_loop(
                 log::warn!("Failed to emit pty:raw event: {}", e);
             }
         }
+        pty_debug_tee(session_id, coalesce_buf.as_slice());
         coalesce_buf.clear();
     }
 

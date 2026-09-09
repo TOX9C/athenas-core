@@ -564,7 +564,9 @@ pub fn App() -> Element {
                 }
 
                 // Workspace tabs (centered, flex-1)
-                div { style: "flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 8px; min-width: 0; overflow: hidden;",
+                // No-drag: must override the titlebar's `drag` region or macOS
+                // swallows clicks for window-dragging (same as the right toolbar).
+                div { style: "flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 8px; min-width: 0; overflow: hidden; -webkit-app-region: no-drag;",
                     WorkspaceTabs { on_new_space: move |_| { notification_overlay.set(false); ui_state.write().show_new_space_modal = true; } }
                 }
 

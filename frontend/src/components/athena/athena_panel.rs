@@ -412,9 +412,35 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                         .set_api_keyring_error(Some(format!("Keychain access failed: {:?}", e)));
                 }
             }
-            match tauri_bridge::store_get("llm.model").await {
-                Ok(m) if !m.is_empty() => athena.write().set_configured_model(Some(m)),
-                _ => athena.write().set_configured_model(None),
+            // Resolve the model the same way the chat backend does
+            // (`build_provider_config_from_store`): when a provider preset is
+            // persisted, its scoped `llm.model.<provider>` slot wins and the
+            // legacy `llm.model` is only a migration fallback. Reading the
+            // legacy key unconditionally showed the pre-scoping model forever.
+            let prov = tauri_bridge::store_get("llm.provider")
+                .await
+                .unwrap_or_default();
+            let prov = prov.trim();
+            let scoped_key = (!prov.is_empty() && prov != "custom")
+                .then(|| format!("llm.model.{prov}"));
+            let mut resolved: Option<String> = None;
+            if let Some(key) = scoped_key {
+                if let Ok(m) = tauri_bridge::store_get(&key).await {
+                    if !m.trim().is_empty() {
+                        resolved = Some(m);
+                    }
+                }
+            }
+            if resolved.is_none() {
+                if let Ok(m) = tauri_bridge::store_get("llm.model").await {
+                    if !m.trim().is_empty() {
+                        resolved = Some(m);
+                    }
+                }
+            }
+            match resolved {
+                Some(m) => athena.write().set_configured_model(Some(m)),
+                None => athena.write().set_configured_model(None),
             }
 
             match tauri_bridge::session_list().await {

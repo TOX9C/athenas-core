@@ -1,11 +1,100 @@
 //! Browser and xterm.js helpers shared by the mount lifecycle.
 
 use crate::stores::terminal::TerminalSession;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
+
+/// How long after a fit the write path keeps re-pinning a bottom-following
+/// pane to the bottom. The fit itself fires xterm's `onResize` → `pty_resize`
+/// → SIGWINCH, and full-screen TUIs (OMP, vim) redraw asynchronously — often
+/// 100–500 ms later — reprinting their whole scrollback. A one-shot viewport
+/// restore runs before that burst, so without a follow window the pane can
+/// stick at a mid-buffer position indefinitely (the "scrolled up" bug).
+pub(crate) const FOLLOW_BOTTOM_WINDOW_MS: f64 = 3200.0;
+
+/// A viewport observed at the bottom within this window still counts as
+/// bottom-following when a fit captures its intent. Redraw bursts can leave
+/// `viewportY < baseY` for a frame or two; those panes must still follow.
+pub(crate) const RECENT_BOTTOM_WINDOW_MS: f64 = 1500.0;
+
+/// True when xterm's active buffer viewport is pinned to the bottom.
+pub(crate) fn viewport_at_bottom(term_val: &JsValue) -> bool {
+    let Some(active) = active_buffer(term_val) else {
+        return true;
+    };
+    let viewport_y = read_number(&active, "viewportY").unwrap_or(0);
+    let base_y = read_number(&active, "baseY").unwrap_or(viewport_y);
+    viewport_y >= base_y
+}
+
+/// Scroll the terminal viewport to the bottom of the active buffer.
+/// No-op when the method is unavailable or the pane is already pinned.
+pub(crate) fn scroll_to_bottom(term_val: &JsValue) {
+    let Ok(method_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("scrollToBottom"))
+    else {
+        return;
+    };
+    let Ok(method_fn) = method_val.dyn_into::<js_sys::Function>() else {
+        return;
+    };
+    let _ = method_fn.call0(term_val);
+}
+
+/// Record bottom-following intent across a geometry change. A pane that was
+/// at the bottom (now, or within [`RECENT_BOTTOM_WINDOW_MS`]) keeps following
+/// output for [`FOLLOW_BOTTOM_WINDOW_MS`] after the fit, covering the deferred
+/// SIGWINCH redraw burst. Returns true when the pane should follow.
+pub(crate) fn note_fit_viewport_intent(
+    at_bottom: bool,
+    follow_until: &Rc<Cell<f64>>,
+    last_bottom_at: &Rc<Cell<f64>>,
+) -> bool {
+    let now = js_sys::Date::now();
+    if at_bottom {
+        follow_until.set(now + FOLLOW_BOTTOM_WINDOW_MS);
+        last_bottom_at.set(now);
+        return true;
+    }
+    if now - last_bottom_at.get() < RECENT_BOTTOM_WINDOW_MS {
+        // Mid-redraw transient: the pane was following moments ago; keep it.
+        follow_until.set(now + FOLLOW_BOTTOM_WINDOW_MS);
+        return true;
+    }
+    false
+}
+
+/// Re-pin a bottom-following pane across the whole redraw settle window.
+///
+/// The fit's one-shot viewport restore cannot cover the deferred SIGWINCH
+/// redraw: full-screen TUIs (OMP) cycle normal→alt→normal buffers on resize
+/// and write their reprint *after* the restore frame — and an idle shell
+/// writes nothing at all afterwards, so a write-path re-pin never fires.
+/// schedule_fit calls these delayed re-pins whenever follow intent is armed;
+/// user scroll gestures cancel them by zeroing `follow_until`.
+pub(crate) fn schedule_follow_repins(
+    term_val: &JsValue,
+    active: &Rc<RefCell<bool>>,
+    follow_until: &Rc<Cell<f64>>,
+) {
+    const REPIN_DELAYS_MS: &[u32] = &[120, 300, 600, 1100, 1800, 2800];
+    for &delay in REPIN_DELAYS_MS {
+        let term = term_val.clone();
+        let active_for_delay = active.clone();
+        let follow_for_delay = follow_until.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            gloo::timers::future::TimeoutFuture::new(delay).await;
+            if !*active_for_delay.borrow() {
+                return;
+            }
+            if js_sys::Date::now() <= follow_for_delay.get() {
+                scroll_to_bottom(&term);
+            }
+        });
+    }
+}
 
 pub(crate) fn read_css_var(window: &web_sys::Window, name: &str) -> String {
     let Some(doc_el) = window.document().and_then(|d| d.document_element()) else {
@@ -246,6 +335,8 @@ pub(crate) fn schedule_fit(
     pending: &Rc<RefCell<bool>>,
     active: &Rc<RefCell<bool>>,
     viewport: &Rc<RefCell<Option<ViewportState>>>,
+    follow_until: &Rc<Cell<f64>>,
+    last_bottom_at: &Rc<Cell<f64>>,
 ) {
     // ResizeObserver, font updates, visibility restoration, and pane swaps can
     // all request a fit in the same frame. Keep the whole fit/repaint pair in
@@ -254,7 +345,17 @@ pub(crate) fn schedule_fit(
     if !*active.borrow() || *pending.borrow() {
         return;
     }
-    *viewport.borrow_mut() = Some(capture_viewport(term_val));
+    let captured = capture_viewport(term_val);
+    // The one-shot restore below runs before the deferred TUI redraw burst
+    // (SIGWINCH → reprint) that the resize itself triggers. Record follow
+    // intent so the write path keeps re-pinning a bottom-following pane until
+    // the burst settles — otherwise the pane can stick scrolled up. Schedule
+    // delayed re-pins as well: an idle pane writes nothing after the burst,
+    // so only the timed re-pins can catch the final buffer state.
+    if note_fit_viewport_intent(captured.at_bottom, follow_until, last_bottom_at) {
+        schedule_follow_repins(term_val, active, follow_until);
+    }
+    *viewport.borrow_mut() = Some(captured);
     *pending.borrow_mut() = true;
 
     let fit_for_raf = fit_instance.clone();
@@ -545,5 +646,5 @@ mod tests {
     }
 }
 
-// scan_for_resume_id has been replaced by ResumeScanner in utils::resume_scanner.
-// Kept out to prevent stale references.
+// Resume capture lives in xterm_mount.rs via ResumeScanner (re-exported at
+// crate::utils::resume_scanner); keep the parsing rules in the shared crate.

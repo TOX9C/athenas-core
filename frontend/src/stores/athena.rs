@@ -40,6 +40,16 @@ pub struct AthenaState {
     /// from cancelled or superseded turns are ignored.
     pub active_request_id: Option<String>,
     pub error: Option<String>,
+    /// Prompt of the last failed turn, captured by `fail_stream` so Retry can
+    /// rebuild it without scanning history. In-memory only — restored
+    /// sessions fall back to the user message preceding the error bubble.
+    pub retry_text: Option<String>,
+    /// Rate-limit cooldown (epoch millis) parsed from the failure message.
+    /// While in the future the Retry button renders disabled with a countdown.
+    pub retry_not_before_ms: Option<i64>,
+    /// One-shot notice shown next to the retry affordance when a retry click
+    /// could not run (e.g. the error bubble is no longer the latest turn).
+    pub retry_notice: Option<String>,
     pub model: String,
     pub provider: String,
     pub bypass_mode: bool,
@@ -82,6 +92,9 @@ impl AthenaState {
             streaming_trace: Vec::new(),
             active_request_id: None,
             error: None,
+            retry_text: None,
+            retry_not_before_ms: None,
+            retry_notice: None,
             model: DEFAULT_MODEL.to_string(),
             provider: DEFAULT_PROVIDER.to_string(),
             bypass_mode: DEFAULT_BYPASS_MODE,
@@ -144,6 +157,9 @@ impl AthenaState {
         self.streaming_status = Some("Connecting…".to_string());
         self.streaming_trace = vec!["Connecting…".to_string()];
         self.error = None;
+        self.retry_text = None;
+        self.retry_not_before_ms = None;
+        self.retry_notice = None;
     }
 
     pub fn accepts_stream_event(&self, request_id: &str) -> bool {
@@ -187,6 +203,9 @@ impl AthenaState {
         self.is_streaming = false;
         self.streaming_status = None;
         self.streaming_trace.clear();
+        self.retry_text = None;
+        self.retry_not_before_ms = None;
+        self.retry_notice = None;
         request_id
     }
 
@@ -213,6 +232,23 @@ impl AthenaState {
                         last.content.push_str(&format!("\n\nError: {message}"));
                     }
                     last.is_error = true;
+                    // Capture the prompt for Retry: the user message preceding
+                    // the placeholder we just marked. Stored so a later retry
+                    // never depends on the transient `error` field.
+                    self.retry_text = self
+                        .messages
+                        .iter()
+                        .rev()
+                        .nth(1)
+                        .filter(|m| m.role == MessageRole::User)
+                        .map(|m| m.content.clone());
+                    // Rate-limit failures carry a machine-usable hint ("wait 30s",
+                    // bare "429", …) — park the Retry button until it elapses.
+                    if let Some(delay_ms) = parse_retry_delay_ms(&message) {
+                        self.retry_not_before_ms = Some(
+                            chrono::Utc::now().timestamp_millis() + capped_cooldown(delay_ms) as i64,
+                        );
+                    }
                 }
             }
         }
@@ -226,29 +262,47 @@ impl AthenaState {
         self.error = None;
     }
 
-    /// Remove the failed turn before replaying it so Retry does not duplicate
-    /// the user message or leave an obsolete error bubble in the transcript.
-    pub fn prepare_retry(&mut self, text: &str) -> bool {
-        if self.error.is_none() {
-            return false;
-        }
+    /// Remove the failed turn and return the prompt to replay. The error
+    /// bubble itself is the sole authority: `self.error` is transient and is
+    /// NOT restored when a session reloads (while `isError` on messages is),
+    /// so gating on it used to make Retry a silent no-op after any reload.
+    pub fn prepare_retry(&mut self) -> Option<String> {
         let failed_assistant = self
             .messages
             .back()
             .is_some_and(|message| message.role == MessageRole::Athena && message.is_error);
         if !failed_assistant {
-            return false;
+            return None;
         }
+        // Prefer the prompt captured by fail_stream; restored sessions lack it,
+        // so fall back to the user message directly preceding the bubble.
+        let text = self.retry_text.take().or_else(|| {
+            self.messages
+                .iter()
+                .rev()
+                .nth(1)
+                .filter(|m| m.role == MessageRole::User)
+                .map(|m| m.content.clone())
+        })?;
         self.messages.pop_back();
-        let matching_user = self
+        // Pop the user prompt too so the resubmission does not duplicate it.
+        if self
             .messages
             .back()
-            .is_some_and(|message| message.role == MessageRole::User && message.content == text);
-        if matching_user {
+            .is_some_and(|m| m.role == MessageRole::User && m.content == text)
+        {
             self.messages.pop_back();
         }
         self.error = None;
-        true
+        self.retry_not_before_ms = None;
+        self.retry_notice = None;
+        Some(text)
+    }
+
+    /// Set or clear the inline notice shown next to the Retry affordance when
+    /// a retry click could not run.
+    pub fn set_retry_notice(&mut self, notice: Option<String>) {
+        self.retry_notice = notice;
     }
 
     pub fn set_model(&mut self, model: impl Into<String>) {
@@ -557,6 +611,62 @@ impl AthenaState {
 }
 
 // ---------------------------------------------------------------------------
+// Retry helpers
+// ---------------------------------------------------------------------------
+
+/// Default cooldown applied to rate-limit failures that carry no explicit
+/// "wait N seconds" hint (provider 429s).
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS: u64 = 15_000;
+/// Never park the Retry button longer than this, whatever the message claims.
+const MAX_RETRY_COOLDOWN_MS: u64 = 120_000;
+
+/// Best-effort extraction of a rate-limit cooldown from an error message.
+/// Understands "wait 30s", "retry in 30 seconds", "retry after 30 s", and
+/// falls back to a default when the message is clearly a rate-limit failure
+/// (HTTP 429 / "rate limit" / "too many requests"). `None` for other errors.
+fn parse_retry_delay_ms(message: &str) -> Option<u64> {
+    let lower = message.to_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+
+    // Three-token form: "wait 30 seconds", "retry in 30 s", "after 30 s".
+    // The keyword may also be the lead token of a two-token pair ("wait 30s").
+    for window in tokens.windows(3) {
+        if matches!(window[0], "wait" | "in" | "after")
+            && parse_secs(window[1]).is_some()
+            && window[2].starts_with('s')
+        {
+            return parse_secs(window[1]).map(|s| (s * 1000.0) as u64);
+        }
+    }
+    for window in tokens.windows(2) {
+        if matches!(window[0], "wait" | "in" | "after") {
+            // "wait 30s" — trailing unit attached to the number.
+            let digits: String = window[1]
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            if let Some(secs) = parse_secs(&digits) {
+                return Some((secs * 1000.0) as u64);
+            }
+        }
+    }
+
+    let rate_limited = lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("too many requests");
+    rate_limited.then_some(DEFAULT_RATE_LIMIT_COOLDOWN_MS)
+}
+
+fn parse_secs(token: &str) -> Option<f64> {
+    token.parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0)
+}
+
+/// Clamp + expose the parsed cooldown.
+fn capped_cooldown(delay_ms: u64) -> u64 {
+    delay_ms.min(MAX_RETRY_COOLDOWN_MS)
+}
+
+// ---------------------------------------------------------------------------
 // Context helpers
 // ---------------------------------------------------------------------------
 
@@ -691,10 +801,108 @@ mod tests {
         });
         s.error = Some("timeout".into());
 
-        assert!(s.prepare_retry("try again"));
+        assert_eq!(s.prepare_retry().as_deref(), Some("try again"));
         assert_eq!(s.messages.len(), 1);
         assert_eq!(s.messages.front().unwrap().content, "older question");
         assert!(s.error.is_none());
+    }
+
+    #[test]
+    fn prepare_retry_works_for_restored_bubble_without_error_state() {
+        // Session reloads persist `isError` bubbles but not the transient
+        // `error` field. Retry previously no-op'd here — the button rendered
+        // but prepare_retry returned false because `error` was None.
+        let mut s = AthenaState::default();
+        s.add_message(AthenaMessage {
+            id: "failed-user".into(),
+            role: MessageRole::User,
+            content: "try again".into(),
+            timestamp: 0,
+            is_error: false,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+        s.add_message(AthenaMessage {
+            id: "failed-assistant".into(),
+            role: MessageRole::Athena,
+            content: "Error: 429 too many requests".into(),
+            timestamp: 0,
+            is_error: true,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+        assert!(s.error.is_none());
+
+        assert_eq!(s.prepare_retry().as_deref(), Some("try again"));
+        assert!(s.messages.is_empty());
+    }
+
+    #[test]
+    fn prepare_retry_rejects_non_error_tail() {
+        let mut s = AthenaState::default();
+        s.add_message(AthenaMessage {
+            id: "ok-assistant".into(),
+            role: MessageRole::Athena,
+            content: "all good".into(),
+            timestamp: 0,
+            is_error: false,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+
+        assert!(s.prepare_retry().is_none());
+        assert_eq!(s.messages.len(), 1);
+    }
+
+    #[test]
+    fn fail_stream_records_retry_prompt_and_rate_limit_cooldown() {
+        let mut s = AthenaState::default();
+        s.add_message(AthenaMessage {
+            id: "user".into(),
+            role: MessageRole::User,
+            content: "summarize this".into(),
+            timestamp: 0,
+            is_error: false,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+        s.begin_stream("req-1".to_string());
+        s.add_message(AthenaMessage {
+            id: "assistant".into(),
+            role: MessageRole::Athena,
+            content: String::new(),
+            timestamp: 0,
+            is_error: false,
+            images: Vec::new(),
+            blocks: Vec::new(),
+        });
+
+        let before = chrono::Utc::now().timestamp_millis();
+        s.fail_stream("req-1", "Rate limit exceeded. Please wait 30s.".to_string(), false);
+
+        // begin_stream resets retry state for the new turn; fail_stream then
+        // re-establishes it from the failure.
+        assert_eq!(s.retry_text.as_deref(), Some("summarize this"));
+        let not_before = s.retry_not_before_ms.expect("cooldown parsed");
+        assert!(not_before >= before + 30_000);
+        assert!(not_before <= chrono::Utc::now().timestamp_millis() + 31_000);
+    }
+
+    #[test]
+    fn parse_retry_delay_ms_variants() {
+        assert_eq!(parse_retry_delay_ms("Rate limit exceeded. Please wait 30s."), Some(30_000));
+        assert_eq!(parse_retry_delay_ms("retry in 12 seconds"), Some(12_000));
+        assert_eq!(parse_retry_delay_ms("please retry after 9 s"), Some(9_000));
+        assert_eq!(
+            parse_retry_delay_ms("provider returned 429 too many requests"),
+            Some(DEFAULT_RATE_LIMIT_COOLDOWN_MS)
+        );
+        assert_eq!(
+            parse_retry_delay_ms("rate limit hit"),
+            Some(DEFAULT_RATE_LIMIT_COOLDOWN_MS)
+        );
+        assert_eq!(parse_retry_delay_ms("network unreachable"), None);
+        assert_eq!(parse_retry_delay_ms("connection refused"), None);
     }
 
     #[test]

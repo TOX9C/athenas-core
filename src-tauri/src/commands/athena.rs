@@ -23,7 +23,8 @@ fn provider_chat_error(state: &AppState, error: athena_core::types::Orchestrator
 #[tauri::command]
 pub async fn athena_chat(state: State<'_, AppState>, message: String) -> Result<String, String> {
     if !state.rate_limiter.check("athena_chat") {
-        return Err("Rate limit exceeded. Please wait a moment.".to_string());
+        let wait = state.rate_limiter.retry_after_secs("athena_chat");
+        return Err(format!("Rate limit exceeded. Please wait {wait}s."));
     }
     let orchestrator = Arc::clone(&state.orchestrator);
     match build_provider_config_from_store(&state) {
@@ -52,7 +53,8 @@ pub async fn athena_chat_stream(
         return Err("request_id is required".to_string());
     }
     if !state.rate_limiter.check("athena_chat_stream") {
-        return Err("Rate limit exceeded. Please wait a moment.".to_string());
+        let wait = state.rate_limiter.retry_after_secs("athena_chat_stream");
+        return Err(format!("Rate limit exceeded. Please wait {wait}s."));
     }
     let orchestrator = Arc::clone(&state.orchestrator);
     match build_provider_config_from_store(&state) {

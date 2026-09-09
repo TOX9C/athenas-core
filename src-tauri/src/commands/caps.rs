@@ -88,6 +88,20 @@ impl RateLimiter {
         entry.0 += 1;
         true
     }
+
+    /// Seconds until `command`'s budget replenishes. 0 when the command is
+    /// within budget — call only after `check` has rejected a request.
+    pub fn retry_after_secs(&self, command: &str) -> u64 {
+        let map = self.inner.lock();
+        let Some((count, window_start)) = map.get(command) else {
+            return 0;
+        };
+        if *count < self.max_requests {
+            return 0;
+        }
+        let elapsed = Instant::now().duration_since(*window_start);
+        self.window.saturating_sub(elapsed).as_secs().max(1)
+    }
 }
 
 /// Global rate limiter for IPC commands — limits any command to a burst
