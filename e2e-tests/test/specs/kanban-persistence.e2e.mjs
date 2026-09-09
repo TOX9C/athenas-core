@@ -16,6 +16,18 @@
 //
 // Cleanup: the test deletes the task it created in `after` (best effort) so
 // the shared store.json is left as it was found.
+//
+// The second `it` proves restart survival: kanban writes go through
+// `KeyValueStore::set_sync` (immediate disk persist), so the on-disk
+// `~/Library/Application Support/athena-core/store.json` is asserted right
+// after the move, then `browser.reloadSession()` kills the app and starts a
+// fresh WebDriver session against a brand-new process — rehydration is
+// verified from the reloaded UI, not from the still-running first process.
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const STORE_JSON = join(homedir(), 'Library', 'Application Support', 'athena-core', 'store.json');
 const TASK_TITLE = `KB_E2E_${Date.now()}`;
 // browser.execute NEVER awaits a returned Promise (WebDriver sync script
 // serialization turns a Promise into `{}`), so Tauri invoke calls must be
@@ -87,6 +99,82 @@ const moveCardTo = async (menuLabel) => {
   expect(await clickButton(menuLabel)).toBe(true);
 };
 
+// Wait for the Dioxus WASM app to mount. Mirrors the wdio.conf `before`
+// gate, but callable mid-spec: `browser.reloadSession()` does NOT re-run the
+// config hooks, so the restart phase must gate on this itself.
+const waitForMount = () => browser.waitUntil(
+  async () => browser.execute(() => {
+    const main = document.getElementById('main');
+    if (!main) return false;
+    if (main.querySelector('[data-dioxus-id]')) return true;
+    for (const child of main.children) {
+      if (child.id !== 'wasm-loading' && child.id !== 'console-log') return true;
+    }
+    return false;
+  }),
+  { timeout: 30000, interval: 500, timeoutMsg: 'Dioxus WASM did not mount' },
+);
+
+// Bring the app to a state where a workspace (agent pill) is mounted: reuse a
+// restored/existing space if possible, otherwise launch a fresh Terminal
+// Workspace. A worksheet is required because the kanban backend scopes tasks
+// to the active space (`get_active_workspace_id`).
+async function ensureWorkspace() {
+  await browser.execute(() => {
+    window.__athenaE2E = true;
+    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir: '/tmp' }).catch(() => {});
+  });
+  const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));
+  if (!(await hasPill())) {
+    if (await clickButton('Space 1')) {
+      await browser.pause(1500);
+    }
+  }
+  if (!(await hasPill())) {
+    expect(await clickButton('New Workspace')).toBe(true);
+    await browser.waitUntil(
+      async () => browser.execute(() => !!document.querySelector('.modal-overlay')),
+      { timeout: 10000, interval: 250, timeoutMsg: 'New Workspace modal did not open' },
+    );
+    expect(await clickButton('Terminal Workspace')).toBe(true);
+    await browser.pause(400);
+    expect(await clickButton('Next >')).toBe(true);
+    try {
+      await browser.waitUntil(
+        async () => browser.execute(() => !!document.getElementById('add-claude')),
+        { timeout: 10000, interval: 250, timeoutMsg: 'Agent configuration step did not appear' },
+      );
+    } catch (e) {
+      const dump = await browser.execute(() => ({
+        overlays: document.querySelectorAll('.modal-overlay').length,
+        ids: [...document.querySelectorAll('[id^="add-"]')].map(el => el.id),
+        text: [...document.querySelectorAll('.modal-overlay')].map(m => (m.textContent || '').slice(0, 400)),
+        pills: document.querySelectorAll('[data-agent-pill]').length,
+      }));
+      console.log('=== bootstrap dump ===', JSON.stringify(dump));
+      throw e;
+    }
+    await browser.execute(() => document.getElementById('add-claude')?.click());
+    expect(await clickButton('Launch Space')).toBe(true);
+  }
+  await browser.waitUntil(hasPill, {
+    timeout: 25000, interval: 500, timeoutMsg: 'Agent pane pill did not mount',
+  });
+}
+
+// Switch the panel switcher to the kanban board and wait for it to mount.
+async function openKanban() {
+  await browser.execute(() => {
+    const btn = [...document.querySelectorAll('.tb-panel-switcher button')]
+      .find(b => (b.textContent || '').trim().toLowerCase() === 'kanban');
+    btn?.click();
+  });
+  await browser.waitUntil(
+    async () => browser.execute(() => !!document.querySelector('.kanban-board')),
+    { timeout: 10000, interval: 250, timeoutMsg: 'Kanban board did not mount' },
+  );
+}
+
 describe('Kanban worksheet persistence', () => {
   let activeSpaceId = null;
   let createdTaskId = null;
@@ -104,57 +192,10 @@ describe('Kanban worksheet persistence', () => {
     this.timeout(90000);
 
     // --- Bootstrap a worksheet (workspace) -------------------------------
-    await browser.execute(() => {
-      window.__athenaE2E = true;
-      window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir: '/tmp' }).catch(() => {});
-    });
-    const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));
-    if (!(await hasPill())) {
-      if (await clickButton('Space 1')) {
-        await browser.pause(1500);
-      }
-    }
-    if (!(await hasPill())) {
-      expect(await clickButton('New Workspace')).toBe(true);
-      await browser.waitUntil(
-        async () => browser.execute(() => !!document.querySelector('.modal-overlay')),
-        { timeout: 10000, interval: 250, timeoutMsg: 'New Workspace modal did not open' },
-      );
-      expect(await clickButton('Terminal Workspace')).toBe(true);
-      await browser.pause(400);
-      expect(await clickButton('Next >')).toBe(true);
-      try {
-        await browser.waitUntil(
-          async () => browser.execute(() => !!document.getElementById('add-claude')),
-          { timeout: 10000, interval: 250, timeoutMsg: 'Agent configuration step did not appear' },
-        );
-      } catch (e) {
-        const dump = await browser.execute(() => ({
-          overlays: document.querySelectorAll('.modal-overlay').length,
-          ids: [...document.querySelectorAll('[id^="add-"]')].map(el => el.id),
-          text: [...document.querySelectorAll('.modal-overlay')].map(m => (m.textContent || '').slice(0, 400)),
-          pills: document.querySelectorAll('[data-agent-pill]').length,
-        }));
-        console.log('=== bootstrap dump ===', JSON.stringify(dump));
-        throw e;
-      }
-      await browser.execute(() => document.getElementById('add-claude')?.click());
-      expect(await clickButton('Launch Space')).toBe(true);
-    }
-    await browser.waitUntil(hasPill, {
-      timeout: 25000, interval: 500, timeoutMsg: 'Agent pane pill did not mount',
-    });
+    await ensureWorkspace();
 
     // --- Open the kanban panel --------------------------------------------
-    await browser.execute(() => {
-      const btn = [...document.querySelectorAll('.tb-panel-switcher button')]
-        .find(b => (b.textContent || '').trim().toLowerCase() === 'kanban');
-      btn?.click();
-    });
-    await browser.waitUntil(
-      async () => browser.execute(() => !!document.querySelector('.kanban-board')),
-      { timeout: 10000, interval: 250, timeoutMsg: 'Kanban board did not mount' },
-    );
+    await openKanban();
 
     // Snapshot tasks the board already has (from prior suite runs) so later
     // assertions only look at OUR task.
@@ -220,6 +261,38 @@ describe('Kanban worksheet persistence', () => {
     await browser.waitUntil(
       async () => (await columnOfTask()) === 'Done',
       { timeout: 10000, interval: 500, timeoutMsg: 'task did not reload into Done after panel remount' },
+    );
+  });
+
+  it('persists to store.json on disk and rehydrates after an app restart', async function () {
+    this.timeout(150000);
+    // Serial suite (maxInstances: 1): this test depends on the first `it`.
+    if (!createdTaskId) throw new Error('first spec must have created the task');
+
+    // --- On-disk persistence ----------------------------------------------
+    // kanban writes go through KeyValueStore::set_sync (immediate blocking
+    // disk write), so store.json must already hold the Completed task.
+    const onDisk = JSON.parse(readFileSync(STORE_JSON, 'utf8'));
+    if (!onDisk[`kanban.${activeSpaceId}`]) throw new Error('store.json lacks kanban key');
+    const tasksOnDisk = JSON.parse(onDisk[`kanban.${activeSpaceId}`]);
+    const mineOnDisk = tasksOnDisk.find(t => t.id === createdTaskId);
+    expect(mineOnDisk).toBeTruthy();
+    expect(mineOnDisk.title).toBe(TASK_TITLE);
+    expect(mineOnDisk.status).toBe('Complete');
+
+    // --- Real restart: kill the app, launch a brand-new process ------------
+    // reloadSession() deletes the WebDriver session (tauri-driver quits the
+    // binary) and creates a new one against a fresh process whose store is
+    // reloaded from disk — the same attach mechanism every spec relies on.
+    await browser.reloadSession();
+    await waitForMount();
+    await ensureWorkspace();
+    await openKanban();
+
+    // The new process must rehydrate the task in the Done column.
+    await browser.waitUntil(
+      async () => (await columnOfTask()) === 'Done',
+      { timeout: 15000, interval: 500, timeoutMsg: 'task did not rehydrate into Done after app restart' },
     );
   });
 });
