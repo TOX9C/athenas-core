@@ -47,6 +47,12 @@ The release build exposes 144 IPC commands.
 3. Drag Athena's Core into **Applications** and launch.
 
 > **Unsigned build.** Athena's Core is not yet notarized by Apple. On first launch macOS will say it can't be opened. On **macOS 15 Sequoia and later**: open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the Athena's Core message, then confirm. On older macOS versions, right-click the app and choose **Open**. You only do this once.
+>
+> Via Homebrew instead (skips the Gatekeeper prompt entirely):
+>
+> ```bash
+> brew install --no-quarantine tox9c/tap/athenas-core
+> ```
 
 ## Keyboard shortcuts
 
