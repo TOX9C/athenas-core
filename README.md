@@ -2,7 +2,7 @@
 
 <img src="src-tauri/icons/128x128.png?v=2025" alt="Athena's Core" width="128" height="128" />
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-blue)](https://github.com/TOX9C/athenas-core/releases)
 [![Rust](https://img.shields.io/badge/Rust-Tauri%202%20%2B%20Dioxus-orange)](https://www.rust-lang.org/)
 [![Stars](https://img.shields.io/github/stars/TOX9C/athenas-core?style=social)](https://github.com/TOX9C/athenas-core)
@@ -45,6 +45,8 @@ The release build exposes 144 IPC commands.
 1. Open the [Releases](https://github.com/TOX9C/athenas-core/releases) page.
 2. Download the latest `.dmg`.
 3. Drag Athena's Core into **Applications** and launch.
+
+> **Unsigned build.** Athena's Core is not yet notarized by Apple. On first launch macOS will say it can't be opened. On **macOS 15 Sequoia and later**: open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the Athena's Core message, then confirm. On older macOS versions, right-click the app and choose **Open**. You only do this once.
 
 ## Keyboard shortcuts
 
@@ -94,13 +96,17 @@ End-to-end coverage lives in WebdriverIO specs that drive the real app through `
 
 ## License
 
-Athena's Core is released under the [MIT License](LICENSE).
+Athena's Core is source-available under the [Business Source License 1.1](LICENSE).
+
+- **Free** for non-commercial use — personal projects, learning, and uncompensated open-source contributions.
+- **Commercial use** (at work, for an employer or client, or in any for-profit context) requires a commercial license — $39 one-time per seat, includes a year of updates. Building from source does not remove this requirement. **[Buy a license](https://lemonsqueezy.com/)** _(store link coming once checkout is set up)_.
+- Every release converts to the **Apache License 2.0** three years after it ships.
 
 ---
 
 ## Support the developer
 
-Athena's Core is free and open source. If it saves you time or you just want to support a solo developer, donations are appreciated.
+Athena's Core is source-available — free for non-commercial use, commercial licenses at the price above. If it saves you time or you just want to support a solo developer, donations are also appreciated.
 
 **Crypto:**
 

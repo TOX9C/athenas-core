@@ -43,7 +43,9 @@ Version bumped from 0.3.0 → **3.3.0** across `package.json`, `package-lock.jso
 - [x] **Apple signing** — decision (2026-09-02): ship **unsigned**. **Release published 2026-09-02**: tag `v3.3.0` → `a2371ca`, CI `macOS Release` run 33573856164 succeeded; public (non-draft) GitHub release carries `Athena.s.Core_3.3.0_aarch64.dmg` (~10 MB) + sha256. Post-ship fix landed in that tag: `byte_char_slices` (clippy 1.98, CI stable is newer than local 1.95 gate — toolchain drift remains a risk; consider pinning `rust-toolchain.toml`). The
   release workflow now publishes an unsigned DMG on tag push (signing-gate
   hard-fail removed, publish step no longer conditioned on
-  `APPLE_SIGNING_IDENTITY`); users bypass Gatekeeper via right-click → Open.
+  `APPLE_SIGNING_IDENTITY`); users bypass Gatekeeper via System Settings →
+  Privacy & Security → Open Anyway (macOS 15+; right-click → Open no longer
+  works on Sequoia).
   Restore signing + notarization when secrets are configured.
 - [x] **Deprecation UX** — provider responses classified centrally (`orchestrator_support::classify_api_error`): HTTP 410, or 404 with a model-scoped body, now return `OrchestratorError::ModelUnavailable`, which emits `AthenaStreamEvent::Error{ model_unavailable: true }` with guidance text; the desktop Athena panel (`athena_panel.rs`) detects the flag and opens the Settings modal so the user picks another model. Covered by `model_gone_yields_model_unavailable_error_event` (stream contract) + three classifier unit tests (2026-09-02).
 

@@ -127,8 +127,9 @@ jobs:
         run: |
           echo 'No Apple signing credentials configured — publishing an AD-HOC signed DMG.' >&2
           echo 'The app is code signed with identity "-" so Gatekeeper sees a valid,' >&2
-          echo 'sealed bundle; users bypass the unsigned-developer warning with' >&2
-          echo 'right-click -> Open (or System Settings -> Privacy & Security).' >&2
+          echo 'sealed bundle; users bypass the unsigned-developer warning via' >&2
+          echo 'System Settings -> Privacy & Security -> Open Anyway (macOS 15+;' >&2
+          echo 'right-click -> Open stopped working in Sequoia).' >&2
           echo 'Configure APPLE_SIGNING_IDENTITY + cert secrets to ship a signed, notarized build.' >&2
 
       - name: Build ad-hoc signed DMG
@@ -258,7 +259,9 @@ jobs:
         # Developer ID notarization beats shipping nothing. The DMG is ad-hoc
         # signed so its signature is structurally valid (so the "damaged"
         # Gatekeeper failure class cannot occur); users dismiss the
-        # "not from an identified developer" warning via right-click -> Open.
+        # "not from an identified developer" warning via System Settings ->
+        # Privacy & Security -> Open Anyway (macOS 15+; right-click -> Open
+        # no longer bypasses Gatekeeper on Sequoia).
         # Restore the `env.APPLE_SIGNING_IDENTITY != ''` guard on this step when
         # signing secrets exist so a regression to unsigned never publishes silently.
         if: ${{ github.event_name == 'push' || inputs.publish == true }}

@@ -49,6 +49,33 @@ if (args.includes('--help')) {
   process.exit(0)
 }
 
+// Fail loudly on unrecognized flags: a typo like `--require-arm` must not
+// silently downgrade the verification level of a release artifact.
+const VALUE_FLAGS = new Set(['--artifact', '--sha256', '--expected-name'])
+const BOOLEAN_FLAGS = new Set([
+  '--require-app',
+  '--require-arm64',
+  '--require-signing',
+  '--require-ad-hoc',
+  '--require-notarization',
+])
+{
+  const unknown = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (VALUE_FLAGS.has(arg)) {
+      i += 1 // skip the flag's value
+    } else if (!BOOLEAN_FLAGS.has(arg)) {
+      unknown.push(arg)
+    }
+  }
+  if (unknown.length) {
+    console.error(`error: unknown argument(s): ${unknown.join(', ')}`)
+    usage()
+    process.exit(2)
+  }
+}
+
 const artifact = argumentValue(args, '--artifact')
 const expectedShaPath = argumentValue(args, '--sha256')
 const expectedName = argumentValue(args, '--expected-name')
@@ -133,9 +160,6 @@ if (requireApp || requireArm64 || requireSigning || requireNotarization || requi
         '-',
         plist,
       ])
-      if (!executableName || executableName.includes('/') || executableName.includes('\0')) {
-        throw new Error('app bundle has an invalid CFBundleExecutable value')
-      }
       if (
         !executableName
         || executableName !== basename(executableName)
@@ -177,10 +201,11 @@ if (requireApp || requireArm64 || requireSigning || requireNotarization || requi
       // Informational: Gatekeeper assessment. An ad-hoc signed app is NEVER
       // accepted by spctl (no Developer ID, no notarization ticket), so a
       // rejection here is expected and NOT fatal — users launch the app via
-      // right-click -> Open once the signature itself is valid.
+      // System Settings -> Privacy & Security -> Open Anyway (macOS 15+;
+      // right-click -> Open no longer bypasses Gatekeeper on Sequoia).
       const assess = runCaptureAll('spctl', ['--assess', '--type', 'execute', '--verbose', app])
       console.log(
-        `gatekeeper: spctl exited ${assess.status} (expected non-zero for ad-hoc builds; right-click -> Open bypass applies once the signature is valid)`,
+        `gatekeeper: spctl exited ${assess.status} (expected non-zero for ad-hoc builds; user bypasses via Privacy & Security -> Open Anyway on macOS 15+)`,
       )
     }
     if (requireNotarization) {
