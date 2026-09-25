@@ -2,8 +2,8 @@
 # version + sha256 are placeholders: fill from the GitHub release at publish
 # time (release-macos.yml already uploads "<dmg>.sha256" alongside the DMG).
 cask "athenas-core" do
-  version "3.3.0"
-  sha256 "4a7192b44917934e125ec19002c8f4d01cf239d3be66b0dd4f60329380dbfd31"
+  version "3.3.1"
+  sha256 "b5f994f9698e1b557f042b3e48b33599f24557bb097c4df11cb2b3321977321d"
 
   # NOTE: the local DMG is "Athena's Core_<v>_aarch64.dmg" (passes the
   # release workflow's --expected-name gate against the local artifact),
