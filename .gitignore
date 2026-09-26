@@ -74,6 +74,7 @@ dist-electron/
 *.md
 !README.md
 !ROADMAP.md
+!CLAUDE.md
 
 # Rust compile artifacts (redundant with target/ but explicit)
 *.rlib

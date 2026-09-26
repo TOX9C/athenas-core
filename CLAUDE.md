@@ -11,8 +11,8 @@ cargo tauri dev               # run the app; only Rust changes recompile live
 
 - `dx` (dioxus-cli 0.7.9) must be at `~/.cargo/bin/dx` — a Homebrew `dx` shadows it in PATH.
 - Rust-only changes: `cargo check --workspace` is the fast gate; `cargo test -p <crate>` per crate.
-- CI runs `cargo test --workspace --exclude athena-terminal --locked` (the terminal crate's PTY fork kills Ubuntu runners — run it locally). Full suite is ~700 tests.
-- Before pushing: `npm run lint && npm test`, `cargo clippy --workspace`, `npm run check:tauri-commands`, `check:tauri-permissions`, `check:release-privacy`. No pre-commit hooks — CI is the only gate.
+- CI runs `cargo test --workspace --exclude athena-terminal --locked` (the terminal crate's PTY fork kills Ubuntu runners — run it locally).
+- Before pushing, mirror CI (ci.yml): `npm run lint`, `npm test`, `npm run test:mcp`, `npm run test:release-scripts`, `npm run check:plugin-integration`, `check:tauri-security`, `check:release-privacy`, and `node scripts/run-clippy-baseline.mjs` (clippy is a **no-regression baseline** — bare `cargo clippy` shows warnings CI tolerates). `check:tauri-commands`/`check:tauri-permissions` only run in the release workflow. No pre-commit hooks — CI is the only gate.
 
 ## Shipping a release
 
@@ -27,4 +27,4 @@ cargo tauri dev               # run the app; only Rust changes recompile live
 - Pricing/store link lives in the README License section (placeholder until the Lemon Squeezy store exists). License key check is NOT implemented; when built: activate once, store locally, offline forever — never gate a running app on license status.
 - Verbatim-legal files (`LICENSE`) must not diverge from the published BSL 1.1 text.
 
-Rules: commit only files you changed (the working tree often carries unrelated in-flight work); prefer `gh` CLI for GitHub operations (authenticated as TOX9C).
+Rules: commit only files you changed — NEVER `git commit -am` / `-A`; stage explicit paths only (the working tree often carries unrelated in-flight work, and 2026-09-26 incident: a `-am` commit swept ~190 files of user WIP into a docs commit and pushed it public). Prefer `gh` CLI for GitHub operations (authenticated as TOX9C).

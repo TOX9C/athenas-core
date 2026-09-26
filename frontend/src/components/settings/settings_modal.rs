@@ -221,19 +221,19 @@ pub fn SettingsContent(props: SettingsContentProps) -> Element {
     let section_vi = rsx! {
         CodexSection {
             numeral: "VI",
-            title: "About",
-            intro: Some(""),
+            title: "Mobile Mirror",
+            intro: Some("Mirror this desktop to your phone over the local network."),
             id: "s-vi",
-            AboutSettings {}
+            MobileMirrorSettings {}
         }
     };
     let section_vii = rsx! {
         CodexSection {
             numeral: "VII",
-            title: "Mobile Mirror",
-            intro: Some("Mirror this desktop to your phone over the local network."),
+            title: "About",
+            intro: Some(""),
             id: "s-vii",
-            MobileMirrorSettings {}
+            AboutSettings {}
         }
     };
 

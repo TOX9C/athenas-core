@@ -147,17 +147,17 @@ describe('Mobile Mirror relay pairing (stubbed phone)', () => {
     });
     expect(opened).toBe(true);
     await browser.waitUntil(
-      async () => browser.execute(() => !!document.querySelector('#s-vii button.toggle')),
+      async () => browser.execute(() => !!document.querySelector('#s-vi button.toggle')),
       { timeout: 10000, interval: 250, timeoutMsg: 'Mobile Mirror toggle did not mount' },
     );
 
-    await browser.execute(() => document.querySelector('#s-vii button.toggle').click());
+    await browser.execute(() => document.querySelector('#s-vi button.toggle').click());
 
     // Renderer surfaces the running state: status pill flips to "Running" and
     // the pairing card renders the tokened URL (what the phone would scan).
     await browser.waitUntil(
       async () => browser.execute(() => {
-        const section = document.querySelector('#s-vii');
+        const section = document.querySelector('#s-vi');
         if (!section) return false;
         return [...section.querySelectorAll('span')].some(s => s.textContent.trim() === 'Running');
       }),
@@ -165,7 +165,7 @@ describe('Mobile Mirror relay pairing (stubbed phone)', () => {
     );
     await browser.waitUntil(
       async () => browser.execute(() =>
-        !!(document.querySelector('#s-vii .mobile-pairing-url')?.textContent || '').trim()),
+        !!(document.querySelector('#s-vi .mobile-pairing-url')?.textContent || '').trim()),
       { timeout: 10000, interval: 300, timeoutMsg: 'pairing URL not rendered in the Settings UI' },
     );
 
