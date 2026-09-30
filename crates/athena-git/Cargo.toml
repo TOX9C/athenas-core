@@ -1,0 +1,13 @@
+[package]
+name = "athena-git"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+
+[dependencies]
+# Local-only repo operations (discover/status/diff): default-features = false
+# drops https/ssh transport, which removes the openssl dependency entirely;
+# vendored-libgit2 keeps the native build self-contained for CI and release.
+git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
+serde = { workspace = true }
+thiserror = { workspace = true }

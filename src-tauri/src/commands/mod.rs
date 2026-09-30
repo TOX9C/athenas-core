@@ -15,6 +15,7 @@ pub mod caps;
 mod diagnostics;
 mod drop;
 mod filesystem;
+mod git;
 mod kanban;
 mod mcp;
 mod notification;
@@ -57,6 +58,7 @@ pub use filesystem::{
     fs_exists, fs_list_dir, fs_read_file, fs_read_file_as_base64, fs_search_files,
     fs_show_image_dialog, fs_show_open_dialog, fs_write_file,
 };
+pub use git::{git_diff, git_discover, git_status};
 pub use kanban::{kanban_create_task, kanban_delete_task, kanban_get_tasks, kanban_update_task};
 pub use mcp::{mcp_broadcast, mcp_handle_request, mcp_init, mcp_shutdown, mcp_tools};
 pub use notification::{

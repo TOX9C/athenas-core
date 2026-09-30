@@ -41,6 +41,7 @@ dirs = "6"
 libc = "0.2"
 parking_lot = { version = "0.12", features = ["send_guard"] }
 athena-core = { path = "../crates/athena-core" }
+athena-git = { path = "../crates/athena-git" }
 athena-fs = { path = "../crates/athena-fs" }
 athena-store = { path = "../crates/athena-store" }
 athena-browser = { path = "../crates/athena-browser" }

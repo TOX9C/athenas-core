@@ -609,6 +609,24 @@
           "markdownDescription": "Enables the get_pane_history command without any pre-configured scope."
         },
         {
+          "description": "Enables the git_diff command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-git-diff",
+          "markdownDescription": "Enables the git_diff command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the git_discover command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-git-discover",
+          "markdownDescription": "Enables the git_discover command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the git_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-git-status",
+          "markdownDescription": "Enables the git_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the kanban_create_task command without any pre-configured scope.",
           "type": "string",
           "const": "allow-kanban-create-task",
@@ -1471,6 +1489,24 @@
           "type": "string",
           "const": "deny-get-pane-history",
           "markdownDescription": "Denies the get_pane_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the git_diff command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-git-diff",
+          "markdownDescription": "Denies the git_diff command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the git_discover command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-git-discover",
+          "markdownDescription": "Denies the git_discover command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the git_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-git-status",
+          "markdownDescription": "Denies the git_status command without any pre-configured scope."
         },
         {
           "description": "Denies the kanban_create_task command without any pre-configured scope.",

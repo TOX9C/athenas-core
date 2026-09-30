@@ -86,6 +86,10 @@ fn main() {
             fs_show_open_dialog,
             fs_show_image_dialog,
             fs_search_files,
+            // Git
+            git_discover,
+            git_status,
+            git_diff,
             // Store
             store_get,
             store_set,

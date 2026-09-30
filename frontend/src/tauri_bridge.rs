@@ -186,6 +186,36 @@ pub async fn fs_show_image_dialog() -> TauriResult<String> {
     invoke("fs_show_image_dialog", "{}").await
 }
 
+/// Git operations (backed by the `athena-git` crate; types live in
+/// `stores::git` and mirror the Rust serde output).
+pub async fn git_discover(path: &str) -> TauriResult<Option<String>> {
+    invoke(
+        "git_discover",
+        &serde_json::json!({ "path": path }).to_string(),
+    )
+    .await
+}
+
+pub async fn git_status(path: &str) -> TauriResult<crate::stores::git::RepoStatus> {
+    let value: JsValue = invoke(
+        "git_status",
+        &serde_json::json!({ "path": path }).to_string(),
+    )
+    .await?;
+    serde_wasm_bindgen::from_value(value)
+        .map_err(|e| JsValue::from_str(&format!("git_status decode: {e}")))
+}
+
+pub async fn git_diff(path: &str, staged: bool) -> TauriResult<crate::stores::git::DiffSet> {
+    let value: JsValue = invoke(
+        "git_diff",
+        &serde_json::json!({ "path": path, "staged": staged }).to_string(),
+    )
+    .await?;
+    serde_wasm_bindgen::from_value(value)
+        .map_err(|e| JsValue::from_str(&format!("git_diff decode: {e}")))
+}
+
 /// Store operations
 pub async fn store_get(key: &str) -> TauriResult<String> {
     invoke("store_get", &serde_json::json!({ "key": key }).to_string()).await

@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-09-30 — G1: Git integration core
+
+New crate `crates/athena-git` (git2, `vendored-libgit2`, no network transports): repo discovery, branch + per-file staged/unstaged status, and staged/unstaged unified diffs with per-hunk parsing (capped at 4 MB, reports truncation). New IPC commands `git_discover` / `git_status` / `git_diff` validate the input path **and the discovered repo root** against the existing path sandbox, so a parent repository above a trusted root cannot leak repo state. Frontend gains a bounded git store (`stores/git.rs`, max 16 tracked repos) plus typed bridge wrappers. 7 unit tests run against real temp repos.
+
 > Comprehensive tracking of bugs, issues, and fixes discovered during deep-dive audit and refactoring sessions.
 > Last updated: 2026-09-01 (v3.3.0 release + CI/release hardening pass)
 

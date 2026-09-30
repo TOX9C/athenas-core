@@ -4,6 +4,7 @@ members = [
   "frontend", # Dioxus frontend
   "crates/athena-core",
   "crates/athena-fs",
+  "crates/athena-git",
   "crates/athena-store",
   "crates/athena-browser",
   "crates/athena-plugins",
