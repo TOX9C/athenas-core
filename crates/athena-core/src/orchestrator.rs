@@ -1,5 +1,6 @@
 use crate::notification::NotificationType as NotifType;
-use crate::tool_executor::{to_openai_tools, ToolExecutor};
+use crate::tool_executor::ToolExecutor;
+use crate::tool_schema::to_openai_tools;
 use crate::types::*;
 use secrecy::ExposeSecret;
 use std::collections::HashMap;
@@ -311,6 +312,21 @@ impl AthenaOrchestrator {
         *self.project_context.lock() = context;
     }
 
+    /// Whether the Web tools (`web_fetch`/`web_search`) are enabled; read
+    /// live from the KV store so the Settings toggle takes effect on the
+    /// next turn without a restart.
+    fn web_tools_enabled(&self) -> bool {
+        self.kv_store
+            .as_ref()
+            .and_then(|s| s.get::<bool>("web_tools.enabled").ok().flatten())
+            .unwrap_or(false)
+    }
+
+    /// OpenAI-format tool list honoring the Web-tools opt-in.
+    fn openai_tools(&self) -> Vec<crate::tool_schema::OpenAITool> {
+        crate::tool_schema::to_openai_tools_web_aware(self.web_tools_enabled())
+    }
+
     pub fn set_provider_config(&self, config: ProviderConfig) {
         *self.provider_config.lock() = Some(config);
     }
@@ -506,7 +522,7 @@ impl AthenaOrchestrator {
 
         let client = &self.http_client;
         let url = "https://api.anthropic.com/v1/messages";
-        let tools = to_openai_tools();
+        let tools = self.openai_tools();
 
         // Build the Anthropic-format tools list from the OpenAI-compatible schema.
         let anthropic_tools: Vec<serde_json::Value> = tools
@@ -661,7 +677,7 @@ impl AthenaOrchestrator {
         };
 
         let client = &self.http_client;
-        let tools = to_openai_tools();
+        let tools = self.openai_tools();
 
         // Build or update messages with system prompt
         {

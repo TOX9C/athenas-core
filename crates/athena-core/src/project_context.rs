@@ -2,7 +2,7 @@
 //! .goosehints) discovered from a workspace root upward to the user's home
 //! directory (never beyond it) and injected into chat/swarm contexts.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Files we auto-detect, in discovery order.
 pub const CONTEXT_FILENAMES: &[&str] = &["AGENTS.md", "CLAUDE.md", ".cursorrules", ".goosehints"];
@@ -32,8 +32,7 @@ pub fn discover(dir: &Path) -> Vec<ContextFile> {
         Ok(d) => Some(d),
         Err(_) => return out,
     };
-    loop {
-        let Some(cur) = current else { break };
+    while let Some(cur) = current {
         for name in CONTEXT_FILENAMES {
             let candidate = cur.join(name);
             if candidate.is_file() {
@@ -51,9 +50,9 @@ pub fn discover(dir: &Path) -> Vec<ContextFile> {
         if home.as_ref().is_some_and(|h| &cur == h) {
             break;
         }
-        current = cur.parent().map(|p| p.to_path_buf());
-        if current.is_none() {
-            break;
+        match cur.parent() {
+            Some(p) => current = Some(p.to_path_buf()),
+            None => break,
         }
     }
     out

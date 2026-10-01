@@ -48,6 +48,8 @@ pub enum ToolExecutorError {
     AgentComms(#[from] crate::agent_comms::AgentCommsError),
     #[error("Plan manager error: {0}")]
     PlanManager(#[from] crate::plan_manager::PlanManagerError),
+    #[error("{0}")]
+    Internal(String),
     #[error("Notification error: {0}")]
     Notification(String),
     #[error("Missing required parameter: {0}")]
@@ -240,6 +242,8 @@ impl ToolExecutor {
             "create_execution_plan" => self.create_execution_plan(args),
             "dispatch_plan_step" => self.dispatch_plan_step(args),
             "prompt_agent" => self.prompt_agent(args),
+            "web_fetch" => self.web_fetch(args),
+            "web_search" => self.web_search(args),
             "ask_user" => self.ask_user(args),
             "evaluate_results" => self.evaluate_results(args),
             "kanban_list_tasks" => self.kanban_list_tasks(),
@@ -276,6 +280,63 @@ impl ToolExecutor {
     }
 
     // -- Individual tool implementations ------------------------------------
+
+    /// Whether the Web tools toggle (`web_tools.enabled`) is on.
+    fn web_tools_enabled(&self) -> bool {
+        self.store
+            .get::<bool>("web_tools.enabled")
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    }
+
+    fn web_fetch(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
+        if !self.web_tools_enabled() {
+            return Ok(ToolCallResult {
+                text: "web_fetch is disabled. Enable Web tools in Settings → General.".into(),
+                is_error: Some(true),
+            });
+        }
+        let url = args
+            .url
+            .clone()
+            .ok_or_else(|| ToolExecutorError::MissingParam("url".to_string()))?;
+        let url = url.to_string();
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::limited(3))
+            .build()
+            .map_err(|e| ToolExecutorError::Internal(e.to_string()))?;
+        let body = tokio::task::block_in_place(|| {
+            crate::web_tools::web_fetch_with_client(&client, &url)
+        })
+        .map_err(ToolExecutorError::Internal)?;
+        Ok(ToolCallResult { text: body, is_error: None })
+    }
+
+    fn web_search(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
+        if !self.web_tools_enabled() {
+            return Ok(ToolCallResult {
+                text: "web_search is disabled. Enable Web tools in Settings → General.".into(),
+                is_error: Some(true),
+            });
+        }
+        let query = args
+            .query
+            .clone()
+            .ok_or_else(|| ToolExecutorError::MissingParam("query".to_string()))?;
+        let query = query.to_string();
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::limited(3))
+            .build()
+            .map_err(|e| ToolExecutorError::Internal(e.to_string()))?;
+        let body = tokio::task::block_in_place(|| {
+            crate::web_tools::web_search_with_client(&client, &query, None)
+        })
+        .map_err(ToolExecutorError::Internal)?;
+        Ok(ToolCallResult { text: body, is_error: None })
+    }
 
     fn ask_user(&self, args: &ToolInput) -> Result<ToolCallResult, ToolExecutorError> {
         let request_id = Uuid::new_v4().to_string();

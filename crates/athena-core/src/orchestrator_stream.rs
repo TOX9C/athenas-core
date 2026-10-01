@@ -343,7 +343,7 @@ impl AthenaOrchestrator {
                 "model": model,
                 "max_tokens": MAX_OUTPUT_TOKENS,
                 "messages": body_messages,
-                "tools": to_openai_tools(),
+                "tools": self.openai_tools(),
                 "tool_choice": "auto",
                 "stream": true,
                 // Ask for a final usage-bearing chunk; providers that don't
@@ -611,7 +611,7 @@ impl AthenaOrchestrator {
                 "max_tokens": MAX_OUTPUT_TOKENS,
                 "system": system_prompt,
                 "messages": messages,
-                "tools": to_openai_tools().iter().map(|tool| serde_json::json!({"name": tool.function.name, "description": tool.function.description, "input_schema": tool.function.parameters})).collect::<Vec<_>>(),
+                "tools": self.openai_tools().iter().map(|tool| serde_json::json!({"name": tool.function.name, "description": tool.function.description, "input_schema": tool.function.parameters})).collect::<Vec<_>>(),
                 "tool_choice": {"type": "auto"},
                 "stream": true,
             });

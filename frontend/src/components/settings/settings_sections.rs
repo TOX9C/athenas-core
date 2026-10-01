@@ -19,6 +19,17 @@ Tab: General
 #[component]
 pub(super) fn GeneralSettings() -> Element {
     let mut ui_state = use_ui_store();
+    let mut web_tools_on = use_signal(|| false);
+    let mut web_loaded = use_signal(|| false);
+    use_effect(move || {
+        if web_loaded() { return; }
+        web_loaded.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(v) = crate::tauri_bridge::store_get("web_tools.enabled").await {
+                web_tools_on.set(v.trim() == "true");
+            }
+        });
+    });
 
     rsx! {
         GroupLabel { label: "Typography", first: true }
@@ -104,6 +115,29 @@ pub(super) fn GeneralSettings() -> Element {
 
         GroupLabel { label: "Project context" }
         ProjectContextSection {}
+
+        GroupLabel { label: "Web tools" }
+
+        div { style: "display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); margin-bottom: 8px;",
+            div { style: "display: flex; flex-direction: column; gap: 4px; min-width: 0;",
+                span { style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--accent);", "Enable web tools" }
+                span { style: "font-size: 11px; color: var(--textDim);",
+                    "Allow the assistant to fetch URLs and run web searches (DuckDuckGo). Off by default — provider privacy applies."
+                }
+            }
+            Toggle {
+                active: web_tools_on.read().clone(),
+                on_toggle: move |_| {
+                    let next = !web_tools_on.read().clone();
+                    web_tools_on.set(next);
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = crate::tauri_bridge::store_set(
+                            "web_tools.enabled", if next { "true" } else { "false" },
+                        ).await;
+                    });
+                }
+            }
+        }
 
         GroupLabel { label: "Swarm" }
 

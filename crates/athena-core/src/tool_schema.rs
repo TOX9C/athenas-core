@@ -43,6 +43,9 @@ pub struct ToolInput {
     // FS
     pub path: Option<String>,
     pub pattern: Option<String>,
+    // Web tools
+    pub url: Option<String>,
+    pub query: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -76,9 +79,35 @@ pub struct ToolDefinition {
 
 /// The full list of orchestrator tools, with JSON Schema parameter
 /// definitions passed verbatim to the LLM provider.
+/// Names behind the opt-in `web_tools.enabled` setting. Excluded from the
+/// advertised list (and refused at execute time) until the user enables them.
+pub const WEB_TOOL_NAMES: &[&str] = &["web_fetch", "web_search"];
+
 pub fn orchestrator_tools() -> Vec<ToolDefinition> {
     use serde_json::json;
     vec![
+        ToolDefinition {
+            name: "web_fetch".to_string(),
+            description: "Fetch the text of an http(s) URL (up to 256 KB; tag-stripped for HTML). Use for answering questions about a specific page. Requires the 'Web tools' toggle in Settings.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "http(s) URL to fetch" }
+                },
+                "required": ["url"]
+            }),
+        },
+        ToolDefinition {
+            name: "web_search".to_string(),
+            description: "Search the web (DuckDuckGo HTML; no API key needed). Use for questions about current public information. Requires the 'Web tools' toggle in Settings.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "What to search for" }
+                },
+                "required": ["query"]
+            }),
+        },
         ToolDefinition {
             name: "close_terminals".to_string(),
             description: "Close and remove terminal panes/agents from the UI using their pane IDs. Use whenever the user asks to close, exit, or remove a running terminal/agent. Destructive — confirm with the user first.".to_string(),
@@ -431,6 +460,18 @@ static CACHED_OPENAI_TOOLS: LazyLock<Vec<OpenAITool>> = LazyLock::new(|| {
 
 pub fn to_openai_tools() -> Vec<OpenAITool> {
     CACHED_OPENAI_TOOLS.clone()
+}
+
+/// The schema advertised to the model, with Web tools hidden unless the
+/// user has explicitly enabled them (default off).
+pub fn to_openai_tools_web_aware(web_enabled: bool) -> Vec<OpenAITool> {
+    if web_enabled {
+        return to_openai_tools();
+    }
+    to_openai_tools()
+        .into_iter()
+        .filter(|t| !WEB_TOOL_NAMES.contains(&t.function.name.as_str()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

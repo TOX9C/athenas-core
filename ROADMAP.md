@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — M4: Web tools (opt-in)
+
+`web_fetch` (tag-stripped GET ≤ 256 KB, 15 s timeout, max 3 redirects, http(s) only) and `web_search` (DuckDuckGo HTML, no API key; unknown provider names fall back to it) are exposed to the orchestrator's tool list **only when the Web tools toggle is on** (Settings → General, persisted as `web_tools.enabled`); otherwise the executor refuses them with a clear error and they never reach the model. Both implemented via a blocking reqwest client inside the existing `spawn_blocking` executor path — no new process spawns, no network access out of the app process.
+
 ## 🚀 2026-10-01 — M3: Project context layer
 
 AGENTS.md / CLAUDE.md / .cursorrules / .goosehints are auto-discovered in the active workspace (and parents up to `$HOME`); Settings → General → **Project context** lists each with per-file chat/swarm toggles (persisted in `project_context.selection`). Chat turns merge the chat-enabled contents into the system prompt (`athena_chat_stream` + `athena_chat_with_session` rebuild it from the active workspace dir before each send; capped at 64 KB/file with truncation markers); swarm launches copy swarm-enabled files into every agent worktree via `project_context_apply` (existing repo files win; never overwritten). New IPC: `project_context_list`, `project_context_apply`. 3 crate tests (discovery + read caps + copy semantics).
