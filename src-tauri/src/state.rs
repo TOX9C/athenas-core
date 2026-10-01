@@ -783,6 +783,13 @@ impl AppState {
             *guard = Some(handle.clone());
         } // Drop the lock before calling wire methods that also acquire it
 
+        // Background routines tick ("fixed schedule" presets run hands-off).
+        crate::commands::routines::start(crate::commands::routines::RoutineTimerDeps {
+            store: Arc::clone(&self.store),
+            orchestrator: Arc::clone(&self.orchestrator),
+            notification: Arc::clone(&self.notification_service),
+        });
+
         // Stream events are request-scoped and use one stable channel. The
         // payload is already typed in athena-core; serialize exactly once at
         // the IPC boundary so the frontend can ignore stale request IDs.

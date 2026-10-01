@@ -21,6 +21,8 @@ tokio = { version = "1.43", features = ["rt", "sync", "time", "fs", "macros"] }
 log = { workspace = true }
 base64 = "0.22"
 path-clean = "1.0"
+regex = "1.10"
+chrono = { workspace = true }
 tauri-runtime = "2"
 uuid = { workspace = true }
 # keyring v3 ships NO default backends — without an explicit platform

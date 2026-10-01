@@ -170,6 +170,11 @@ fn main() {
             plan_create,
             plan_get,
             plan_update_step,
+            routines_list,
+            routines_upsert,
+            routines_delete,
+            routines_set_enabled,
+            routines_run_now,
             // Agent comms (legacy)
             agent_comms_token,
             agent_comms_sessions,

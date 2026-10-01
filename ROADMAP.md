@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — O4: Scheduled routines
+
+Routines: interval (`every N minutes`) or glob-watch triggers queue a prompt on the shared orchestrator in a scratch session, push a notification on each run, and keep a per-rule 20-entry run history in the KV store. Settings → General → **Routines** lists rules with enable/add/run-now/delete. Backend: `routines_list`/`routines_upsert`/`routines_delete`/`routines_set_enabled`/`routines_run_now`/`routines_tick` (every 30 s, spawned from AppState after app-handle registration; fixed intervals, glob matcher is a small local `*`/`?`/`**` diameter — no new proc deps).
+
 ## 🚀 2026-10-01 — O3: Proof-of-work kanban gate
 
 Kanban cards whose owner is an agent (`assigned_agent` or `plan_step_id` set) can no longer slide into **In Review** empty-handed: `update_task` rejects the transition with `ProofRequired` unless the update (or an earlier one on the same card) carries `TaskEvidence { diff, test_log, pane_id? }`. The card move UI gathers it automatically on demand: `git_diff` from the workspace + tail of the active agent pane's output buffer, attached via the extended `kanban_update_task(?, evidence)` (backend + bridge + tool schema). Manual (fully un-owned) cards move unchanged. Crate tests cover the rejection and the evidence-acceptance paths.

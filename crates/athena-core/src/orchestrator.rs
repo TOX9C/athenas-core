@@ -1,6 +1,5 @@
 use crate::notification::NotificationType as NotifType;
 use crate::tool_executor::ToolExecutor;
-use crate::tool_schema::to_openai_tools;
 use crate::types::*;
 use secrecy::ExposeSecret;
 use std::collections::HashMap;

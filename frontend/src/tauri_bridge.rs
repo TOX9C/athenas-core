@@ -319,6 +319,42 @@ pub async fn git_diff(path: &str, staged: bool) -> TauriResult<crate::stores::gi
         .map_err(|e| JsValue::from_str(&format!("git_diff decode: {e}")))
 }
 
+pub async fn routines_list() -> TauriResult<JsValue> {
+    invoke("routines_list", "{}").await
+}
+
+pub async fn routines_upsert(rule_json: &str) -> TauriResult<()> {
+    invoke(
+        "routines_upsert",
+        &serde_json::json!({ "ruleJson": rule_json.to_string() }).to_string(),
+    )
+    .await
+}
+
+pub async fn routines_delete(rule_id: &str) -> TauriResult<()> {
+    invoke(
+        "routines_delete",
+        &serde_json::json!({ "ruleId": rule_id }).to_string(),
+    )
+    .await
+}
+
+pub async fn routines_set_enabled(rule_id: &str, enabled: bool) -> TauriResult<()> {
+    invoke(
+        "routines_set_enabled",
+        &serde_json::json!({ "ruleId": rule_id, "enabled": enabled }).to_string(),
+    )
+    .await
+}
+
+pub async fn routines_run_now(rule_id: &str) -> TauriResult<()> {
+    invoke(
+        "routines_run_now",
+        &serde_json::json!({ "ruleId": rule_id }).to_string(),
+    )
+    .await
+}
+
 /// Store operations
 pub async fn store_get(key: &str) -> TauriResult<String> {
     invoke("store_get", &serde_json::json!({ "key": key }).to_string()).await

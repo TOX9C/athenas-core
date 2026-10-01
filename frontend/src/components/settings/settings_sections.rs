@@ -116,6 +116,9 @@ pub(super) fn GeneralSettings() -> Element {
         GroupLabel { label: "Project context" }
         ProjectContextSection {}
 
+        GroupLabel { label: "Routines" }
+        RoutinesSection {}
+
         GroupLabel { label: "Web tools" }
 
         div { style: "display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); margin-bottom: 8px;",
@@ -1397,6 +1400,150 @@ fn ProjectContextSection() -> Element {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+
+/// Scheduled / glob-triggered routines. Each rule is `{ interval_minutes?:
+/// n, file_watch_glob?: string, prompt, enabled }`; a run pushes a
+/// notification and appspaces forward to the orchestrator in a scratch
+/// session so the active chat is not polluted.
+#[component]
+fn RoutinesSection() -> Element {
+    let mut rules = use_signal(Vec::<serde_json::Value>::new);
+    let mut loaded = use_signal(|| false);
+    let mut name_in = use_signal(String::new);
+    let mut interval_in = use_signal(|| "15".to_string());
+    let mut prompt_in = use_signal(String::new);
+    let mut glob_in = use_signal(String::new);
+
+
+    use_effect(move || {
+        if loaded() { return; }
+        loaded.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(raw) = crate::tauri_bridge::routines_list().await {
+                if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<serde_json::Value>>(raw) {
+                    rules.set(list);
+                }
+            }
+        });
+    });
+
+    let refresh = move || {
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(raw) = crate::tauri_bridge::routines_list().await {
+                if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<serde_json::Value>>(raw) {
+                    rules.set(list);
+                }
+            }
+        });
+    };
+
+    let mut toggle_rule = move |id: String, enabled: bool| {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = crate::tauri_bridge::routines_set_enabled(&id, enabled).await;
+            refresh();
+        });
+    };
+
+    let mut delete_rule = move |id: String| {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = crate::tauri_bridge::routines_delete(&id).await;
+            refresh();
+        });
+    };
+
+    let mut run_now = move |id: String| {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = crate::tauri_bridge::routines_run_now(&id).await;
+            refresh();
+        });
+    };
+
+    let mut create_rule = move || {
+        let name = name_in.read().trim().to_string();
+        let prompt = prompt_in.read().trim().to_string();
+        if name.is_empty() || prompt.is_empty() { return; }
+        let mut rule = serde_json::json!({
+            "id": String::new(),
+            "name": name,
+            "prompt": prompt,
+            "enabled": true,
+            "runs": [],
+        });
+        let interval = interval_in.read().trim().parse::<u32>().unwrap_or(15);
+        rule["interval_minutes"] = serde_json::Value::from(interval);
+        let glob = glob_in.read().trim().to_string();
+        if !glob.is_empty() {
+            rule["file_watch_glob"] = serde_json::Value::from(glob);
+        }
+        name_in.set(String::new());
+        prompt_in.set(String::new());
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = crate::tauri_bridge::routines_upsert(&serde_json::to_string(&rule).unwrap_or_default()).await;
+            refresh();
+        });
+    };
+
+    rsx! {
+        div { style: "display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); margin-bottom: 8px;",
+            span { style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--accent);", "Scheduled routines" }
+            span { style: "font-size: 11px; color: var(--textDim);",
+                "Run a prompt on a timer or when a glob matches changed files. Each run fires a notification and lives in a scratch session."
+            }
+
+            for rule in rules.read().iter() {
+                {
+                    let id = rule.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let name = rule.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let prompt = rule.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let enabled = rule.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let interval = rule.get("interval_minutes").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let last_run = rule.get("last_run_at").and_then(|v| v.as_i64()).unwrap_or(0);
+                    rsx! {
+                        div { key: "{id}", style: "display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);",
+                            label { style: "display: flex; align-items: center; gap: 4px; font-size: 10px;",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: enabled,
+                                    onchange: { let id = id.clone(); move |e| toggle_rule(id.clone(), e.checked()) },
+                                }
+                            }
+                            span { style: "flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 10px; color: var(--text);",
+                                "{name} · every {interval}min · {prompt}"
+                            }
+                            if last_run > 0 {
+                                span { style: "font-size: 9px; color: var(--textDim);", "{last_run}" }
+                            }
+                            button {
+                                class: "btn-ghost",
+                                style: "font-size: 9px; padding: 2px 8px;",
+                                onclick: { let id = id.clone(); move |_| run_now(id.clone()) },
+                                "Run now"
+                            }
+                            button {
+                                class: "btn-ghost",
+                                style: "font-size: 9px; padding: 2px 8px; color: var(--error);",
+                                onclick: { let id = id.clone(); move |_| delete_rule(id.clone()) },
+                                "Delete"
+                            }
+                        }
+                    }
+                }
+            }
+
+            // New routine
+            div { style: "display: flex; flex-direction: column; gap: 6px; margin-top: 8px;",
+                input { class: "field", placeholder: "Routine name", value: "{name_in}", oninput: move |e| name_in.set(e.value()) }
+                input { class: "field", placeholder: "Prompt for the run", value: "{prompt_in}", oninput: move |e| prompt_in.set(e.value()) }
+                div { style: "display: flex; gap: 6px; align-items: center;",
+                    input { class: "field", style: "width: 80px;", placeholder: "minutes", value: "{interval_in}", oninput: move |e| interval_in.set(e.value()) }
+                    input { class: "field", style: "flex: 1;", placeholder: "glob path (optional)", value: "{glob_in}", oninput: move |e| glob_in.set(e.value()) }
+                    button { class: "btn-ghost", style: "font-size: 10px;", onclick: move |_| create_rule(), "Add" }
                 }
             }
         }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-routines-set-enabled"
+description = "Enables the routines_set_enabled command without any pre-configured scope."
+commands.allow = ["routines_set_enabled"]
+
+[[permission]]
+identifier = "deny-routines-set-enabled"
+description = "Denies the routines_set_enabled command without any pre-configured scope."
+commands.deny = ["routines_set_enabled"]

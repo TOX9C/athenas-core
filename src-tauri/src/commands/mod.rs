@@ -23,6 +23,7 @@ mod notification;
 mod output;
 mod plan;
 mod plugin;
+pub(crate) mod routines;
 mod provider_config;
 mod pty;
 pub(crate) mod relay;
@@ -73,6 +74,7 @@ pub use output::{
     output_buffer_list,
 };
 pub use plan::{plan_create, plan_get, plan_update_step};
+pub use routines::{routines_delete, routines_list, routines_run_now, routines_set_enabled, routines_upsert};
 pub use plugin::{
     plugin_disable, plugin_enable, plugin_get, plugin_get_config, plugin_host_discover_plugins,
     plugin_host_emit_event, plugin_host_get_session, plugin_host_list_sessions,

@@ -1095,6 +1095,36 @@
           "markdownDescription": "Enables the relay_stop command without any pre-configured scope."
         },
         {
+          "description": "Enables the routines_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-routines-delete",
+          "markdownDescription": "Enables the routines_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the routines_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-routines-list",
+          "markdownDescription": "Enables the routines_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the routines_run_now command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-routines-run-now",
+          "markdownDescription": "Enables the routines_run_now command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the routines_set_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-routines-set-enabled",
+          "markdownDescription": "Enables the routines_set_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the routines_upsert command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-routines-upsert",
+          "markdownDescription": "Enables the routines_upsert command without any pre-configured scope."
+        },
+        {
           "description": "Enables the search_code command without any pre-configured scope.",
           "type": "string",
           "const": "allow-search-code",
@@ -2035,6 +2065,36 @@
           "type": "string",
           "const": "deny-relay-stop",
           "markdownDescription": "Denies the relay_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the routines_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-routines-delete",
+          "markdownDescription": "Denies the routines_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the routines_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-routines-list",
+          "markdownDescription": "Denies the routines_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the routines_run_now command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-routines-run-now",
+          "markdownDescription": "Denies the routines_run_now command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the routines_set_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-routines-set-enabled",
+          "markdownDescription": "Denies the routines_set_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the routines_upsert command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-routines-upsert",
+          "markdownDescription": "Denies the routines_upsert command without any pre-configured scope."
         },
         {
           "description": "Denies the search_code command without any pre-configured scope.",
