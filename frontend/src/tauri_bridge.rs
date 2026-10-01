@@ -222,6 +222,46 @@ pub async fn git_worktree_remove(path: &str, name: &str) -> TauriResult<()> {
     .await
 }
 
+pub async fn git_diff_file(
+    path: &str,
+    staged: bool,
+    file: &str,
+) -> TauriResult<crate::stores::git::DiffSet> {
+    let value: JsValue = invoke(
+        "git_diff_file",
+        &serde_json::json!({ "path": path, "staged": staged, "file": file }).to_string(),
+    )
+    .await?;
+    // Backend returns Option<FileDiff>; the panel consumes a DiffSet shape.
+    let file: Option<crate::stores::git::FileDiff> = serde_wasm_bindgen::from_value(value)
+        .map_err(|e| JsValue::from_str(&format!("git_diff_file decode: {e}")))?;
+    Ok(crate::stores::git::DiffSet {
+        files: file.into_iter().collect(),
+        truncated: false,
+    })
+}
+
+pub async fn git_apply_hunk(
+    path: &str,
+    file: &str,
+    hunk_index: usize,
+    action: &str,
+) -> TauriResult<()> {
+    invoke(
+        "git_apply_hunk",
+        &serde_json::json!({ "path": path, "file": file, "hunkIndex": hunk_index, "action": action }).to_string(),
+    )
+    .await
+}
+
+pub async fn git_apply_file(path: &str, file: &str, stage: bool) -> TauriResult<()> {
+    invoke(
+        "git_apply_file",
+        &serde_json::json!({ "path": path, "file": file, "stage": stage }).to_string(),
+    )
+    .await
+}
+
 pub async fn git_diff(path: &str, staged: bool) -> TauriResult<crate::stores::git::DiffSet> {
     let value: JsValue = invoke(
         "git_diff",

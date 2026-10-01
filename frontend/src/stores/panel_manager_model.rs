@@ -23,6 +23,7 @@ pub enum RightPanel {
     Assistant,
     Editor,
     Skills,
+    Changes,
 }
 
 // ---------------------------------------------------------------------------

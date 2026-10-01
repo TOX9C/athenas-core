@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-git-apply-hunk"
+description = "Enables the git_apply_hunk command without any pre-configured scope."
+commands.allow = ["git_apply_hunk"]
+
+[[permission]]
+identifier = "deny-git-apply-hunk"
+description = "Denies the git_apply_hunk command without any pre-configured scope."
+commands.deny = ["git_apply_hunk"]

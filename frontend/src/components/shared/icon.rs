@@ -361,14 +361,6 @@ pub fn IconEyeOff(size: Option<u8>, color: Option<String>) -> Element {
     )
 }
 
-#[path = "icon_empty_states.rs"]
-mod icon_empty_states;
-
-pub use icon_empty_states::{
-    IconEmptyChat, IconEmptyKanban, IconEmptyNotifications, IconEmptyPlugins, IconEmptySwarm,
-    IconEmptyWorkspace,
-};
-
 #[path = "icon_glyphs.rs"]
 mod icon_glyphs;
 
@@ -385,3 +377,27 @@ pub use icon_mythology::{
     IconArchive, IconAthena, IconInfo, IconKanban, IconLaurel, IconList, IconLoop, IconPulse,
     IconSeal, IconShield, IconSparkle,
 };
+
+/// Git branch glyph: two circles on diverging lines.
+#[component]
+pub fn IconBranch(size: Option<u8>, color: Option<String>) -> Element {
+    let size = size.unwrap_or(16);
+    let color = color.unwrap_or_else(|| "currentColor".to_string());
+    rsx! {
+        svg {
+            width: "{size}",
+            height: "{size}",
+            view_box: "0 0 24 24",
+            fill: "none",
+            stroke: color.as_str(),
+            stroke_width: "2",
+            stroke_linecap: "round",
+            stroke_linejoin: "round",
+            circle { cx: "6", cy: "6", r: "3" }
+            circle { cx: "6", cy: "18", r: "3" }
+            circle { cx: "18", cy: "8", r: "3" }
+            path { d: "M6 9v6" }
+            path { d: "M18 11a9 9 0 0 1-9 9" }
+        }
+    }
+}

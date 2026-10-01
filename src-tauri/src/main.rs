@@ -92,6 +92,9 @@ fn main() {
             git_diff,
             git_worktree_add,
             git_worktree_remove,
+            git_diff_file,
+            git_apply_hunk,
+            git_apply_file,
             // Store
             store_get,
             store_set,

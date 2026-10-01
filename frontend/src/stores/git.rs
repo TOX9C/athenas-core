@@ -9,7 +9,7 @@ use std::collections::HashMap;
 #[path = "git_model.rs"]
 mod git_model;
 
-pub use git_model::{DiffSet, FileDiff, FileStatus, Hunk, RepoStatus, StatusKind};
+pub use git_model::{DiffLine, DiffSet, FileDiff, FileStatus, Hunk, RepoStatus, StatusKind};
 use git_model::MAX_TRACKED_REPOS;
 
 use crate::tauri_bridge::{git_diff, git_discover, git_status};

@@ -123,3 +123,80 @@ pub async fn git_diff(
         .await
         .map_err(|e| CommandError::Internal(format!("git diff task failed: {e}")))?
 }
+
+/// Unified diff of a single file (`staged` index vs HEAD, else workdir vs
+/// index), capped like `git_diff`.
+#[tauri::command]
+pub async fn git_diff_file(
+    state: State<'_, AppState>,
+    path: String,
+    staged: bool,
+    file: String,
+) -> Result<Option<athena_git::FileDiff>, CommandError> {
+    if !state.rate_limiter.check("git_diff_file") {
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
+    }
+    let root = validated_repo_root(&state, &path)?;
+    tokio::task::spawn_blocking(move || {
+        athena_git::diff_file(&root, staged, &file).map_err(map_git_err)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("git diff file task failed: {e}")))?
+}
+
+/// Apply a single hunk of a file's unstaged diff: `action` is "stage"
+/// (partial stage into the index) or "discard" (partial revert in the
+/// working tree).
+#[tauri::command]
+pub async fn git_apply_hunk(
+    state: State<'_, AppState>,
+    path: String,
+    file: String,
+    hunk_index: usize,
+    action: String,
+) -> Result<(), CommandError> {
+    if !state.rate_limiter.check("git_apply_hunk") {
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
+    }
+    let action = match action.as_str() {
+        "stage" => athena_git::HunkAction::Stage,
+        "discard" => athena_git::HunkAction::Discard,
+        other => {
+            return Err(CommandError::InvalidInput(format!(
+                "unknown hunk action: {other} (expected 'stage' or 'discard')"
+            )))
+        }
+    };
+    let root = validated_repo_root(&state, &path)?;
+    tokio::task::spawn_blocking(move || {
+        athena_git::apply_hunk(&root, &file, hunk_index, action).map_err(map_git_err)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("git apply hunk task failed: {e}")))?
+}
+
+/// File-level stage (`stage = true`) or discard of one file's unstaged
+/// changes (discard restores the index version or deletes an untracked file).
+#[tauri::command]
+pub async fn git_apply_file(
+    state: State<'_, AppState>,
+    path: String,
+    file: String,
+    stage: bool,
+) -> Result<(), CommandError> {
+    if !state.rate_limiter.check("git_apply_file") {
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
+    }
+    let root = validated_repo_root(&state, &path)?;
+    tokio::task::spawn_blocking(move || {
+        athena_git::apply_file(&root, &file, stage).map_err(map_git_err)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("git apply file task failed: {e}")))?
+}

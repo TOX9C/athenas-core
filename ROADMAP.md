@@ -1,5 +1,13 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — G3: Changes panel (diff review)
+
+New right-sidebar "Changes" tab: file list from `git_status`, unified per-file diffs (`git_diff_file`), per-hunk **Accept** (stages just that hunk into the index) / **Discard** (reverse-applies it in the working tree) via git2 patch reconstruction, per-file accept/discard too, staged view (read-only), and per-hunk comments written straight into the owning agent's PTY (`pty_write`). Target picker covers the workspace root and every active swarm agent's worktree. Powered by new `apply_hunk` (with textual patch reversal for discard) and `apply_file` in athena-git — all pathspecs validated, 5 new crate tests.
+
+## 🚀 2026-10-01 — G2: Worktree isolation per swarm agent
+
+Swarm missions launched inside a git repository now isolate every agent: `git worktree add` (new IPC `git_worktree_add`/`git_worktree_remove`) creates `<repo>/.athena/worktrees/<role>-<pane>` on a fresh `athena/<name>` branch, and the agent's pane spawns with the worktree as cwd (`PaneConfig.cwd`). Launch rolls back partial worktrees on failure. "Complete swarm" tears the worktrees down (Settings → General → Swarm toggle, default on); agent branches always survive so commits are never destroyed. Names are `[A-Za-z0-9._-]`-validated and removal is prefix-locked to `.athena/worktrees` (path-sandbox defense in depth). 3 new crate tests incl. a 3-agent acceptance mirror.
+
 ## 🚀 2026-09-30 — G1: Git integration core
 
 New crate `crates/athena-git` (git2, `vendored-libgit2`, no network transports): repo discovery, branch + per-file staged/unstaged status, and staged/unstaged unified diffs with per-hunk parsing (capped at 4 MB, reports truncation). New IPC commands `git_discover` / `git_status` / `git_diff` validate the input path **and the discovered repo root** against the existing path sandbox, so a parent repository above a trusted root cannot leak repo state. Frontend gains a bounded git store (`stores/git.rs`, max 16 tracked repos) plus typed bridge wrappers. 7 unit tests run against real temp repos.

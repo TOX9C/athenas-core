@@ -183,14 +183,28 @@ fn kind_of(bits: git2::Status, new_kind: StatusKind) -> Option<StatusKind> {
 /// `staged == true`: index vs HEAD (a missing HEAD is treated as the empty
 /// tree, so diffs work in freshly initialized repos).
 pub fn diff(path: &Path, staged: bool) -> Result<DiffSet, GitError> {
+    diff_opts(path, staged, None)
+}
+
+/// Diff restricted to one file (`None` when the file has no changes).
+pub fn diff_file(path: &Path, staged: bool, file: &str) -> Result<Option<FileDiff>, GitError> {
+    let set = diff_opts(path, staged, Some(file))?;
+    Ok(set.files.into_iter().next())
+}
+
+fn diff_opts(path: &Path, staged: bool, file: Option<&str>) -> Result<DiffSet, GitError> {
     let repo = open(path)?;
+    let mut opts = git2::DiffOptions::new();
+    if let Some(file) = file {
+        opts.pathspec(file);
+    }
     let diff = if staged {
         let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
         let index = repo.index()?;
-        repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), None)?
+        repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?
     } else {
         let index = repo.index()?;
-        repo.diff_index_to_workdir(Some(&index), None)?
+        repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?
     };
 
     let mut files = Vec::new();
@@ -358,6 +372,227 @@ pub fn remove_worktree(repo_path: &Path, name: &str) -> Result<(), GitError> {
             .map_err(|e| GitError::Git(format!("cannot remove {}: {e}", expected.display())))?;
     }
     Ok(())
+}
+
+
+/// What to do with a single hunk of the *unstaged* (workdir vs index) diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HunkAction {
+    /// Move the hunk's changes into the index (partial `git add`).
+    Stage,
+    /// Reverse the hunk in the working tree (partial `git checkout --`).
+    Discard,
+}
+
+fn file_diff_text(repo_path: &Path, rel_file: &str, staged: bool) -> Result<String, GitError> {
+    if rel_file.is_empty()
+        || rel_file.starts_with('/')
+        || rel_file.split('/').any(|seg| seg == ".." || seg.is_empty())
+    {
+        return Err(GitError::Git(format!("invalid pathspec: {rel_file:?}")));
+    }
+    let repo = open(repo_path)?;
+    let mut opts = git2::DiffOptions::new();
+    opts.pathspec(rel_file).force_text(false);
+    let diff = if staged {
+        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        let index = repo.index()?;
+        repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?
+    } else {
+        let index = repo.index()?;
+        repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?
+    };
+    // Ignore whitespace churn? No — the reviewer must see byte-accurate
+    // changes; the patch text is reused verbatim for hunk application.
+    let mut buf = String::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let origin = line.origin();
+        let content = line.content();
+        // libgit2 strips the leading marker from context/add/del line content;
+        // put it back. Header ('F', 'H') and "\\ No newline..." marker lines
+        // ('=', '<', '>') carry their content verbatim.
+        if matches!(origin, '+' | '-' | ' ') {
+            buf.push(origin);
+        }
+        buf.push_str(&String::from_utf8_lossy(content));
+        // Non-data lines always terminate; data lines without a trailing
+        // newline precede a "\ No newline at end of file" marker and must
+        // stay unterminated.
+        if !matches!(origin, '+' | '-' | ' ') && !content.ends_with(b"\n") {
+            buf.push('\n');
+        }
+        true
+    })?;
+    Ok(buf)
+}
+
+/// Split a full-file unified-diff patch into (header, hunks) where the header
+/// is everything before the first "@@" line.
+fn split_patch(text: &str) -> (String, Vec<String>) {
+    let mut header = String::new();
+    let mut hunks: Vec<String> = Vec::new();
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("@@") {
+            hunks.push(line.to_string());
+        } else if hunks.is_empty() {
+            header.push_str(line);
+        } else {
+            hunks.last_mut().expect("hunk exists").push_str(line);
+        }
+    }
+    (header, hunks)
+}
+
+/// Reverse a single-hunk unified-diff patch in place: swap a/…b/ path lines
+/// and index ids, flip the hunk range header, and exchange +/- at
+/// line-start. Returns `Err`-free text; libgit2 validates on parse.
+fn reverse_patch(patch: &str) -> String {
+    // Forward (old, new) path names from the diff --git line; the reversed
+    // header's ---/+++ lines reference (new, old) respectively while keeping
+    // git's mandatory a/ and b/ prefixes.
+    let mut old_path = "";
+    let mut new_path = "";
+    for line in patch.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            if let Some((a, b)) = rest.split_once(' ') {
+                old_path = a.strip_prefix("a/").unwrap_or(a);
+                new_path = b.strip_prefix("b/").unwrap_or(b);
+            }
+            break;
+        }
+    }
+    patch
+        .lines()
+        .map(|line| {
+            if let Some(rest) = line.strip_prefix("diff --git ") {
+                // "diff --git a/x b/y" → "diff --git a/y b/x".
+                let (a, b) = rest.split_once(' ').unwrap_or((rest, rest));
+                let a = a.strip_prefix("a/").unwrap_or(a);
+                let b = b.strip_prefix("b/").unwrap_or(b);
+                format!("diff --git a/{b} b/{a}")
+            } else if line.starts_with("--- ") {
+                format!("--- a/{new_path}")
+            } else if line.starts_with("+++ ") {
+                format!("+++ b/{old_path}")
+            } else if line.starts_with("index ") {
+                // "index <old>..<new> <mode>" → swap oids.
+                let body = line.strip_prefix("index ").unwrap_or(line);
+                let mut parts = body.split_whitespace();
+                let range = parts.next().unwrap_or("");
+                let mode = parts.next().unwrap_or("");
+                let (old, new) = range
+                    .split_once("..")
+                    .unwrap_or(("", ""));
+                format!("index {new}..{old} {mode}").trim_end().to_string()
+            } else if line.starts_with("@@") && line.contains("@@") {
+                reverse_hunk_header(line)
+            } else if let Some(rest) = line.strip_prefix('+') {
+                format!("-{rest}")
+            } else if let Some(rest) = line.strip_prefix('-') {
+                format!("+{rest}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Patch text must end with a newline; `lines()`/`join` drops it and
+/// libgit2 rejects the truncated last instruction.
+fn with_trailing_newline(text: String) -> String {
+    if text.ends_with('\n') { text } else { format!("{text}\n") }
+}
+
+/// "@@ -o1,oN +n1,nN @@" → "@@ -n1,nN +o1,oN @@" (counts may be elided).
+fn reverse_hunk_header(line: &str) -> String {
+    let Some(start) = line.find('-') else { return line.to_string() };
+    let Some(mid) = line.find('+') else { return line.to_string() };
+    let Some(end) = line[mid..].find("@@").map(|i| mid + i) else {
+        return line.to_string();
+    };
+    let old_part = line[start..mid].trim_end();
+    let new_part = line[mid..end].trim_end();
+    let tail = &line[end..];
+    format!("@@ -{} +{} {}", &new_part[1..], &old_part[1..], tail).to_string()
+}
+
+/// Apply exactly one hunk of `rel_file`'s unstaged diff.
+///
+/// `stage` applies the hunk forward to the index (partial stage);
+/// `discard` applies the hunk reversed to the working tree (partial revert).
+pub fn apply_hunk(
+    repo_path: &Path,
+    rel_file: &str,
+    hunk_index: usize,
+    action: HunkAction,
+) -> Result<(), GitError> {
+    // Bi-directional sanity: hunk ops are defined on the workdir↔index axis.
+    let text = file_diff_text(repo_path, rel_file, false)?;
+    let (mut header, hunks) = split_patch(&text);
+    let body = hunks
+        .get(hunk_index)
+        .ok_or_else(|| GitError::Git(format!("no hunk #{hunk_index} in {rel_file}")))?
+        .clone();
+    let single = format!("{}{}", header, body);
+    let single = with_trailing_newline(single);
+    let applied = match action {
+        HunkAction::Stage => single,
+        HunkAction::Discard => with_trailing_newline(reverse_patch(&single)),
+    };
+    let parsed = git2::Diff::from_buffer(applied.as_bytes())
+        .map_err(|e| GitError::Git(format!("hunk patch failed to parse: {e}")))?;
+    let repo = open(repo_path)?;
+    let location = match action {
+        HunkAction::Stage => git2::ApplyLocation::Index,
+        HunkAction::Discard => git2::ApplyLocation::WorkDir,
+    };
+    header.clear();
+    repo.apply(&parsed, location, None)
+        .map_err(|e| GitError::Git(format!("could not apply hunk: {e}")))
+}
+
+/// File-level counterpart of [`apply_hunk`]: stage (index gains the workdir
+/// file) or discard (workdir resets to the index version, or the untracked
+/// file is deleted) for a single path.
+pub fn apply_file(repo_path: &Path, rel_file: &str, stage: bool) -> Result<(), GitError> {
+    if rel_file.is_empty()
+        || rel_file.starts_with('/')
+        || rel_file.split('/').any(|seg| seg == ".." || seg.is_empty())
+    {
+        return Err(GitError::Git(format!("invalid pathspec: {rel_file:?}")));
+    }
+    let repo = open(repo_path)?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| GitError::Git("bare repository".into()))?
+        .to_path_buf();
+    let abs = workdir.join(rel_file);
+    let mut index = repo.index()?;
+    let in_index = index.get_path(Path::new(rel_file), 0).is_some();
+    if stage {
+        if abs.exists() {
+            index.add_path(Path::new(rel_file))?;
+        } else {
+            index.remove_path(Path::new(rel_file))?;
+        }
+        index.write()?;
+        Ok(())
+    } else if in_index {
+        drop(index);
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.path(rel_file).force().remove_untracked(false);
+        repo.checkout_index(None, Some(&mut checkout))?;
+        Ok(())
+    } else {
+        // Untracked file: discard means delete.
+        match std::fs::remove_file(&abs) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(GitError::Git(format!("cannot remove {}: {e}", abs.display()))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -657,6 +892,136 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn diff_file_filters_single_path() {
+        let tmp = TempRepo::new();
+        tmp.commit_file("a.txt", "1\n", "initial");
+        tmp.commit_file("b.txt", "2\n", "second");
+        fs::write(tmp.path().join("a.txt"), "1x\n").unwrap();
+        fs::write(tmp.path().join("b.txt"), "2x\n").unwrap();
+
+        let one = diff_file(tmp.path(), false, "a.txt").unwrap().unwrap();
+        assert_eq!(one.path, "a.txt");
+        assert_eq!(one.hunks.len(), 1);
+
+        // Clean file returns None, missing file too.
+        tmp.commit_file("a.txt", "1x\n", "fixup");
+        assert!(diff_file(tmp.path(), false, "a.txt").unwrap().is_none());
+        assert!(diff_file(tmp.path(), false, "nope.txt").unwrap().is_none());
+    }
+
+    #[test]
+    fn apply_hunk_stages_single_hunk() {
+        let tmp = TempRepo::new();
+        // Two well-separated regions so two hunks.
+        let base: String = (1..=20).map(|i| format!("line{i}\n")).collect();
+        tmp.commit_file("f.txt", &base, "initial");
+        let changed: String = (1..=20)
+            .map(|i| if i == 1 || i == 20 { format!("CHANGED{i}\n") } else { format!("line{i}\n") })
+            .collect();
+        fs::write(tmp.path().join("f.txt"), &changed).unwrap();
+
+        // Sanity: two hunks.
+        let set = diff(tmp.path(), false).unwrap();
+        assert_eq!(set.files.len(), 1);
+        assert_eq!(set.files[0].hunks.len(), 2);
+
+        apply_hunk(tmp.path(), "f.txt", 0, HunkAction::Stage).unwrap();
+
+        // Staged diff contains CHANGED1 but not CHANGED20; unstaged keeps 20.
+        let staged = diff(tmp.path(), true).unwrap();
+        let staged_text: String = staged.files[0]
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter().map(|l| l.content.clone()))
+            .collect();
+        assert!(staged_text.contains("CHANGED1"), "{staged_text}");
+        assert!(!staged_text.contains("CHANGED20"), "{staged_text}");
+
+        let unstaged = diff(tmp.path(), false).unwrap();
+        let unstaged_text: String = unstaged.files[0]
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter().map(|l| l.content.clone()))
+            .collect();
+        assert!(!unstaged_text.contains("CHANGED1"), "{unstaged_text}");
+        assert!(unstaged_text.contains("CHANGED20"), "{unstaged_text}");
+    }
+
+    #[test]
+    fn apply_hunk_discard_reverts_single_hunk() {
+        let tmp = TempRepo::new();
+        let base: String = (1..=20).map(|i| format!("line{i}\n")).collect();
+        tmp.commit_file("f.txt", &base, "initial");
+        let changed: String = (1..=20)
+            .map(|i| if i == 2 || i == 19 { "X\n".to_string() } else { format!("line{i}\n") })
+            .collect();
+        fs::write(tmp.path().join("f.txt"), &changed).unwrap();
+
+        apply_hunk(tmp.path(), "f.txt", 1, HunkAction::Discard).unwrap();
+
+        let on_disk = fs::read_to_string(tmp.path().join("f.txt")).unwrap();
+        assert!(on_disk.contains("X\n"), "hunk 0 must survive discard of hunk 1: {on_disk:?}");
+        assert!(on_disk.contains("line19"), "{on_disk:?}");
+
+        // Only one hunk remains unstaged.
+        let set = diff(tmp.path(), false).unwrap();
+        assert_eq!(set.files[0].hunks.len(), 1);
+    }
+
+    #[test]
+    fn apply_hunk_out_of_range_errors_and_is_atomic() {
+        let tmp = TempRepo::new();
+        tmp.commit_file("f.txt", "a\n", "initial");
+        fs::write(tmp.path().join("f.txt"), "a\nb\n").unwrap();
+        assert!(matches!(
+            apply_hunk(tmp.path(), "f.txt", 7, HunkAction::Stage),
+            Err(GitError::Git(_))
+        ));
+        // Nothing moved.
+        let staged = diff(tmp.path(), true).unwrap();
+        assert!(staged.files.is_empty());
+    }
+
+    #[test]
+    fn apply_hunk_rejects_traversal() {
+        let tmp = TempRepo::new();
+        tmp.commit_file("f.txt", "a\n", "initial");
+        for bad in ["../x", "/etc/passwd", "a//b", ""] {
+            for action in [HunkAction::Stage, HunkAction::Discard] {
+                assert!(apply_hunk(tmp.path(), bad, 0, action).is_err(), "{bad:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn apply_file_stage_and_discard() {
+        let tmp = TempRepo::new();
+        tmp.commit_file("f.txt", "v1\n", "initial");
+
+        // Modified file: stage then discard restores index version.
+        fs::write(tmp.path().join("f.txt"), "v2\n").unwrap();
+        apply_file(tmp.path(), "f.txt", true).unwrap();
+        let staged = diff(tmp.path(), true).unwrap();
+        assert_eq!(staged.files.len(), 1);
+        fs::write(tmp.path().join("f.txt"), "v3\n").unwrap();
+        apply_file(tmp.path(), "f.txt", false).unwrap();
+        assert_eq!(fs::read_to_string(tmp.path().join("f.txt")).unwrap(), "v2\n");
+
+        // Untracked file: stage then discard deletes.
+        fs::write(tmp.path().join("new.txt"), "fresh\n").unwrap();
+        apply_file(tmp.path(), "new.txt", true).unwrap();
+        let staged = diff(tmp.path(), true).unwrap();
+        assert!(staged.files.iter().any(|f| f.path == "new.txt"));
+        fs::write(tmp.path().join("other.txt"), "untracked\n").unwrap();
+        apply_file(tmp.path(), "other.txt", false).unwrap();
+        assert!(!tmp.path().join("other.txt").exists());
+
+        // Traversal rejected.
+        assert!(apply_file(tmp.path(), "../evil.txt", true).is_err());
+    }
+
     #[test]
     fn diff_outside_repo_errors() {
         let dir = std::env::temp_dir().join(format!(
@@ -671,5 +1036,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
 
 
