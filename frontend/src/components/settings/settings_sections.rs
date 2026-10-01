@@ -101,6 +101,38 @@ pub(super) fn GeneralSettings() -> Element {
                 }
             }
         }
+
+        GroupLabel { label: "Swarm" }
+
+        /* ── Worktree cleanup label + toggle row ── */
+        div {
+            style: "display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); margin-bottom: 8px;",
+            div {
+                style: "display: flex; flex-direction: column; gap: 4px; min-width: 0;",
+                span {
+                    style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--accent);",
+                    "Clean up agent worktrees"
+                }
+                span {
+                    style: "font-size: 11px; color: var(--textDim);",
+                    "When a swarm completes, remove the per-agent git worktrees it created under .athena/worktrees. Agent branches are always kept."
+                }
+            }
+            Toggle {
+                active: ui_state.read().swarm_cleanup_worktrees,
+                on_toggle: move |_| {
+                    let next = !ui_state.read().swarm_cleanup_worktrees;
+                    ui_state.write().swarm_cleanup_worktrees = next;
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = crate::tauri_bridge::store_set(
+                            "swarm_cleanup_worktrees",
+                            if next { "true" } else { "false" },
+                        )
+                        .await;
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -406,7 +438,7 @@ pub(super) fn AthenaSettings() -> Element {
 
             if any_error {
                 toast_store.write().push(crate::components::shared::toast::Toast {
-                    id: format!("athena-save-{}", chrono::Utc::now().timestamp_millis()),
+                    id: next_toast_id("athena-save"),
                     toast_type: crate::components::shared::toast::ToastType::Error,
                     title: "Failed to save Athena settings".to_string(),
                     message: format!(
@@ -510,7 +542,7 @@ pub(super) fn AthenaSettings() -> Element {
                                         Ok(v) => v,
                                         Err(_) => {
                                             toast.write().push(crate::components::shared::toast::Toast {
-                                                id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
+                                                id: next_toast_id("test-key"),
                                                 toast_type: crate::components::shared::toast::ToastType::Warning,
                                                 title: "Key test error".to_string(),
                                                 message: "Could not parse key test response".to_string(),
@@ -522,7 +554,7 @@ pub(super) fn AthenaSettings() -> Element {
                                     let ok = parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                                     let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown response");
                                     toast.write().push(crate::components::shared::toast::Toast {
-                                        id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
+                                        id: next_toast_id("test-key"),
                                         toast_type: if ok {
                                             crate::components::shared::toast::ToastType::Success
                                         } else {
@@ -535,7 +567,7 @@ pub(super) fn AthenaSettings() -> Element {
                                 }
                                 Err(e) => {
                                     toast.write().push(crate::components::shared::toast::Toast {
-                                        id: format!("test-key-{}", chrono::Utc::now().timestamp_millis()),
+                                        id: next_toast_id("test-key"),
                                         toast_type: crate::components::shared::toast::ToastType::Error,
                                         title: "Key test failed".to_string(),
                                         message: format!("{:?}", e),
@@ -674,6 +706,14 @@ pub(super) fn AthenaSettings() -> Element {
 Tab: About
 ============================================================= */
 
+/// Unique toast ids: a monotonic per-session counter (timestamps collide when
+/// two toasts fire within the same millisecond).
+fn next_toast_id(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!("{prefix}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
 fn browser_diagnostic_value(object_name: &str, method_name: &str) -> String {
     let Some(window) = web_sys::window() else {
         return String::new();
@@ -734,7 +774,7 @@ pub(super) fn AboutSettings() -> Element {
             }
             div {
                 style: "font-family: var(--font-display); color: var(--accent); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; margin-top: 6px;",
-                "v 0.3.0"
+                {concat!("v ", env!("CARGO_PKG_VERSION"))}
             }
             div {
                 style: "font-family: var(--font-display); font-style: italic; color: var(--textDim); font-size: 13px; margin-top: 14px; max-width: 380px; text-align: center; line-height: 1.6;",

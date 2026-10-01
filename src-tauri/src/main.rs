@@ -90,6 +90,8 @@ fn main() {
             git_discover,
             git_status,
             git_diff,
+            git_worktree_add,
+            git_worktree_remove,
             // Store
             store_get,
             store_set,

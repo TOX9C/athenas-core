@@ -183,6 +183,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 panes.push(PaneConfig {
                                                     id: generate_id(),
                                                     agent_type: row.agent_type.clone(),
+                                                    cwd: None,
                                                     custom_cmd: row.custom_cmd.clone(),
                                                     custom_agent_id: row.custom_id.clone(),
                                                     // Default to None so the pane pill's
@@ -278,6 +279,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                             pane_configs.push(PaneConfig {
                                                 id: pane_id.clone(),
                                                 agent_type: slot.agent_type.clone(),
+                                                cwd: None,
                                                 custom_cmd: slot.custom_cmd.clone(),
                                                 custom_agent_id: slot.custom_id.clone(),
                                                 label: slot.label.clone(),
@@ -297,6 +299,8 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 current_task: None,
                                                 last_action: "Spawned".to_string(),
                                                 last_action_at: now_ts,
+                                                worktree_path: None,
+                                                worktree_name: None,
                                             });
                                         }
 
@@ -305,37 +309,8 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         // mission creation before it is moved into Space.
                                         let trust_dir = dir.clone();
                                         let swarm_dir = dir.clone();
-                                        let space = Space {
-                                            id: generate_id(),
-                                            name,
-                                            dir,
-                                            grid,
-                                            panes: pane_configs,
-                                            color: TAB_COLORS[space_count % TAB_COLORS.len()].to_string(),
-                                            created_at: now_ts,
-                                            last_opened_at: now_ts,
-                                        };
-
-                                        let swarm_id = generate_id();
-                                        let swarm_data = SwarmData {
-                                            id: swarm_id,
-                                            workspace_dir: swarm_dir.clone(),
-                                            goal: goal.clone(),
-                                            agents: swarm_agents,
-                                            tasks: Vec::new(),
-                                            messages: Vec::new(),
-                                            status: crate::stores::swarm::SwarmOverallStatus::Active,
-                                            started_at: now_ts,
-                                            revision: 0,
-                                        };
-                                        let swarm_json = match serde_json::to_string(&swarm_data) {
-                                            Ok(json) => json,
-                                            Err(e) => {
-                                                web_sys::console::error_1(&format!("[NewSpaceModal] swarm serialization failed: {e}").into());
-                                                return;
-                                            }
-                                        };
-
+                                        let space_name = name;
+                                        let space_count_for_space = space_count;
                                         // Keep the new space out of the global stores until
                                         // authorization and mission persistence both succeed.
                                         // Otherwise a failed IPC call leaves a ghost mission that
@@ -364,6 +339,95 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 ));
                                                 return;
                                             }
+
+                                            // Worktree isolation: when the mission launches
+                                            // inside a git repository, every agent pane gets
+                                            // its own worktree on its own branch under
+                                            // .athena/worktrees/<role>-<pane-suffix>. Off-repo
+                                            // workspaces keep the shared directory.
+                                            let repo_root =
+                                                crate::tauri_bridge::git_discover(&swarm_dir).await;
+                                            if let Ok(Some(_)) = repo_root {
+                                                let mut created: Vec<String> = Vec::new();
+                                                let mut failed = false;
+                                                for (pane, agent) in pane_configs
+                                                    .iter_mut()
+                                                    .zip(swarm_agents.iter_mut())
+                                                {
+                                                    let role = agent_role_str(&agent.role);
+                                                    // Pane ids are `swarm-<ts>-<n>`; the
+                                                    // ts+counter tail is unique per launch.
+                                                    let tail = pane
+                                                        .id
+                                                        .strip_prefix("swarm-")
+                                                        .unwrap_or(&pane.id);
+                                                    let name = format!("{role}-{tail}");
+                                                    match crate::tauri_bridge::git_worktree_add(
+                                                        &swarm_dir, &name,
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(path) => {
+                                                            pane.cwd = Some(path.clone());
+                                                            agent.worktree_path = Some(path);
+                                                            agent.worktree_name = Some(name.clone());
+                                                            created.push(name);
+                                                        }
+                                                        Err(error) => {
+                                                            web_sys::console::error_1(
+                                                                &format!(
+                                                                    "[NewSpaceModal] worktree add failed for {name}: {error:?}"
+                                                                )
+                                                                .into(),
+                                                            );
+                                                            launch_error.set(Some(
+                                                                "Couldn't create agent worktrees in this repository. Check that .athena/worktrees is writable and branch names are free, then try again."
+                                                                    .to_string(),
+                                                            ));
+                                                            failed = true;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                if failed {
+                                                    // Roll back partial isolation so a retry
+                                                    // launches from a clean state.
+                                                    for name in created {
+                                                        let _ = crate::tauri_bridge::git_worktree_remove(&swarm_dir, &name).await;
+                                                    }
+                                                    return;
+                                                }
+                                            }
+
+                                            let space = Space {
+                                                id: generate_id(),
+                                                name: space_name,
+                                                dir: swarm_dir.clone(),
+                                                grid,
+                                                panes: pane_configs,
+                                                color: TAB_COLORS[space_count_for_space % TAB_COLORS.len()].to_string(),
+                                                created_at: now_ts,
+                                                last_opened_at: now_ts,
+                                            };
+                                            let swarm_id = generate_id();
+                                            let swarm_data = SwarmData {
+                                                id: swarm_id,
+                                                workspace_dir: swarm_dir.clone(),
+                                                goal,
+                                                agents: swarm_agents,
+                                                tasks: Vec::new(),
+                                                messages: Vec::new(),
+                                                status: crate::stores::swarm::SwarmOverallStatus::Active,
+                                                started_at: now_ts,
+                                                revision: 0,
+                                            };
+                                            let swarm_json = match serde_json::to_string(&swarm_data) {
+                                                Ok(json) => json,
+                                                Err(e) => {
+                                                    web_sys::console::error_1(&format!("[NewSpaceModal] swarm serialization failed: {e}").into());
+                                                    return;
+                                                }
+                                            };
                                             match crate::tauri_bridge::swarm_create(&swarm_dir, &swarm_json).await {
                                                 Ok(_) => {
                                                     workspace_state.write().add_space(space);
@@ -520,6 +584,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 input {
                     class: "field",
                     style: "flex: 1; box-sizing: border-box;",
+                    "data-athena-browse-target": "directory",
                     value: "{space_dir}",
                     oninput: move |e| space_dir.set(e.value()),
                     onchange: move |e| space_dir.set(e.value()),
@@ -528,15 +593,17 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                             button {
                                 class: "btn-secondary",
                                 style: "flex-shrink: 0;",
+                                "data-athena-browse": "directory",
                                 onclick: move |e| {
                                     e.stop_propagation();
-                                    web_sys::console::log_1(&"[Browse] clicked".into());
+                                    let debug_logs = cfg!(debug_assertions);
                                     let mut space_dir = space_dir;
                                     spawn(async move {
-                                        web_sys::console::log_1(&"[Browse] invoking dialog...".into());
                                         match crate::tauri_bridge::fs_show_open_dialog(Some("Select Workspace Directory"), true, false).await {
                                             Ok(path) => {
-                                                web_sys::console::log_1(&format!("[Browse] path: {:?}", path).into());
+                                                if debug_logs {
+                                                    web_sys::console::log_1(&format!("[Browse] path: {:?}", path).into());
+                                                }
                                                 if !path.is_empty() {
                                                     space_dir.set(path);
                                                 }
@@ -626,21 +693,22 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 class: "icon-btn {minus_disabled_class}",
                                                 "aria-label": "Remove agent",
                                                 onclick: move |_: dioxus::events::MouseEvent| {
-                                                    web_sys::console::log_1(&"[NewSpaceModal] - clicked".into());
+                                                    let debug_logs = cfg!(debug_assertions);
+                                                    if debug_logs {
+                                                        web_sys::console::log_1(&"[NewSpaceModal] - clicked".into());
+                                                    }
                                                     let mut paned = pane_agents;
                                                     let mut agents: Vec<AgentRowState> = paned.read().iter().cloned().collect();
                                                     if let Some(r) = agents.get_mut(idx) {
                                                         if r.count > 0 {
-                                                            web_sys::console::log_1(&"[NewSpaceModal] decrementing".into());
                                                             r.count -= 1;
-                                                        } else {
-                                                            web_sys::console::log_1(&"[NewSpaceModal] count already 0, cannot decrement".into());
                                                         }
                                                         paned.set(agents);
-                                                        let total: usize = paned.read().iter().map(|ag| ag.count).sum();
-                                                        web_sys::console::log_1(&format!("[NewSpaceModal] total panes after decrement: {}", total).into());
                                                     }
-                                                    web_sys::console::log_1(&"[NewSpaceModal] - done".into());
+                                                    if debug_logs {
+                                                        let total: usize = paned.read().iter().map(|ag| ag.count).sum();
+                                                        web_sys::console::log_1(&format!("[NewSpaceModal] decrement done; total panes: {}", total).into());
+                                                    }
                                                 },
                                                 IconMinus { size: Some(14), color: Some("currentColor".to_string()) }
                                             }
@@ -655,26 +723,40 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 id: "{plus_testid}",
                                                 "aria-label": "Add agent",
                                                 onclick: move |_: dioxus::events::MouseEvent| {
-                                                    web_sys::console::log_1(&"[NewSpaceModal] + clicked".into());
-                                                    let mut paned = pane_agents;
-                                                    if let Some(win) = web_sys::window() {
-                                                        let _ = js_sys::Reflect::set(&win, &"__athenaClickFired".into(), &true.into());
+                                                    // Per-click console logs are intentionally
+                                                    // debug-build-only; the window globals below
+                                                    // exist solely for e2e assertions and are
+                                                    // only set when the e2e harness flagged in.
+                                                    let debug_logs = cfg!(debug_assertions);
+                                                    let e2e = web_sys::window()
+                                                        .and_then(|w| js_sys::Reflect::get(&w, &"__athenaE2E".into()).ok())
+                                                        .and_then(|v| v.as_bool())
+                                                        .unwrap_or(false);
+                                                    if debug_logs {
+                                                        web_sys::console::log_1(&"[NewSpaceModal] + clicked".into());
                                                     }
-                                                    web_sys::console::log_1(&"[NewSpaceModal] about to write pane_agents".into());
+                                                    let mut paned = pane_agents;
+                                                    if e2e {
+                                                        if let Some(win) = web_sys::window() {
+                                                            let _ = js_sys::Reflect::set(&win, &"__athenaClickFired".into(), &true.into());
+                                                        }
+                                                    }
                                                     let mut agents: Vec<AgentRowState> = paned.read().iter().cloned().collect();
                                                     let total: usize = agents.iter().map(|ag| ag.count).sum();
                                                     if let Some(r) = agents.get_mut(idx) {
-                                                        web_sys::console::log_1(&"[NewSpaceModal] incrementing".into());
                                                         if total < 16 {
                                                             r.count += 1;
                                                         }
                                                         paned.set(agents);
                                                     }
-                                                    let total: usize = paned.read().iter().map(|ag| ag.count).sum();
-                                                    web_sys::console::log_1(&format!("[NewSpaceModal] total panes: {}", total).into());
-                                                    web_sys::console::log_1(&"[NewSpaceModal] + done".into());
-                                                    if let Some(win) = web_sys::window() {
-                                                        let _ = js_sys::Reflect::set(&win, &"__athenaClickDone".into(), &true.into());
+                                                    if debug_logs {
+                                                        let total: usize = paned.read().iter().map(|ag| ag.count).sum();
+                                                        web_sys::console::log_1(&format!("[NewSpaceModal] increment done; total panes: {}", total).into());
+                                                    }
+                                                    if e2e {
+                                                        if let Some(win) = web_sys::window() {
+                                                            let _ = js_sys::Reflect::set(&win, &"__athenaClickDone".into(), &true.into());
+                                                        }
                                                     }
                                                 },
                                                 IconPlus { size: Some(14), color: Some("currentColor".to_string()) }

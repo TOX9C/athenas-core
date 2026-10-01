@@ -19,3 +19,12 @@ pub async fn migrate_smart_pane_titles() -> bool {
             .await;
     merged
 }
+
+/// Load the swarm worktree cleanup preference (defaults to true so teardown
+/// never leaks worktrees for users who never open settings).
+pub async fn migrate_swarm_cleanup_worktrees() -> bool {
+    crate::tauri_bridge::store_get("swarm_cleanup_worktrees")
+        .await
+        .map(|v| v.trim() == "true" || v.trim().is_empty())
+        .unwrap_or(true)
+}

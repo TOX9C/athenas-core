@@ -8,7 +8,7 @@ use crate::stores::ui::UITheme;
 use crate::stores::command::{use_command_store, CommandState};
 use crate::stores::workspace::WorkspaceState;
 use crate::utils::font_size::{parse_persisted_font_size, persist_font_size};
-use crate::utils::settings_migration::migrate_smart_pane_titles;
+use crate::utils::settings_migration::{migrate_smart_pane_titles, migrate_swarm_cleanup_worktrees};
 use dioxus::prelude::*;
 
 /// Run the root app's one-time platform, settings, workspace, and
@@ -100,6 +100,7 @@ pub fn use_startup_bootstrap(
                     }
                 }
                 ui.write().smart_pane_titles = migrate_smart_pane_titles().await;
+                ui.write().swarm_cleanup_worktrees = migrate_swarm_cleanup_worktrees().await;
             });
         });
     }

@@ -206,6 +206,22 @@ pub async fn git_status(path: &str) -> TauriResult<crate::stores::git::RepoStatu
         .map_err(|e| JsValue::from_str(&format!("git_status decode: {e}")))
 }
 
+pub async fn git_worktree_add(path: &str, name: &str) -> TauriResult<String> {
+    invoke(
+        "git_worktree_add",
+        &serde_json::json!({ "path": path, "name": name }).to_string(),
+    )
+    .await
+}
+
+pub async fn git_worktree_remove(path: &str, name: &str) -> TauriResult<()> {
+    invoke(
+        "git_worktree_remove",
+        &serde_json::json!({ "path": path, "name": name }).to_string(),
+    )
+    .await
+}
+
 pub async fn git_diff(path: &str, staged: bool) -> TauriResult<crate::stores::git::DiffSet> {
     let value: JsValue = invoke(
         "git_diff",

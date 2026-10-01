@@ -34,6 +34,7 @@ fn status_label(status: &SwarmOverallStatus) -> &'static str {
 pub fn SwarmBoard() -> Element {
     let swarm_state = use_swarm_store();
     let workspace = use_workspace_store();
+    let ui_state = crate::stores::ui::use_ui_store();
     let mut task_title = use_signal(String::new);
     let mut task_description = use_signal(String::new);
     let mut message_text = use_signal(String::new);
@@ -341,7 +342,29 @@ pub fn SwarmBoard() -> Element {
                     on_confirm: move |_| {
                         confirm_complete.set(false);
                         let dir = complete_dir.clone();
-                        spawn(async move { let _ = tauri_bridge::swarm_set_status(&dir, "completed").await; });
+                        let cleanup = ui_state.read().swarm_cleanup_worktrees;
+                        let agents = swarm_state
+                            .read()
+                            .active_swarm
+                            .as_ref()
+                            .map(|swarm| {
+                                swarm
+                                    .agents
+                                    .iter()
+                                    .filter_map(|agent| agent.worktree_name.clone())
+                                    .collect::<Vec<String>>()
+                            })
+                            .unwrap_or_default();
+                        spawn(async move {
+                            let _ = tauri_bridge::swarm_set_status(&dir, "completed").await;
+                            // Teardown the per-agent worktrees created at launch
+                            // (branches stay: agent commits are never destroyed).
+                            if cleanup {
+                                for name in agents {
+                                    let _ = tauri_bridge::git_worktree_remove(&dir, &name).await;
+                                }
+                            }
+                        });
                     },
                 }
             }

@@ -37,6 +37,8 @@
     "allow-git-discover",
     "allow-git-status",
     "allow-git-diff",
+    "allow-git-worktree-add",
+    "allow-git-worktree-remove",
     "allow-store-get",
     "allow-store-set",
     "allow-store-has",

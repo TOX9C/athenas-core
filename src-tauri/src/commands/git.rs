@@ -61,6 +61,50 @@ pub async fn git_status(
         .map_err(|e| CommandError::Internal(format!("git status task failed: {e}")))?
 }
 
+/// Create `name`'s agent worktree (`<root>/.athena/worktrees/<name>` on
+/// branch `athena/<name>`). Returns the absolute worktree path.
+#[tauri::command]
+pub async fn git_worktree_add(
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+) -> Result<String, CommandError> {
+    if !state.rate_limiter.check("git_worktree_add") {
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
+    }
+    let root = validated_repo_root(&state, &path)?;
+    tokio::task::spawn_blocking(move || {
+        athena_git::add_worktree(&root, &name)
+            .map(|p| p.display().to_string())
+            .map_err(map_git_err)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("git worktree add task failed: {e}")))?
+}
+
+/// Remove the worktree named `name` (created via `git_worktree_add`). The
+/// backing branch is kept so agent commits are never destroyed.
+#[tauri::command]
+pub async fn git_worktree_remove(
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+) -> Result<(), CommandError> {
+    if !state.rate_limiter.check("git_worktree_remove") {
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
+    }
+    let root = validated_repo_root(&state, &path)?;
+    tokio::task::spawn_blocking(move || {
+        athena_git::remove_worktree(&root, &name).map_err(map_git_err)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("git worktree remove task failed: {e}")))?
+}
+
 /// Unified diff (`staged = true`: index vs HEAD, else workdir vs index) for
 /// the repo containing `path`, capped at [`athena_git::MAX_DIFF_BYTES`].
 #[tauri::command]

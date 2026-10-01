@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-git-worktree-remove"
+description = "Enables the git_worktree_remove command without any pre-configured scope."
+commands.allow = ["git_worktree_remove"]
+
+[[permission]]
+identifier = "deny-git-worktree-remove"
+description = "Denies the git_worktree_remove command without any pre-configured scope."
+commands.deny = ["git_worktree_remove"]

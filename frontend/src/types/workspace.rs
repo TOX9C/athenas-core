@@ -67,6 +67,10 @@ pub enum GridTemplate {
 pub struct PaneConfig {
     pub id: String,
     pub agent_type: AgentType,
+    /// Working-directory override. `None` = the space's root directory
+    /// (set for swarm agents that run in an isolated git worktree).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_cmd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

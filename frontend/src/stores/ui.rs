@@ -47,6 +47,10 @@ pub struct UIState {
     /// agent titles via LLM. Toggleable from the General settings tab;
     /// persisted under `"smart_pane_titles"`.
     pub smart_pane_titles: bool,
+    /// Whether completing a swarm tears down the per-agent git worktrees it
+    /// created (branch per agent is always kept). Toggleable from the
+    /// General settings tab; persisted under `"swarm_cleanup_worktrees"`.
+    pub swarm_cleanup_worktrees: bool,
     /// When the user launches a swarm from SwarmModal, this carries the
     /// goal text into the NewSpaceModal so it isn't lost on the handoff.
     pub pending_swarm_goal: Option<String>,
@@ -75,6 +79,7 @@ impl Default for UIState {
             font_family: String::from("Monaspace Neon"),
             font_size: 14,
             smart_pane_titles: true,
+            swarm_cleanup_worktrees: true,
             pending_swarm_goal: None,
             pending_browser_url: None,
             custom_agents: Vec::new(),

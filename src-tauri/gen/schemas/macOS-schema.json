@@ -627,6 +627,18 @@
           "markdownDescription": "Enables the git_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the git_worktree_add command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-git-worktree-add",
+          "markdownDescription": "Enables the git_worktree_add command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the git_worktree_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-git-worktree-remove",
+          "markdownDescription": "Enables the git_worktree_remove command without any pre-configured scope."
+        },
+        {
           "description": "Enables the kanban_create_task command without any pre-configured scope.",
           "type": "string",
           "const": "allow-kanban-create-task",
@@ -1507,6 +1519,18 @@
           "type": "string",
           "const": "deny-git-status",
           "markdownDescription": "Denies the git_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the git_worktree_add command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-git-worktree-add",
+          "markdownDescription": "Denies the git_worktree_add command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the git_worktree_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-git-worktree-remove",
+          "markdownDescription": "Denies the git_worktree_remove command without any pre-configured scope."
         },
         {
           "description": "Denies the kanban_create_task command without any pre-configured scope.",

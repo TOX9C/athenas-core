@@ -75,6 +75,15 @@ pub struct SwarmAgent {
     pub current_task: Option<String>,
     pub last_action: String,
     pub last_action_at: i64,
+    /// Absolute path of this agent's isolated git worktree
+    /// (`<repo>/.athena/worktrees/<name>`), when the swarm launched inside a
+    /// git repository. `None` = the agent shares the workspace directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    /// Backend name of the worktree (the `<name>` in the path above); used
+    /// for teardown via `git_worktree_remove`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_name: Option<String>,
 }
 
 /// A message in the swarm mailbox.
@@ -174,6 +183,14 @@ pub fn parse_swarm_data(raw: &str) -> Result<SwarmData, serde_json::Error> {
                             .get("lastActionAt")
                             .and_then(|v| v.as_i64())
                             .unwrap_or_default(),
+                        worktree_path: item
+                            .get("worktreePath")
+                            .and_then(|v| v.as_str())
+                            .map(ToOwned::to_owned),
+                        worktree_name: item
+                            .get("worktreeName")
+                            .and_then(|v| v.as_str())
+                            .map(ToOwned::to_owned),
                     })
                 })
                 .collect()
@@ -349,6 +366,34 @@ mod tests {
         assert_eq!(data.tasks[0].owned_files, vec!["src/lib.rs"]);
         assert_eq!(data.tasks[0].depends_on, vec!["task-0"]);
         assert_eq!(data.messages[0].content, "done");
+        assert_eq!(data.agents[0].worktree_path, None);
+        assert_eq!(data.agents[0].worktree_name, None);
+    }
+
+    #[test]
+    fn parser_round_trips_agent_worktree_fields() {
+        let raw = r#"{
+            "id":"swarm-1","goal":"Ship","status":"active","startedAt":1,"revision":0,
+            "agents":[{"id":"agent-1","role":"builder","agentType":"claude","paneId":"pane-1","status":"idle","worktreePath":"/repo/.athena/worktrees/builder-x","worktreeName":"builder-x","lastAction":"Spawned","lastActionAt":0}],
+            "tasks":[],"messages":[]
+        }"#;
+        let data = parse_swarm_data(raw).unwrap();
+        assert_eq!(
+            data.agents[0].worktree_path.as_deref(),
+            Some("/repo/.athena/worktrees/builder-x")
+        );
+        assert_eq!(data.agents[0].worktree_name.as_deref(), Some("builder-x"));
+
+        // Serialization keeps the camelCase contract the backend persists
+        // (core's SwarmAgent stores unknown fields via `extra`).
+        let json = serde_json::to_value(&data).unwrap();
+        let agent = &json["agents"][0];
+        assert_eq!(
+            agent["worktreePath"].as_str(),
+            Some("/repo/.athena/worktrees/builder-x")
+        );
+        assert_eq!(agent["worktreeName"].as_str(), Some("builder-x"));
+        assert!(agent.get("worktree_path").is_none());
     }
 
     #[test]

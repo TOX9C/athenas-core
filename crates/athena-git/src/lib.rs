@@ -258,6 +258,108 @@ pub fn diff(path: &Path, staged: bool) -> Result<DiffSet, GitError> {
     Ok(DiffSet { files, truncated })
 }
 
+/// Directory (under the repo workdir) that holds all Athena-managed
+/// worktrees. Keeping every agent worktree under one prefix makes the
+/// sandbox invariant in [`remove_worktree`] a simple prefix check.
+pub const WORKTREE_PREFIX: &str = ".athena/worktrees";
+
+fn validate_worktree_name(name: &str) -> Result<(), GitError> {
+    if name.is_empty()
+        || name.len() > 64
+        || name == "."
+        || name == ".."
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(GitError::Git(format!(
+            "invalid worktree name: {name:?} (allowed: [A-Za-z0-9._-], max 64 chars)"
+        )));
+    }
+    Ok(())
+}
+
+fn branch_name(name: &str) -> String {
+    format!("athena/{name}")
+}
+
+/// Create an agent worktree at `<root>/.athena/worktrees/<name>` on a new
+/// branch `athena/<name>` based at HEAD. Returns the worktree path.
+///
+/// Fails for repositories with no commits (there is no HEAD to base the
+/// branch on) and when the worktree or branch name is already taken.
+pub fn add_worktree(repo_path: &Path, name: &str) -> Result<PathBuf, GitError> {
+    validate_worktree_name(name)?;
+    let repo = open(repo_path)?;
+    let root = repo
+        .workdir()
+        .ok_or_else(|| GitError::Git("bare repositories cannot hold worktrees".into()))?;
+    let commit = repo.head()?.peel_to_commit().map_err(|_| {
+        GitError::Git("cannot create a worktree: repository has no commits".into())
+    })?;
+
+    if repo
+        .find_branch(&branch_name(name), git2::BranchType::Local)
+        .is_ok()
+    {
+        return Err(GitError::Git(format!(
+            "branch already exists: {}",
+            branch_name(name)
+        )));
+    }
+
+    let dir = root.join(WORKTREE_PREFIX);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| GitError::Git(format!("cannot create {}: {e}", dir.display())))?;
+    let path = dir.join(name);
+
+    let branch_ref = repo
+        .branch(&branch_name(name), &commit, false)?
+        .into_reference();
+    let mut opts = git2::WorktreeAddOptions::new();
+    opts.reference(Some(&branch_ref));
+    repo.worktree(name, &path, Some(&opts))?;
+    Ok(canonicalize(path))
+}
+
+/// Remove the worktree named `name` (created via [`add_worktree`]) and its
+/// on-disk directory. The backing branch `athena/<name>` is kept so agent
+/// commits are never destroyed by cleanup.
+pub fn remove_worktree(repo_path: &Path, name: &str) -> Result<(), GitError> {
+    validate_worktree_name(name)?;
+    let repo = open(repo_path)?;
+    let root = repo
+        .workdir()
+        .ok_or_else(|| GitError::Git("bare repositories cannot hold worktrees".into()))?;
+    let expected = canonicalize(root.join(WORKTREE_PREFIX).join(name));
+
+    // Defense in depth: never prune anything outside the managed prefix.
+    let prefix = canonicalize(root.join(WORKTREE_PREFIX));
+    if !expected.starts_with(&prefix) {
+        return Err(GitError::Git(format!(
+            "refusing to remove worktree outside {WORKTREE_PREFIX}: {}",
+            expected.display()
+        )));
+    }
+
+    match repo.find_worktree(name) {
+        Ok(wt) => {
+            let mut opts = git2::WorktreePruneOptions::new();
+            opts.valid(true).locked(false).working_tree(true);
+            wt.prune(Some(&mut opts))?;
+        }
+        Err(e) if e.code() == git2::ErrorCode::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    // Prune only removes the book-keeping once the tree is gone; delete any
+    // remaining directory contents ourselves.
+    if expected.exists() {
+        std::fs::remove_dir_all(&expected)
+            .map_err(|e| GitError::Git(format!("cannot remove {}: {e}", expected.display())))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +544,117 @@ mod tests {
         let set = diff(tmp.path(), true).unwrap();
         assert_eq!(set.files.len(), 1);
         assert_eq!(set.files[0].path, "new.txt");
+    }
+
+    #[test]
+    fn worktree_add_create_branch_and_remove() {
+        let tmp = TempRepo::new();
+        tmp.commit_file("f.txt", "v1\n", "initial");
+
+        let wt_path = add_worktree(tmp.path(), "agent-alpha").unwrap();
+        assert_eq!(
+            wt_path,
+            tmp.path()
+                .canonicalize()
+                .unwrap()
+                .join(".athena/worktrees/agent-alpha")
+        );
+        // HEAD content is present in the new worktree.
+        assert_eq!(
+            fs::read_to_string(wt_path.join("f.txt")).unwrap(),
+            "v1\n"
+        );
+        // The backing branch exists and points at HEAD.
+        {
+            let repo = tmp.repo();
+            let branch_id = repo
+                .find_branch("athena/agent-alpha", git2::BranchType::Local)
+                .unwrap()
+                .get()
+                .peel_to_commit()
+                .unwrap()
+                .id();
+            let head_id = repo.head().unwrap().peel_to_commit().unwrap().id();
+            assert_eq!(branch_id, head_id);
+        }
+
+        // Duplicate name is an error, not a clobber.
+        assert!(add_worktree(tmp.path(), "agent-alpha").is_err());
+
+        remove_worktree(tmp.path(), "agent-alpha").unwrap();
+        assert!(!wt_path.join("f.txt").exists());
+        // Branch survives teardown: agent commits are never destroyed.
+        let repo = tmp.repo();
+        assert!(
+            repo.find_branch("athena/agent-alpha", git2::BranchType::Local)
+                .is_ok()
+        );
+
+        // Removing a missing worktree is a no-op.
+        remove_worktree(tmp.path(), "agent-alpha").unwrap();
+    }
+
+    #[test]
+    fn three_agent_swarm_isolation_and_teardown() {
+        // Acceptance mirror: a 3-agent swarm in a repo gets 3 worktrees on
+        // 3 branches; teardown removes the directories, branches remain.
+        let tmp = TempRepo::new();
+        tmp.commit_file("main.rs", "fn main() {}\n", "initial");
+
+        let roles = ["coordinator", "builder", "scout"];
+        let mut paths = Vec::new();
+        for role in roles {
+            let name = format!("{role}-abc123");
+            let path = add_worktree(tmp.path(), &name).unwrap();
+            assert!(path.join("main.rs").exists(), "{} missing HEAD content", role);
+            paths.push(path);
+        }
+        // All three live side by side under the managed prefix.
+        assert_eq!(paths.len(), 3);
+        let repo = tmp.repo();
+        for role in roles {
+            let branch = repo
+                .find_branch(&format!("athena/{role}-abc123"), git2::BranchType::Local)
+                .unwrap_or_else(|e| panic!("missing branch for {role}: {e}"));
+            drop(branch);
+        }
+        drop(repo);
+
+        // Independent edits do not leak between agents.
+        fs::write(paths[1].join("main.rs"), "fn main() { builder }\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(paths[0].join("main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+
+        for role in roles {
+            remove_worktree(tmp.path(), &format!("{role}-abc123")).unwrap();
+        }
+        for path in &paths {
+            assert!(!path.exists(), "{} not torn down", path.display());
+        }
+        let repo = tmp.repo();
+        for role in roles {
+            assert!(
+                repo.find_branch(&format!("athena/{role}-abc123"), git2::BranchType::Local)
+                    .is_ok(),
+                "branch for {role} must survive teardown"
+            );
+        }
+    }
+
+    #[test]
+    fn worktree_add_rejects_bad_names_and_headless_repo() {
+        let tmp = TempRepo::new();
+        // No commits yet: cannot base a worktree branch.
+        assert!(matches!(
+            add_worktree(tmp.path(), "ok"),
+            Err(GitError::Git(_))
+        ));
+        for bad in ["", "../escape", "a/b", "a b", ".."] {
+            assert!(add_worktree(tmp.path(), bad).is_err(), "name {bad:?}");
+            assert!(remove_worktree(tmp.path(), bad).is_err(), "name {bad:?}");
+        }
     }
 
     #[test]

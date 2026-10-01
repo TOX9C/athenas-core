@@ -37,6 +37,8 @@ const COMMANDS: &[&str] = &[
     "git_discover",
     "git_status",
     "git_diff",
+    "git_worktree_add",
+    "git_worktree_remove",
     "store_get",
     "store_set",
     "store_has",
