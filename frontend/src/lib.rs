@@ -326,6 +326,28 @@ pub fn App() -> Element {
             });
         }
 
+        {
+            handlers.insert(
+                "inbox_show".to_string(),
+                Callback::new(move |_| {
+                    let mut ui = use_ui_store();
+                    let mut panel = use_panel_manager_store();
+                    ui.write().right_sidebar_open = true;
+                    panel.write().active_right_panel = crate::stores::panel_manager::RightPanel::Inbox;
+                }),
+            );
+            commands.push(Command {
+                id: "attention-inbox".to_string(),
+                label: "Attention inbox".to_string(),
+                category: CommandCategory::Workspace,
+                description: Some("Jump to the panes whose agents are waiting on input".to_string()),
+                keywords: vec!["attention".to_string(), "alerts".to_string(), "input".to_string()],
+                shortcut: Some("Cmd+Shift+U".to_string()),
+                handler_key: "inbox_show".to_string(),
+                when_key: None,
+            });
+        }
+
         handlers.insert(
             "open_settings".to_string(),
             Callback::new(move |_| {

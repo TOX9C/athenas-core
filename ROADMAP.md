@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — O5: Attention inbox
+
+Right-sidebar **Inbox** tab lists every pane whose agent has an unanswered request (OSC 6337 → `WaitingForInput`), with Dismiss (and Clear all) hooks; badges show only the unseen count. Cmd+Shift+U opens the panel directly. Detection → inbox → dismiss is the same lifecycle the agent status stream already produces; without dismissing, panes surface again on their next waiting event.
+
 ## 🚀 2026-10-01 — O4: Scheduled routines
 
 Routines: interval (`every N minutes`) or glob-watch triggers queue a prompt on the shared orchestrator in a scratch session, push a notification on each run, and keep a per-rule 20-entry run history in the KV store. Settings → General → **Routines** lists rules with enable/add/run-now/delete. Backend: `routines_list`/`routines_upsert`/`routines_delete`/`routines_set_enabled`/`routines_run_now`/`routines_tick` (every 30 s, spawned from AppState after app-handle registration; fixed intervals, glob matcher is a small local `*`/`?`/`**` diameter — no new proc deps).

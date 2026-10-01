@@ -102,6 +102,7 @@ mod tests {
                 total: 5,
                 label: "compile".to_string(),
             }),
+            dismissed: false,
             last_updated_at: 42,
         };
         let converted = to_pane_status(&status);

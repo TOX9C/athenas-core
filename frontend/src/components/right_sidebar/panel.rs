@@ -1,5 +1,6 @@
 use super::browser_panel::RightBrowserPanel;
 use super::diff_panel::DiffPanel;
+use super::inbox_panel::InboxPanel;
 use super::editor_panel::RightEditorPanel;
 use super::skills_panel::SkillsPanel;
 use crate::components::athena::athena_panel::{AthenaPanel, AthenaPanelMode};
@@ -90,6 +91,19 @@ pub fn RightSidebar() -> Element {
 
                 button {
                     class: "lit-sweep",
+                    style: "{tab_btn(active == RightPanel::Inbox)}",
+                    title: "Panes waiting on input (agent inbox)",
+                    onclick: move |_| {
+                        let sidebar_open = ui_state.read().right_sidebar_open;
+                        let should_be_open = panel_state.write().toggle_right_panel(RightPanel::Inbox, sidebar_open);
+                        ui_state.write().right_sidebar_open = should_be_open;
+                    },
+                    crate::components::shared::icon::IconBell { size: Some(13), color: Some("currentColor".to_string()) }
+                    "Inbox"
+                }
+
+                button {
+                    class: "lit-sweep",
                     style: "{tab_btn(active == RightPanel::Skills)}",
                     onclick: move |_| {
                         let sidebar_open = ui_state.read().right_sidebar_open;
@@ -159,6 +173,7 @@ pub fn RightSidebar() -> Element {
                     },
                     RightPanel::Skills => rsx! { SkillsPanel {} },
                     RightPanel::Changes => rsx! { DiffPanel {} },
+                    RightPanel::Inbox => rsx! { InboxPanel {} },
                     RightPanel::None => rsx! {},
                 }
             }

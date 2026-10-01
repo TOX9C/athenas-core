@@ -22,6 +22,33 @@ impl AgentStatusState {
         }
     }
 
+    /// All live × un-dismissed "waiting for input" panes, oldest first.
+    pub fn waiting_panes(&self) -> Vec<String> {
+        self.statuses
+            .iter()
+            .filter(|(_, s)| {
+                matches!(s.status, AgentRunStatus::WaitingForInput) && !s.dismissed
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    pub fn dismiss_waiting(&mut self, pane_id: &str) {
+        if let Some(entry) = self.statuses.iter_mut().find(|(id, _)| id == pane_id) {
+            entry.1.dismissed = true;
+            entry.1.status = AgentRunStatus::Idle;
+        }
+    }
+
+    pub fn dismiss_all_waiting(&mut self) {
+        for (_, s) in self.statuses.iter_mut() {
+            if s.status == AgentRunStatus::WaitingForInput {
+                s.dismissed = true;
+                s.status = AgentRunStatus::Idle;
+            }
+        }
+    }
+
     // -- Mutators (in-place, compatible with Signal::write()) ---------------
 
     /// Update (or insert) the status for a pane.
@@ -59,6 +86,7 @@ impl AgentStatusState {
                 key.clone(),
                 AgentStatus {
                     pane_id: key,
+                    dismissed: false,
                     generation: update.generation,
                     status: update.status.unwrap_or_default(),
                     message: update.message,
@@ -87,6 +115,7 @@ impl AgentStatusState {
                     status: AgentRunStatus::Idle,
                     message: Some("Connected".to_string()),
                     progress: None,
+                    dismissed: false,
                     last_updated_at: now,
                 },
             ));
@@ -117,6 +146,7 @@ impl AgentStatusState {
                     status: AgentRunStatus::WaitingForInput,
                     message: Some(message),
                     progress: None,
+                    dismissed: false,
                     last_updated_at: now,
                 },
             ));

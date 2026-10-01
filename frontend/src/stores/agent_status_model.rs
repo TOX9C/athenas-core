@@ -26,6 +26,9 @@ pub struct AgentProgress {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AgentStatus {
     pub pane_id: String,
+    /// User cleared this "needs input" state; the OSC 6337 aftermarket must
+    /// not resurface it until the next agent refresh.
+    pub dismissed: bool,
     /// PTY generation owning this transient status. Used to ignore a late
     /// exit event from an older process after a pane id is reused.
     pub generation: Option<u64>,
@@ -82,6 +85,7 @@ mod tests {
                 total: 4,
                 label: "step".to_string(),
             }),
+            dismissed: false,
             last_updated_at: 42,
         };
         assert_eq!(status.pane_id, "pane-1");
