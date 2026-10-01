@@ -814,6 +814,7 @@ pub async fn kanban_update_task(
     title: Option<&str>,
     description: Option<&str>,
     status: Option<&str>,
+    evidence: Option<&str>,
 ) -> TauriResult<String> {
     // camelCase wire key (`taskId`) — Tauri v2 expects camelCase args; the
     // old snake_case key made the required `task_id` param fail, so cards
@@ -824,7 +825,8 @@ pub async fn kanban_update_task(
             "taskId": task_id,
             "title": title,
             "description": description,
-            "status": status
+            "status": status,
+            "evidence": evidence
         })
         .to_string(),
     )

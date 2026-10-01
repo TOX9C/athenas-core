@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — O3: Proof-of-work kanban gate
+
+Kanban cards whose owner is an agent (`assigned_agent` or `plan_step_id` set) can no longer slide into **In Review** empty-handed: `update_task` rejects the transition with `ProofRequired` unless the update (or an earlier one on the same card) carries `TaskEvidence { diff, test_log, pane_id? }`. The card move UI gathers it automatically on demand: `git_diff` from the workspace + tail of the active agent pane's output buffer, attached via the extended `kanban_update_task(?, evidence)` (backend + bridge + tool schema). Manual (fully un-owned) cards move unchanged. Crate tests cover the rejection and the evidence-acceptance paths.
+
 ## 🚀 2026-10-01 — O2: Swarm presets
 
 Mission templates: three built-ins ("Feature build", "Bug hunt", "Refactor + tests") ship in `utils/swarm_presets.rs`; each records per-slot role / agent CLI / `--model` flag / capability profile. The swarm modal gains a PRESET strip: select-to-apply, name+Save-preset persistence (KV `swarm_presets`, capped at 32 custom), and Delete. Applying a preset replaces the slot list; per-slot CLI model (`--model '<name>'`, shell-quoted) now flows through pane spawn thanks to `get_agent_command`'s new `model` parameter, consumed per-pane from `PaneConfig.model_name` in `render_shell_pane` → `XtermMount`.

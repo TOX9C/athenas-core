@@ -1296,7 +1296,7 @@ Plan (approved):
                                         }
                                     }
                                     {
-                                        let approved_plan_text = format!(
+                                        let _approved_plan_text = format!(
                                             "{}
 {}",
                                             draft.goal,

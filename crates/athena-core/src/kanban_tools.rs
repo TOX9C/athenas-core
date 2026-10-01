@@ -86,6 +86,7 @@ impl ToolExecutor {
             created_at: self.get_current_time_ms(),
             // Tool-created cards have no plan-step back-link.
             plan_step_id: None,
+            evidence: None,
         };
 
         match self.kanban_backend.create_task(space_id, task) {
@@ -124,12 +125,17 @@ impl ToolExecutor {
             .as_ref()
             .and_then(|s| KanbanBackendStatus::parse(s).ok());
 
+        let evidence: Option<crate::kanban::TaskEvidence> = args
+            .evidence
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
         match self.kanban_backend.update_task(
             &workspace_id,
             task_id,
             args.title.clone(),
             args.description.clone(),
             status,
+            evidence,
         ) {
             Ok(updated) => Ok(ToolCallResult {
                 text: format!("Task updated: {} (ID: {})", updated.title, updated.id),

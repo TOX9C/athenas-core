@@ -268,7 +268,7 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             let description = opts.opt::<Option<String>>("description")?;
             let status = opts.opt::<Option<String>>("status")?;
             let out =
-                commands::kanban_update_task(state, task_id, title, description, status).await?;
+                commands::kanban_update_task(state, task_id, title, description, status, None).await?;
             Ok(serde_json::to_value(out).map_err(|e| e.to_string())?)
         }
         "kanban_delete_task" => {

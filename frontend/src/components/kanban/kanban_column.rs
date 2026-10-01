@@ -109,7 +109,37 @@ pub(super) async fn create_task_in_column(
 
     if col_status != KanbanStatus::Todo {
         let status_str = status_to_backend(&col_status).to_string();
-        let _ = tauri_bridge::kanban_update_task(&task_id, None, None, Some(&status_str)).await;
+        let evidence = {
+            let task = crate::stores::task::use_task_store()
+                .read()
+                .tasks
+                .iter()
+                .find(|t| t.id == task_id)
+                .cloned();
+            if matches!(col_status, KanbanStatus::InReview) {
+                let is_agent_owned = task.as_ref().is_some_and(|t| {
+                    t.assigned_agent.is_some() || t.plan_step_id.is_some()
+                });
+                let has_evidence = task.as_ref().is_some_and(|t| t.evidence.is_some());
+                if is_agent_owned && !has_evidence {
+                    // Gather proof-of-work from the pane's recent output.
+                    match super::kanban_card::gather_evidence_for(&task_id).await {
+                        Ok(e) => Some(e),
+                        Err(err) => {
+                            web_sys::console::warn_1(
+                                &format!("[KanbanColumn] no evidence attached: {err}").into(),
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        let _ = tauri_bridge::kanban_update_task(&task_id, None, None, Some(&status_str), evidence.as_deref()).await;
     }
 
     Ok(())

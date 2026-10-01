@@ -5,7 +5,7 @@
 //! desktop composer uses this path with a request ID and cancellation token.
 
 use super::{
-    build_anthropic_content, build_openai_content, sanitize_error_message, to_openai_tools,
+    build_anthropic_content, build_openai_content, sanitize_error_message,
     AnthropicMessage, AthenaOrchestrator, OpenAIMessage, OrchestratorError, ANTHROPIC_VERSION,
     MAX_OUTPUT_TOKENS, SYSTEM_PROMPT,
 };
