@@ -200,6 +200,7 @@ pub fn App() -> Element {
     // state; handlers are a callback table keyed by `Command::handler_key`,
     // registered here because App owns the signals they mutate.
     let mut command_state = use_command_store();
+    let use_workspace_store_in_commands = use_workspace_store();
     let handlers = use_hook(move || {
         let mut handlers: std::collections::HashMap<String, Callback<()>> =
             std::collections::HashMap::new();
@@ -247,6 +248,79 @@ pub fn App() -> Element {
                 ],
                 shortcut: None,
                 handler_key,
+                when_key: None,
+            });
+        }
+
+        // Snapshot the active workspace (git tree + app store sidecar) so a
+        // swarm run or agent mistake can be reverted from the Changes panel.
+        {
+            let workspace = use_workspace_store_in_commands;
+            let mut toast = components::shared::toast::use_toast_store();
+            handlers.insert(
+                "checkpoint_create".to_string(),
+                Callback::new(move |_| {
+                    let dir = {
+                        let ws = workspace.read();
+                        ws.active_space_id
+                            .as_ref()
+                            .and_then(|id| ws.spaces.iter().find(|s| &s.id == id))
+                            .map(|s| s.dir.clone())
+                    };
+                    let Some(dir) = dir.filter(|d| !d.is_empty()) else {
+                        toast.write().push(components::shared::toast::Toast {
+                            id: "ckpt-nows".to_string(),
+                            toast_type: components::shared::toast::ToastType::Warning,
+                            title: "Checkpoint skipped".to_string(),
+                            message: "Open a workspace first.".to_string(),
+                            duration_ms: 4000,
+                        });
+                        return;
+                    };
+                    spawn(async move {
+                        match tauri_bridge::git_checkpoint_create(&dir, "manual").await {
+                            Ok(Some(cp)) => toast.write().push(components::shared::toast::Toast {
+                                id: cp.id.clone(),
+                                toast_type: components::shared::toast::ToastType::Success,
+                                title: "Checkpoint created".to_string(),
+                                message: "Snapshot taken — restore it from the Changes panel.".to_string(),
+                                duration_ms: 4000,
+                            }),
+                            Ok(None) => toast.write().push(components::shared::toast::Toast {
+                                id: "ckpt-norepo".to_string(),
+                                toast_type: components::shared::toast::ToastType::Warning,
+                                title: "Not a git repository".to_string(),
+                                message: "Checkpoints require a git workspace.".to_string(),
+                                duration_ms: 4000,
+                            }),
+                            Err(e) => toast.write().push(components::shared::toast::Toast {
+                                id: "ckpt-err".to_string(),
+                                toast_type: components::shared::toast::ToastType::Error,
+                                title: "Checkpoint failed".to_string(),
+                                message: format!("{e:?}"),
+                                duration_ms: 5000,
+                            }),
+                        }
+                    });
+                }),
+            );
+            commands.push(Command {
+                id: "checkpoint-create".to_string(),
+                label: "Create workspace checkpoint".to_string(),
+                category: CommandCategory::Workspace,
+                description: Some(
+                    "Snapshot the active workspace's uncommitted state (restorable from the Changes panel)"
+                        .to_string(),
+                ),
+                keywords: vec![
+                    "checkpoint".to_string(),
+                    "snapshot".to_string(),
+                    "git".to_string(),
+                    "restore".to_string(),
+                    "undo".to_string(),
+                ],
+                shortcut: Some("Cmd+Shift+C".to_string()),
+                handler_key: "checkpoint_create".to_string(),
                 when_key: None,
             });
         }

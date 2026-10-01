@@ -262,6 +262,37 @@ pub async fn git_apply_file(path: &str, file: &str, stage: bool) -> TauriResult<
     .await
 }
 
+pub async fn git_checkpoint_create(
+    path: &str,
+    label: &str,
+) -> TauriResult<Option<crate::stores::git::Checkpoint>> {
+    let value: JsValue = invoke(
+        "git_checkpoint_create",
+        &serde_json::json!({ "path": path, "label": label }).to_string(),
+    )
+    .await?;
+    serde_wasm_bindgen::from_value(value)
+        .map_err(|e| JsValue::from_str(&format!("git_checkpoint_create decode: {e}")))
+}
+
+pub async fn git_checkpoint_list(path: &str) -> TauriResult<Vec<crate::stores::git::Checkpoint>> {
+    let value: JsValue = invoke(
+        "git_checkpoint_list",
+        &serde_json::json!({ "path": path }).to_string(),
+    )
+    .await?;
+    serde_wasm_bindgen::from_value(value)
+        .map_err(|e| JsValue::from_str(&format!("git_checkpoint_list decode: {e}")))
+}
+
+pub async fn git_checkpoint_restore(path: &str, id: &str) -> TauriResult<bool> {
+    invoke(
+        "git_checkpoint_restore",
+        &serde_json::json!({ "path": path, "id": id }).to_string(),
+    )
+    .await
+}
+
 pub async fn git_diff(path: &str, staged: bool) -> TauriResult<crate::stores::git::DiffSet> {
     let value: JsValue = invoke(
         "git_diff",

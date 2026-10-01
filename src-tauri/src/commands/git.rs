@@ -200,3 +200,87 @@ pub async fn git_apply_file(
     .await
     .map_err(|e| CommandError::Internal(format!("git apply file task failed: {e}")))?
 }
+
+/// Snapshot the workdir (git tree + optional app-store sidecar) under
+/// `refs/athena/checkpoints/`. Returns `None` for non-repo paths.
+#[tauri::command]
+pub async fn git_checkpoint_create(
+    state: State<'_, AppState>,
+    path: String,
+    label: String,
+) -> Result<Option<athena_git::Checkpoint>, CommandError> {
+    if !state.rate_limiter.check("git_checkpoint_create") {
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
+    }
+    if label.len() > super::caps::MAX_SESSION_TITLE_LEN {
+        return Err(CommandError::InvalidInput(format!(
+            "checkpoint label too long (max {})",
+            super::caps::MAX_SESSION_TITLE_LEN
+        )));
+    }
+    let root = match validated_repo_root(&state, &path) {
+        Ok(root) => root,
+        Err(CommandError::InvalidInput(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let store_path = state.store.path().map(|p| p.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        athena_git::checkpoint_create(&root, &label, store_path.as_deref())
+            .map(Some)
+            .map_err(map_git_err)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("checkpoint task failed: {e}")))?
+}
+
+/// List checkpoints for the repo containing `path` (newest first, max 20).
+#[tauri::command]
+pub async fn git_checkpoint_list(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<athena_git::Checkpoint>, CommandError> {
+    if !state.rate_limiter.check("git_checkpoint_list") {
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
+    }
+    let root = match validated_repo_root(&state, &path) {
+        Ok(root) => root,
+        Err(CommandError::InvalidInput(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    tokio::task::spawn_blocking(move || athena_git::checkpoint_list(&root).map_err(map_git_err))
+        .await
+        .map_err(|e| CommandError::Internal(format!("checkpoint list task failed: {e}")))?
+}
+
+/// Restore a checkpoint: workdir + index reset to the snapshot tree (HEAD
+/// untouched). Returns `store_restored` when an app-store snapshot was
+/// copied back (takes effect on next app launch).
+#[tauri::command]
+pub async fn git_checkpoint_restore(
+    state: State<'_, AppState>,
+    path: String,
+    id: String,
+) -> Result<bool, CommandError> {
+    if !state.rate_limiter.check("git_checkpoint_restore") {
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
+    }
+    let root = validated_repo_root(&state, &path)?;
+    // The store file must be writable for the restore; it always lives in
+    // the app data dir and `with_name_sync` created it already.
+    let store_path = state
+        .store
+        .path()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| CommandError::Internal("store is in-memory; cannot restore".into()))?;
+    tokio::task::spawn_blocking(move || {
+        athena_git::checkpoint_restore(&root, &id, &store_path).map_err(map_git_err)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("checkpoint restore task failed: {e}")))?
+}

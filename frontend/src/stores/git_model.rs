@@ -58,3 +58,10 @@ pub struct DiffSet {
     pub files: Vec<FileDiff>,
     pub truncated: bool,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Checkpoint {
+    pub id: String,
+    pub label: String,
+    pub created_at: i64,
+}

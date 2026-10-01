@@ -95,6 +95,9 @@ fn main() {
             git_diff_file,
             git_apply_hunk,
             git_apply_file,
+            git_checkpoint_create,
+            git_checkpoint_list,
+            git_checkpoint_restore,
             // Store
             store_get,
             store_set,

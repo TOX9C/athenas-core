@@ -595,6 +595,223 @@ pub fn apply_file(repo_path: &Path, rel_file: &str, stage: bool) -> Result<(), G
     }
 }
 
+
+/// Git-backed workspace snapshot: a commit of the full workdir state on a
+/// dedicated ref under `refs/athena/checkpoints/`, plus (in the app layer) a
+/// copy of the UI store file. User stashes, HEAD, and the real index are
+/// NEVER touched by create/restore below.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Checkpoint {
+    /// Commit oid (unique per snapshot).
+    pub id: String,
+    pub label: String,
+    /// Unix seconds of the snapshot commit.
+    pub created_at: i64,
+}
+
+const CHECKPOINT_REF_PREFIX: &str = "refs/athena/checkpoints/";
+/// Bounded storage: older checkpoints are pruned past this count.
+pub const MAX_CHECKPOINTS: usize = 20;
+
+const CHECKPOINT_DIR: &str = "athena-checkpoints";
+
+fn checkpoint_storage_dir(repo: &git2::Repository) -> std::path::PathBuf {
+    // Linked worktrees live at <main>/.git/worktrees/<name>/ — share
+    // checkpoint storage with the main repository directory.
+    let gitdir = repo.path();
+    let base = match gitdir
+        .parent()
+        .filter(|p| p.file_name().map(|n| n == "worktrees").unwrap_or(false))
+    {
+        Some(worktrees_dir) => worktrees_dir.parent().unwrap_or(gitdir),
+        None => gitdir,
+    };
+    base.join(CHECKPOINT_DIR)
+}
+
+/// Snapshot the entire workdir (tracked, staged, and untracked content,
+/// honoring .gitignore) as a commit, plus an optional sidecar file copy
+/// (the app store). Returns the created checkpoint.
+///
+/// Implementation detail: we temporarily swap the repository's index for a
+/// copy, `add_all` the workdir into it, write that tree, and commit it on a
+/// checkpoint ref. The real `.git/index` and HEAD are untouched.
+pub fn checkpoint_create(
+    repo_path: &Path,
+    label: &str,
+    store_snapshot: Option<&Path>,
+) -> Result<Checkpoint, GitError> {
+    let repo = open(repo_path)?;
+    let head = repo.head()?.peel_to_commit().map_err(|_| {
+        GitError::Git("cannot checkpoint: repository has no commits".into())
+    })?;
+
+    let storage = checkpoint_storage_dir(&repo);
+    std::fs::create_dir_all(&storage)
+        .map_err(|e| GitError::Git(format!("cannot create {}: {e}", storage.display())))?;
+
+    // Build the snapshot tree in a scratch copy of the real index.
+    let index_path = repo.path().join("index");
+    let scratch_path = storage.join(format!("index-scratch-{}", std::process::id()));
+    let from_scratch_file = index_path.exists();
+    let mut index = if from_scratch_file {
+        std::fs::copy(&index_path, &scratch_path)
+            .map_err(|e| GitError::Git(format!("cannot copy index: {e}")))?;
+        git2::Index::open(&scratch_path)?
+    } else {
+        // No .git/index yet (unusual but legal): start from HEAD's tree.
+        let mut index = git2::Index::new()?;
+        index.read_tree(&head.tree()?)?;
+        index
+    };
+    repo.set_index(&mut index)?;
+    index.add_all(
+        ["*"].iter(),
+        git2::IndexAddOption::DEFAULT,
+        Some(&mut |_p: &Path, _content: &[u8]| -> i32 { 0 }),
+    )?;
+    if from_scratch_file {
+        // Only the scratch file is written — the real index is untouched.
+        index.write()?;
+    }
+    let tree_oid = index.write_tree()?;
+    drop(index);
+    let _ = std::fs::remove_file(&scratch_path);
+
+    let label_trimmed = label.trim();
+    let message = if label_trimmed.is_empty() {
+        "athena checkpoint".to_string()
+    } else {
+        format!("athena checkpoint: {label_trimmed}")
+    };
+    let sig = git2::Signature::now("Athena Checkpoints", "checkpoint@athena.local")?;
+    let tree = repo.find_tree(tree_oid)?;
+    // Refname carries a sortable time+sequence id so same-second snapshots
+    // still prune in creation order (commit times are second-resolution).
+    use std::sync::atomic::{AtomicU64, Ordering as AOrd};
+    static _SEQ: AtomicU64 = AtomicU64::new(0);
+    let id = format!(
+        "{:010}-{:06}",
+        sig.when().seconds(),
+        _SEQ.fetch_add(1, AOrd::Relaxed)
+    );
+    let commit_oid = repo.commit(None, &sig, &sig, &message, &tree, &[&head])?;
+    repo.reference(
+        &format!("{CHECKPOINT_REF_PREFIX}{id}"),
+        commit_oid,
+        false,
+        "athena checkpoint snapshot",
+    )?;
+
+    if let Some(store_file) = store_snapshot {
+        if store_file.exists() {
+            std::fs::copy(store_file, storage.join(format!("{id}.store.json")))
+                .map_err(|e| GitError::Git(format!("cannot copy store snapshot: {e}")))?;
+        }
+    }
+
+    let checkpoint = Checkpoint {
+        id: id.clone(),
+        label: label_trimmed.to_string(),
+        created_at: sig.when().seconds(),
+    };
+    prune_checkpoints(&repo)?;
+    Ok(checkpoint)
+}
+
+fn prune_checkpoints(repo: &git2::Repository) -> Result<(), GitError> {
+    let mut all = checkpoint_list_repo(repo)?;
+    if all.len() <= MAX_CHECKPOINTS {
+        return Ok(());
+    }
+    all.sort_by(|a, b| b.id.cmp(&a.id));
+    for old in all.into_iter().skip(MAX_CHECKPOINTS) {
+        if let Ok(mut r) = repo.find_reference(&format!("{CHECKPOINT_REF_PREFIX}{}", old.id)) {
+            r.delete()?;
+        }
+        let store_snap = checkpoint_storage_dir(repo).join(format!("{}.store.json", old.id));
+        let _ = std::fs::remove_file(store_snap);
+    }
+    Ok(())
+}
+
+/// All checkpoints for the repo containing `repo_path`, newest first.
+pub fn checkpoint_list(repo_path: &Path) -> Result<Vec<Checkpoint>, GitError> {
+    let repo = open(repo_path)?;
+    checkpoint_list_repo(&repo)
+}
+
+fn checkpoint_list_repo(repo: &git2::Repository) -> Result<Vec<Checkpoint>, GitError> {
+    let mut out = Vec::new();
+    for reference in repo
+        .references()?
+        .flatten()
+        .filter_map(|r| r.name().map(str::to_owned))
+    {
+        if let Some(id) = reference.strip_prefix(CHECKPOINT_REF_PREFIX) {
+            if let Ok(commit) = repo
+                .find_reference(&reference)
+                .and_then(|r| r.peel_to_commit())
+            {
+                let label = commit
+                    .message()
+                    .and_then(|m| m.strip_prefix("athena checkpoint: "))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                out.push(Checkpoint {
+                    id: id.to_string(),
+                    label,
+                    created_at: commit.time().seconds(),
+                });
+            }
+        }
+    }
+    // Ids are zero-padded time + sequence, so a plain reverse sort is the
+    // creation order even when commits share a timestamp second.
+    out.sort_by(|a, b| b.id.cmp(&a.id));
+    Ok(out)
+}
+
+/// Restore a checkpoint: the workdir + index are reset to the snapshot tree;
+/// HEAD is untouched. Returns whether a store sidecar snapshot was restored
+/// (the in-memory store refreshes on next app launch).
+pub fn checkpoint_restore(
+    repo_path: &Path,
+    id: &str,
+    store_path: &Path,
+) -> Result<bool, GitError> {
+    if id.len() > 32
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '-')
+    {
+        return Err(GitError::Git(format!("invalid checkpoint id: {id:?}")));
+    }
+    let repo = open(repo_path)?;
+    let commit = repo
+        .find_reference(&format!("{CHECKPOINT_REF_PREFIX}{id}"))
+        .and_then(|r| r.peel_to_commit())
+        .map_err(|_| GitError::Git(format!("unknown checkpoint: {id}")))?;
+    let tree = commit.tree()?;
+
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force().remove_untracked(false);
+    repo.checkout_tree(tree.as_object(), Some(&mut checkout))?;
+    let mut index = repo.index()?;
+    index.read_tree(&tree)?;
+    index.write()?;
+
+    // Optional app-store sidecar: copy it back so the next launch picks it up.
+    let snap = checkpoint_storage_dir(&repo).join(format!("{id}.store.json"));
+    if snap.exists() {
+        std::fs::copy(&snap, store_path)
+            .map_err(|e| GitError::Git(format!("cannot restore store snapshot: {e}")))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -892,6 +1109,90 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn checkpoint_create_restore_roundtrip() {
+        let tmp = TempRepo::new();
+        tmp.commit_file("f.txt", "v1\n", "initial");
+        // Untracked file participating in the snapshot.
+        fs::write(tmp.path().join("scratch.txt"), "draft\n").unwrap();
+
+        let cp = checkpoint_create(tmp.path(), "before agent", None).unwrap();
+        assert_eq!(cp.label, "before agent");
+
+        // Break things.
+        fs::write(tmp.path().join("f.txt"), "broken\n").unwrap();
+        fs::remove_file(tmp.path().join("scratch.txt")).unwrap();
+
+        // Restore: workdir back to snapshot.
+        let store_snap = tmp.path().join("store.json");
+        fs::write(&store_snap, "{}").unwrap();
+        let restored = checkpoint_restore(tmp.path(), &cp.id, &store_snap).unwrap();
+        assert!(!restored); // no sidecar written on create
+        assert_eq!(fs::read_to_string(tmp.path().join("f.txt")).unwrap(), "v1\n");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("scratch.txt")).unwrap(),
+            "draft\n"
+        );
+        // HEAD untouched; index matches the snapshot tree.
+        let repo = tmp.repo();
+        let head_content = String::from_utf8_lossy(
+            &repo
+                .head()
+                .unwrap()
+                .peel_to_tree()
+                .unwrap()
+                .get_name("f.txt")
+                .map(|e| {
+                    repo.find_blob(e.id()).unwrap().content().to_vec()
+                })
+                .unwrap(),
+        )
+        .to_string();
+        assert_eq!(head_content, "v1\n");
+        assert!(diff(tmp.path(), false).unwrap().files.is_empty());
+        drop(repo);
+    }
+
+    #[test]
+    fn checkpoint_prunes_beyond_twenty() {
+        let tmp = TempRepo::new();
+        tmp.commit_file("f.txt", "v1\n", "initial");
+        for i in 0..22 {
+            fs::write(tmp.path().join("f.txt"), format!("v{i}\n")).unwrap();
+            checkpoint_create(tmp.path(), &format!("snap{i}"), None).unwrap();
+        }
+        let all = checkpoint_list(tmp.path()).unwrap();
+        assert!(all.len() <= MAX_CHECKPOINTS, "got {}", all.len());
+        // Newest kept.
+        assert_eq!(all[0].label, "snap21");
+    }
+
+    #[test]
+    fn checkpoint_restore_rejects_bad_ids() {
+        let tmp = TempRepo::new();
+        tmp.commit_file("f.txt", "v1\n", "initial");
+        checkpoint_create(tmp.path(), "x", None).unwrap();
+        for bad in ["", "../..", "not-hex", &"1".repeat(40)] {
+            assert!(
+                checkpoint_restore(tmp.path(), bad, Path::new("/tmp/x.json")).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn store_sidecar_roundtrip() {
+        let tmp = TempRepo::new();
+        tmp.commit_file("f.txt", "v1\n", "initial");
+        let store = tmp.path().join("app-store.json");
+        fs::write(&store, "{\"k\":1}").unwrap();
+        let cp = checkpoint_create(tmp.path(), "with-store", Some(&store)).unwrap();
+        fs::write(&store, "{\"k\":2}").unwrap();
+        let restored = checkpoint_restore(tmp.path(), &cp.id, &store).unwrap();
+        assert!(restored);
+        assert_eq!(fs::read_to_string(&store).unwrap(), "{\"k\":1}");
+    }
 
     #[test]
     fn diff_file_filters_single_path() {

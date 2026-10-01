@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — G4: Checkpoints
+
+Workspace snapshots before risky agent runs. `athena-git::checkpoint_create` commits the full workdir state (tracked, staged, untracked — `.gitignore`-honored) onto `refs/athena/checkpoints/<ts>-<seq>` without touching HEAD, the real index, or user stashes; the app store file is snapshotted alongside in `.git/athena-checkpoints/`. Keep-last-20 pruning (sortable id refs, same-second safe). `checkpoint_restore` force-checkouts the snapshot tree and re-aligns the index; HEAD never moves. Creation runs automatically at swarm launch (best-effort) and on demand via the **Create workspace checkpoint** palette command (Cmd+Shift+C); the Changes panel lists checkpoints with one-click **Restore** and reports whether the app-store snapshot will apply on next launch. 4 new crate tests (roundtrip, prune cap, id validation, store sidecar).
+
 ## 🚀 2026-10-01 — G3: Changes panel (diff review)
 
 New right-sidebar "Changes" tab: file list from `git_status`, unified per-file diffs (`git_diff_file`), per-hunk **Accept** (stages just that hunk into the index) / **Discard** (reverse-applies it in the working tree) via git2 patch reconstruction, per-file accept/discard too, staged view (read-only), and per-hunk comments written straight into the owning agent's PTY (`pty_write`). Target picker covers the workspace root and every active swarm agent's worktree. Powered by new `apply_hunk` (with textual patch reversal for discard) and `apply_file` in athena-git — all pathspecs validated, 5 new crate tests.

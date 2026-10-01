@@ -23,6 +23,7 @@ pub fn DiffPanel() -> Element {
     let mut selected_file = use_signal(|| None::<String>);
     let mut file_diff = use_signal(|| None::<Option<FileDiff>>);
     let mut comment_hunk = use_signal(|| None::<usize>);
+    let mut checkpoints = use_signal(Vec::<crate::stores::git::Checkpoint>::new);
     let mut comment_text = use_signal(String::new);
     let mut notice = use_signal(|| None::<String>);
 
@@ -100,6 +101,9 @@ pub fn DiffPanel() -> Element {
             } else {
                 file_diff.set(None);
             }
+            if let Ok(list) = tauri_bridge::git_checkpoint_list(&dir).await {
+                checkpoints.set(list);
+            }
         });
     });
 
@@ -155,6 +159,72 @@ pub fn DiffPanel() -> Element {
             if repo_root.read().is_none() && !target.is_empty() {
                 div { style: "padding: 16px; font-size: 11px; color: var(--textMuted);",
                     "Not a git repository (or the repository is outside the trusted roots)."
+                }
+            }
+
+            if repo_root.read().is_some() {
+                div { style: "padding: 6px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
+                    div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
+                        span { style: "font-family: var(--font-display); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; color: var(--accent);", "CHECKPOINTS" }
+                        button {
+                            class: "btn-ghost",
+                            style: "font-size: 10px; padding: 2px 8px;",
+                            title: "Snapshot the current uncommitted state",
+                            onclick: {
+                                let dir = target.clone();
+                                move |_| {
+                                    let dir = dir.clone();
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        let _ = tauri_bridge::git_checkpoint_create(&dir, "manual").await;
+                                        if let Ok(list) = tauri_bridge::git_checkpoint_list(&dir).await {
+                                            checkpoints.set(list);
+                                        }
+                                    });
+                                }
+                            },
+                            "+ Create"
+                        }
+                    }
+                    for cp in checkpoints.read().iter() {
+                        {
+                            let cp_id = cp.id.clone();
+                            let label = if cp.label.is_empty() { "(unlabeled)" } else { &cp.label };
+                            rsx! {
+                                div { key: "{cp_id}", style: "display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 10px; color: var(--textMuted);",
+                                    span { style: "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", title: "{cp_id}",
+                                        "{label} · {format_ts(cp.created_at)}"
+                                    }
+                                    button {
+                                        class: "btn-ghost",
+                                        style: "font-size: 9px; padding: 1px 6px; color: var(--warning);",
+                                        title: "Reset workdir + index to this snapshot (HEAD untouched)",
+                                        onclick: {
+                                            let dir = target.clone();
+                                            let cp_id = cp_id.clone();
+                                            move |_| {
+                                                let dir = dir.clone();
+                                                let cp_id = cp_id.clone();
+                                                wasm_bindgen_futures::spawn_local(async move {
+                                                    match tauri_bridge::git_checkpoint_restore(&dir, &cp_id).await {
+                                                        Ok(store_restored) => {
+                                                            if store_restored {
+                                                                notice.set(Some("Workspace restored. The app-store snapshot applies on next launch.".to_string()));
+                                                            } else {
+                                                                notice.set(Some("Workspace restored.".to_string()));
+                                                            }
+                                                            reload_panel(target_override.read().clone(), staged_view(), selected_file.read().clone(), files, file_diff);
+                                                        }
+                                                        Err(e) => notice.set(Some(format!("restore failed: {e:?}"))),
+                                                    }
+                                                });
+                                            }
+                                        },
+                                        "Restore"
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -445,4 +515,16 @@ async fn agent_pane_for(dir: &str) -> Option<String> {
         .iter()
         .find(|p| !matches!(p.agent_type, crate::types::workspace::AgentType::Shell))
         .map(|p| p.id.clone())
+}
+
+/// Compact absolute time for a checkpoint row.
+fn format_ts(secs: i64) -> String {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64((secs.max(0) * 1000) as f64));
+    format!(
+        "{:02}-{:02} {:02}:{:02}",
+        d.get_month() + 1,
+        d.get_date(),
+        d.get_hours(),
+        d.get_minutes()
+    )
 }

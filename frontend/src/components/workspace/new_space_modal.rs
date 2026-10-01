@@ -340,6 +340,15 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 return;
                                             }
 
+                                            // Checkpoint the workspace before agents touch it:
+                                            // a bad run is one click from reverted (Changes
+                                            // panel). Best-effort — skip outside repositories.
+                                            if let Err(e) = crate::tauri_bridge::git_checkpoint_create(&swarm_dir, "swarm launch").await {
+                                                web_sys::console::warn_1(
+                                                    &format!("[NewSpaceModal] pre-launch checkpoint failed: {e:?}").into(),
+                                                );
+                                            }
+
                                             // Worktree isolation: when the mission launches
                                             // inside a git repository, every agent pane gets
                                             // its own worktree on its own branch under
