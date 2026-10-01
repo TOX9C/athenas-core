@@ -80,6 +80,9 @@ pub struct SwarmAgent {
     /// git repository. `None` = the agent shares the workspace directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    /// Capability profile this agent was launched with (shell/network/MCP).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<crate::types::workspace::RoleCapabilities>,
     /// Backend name of the worktree (the `<name>` in the path above); used
     /// for teardown via `git_worktree_remove`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,6 +194,10 @@ pub fn parse_swarm_data(raw: &str) -> Result<SwarmData, serde_json::Error> {
                             .get("worktreeName")
                             .and_then(|v| v.as_str())
                             .map(ToOwned::to_owned),
+                        capabilities: item
+                            .get("capabilities")
+                            .cloned()
+                            .and_then(|v| serde_json::from_value(v).ok()),
                     })
                 })
                 .collect()

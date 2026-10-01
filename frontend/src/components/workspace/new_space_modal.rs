@@ -12,8 +12,8 @@ use dioxus::prelude::*;
 #[path = "new_space_helpers.rs"]
 mod new_space_helpers;
 use new_space_helpers::{
-    agent_role_str, apply_slot_value, generate_id, init_agent_rows, parse_agent_role, role_color,
-    slot_value, AgentRowState, AgentSlot,
+    agent_role_str, apply_slot_value, generate_id, init_agent_rows, parse_agent_role, role_caps_load,
+    role_caps_persist, role_color, slot_value, AgentRowState, AgentSlot,
 };
 
 const TAB_COLORS: &[&str] = &[
@@ -67,6 +67,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 custom_id: None,
                 custom_cmd: None,
                 label: None,
+                capabilities: None,
             },
             AgentSlot {
                 role: AgentRole::Builder,
@@ -74,6 +75,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 custom_id: None,
                 custom_cmd: None,
                 label: None,
+                capabilities: None,
             },
             AgentSlot {
                 role: AgentRole::Builder,
@@ -81,8 +83,27 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 custom_id: None,
                 custom_cmd: None,
                 label: None,
+                capabilities: None,
             },
         ]
+    });
+
+    // Hydrate per-role capability profiles once (persisted by the in-row
+    // toggles under `swarm_role_caps`).
+    let mut role_caps_loaded = use_signal(|| false);
+    use_effect(move || {
+        if role_caps_loaded() { return; }
+        role_caps_loaded.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            let profiles = role_caps_load().await;
+            if profiles.is_empty() { return; }
+            let mut s = slots.write();
+            for slot in s.iter_mut() {
+                if let Some(caps) = profiles.get(agent_role_str(&slot.role)) {
+                    slot.capabilities = Some(caps.clone());
+                }
+            }
+        });
     });
 
     // E2E helper: allow skipping validation by setting window.__athenaE2E = true
@@ -184,6 +205,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     id: generate_id(),
                                                     agent_type: row.agent_type.clone(),
                                                     cwd: None,
+                                                    capabilities: None,
                                                     custom_cmd: row.custom_cmd.clone(),
                                                     custom_agent_id: row.custom_id.clone(),
                                                     // Default to None so the pane pill's
@@ -280,6 +302,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 id: pane_id.clone(),
                                                 agent_type: slot.agent_type.clone(),
                                                 cwd: None,
+                                                capabilities: slot.capabilities.clone(),
                                                 custom_cmd: slot.custom_cmd.clone(),
                                                 custom_agent_id: slot.custom_id.clone(),
                                                 label: slot.label.clone(),
@@ -301,6 +324,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 last_action_at: now_ts,
                                                 worktree_path: None,
                                                 worktree_name: None,
+                                                capabilities: slot.capabilities.clone(),
                                             });
                                         }
 
@@ -816,7 +840,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     class: "btn-secondary btn-sm {add_disabled_class}",
                                     onclick: move |_| {
                                         if slots.read().len() < 10 {
-                                            slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude, custom_id: None, custom_cmd: None, label: None });
+                                            slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude, custom_id: None, custom_cmd: None, label: None, capabilities: None });
                                         }
                                     },
                                     "+ Add"
@@ -873,6 +897,92 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 option { value: "shell", "Shell" }
                                                 for ca in ui_state.read().custom_agents.clone() {
                                                     option { value: "custom${ca.id}", "{ca.alias}" }
+                                                }
+                                            }
+
+                                            // Capability toggles (persisted per role profile).
+                                            {
+                                                let caps = slots.read().get(idx).map(|s| s.capabilities.clone()).flatten();
+                                                let shell = caps.as_ref().map(|c| c.shell_str()).unwrap_or("full");
+                                let net = caps.as_ref().map(|c| c.network).unwrap_or(true);
+                                let mcp = caps.as_ref().map(|c| c.mcp_tools).unwrap_or(true);
+                                                rsx! {
+                                                    div { style: "display: flex; gap: 4px; align-items: center; flex-shrink: 0;",
+                                                        button {
+                                                            class: if shell == "full" { "icon-btn" } else { "icon-btn accent" },
+                                                            title: "Shell writes: full / read-only cwd / no exec",
+                                                            onclick: move |_| {
+                                                                let mut slots = slots;
+                                                                {
+                                                                    let updated = {
+                                                                        let mut guard = slots.write();
+                                                                        guard.get_mut(idx).map(|s| {
+                                                                            let caps = s.capabilities.get_or_insert_with(Default::default);
+                                                                            caps.shell = match caps.shell_str() {
+                                                                                "full" => crate::types::workspace::ShellPolicy::ReadOnly,
+                                                                                "readonly" => crate::types::workspace::ShellPolicy::None,
+                                                                                _ => crate::types::workspace::ShellPolicy::Full,
+                                                                            };
+                                                                            (s.role.clone(), caps.clone())
+                                                                        })
+                                                                    };
+                                                                    if let Some((role, caps)) = updated {
+                                                                        role_caps_persist(role, caps);
+                                                                    }
+                                                                }
+                                                            },
+                                                            match shell {
+                                                                "full" => "sh✓",
+                                                                "readonly" => "sh-",
+                                                                _ => "sh⌀",
+                                                            }
+                                                        }
+                                                        button {
+                                                            class: if net { "icon-btn" } else { "icon-btn active" },
+                                                            title: "Network access (proxy env + sandbox deny when off)",
+                                                            onclick: move |_| {
+                                                                let mut slots = slots;
+                                                                {
+                                                                    let updated = {
+                                                                        let mut guard = slots.write();
+                                                                        guard.get_mut(idx).map(|s| {
+                                                                            let caps = s.capabilities.get_or_insert_with(Default::default);
+                                                                            caps.network = !caps.network;;
+                                                                            (s.role.clone(), caps.clone())
+                                                                        })
+                                                                    };
+                                                                    if let Some((role, caps)) = updated {
+                                                                        role_caps_persist(role, caps);
+                                                                    }
+                                                                }
+                                                            },
+                                                            match net {
+                                                                true => "net✓",
+                                                                false => "net⌀",
+                                                            }
+                                                        }
+                                                        button {
+                                                            class: if mcp { "icon-btn" } else { "icon-btn active" },
+                                                            title: "Allow MCP tools declaration to this agent's CLI",
+                                                            onclick: move |_| {
+                                                                let mut slots = slots;
+                                                                {
+                                                                    let updated = {
+                                                                        let mut guard = slots.write();
+                                                                        guard.get_mut(idx).map(|s| {
+                                                                            let caps = s.capabilities.get_or_insert_with(Default::default);
+                                                                            caps.mcp_tools = !caps.mcp_tools;;
+                                                                            (s.role.clone(), caps.clone())
+                                                                        })
+                                                                    };
+                                                                    if let Some((role, caps)) = updated {
+                                                                        role_caps_persist(role, caps);
+                                                                    }
+                                                                }
+                                                            },
+                                                            if mcp { "mcp✓" } else { "mcp⌀" }
+                                                        }
+                                                    }
                                                 }
                                             }
 

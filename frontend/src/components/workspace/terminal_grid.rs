@@ -39,8 +39,9 @@ fn render_shell_pane(
     resume_id: Option<String>,
     custom_cmd: Option<String>,
     bypass_mode: Option<bool>,
+    capabilities: Option<crate::types::workspace::RoleCapabilities>,
 ) -> Element {
-    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id, custom_cmd, bypass_mode } }
+    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id, custom_cmd, bypass_mode, capabilities } }
 }
 
 #[cfg(not(feature = "xterm"))]
@@ -256,6 +257,7 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 custom_cmd: pane.custom_cmd.clone(),
                                                 custom_agent_id: pane.custom_agent_id.clone(),
                                                 bypass_mode: pane.bypass_mode,
+                                                capabilities: pane.capabilities.clone(),
                                                 label: pane.label.clone(),
                                                 fullscreen_pane_id: fullscreen_pane_id,
                                                 pill_drag: pill_drag,
@@ -351,6 +353,7 @@ struct PaneItemProps {
     custom_cmd: Option<String>,
     custom_agent_id: Option<String>,
     bypass_mode: Option<bool>,
+    capabilities: Option<crate::types::workspace::RoleCapabilities>,
     label: Option<String>,
     fullscreen_pane_id: Signal<Option<String>>,
     pill_drag: Signal<Option<crate::components::workspace::pill_drag::PillDrag>>,
@@ -1120,6 +1123,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
                         props.resume_id.clone(),
                         props.custom_cmd.clone(),
                         props.bypass_mode,
+                        props.capabilities.clone(),
                     ) }
                 } else {
                     TerminalPaneBody { pane_id: props.pane_id.clone() }

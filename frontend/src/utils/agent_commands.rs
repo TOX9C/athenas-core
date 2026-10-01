@@ -312,3 +312,113 @@ mod tests {
         assert!(v.contains(&format!("claude --model opus --resume {}", ID)));
     }
 }
+
+/// Build the spawn command for a scoped pane: prepend proxy/MCP env-strip
+/// when disallowed, wrap the agent in `sandbox-exec` (macOS-only; this app
+/// targets macOS) for the file/network restrictions.
+///
+/// If `sandbox-exec` is genuinely missing the spawn fails loudly, which is
+/// correct for a security boundary (no silent partial protection).
+pub fn wrap_with_capabilities(
+    cmd: String,
+    caps: Option<&crate::types::workspace::RoleCapabilities>,
+    cwd: &str,
+) -> String {
+    use crate::types::workspace::{RoleCapabilities, ShellPolicy};
+    let Some(c) = caps else { return cmd };
+    if c.shell == ShellPolicy::Full && c.network && c.mcp_tools {
+        return cmd;
+    }
+
+    // 1) env strip for proxy + MCP plumbing, best-effort.
+    let mut env_prefix = String::new();
+    if !c.network {
+        env_prefix.push_str(
+            "env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ",
+        );
+    }
+    if !c.mcp_tools {
+        env_prefix.push_str("ATHENA_NO_MCP=1 MCP_CONFIG_PATH=/dev/null ");
+    }
+
+    // 2) sandbox profile for fs/network restrictions.
+    let need_sandbox = c.shell != ShellPolicy::Full || !c.network;
+    if !need_sandbox {
+        return format!("{env_prefix}{cmd}");
+    }
+    let mut profile = String::from("(version 1) (allow default)");
+    if c.shell != ShellPolicy::Full {
+        // Deny writes under the agent's cwd (the read-only contract:
+        // agents may read/exec, never mutate the tree).
+        let escaped_cwd = cwd.replace('"', "\\\"");
+        profile.push_str(&format!(
+            " (deny file-write* (subpath \"{escaped_cwd}\"))"
+        ));
+        if c.shell == ShellPolicy::None {
+            profile.push_str(" (deny process-exec process-fork)");
+        }
+    }
+    if !c.network {
+        profile.push_str(" (deny network*)");
+    }
+    let inner = format!("{}sh -c {}", env_prefix, sh_quote(&cmd));
+    format!("sandbox-exec -p {} {}", sh_quote(&profile), inner)
+}
+
+/// POSIX single-quoted literal for strings inside a generated `sh -c`.
+fn sh_quote(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.'))
+    {
+        return s.to_string();
+    }
+    let escaped = s.replace('\'', "'\\''");
+    format!("'{escaped}'")
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+    use crate::types::workspace::{RoleCapabilities, ShellPolicy};
+
+    #[test]
+    fn default_caps_pass_through() {
+        let caps = RoleCapabilities::default();
+        assert_eq!(wrap_with_capabilities("claude".into(), Some(&caps), "/x"), "claude");
+        assert_eq!(wrap_with_capabilities("claude".into(), None, "/x"), "claude");
+    }
+
+    #[test]
+    fn network_off_strips_proxies_and_denies_network() {
+        let caps = RoleCapabilities { network: false, ..Default::default() };
+        let out = wrap_with_capabilities("claude".into(), Some(&caps), "/x");
+        assert!(out.contains("env -u HTTP_PROXY"), "{out}");
+        assert!(out.contains("deny network"), "{out}");
+        assert!(out.contains("sandbox-exec"), "{out}");
+    }
+
+    #[test]
+    fn readonly_denies_cwd_writes() {
+        let caps = RoleCapabilities { shell: ShellPolicy::ReadOnly, ..Default::default() };
+        let out = wrap_with_capabilities("claude".into(), Some(&caps), "/repo");
+        assert!(out.contains("file-write*"), "{out}");
+        assert!(out.contains("/repo"), "{out}");
+        assert!(!out.contains("network"), "{out}");
+    }
+
+    #[test]
+    fn none_mode_drops_exec_and_mcp() {
+        let caps = RoleCapabilities { shell: ShellPolicy::None, network: false, mcp_tools: false };
+        let out = wrap_with_capabilities("claude".into(), Some(&caps), "/r");
+        assert!(out.contains("process-exec"), "{out}");
+        assert!(out.contains("ATHENA_NO_MCP=1"), "{out}");
+    }
+
+    #[test]
+    fn quoting_preserves_inner_command() {
+        let caps = RoleCapabilities { shell: ShellPolicy::ReadOnly, ..Default::default() };
+        let out = wrap_with_capabilities("codex --model x".into(), Some(&caps), "/r");
+        assert!(out.contains("sh -c"), "{out}");
+        assert!(out.contains("'codex --model x'"), "{out}");
+    }
+}

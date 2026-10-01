@@ -418,6 +418,7 @@ pub fn XtermMount(
     resume_id: Option<String>,
     custom_cmd: Option<String>,
     bypass_mode: Option<bool>,
+    capabilities: Option<crate::types::workspace::RoleCapabilities>,
 ) -> Element {
     let mount_id = pane_id.clone();
     let listener_owner: Rc<String> =
@@ -516,11 +517,13 @@ pub fn XtermMount(
         let agent_type_for_spawn = agent_type.clone();
         let resume_id_for_spawn = resume_id.clone();
         let custom_cmd_for_spawn = custom_cmd.clone();
+        let capabilities = capabilities.clone();
         let agent_command_for_spawn = get_agent_command(
             &agent_type,
             custom_cmd.as_deref(),
             bypass_mode.unwrap_or(false),
-        );
+        )
+        .map(|cmd| crate::utils::agent_commands::wrap_with_capabilities(cmd, capabilities.as_ref(), &cwd));
         let mount_id_for_spawn = mount_id.clone();
         let spawn_cwd = if cwd.trim().is_empty() {
             "/tmp".to_string()

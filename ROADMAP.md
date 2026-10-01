@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — M5: Per-agent capability scoping for swarm
+
+Swarm slot rows gain capability toggles cycling on click: **sh✓/sh−/sh⌀** (shell: full → read-only-cwd → no-exec via additive `sandbox-exec` profiles `(deny file-write* (subpath "<cwd>"))` / `deny process-exec process-fork`), **net✓/net⌀** (best-effort: strips HTTP(S) proxy env + `deny network*`), **mcp✓/mcp⌀** (best-effort: `ATHENA_NO_MCP=1` + MCP_CONFIG_PATH=/dev/null markers; agent CLIs with their own config paths may ignore these — documented limit). Policies persist per role under `swarm_role_caps` in the KV store, are hydrated when the modal opens, and ride on every pane's `capabilities` field into the PTY spawn (`wrap_with_capabilities`). Tests cover pass-through, proxy strip, read-only, no-exec, quoting.
+
 ## 🚀 2026-10-01 — M4: Web tools (opt-in)
 
 `web_fetch` (tag-stripped GET ≤ 256 KB, 15 s timeout, max 3 redirects, http(s) only) and `web_search` (DuckDuckGo HTML, no API key; unknown provider names fall back to it) are exposed to the orchestrator's tool list **only when the Web tools toggle is on** (Settings → General, persisted as `web_tools.enabled`); otherwise the executor refuses them with a clear error and they never reach the model. Both implemented via a blocking reqwest client inside the existing `spawn_blocking` executor path — no new process spawns, no network access out of the app process.

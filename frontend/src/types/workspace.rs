@@ -62,6 +62,59 @@ pub enum GridTemplate {
     X4x4,
 }
 
+/// Shell write scope for a sandboxed agent (macOS `sandbox-exec`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellPolicy {
+    #[default]
+    Full,
+    /// Agent can read/execute but not write inside its working directory
+    /// subtree (best-effort macOS ACL via sandbox-exec).
+    ReadOnly,
+    /// Deny process-exec AND file writes under cwd (shell only, nothing runs).
+    None,
+}
+
+/// Per-agent capability profile applied to the spawned command.
+/// Default = full access (pre-M5 behavior); narrowing is opt-in per role.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoleCapabilities {
+    #[serde(default)]
+    pub shell: ShellPolicy,
+    /// When false: spawn strips proxy env AND requests a `deny network*`
+    /// sandbox profile (best-effort; apps reading their own proxy env may
+    /// still tunnel out).
+    #[serde(default = "default_true")]
+    pub network: bool,
+    /// When false: set `MCP_CONFIG_PATH=/dev/null` markers and strip known
+    /// MCP env from the child env (best-effort; CLIs with their own config
+    /// paths ignore it). Stored for preset round-tripping; Athena's own MCP
+    /// tools are governed by the app-level permission system already.
+    #[serde(default = "default_true")]
+    pub mcp_tools: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for RoleCapabilities {
+    /// All-allowed is the safe default: capabilities only ever tighten.
+    fn default() -> Self {
+        Self { shell: ShellPolicy::Full, network: true, mcp_tools: true }
+    }
+}
+
+impl RoleCapabilities {
+    pub fn shell_str(&self) -> &'static str {
+        match self.shell {
+            ShellPolicy::Full => "full",
+            ShellPolicy::ReadOnly => "readonly",
+            ShellPolicy::None => "none",
+        }
+    }
+}
+
 /// Configuration for a single pane within a space.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PaneConfig {
@@ -71,6 +124,10 @@ pub struct PaneConfig {
     /// (set for swarm agents that run in an isolated git worktree).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Capability scoping for this pane's agent (swarm role policy).
+    /// `None` = full access (existing behavior).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<RoleCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_cmd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
