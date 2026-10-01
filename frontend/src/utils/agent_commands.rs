@@ -12,21 +12,32 @@ use crate::utils::agent_display::{get_agent_color_str, get_agent_label_str};
 const CLAUDE_SKIP_PERMISSIONS_FLAG: &str = "--dangerously-skip-permissions";
 
 /// Get the CLI command for an agent type.
+/// Quote one literal as a single-quoted POSIX shell argument.
+fn shq(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\"'\"'"))
+}
+
 pub fn get_agent_command(
     agent_type: &AgentType,
     custom_cmd: Option<&str>,
     bypass: bool,
+    model: Option<&str>,
 ) -> Option<String> {
+    // The model string travels to the CLI verbatim; force-quote it.
+    let model_flag = model
+        .filter(|m| !m.trim().is_empty())
+        .map(|m| format!(" --model {}", shq(m.trim())))
+        .unwrap_or_default();
     match agent_type {
         AgentType::Claude => {
             if bypass {
-                Some(format!("claude {}", CLAUDE_SKIP_PERMISSIONS_FLAG))
+                Some(format!("claude {}{}", CLAUDE_SKIP_PERMISSIONS_FLAG, model_flag))
             } else {
-                Some("claude".to_string())
+                Some(format!("claude{}", model_flag))
             }
         }
-        AgentType::Codex => Some("codex".to_string()),
-        AgentType::Opencode => Some("opencode".to_string()),
+        AgentType::Codex => Some(format!("codex{}", model_flag)),
+        AgentType::Opencode => Some(format!("opencode{}", model_flag)),
         AgentType::Gemini => Some("gemini".to_string()),
         AgentType::Qwen => Some("qwen-code".to_string()),
         AgentType::Aider => Some("aider".to_string()),
@@ -165,23 +176,23 @@ mod tests {
     #[test]
     fn built_in_agent_commands_cover_omp_and_bypass() {
         assert_eq!(
-            get_agent_command(&AgentType::Omp, None, false),
+            get_agent_command(&AgentType::Omp, None, false, None),
             Some("omp".to_string())
         );
         assert_eq!(
-            get_agent_command(&AgentType::Claude, None, true),
+            get_agent_command(&AgentType::Claude, None, true, None),
             Some("claude --dangerously-skip-permissions".to_string())
         );
-        assert_eq!(get_agent_command(&AgentType::Shell, None, false), None);
+        assert_eq!(get_agent_command(&AgentType::Shell, None, false, None), None);
     }
 
     #[test]
     fn custom_agent_command_is_used_without_duplicate_launch() {
         assert_eq!(
-            get_agent_command(&AgentType::Custom, Some("my-agent --interactive"), false),
+            get_agent_command(&AgentType::Custom, Some("my-agent --interactive"), false, None),
             Some("my-agent --interactive".to_string())
         );
-        assert_eq!(get_agent_command(&AgentType::Custom, None, false), None);
+        assert_eq!(get_agent_command(&AgentType::Custom, None, false, None), None);
     }
 
     #[test]
@@ -324,7 +335,7 @@ pub fn wrap_with_capabilities(
     caps: Option<&crate::types::workspace::RoleCapabilities>,
     cwd: &str,
 ) -> String {
-    use crate::types::workspace::{RoleCapabilities, ShellPolicy};
+    use crate::types::workspace::ShellPolicy;
     let Some(c) = caps else { return cmd };
     if c.shell == ShellPolicy::Full && c.network && c.mcp_tools {
         return cmd;

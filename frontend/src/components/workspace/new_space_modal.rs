@@ -12,8 +12,9 @@ use dioxus::prelude::*;
 #[path = "new_space_helpers.rs"]
 mod new_space_helpers;
 use new_space_helpers::{
-    agent_role_str, apply_slot_value, generate_id, init_agent_rows, parse_agent_role, role_caps_load,
-    role_caps_persist, role_color, slot_value, AgentRowState, AgentSlot,
+    agent_role_str, agent_type_str, apply_slot_value, generate_id, init_agent_rows, parse_agent_role,
+    parse_agent_type, role_caps_load, role_caps_persist, role_color, slot_value, AgentRowState,
+    AgentSlot,
 };
 
 const TAB_COLORS: &[&str] = &[
@@ -67,6 +68,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 custom_id: None,
                 custom_cmd: None,
                 label: None,
+                model: None,
                 capabilities: None,
             },
             AgentSlot {
@@ -75,6 +77,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 custom_id: None,
                 custom_cmd: None,
                 label: None,
+                model: None,
                 capabilities: None,
             },
             AgentSlot {
@@ -83,6 +86,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 custom_id: None,
                 custom_cmd: None,
                 label: None,
+                model: None,
                 capabilities: None,
             },
         ]
@@ -109,6 +113,25 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     // Plan gate: default ON for swarm missions — before any execution, the
     // orchestrator drafts a plan the user can edit and must approve.
     let mut plan_gate = use_signal(|| true);
+
+    // Mission presets (built-ins + user presets from kv), and the active one.
+    let mut presets = use_signal(Vec::<crate::utils::swarm_presets::SwarmPreset>::new);
+    let mut presets_loaded = use_signal(|| false);
+    let mut preset_name_input = use_signal(String::new);
+    use_effect(move || {
+        if presets_loaded() { return; }
+        presets_loaded.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            let raw = crate::tauri_bridge::store_get(crate::utils::swarm_presets::SWARM_PRESETS_KEY)
+                .await
+                .unwrap_or_default();
+            let custom: Vec<crate::utils::swarm_presets::SwarmPreset> =
+                if raw.trim().is_empty() { Vec::new() } else {
+                    serde_json::from_str(&raw).unwrap_or_default()
+                };
+            presets.set(crate::utils::swarm_presets::merge_with_builtin(custom));
+        });
+    });
     let mut plan_phase = use_signal(|| PlanPhase::Idle);
     let mut plan_draft: Signal<Option<PlanDraft>> = use_signal(|| None);
     let mut plan_error = use_signal(String::new);
@@ -367,7 +390,7 @@ Plan (approved):
                                                 label: slot.label.clone(),
                                                 bypass_mode: None,
                                                 project_name: None,
-                                                model_name: None,
+                                                model_name: slot.model.clone(),
                                                 resume_id: None,
                                                 resume_cmd: None,
                                                 resume_dismissed: None,
@@ -907,6 +930,117 @@ Plan (approved):
                         div {
                             style: "display: flex; flex-direction: column; gap: 10px;",
 
+                            // Mission presets (O2) — apply a team template or
+                            // save the current one.
+                            {
+                                let preset_list = presets.read().clone();
+                                rsx! {
+                                    div {
+                                        style: "display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
+                                        span { style: "font-family: var(--font-display); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; color: var(--textDim);", "PRESET" }
+                                        select {
+                                            style: "flex: 1; min-width: 0; font-size: var(--text-xs); padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bgTertiary); color: var(--text);",
+                                            onchange: move |e| {
+                                                let id = e.value();
+                                                if id.is_empty() { return; }
+                                                let Some(preset) = presets.read().iter().find(|p| p.id == id).cloned() else { return };
+                                                slots.set(preset.slots.iter().map(|slot| {
+                                                    AgentSlot {
+                                                        role: parse_agent_role(&slot.role),
+                                                        agent_type: parse_agent_type(&slot.agent_type),
+                                                        custom_id: None,
+                                                        custom_cmd: None,
+                                                        label: None,
+                                                        model: slot.model.clone(),
+                                                        capabilities: slot.capabilities.clone(),
+                                                    }
+                                                }).collect());
+                                            },
+                                            option { value: "", "Apply a preset…" }
+                                            for p in preset_list.iter() {
+                                                option { key: "{p.id}", value: "{p.id}", "{p.name}" }
+                                            }
+                                        }
+                                        input {
+                                            style: "width: 8rem; font-size: var(--text-xs); padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bgTertiary); color: var(--text);",
+                                            placeholder: "Name…",
+                                            value: "{preset_name_input}",
+                                            oninput: move |e| preset_name_input.set(e.value()),
+                                        }
+                                        button {
+                                            class: "btn-ghost",
+                                            style: "font-size: 10px; padding: 3px 8px;",
+                                            disabled: preset_name_input.read().trim().is_empty(),
+                                            onclick: move |_| {
+                                                let name = preset_name_input.read().trim().to_string();
+                                                if name.is_empty() { return; }
+                                                preset_name_input.set(String::new());
+                                                let slots_snapshot = slots.read().clone();
+                                                spawn(async move {
+                                                    let preset = crate::utils::swarm_presets::SwarmPreset {
+                                                        id: format!("user-{}", crate::utils::time::now_ms()),
+                                                        name,
+                                                        slots: slots_snapshot
+                                                            .iter()
+                                                            .map(|slot| crate::utils::swarm_presets::PresetSlot {
+                                                                role: agent_role_str(&slot.role).to_string(),
+                                                                agent_type: agent_type_str(&slot.agent_type).to_string(),
+                                                                model: slot.model.clone(),
+                                                                capabilities: slot.capabilities.clone(),
+                                                            })
+                                                            .collect(),
+                                                    };
+                                                    let raw = crate::tauri_bridge::store_get(crate::utils::swarm_presets::SWARM_PRESETS_KEY)
+                                                        .await
+                                                        .unwrap_or_default();
+                                                    let mut custom: Vec<crate::utils::swarm_presets::SwarmPreset> =
+                                                        if raw.trim().is_empty() { Vec::new() } else {
+                                                            serde_json::from_str(&raw).unwrap_or_default()
+                                                        };
+                                                    custom.push(preset.clone());
+                                                    custom.truncate(crate::utils::swarm_presets::MAX_USER_PRESETS);
+                                                    let _ = crate::tauri_bridge::store_set(
+                                                        crate::utils::swarm_presets::SWARM_PRESETS_KEY,
+                                                        &serde_json::to_string(&custom).unwrap_or_default(),
+                                                    )
+                                                    .await;
+                                                    presets.set(crate::utils::swarm_presets::merge_with_builtin(custom));
+                                                });
+                                            },
+                                            "Save preset"
+                                        }
+                                        button {
+                                            class: "btn-ghost",
+                                            style: "font-size: 10px; padding: 3px 8px; color: var(--error);",
+                                            title: "Delete the selected custom preset",
+                                            onclick: move |_| {
+                                                // Match by name — the field holds the preset name.
+                                                let name = preset_name_input.read().trim().to_string();
+                                                if name.is_empty() { return; }
+                                                preset_name_input.set(String::new());
+                                                spawn(async move {
+                                                    let raw = crate::tauri_bridge::store_get(crate::utils::swarm_presets::SWARM_PRESETS_KEY)
+                                                        .await
+                                                        .unwrap_or_default();
+                                                    let mut custom: Vec<crate::utils::swarm_presets::SwarmPreset> =
+                                                        if raw.trim().is_empty() { Vec::new() } else {
+                                                            serde_json::from_str(&raw).unwrap_or_default()
+                                                        };
+                                                    custom.retain(|p| p.name != name && p.id != name);
+                                                    let _ = crate::tauri_bridge::store_set(
+                                                        crate::utils::swarm_presets::SWARM_PRESETS_KEY,
+                                                        &serde_json::to_string(&custom).unwrap_or_default(),
+                                                    )
+                                                    .await;
+                                                    presets.set(crate::utils::swarm_presets::merge_with_builtin(custom));
+                                                });
+                                            },
+                                            "Delete"
+                                        }
+                                    }
+                                }
+                            }
+
                             div {
                                 style: "display: flex; align-items: center; justify-content: space-between;",
                                 label {
@@ -917,7 +1051,7 @@ Plan (approved):
                                     class: "btn-secondary btn-sm {add_disabled_class}",
                                     onclick: move |_| {
                                         if slots.read().len() < 10 {
-                                            slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude, custom_id: None, custom_cmd: None, label: None, capabilities: None });
+                                            slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude, custom_id: None, custom_cmd: None, label: None, model: None, capabilities: None });
                                         }
                                     },
                                     "+ Add"
@@ -1061,6 +1195,20 @@ Plan (approved):
                                                         }
                                                     }
                                                 }
+                                            }
+
+                                            // Per-slot CLI model (blank = CLI default).
+                                            input {
+                                                style: "width: 72px; font-size: 10px; padding: 2px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bgTertiary); color: var(--text); font-family: var(--font-mono);",
+                                                placeholder: "model",
+                                                title: "CLI --model flag passed at spawn",
+                                                value: slot.model.clone().unwrap_or_default(),
+                                                oninput: move |e| {
+                                                    if let Some(s) = slots.write().get_mut(idx) {
+                                                        let v = e.value();
+                                                        s.model = if v.trim().is_empty() { None } else { Some(v.trim().to_string()) };
+                                                    }
+                                                },
                                             }
 
                                             div { style: "flex: 1;" }

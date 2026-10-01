@@ -60,6 +60,8 @@ pub(super) struct AgentSlot {
     pub(super) custom_id: Option<String>,
     pub(super) custom_cmd: Option<String>,
     pub(super) label: Option<String>,
+    /// Selected CLI model for this slot (None = agent default).
+    pub(super) model: Option<String>,
     /// Per-role capability policy applied to the spawned agent command
     /// (`None` = full access — pre-M5 behavior).
     pub(super) capabilities: Option<crate::types::workspace::RoleCapabilities>,

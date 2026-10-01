@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — O2: Swarm presets
+
+Mission templates: three built-ins ("Feature build", "Bug hunt", "Refactor + tests") ship in `utils/swarm_presets.rs`; each records per-slot role / agent CLI / `--model` flag / capability profile. The swarm modal gains a PRESET strip: select-to-apply, name+Save-preset persistence (KV `swarm_presets`, capped at 32 custom), and Delete. Applying a preset replaces the slot list; per-slot CLI model (`--model '<name>'`, shell-quoted) now flows through pane spawn thanks to `get_agent_command`'s new `model` parameter, consumed per-pane from `PaneConfig.model_name` in `render_shell_pane` → `XtermMount`.
+
 ## 🚀 2026-10-01 — O1: Plan gate before swarm launch
 
 Swarm missions default to drafting-first: "Draft plan & review" calls Athena (hidden scratch session, plan-gate prompt, `create_execution_plan` only, no dispatch) and shows the resulting plan as an editable card inline in the modal (steps editable, add/remove), with explicit "Approve & run" — only approval persists the plan into the plan manager (`plan_create`) and merges its steps into the mission goal every agent receives. Cancel while generating aborts the stream. The gate is a checkbox (`Review plan before launching`, default on; unchecking skip-launches immediately).

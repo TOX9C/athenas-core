@@ -16,4 +16,5 @@ pub mod session;
 pub mod settings_migration;
 pub mod space_counts;
 pub mod startup_bootstrap;
+pub mod swarm_presets;
 pub mod time;
