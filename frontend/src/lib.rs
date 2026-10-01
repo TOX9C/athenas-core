@@ -156,6 +156,7 @@ pub fn App() -> Element {
     provide_athena_store();
     provide_command_store();
     provide_notification_store();
+    stores::agent_queue::provide_agent_queue_store();
     stores::git::provide_git_store();
     provide_notification_overlay_store();
     provide_modal_overlay_store();

@@ -1,4 +1,5 @@
 pub mod agent_output;
+pub mod agent_queue;
 pub mod agent_status;
 pub mod athena;
 pub mod command;

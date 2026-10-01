@@ -1,5 +1,13 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — M2: Per-agent message queues
+
+Typing while an agent is busy no longer dead-ends: per-scope message queues with inline reorder (↑/↓) and remove (×) chips, capped at 50 per pane (oldest evicts). The Athena chat composer queues mid-turn Enter presses and auto-sends in FIFO order when the stream completes; the terminal agent status bar gets a queue composer that writes straight through when the agent is idle and queues while it's working — OSC 6337-driven status transitions (Thinking/Working → anything) drain the queue into the pane's PTY in order. Store: `stores/agent_queue.rs` (HashMap of VecDeques, 4 unit tests: FIFO order, reorder/remove, eviction cap, empty-scope safety).
+
+## 🚀 2026-10-01 — M1: Model ledger
+
+The orchestrator's streaming path now parses provider usage (`stream_options: include_usage` for OpenAI-compatible, `message_start`/`message_delta` usage blocks for Anthropic) and emits a `Usage` stream event per tool round with the **resolved** model id and real input/output token counts — nothing fabricated; providers without usage reporting emit no event. The chat bubble gains a per-turn badge (`model · in/out · $est`), and a `model_mismatch` flag warns (warning color) when the provider serves a different model than requested. Session turns are folded into a persisted per-session ledger (`chat_usage` KV key, LRU-capped at 200 rows); Settings → Athena gains a pricing table editor (JSON rows, longest-prefix match, built-in defaults) plus an aggregate usage table with total estimated spend.
+
 ## 🚀 2026-10-01 — G4: Checkpoints
 
 Workspace snapshots before risky agent runs. `athena-git::checkpoint_create` commits the full workdir state (tracked, staged, untracked — `.gitignore`-honored) onto `refs/athena/checkpoints/<ts>-<seq>` without touching HEAD, the real index, or user stashes; the app store file is snapshotted alongside in `.git/athena-checkpoints/`. Keep-last-20 pruning (sortable id refs, same-second safe). `checkpoint_restore` force-checkouts the snapshot tree and re-aligns the index; HEAD never moves. Creation runs automatically at swarm launch (best-effort) and on demand via the **Create workspace checkpoint** palette command (Cmd+Shift+C); the Changes panel lists checkpoints with one-click **Restore** and reports whether the app-store snapshot will apply on next launch. 4 new crate tests (roundtrip, prune cap, id validation, store sidecar).

@@ -138,6 +138,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         // athena:stream — request-scoped text and lifecycle events. Every
         // mutation is guarded by the active request ID in AthenaState.
         let mut stream_store = store;
+        let stream_store_for_queue = store;
         if let Ok(u) = tauri_bridge::listen("athena:stream", move |payload: String| {
             let Ok(event) = serde_json::from_str::<serde_json::Value>(&payload) else {
                 return;
@@ -186,6 +187,8 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                 "completed" => {
                     let final_text = event.get("text").and_then(|v| v.as_str());
                     stream_store.write().finish_stream(request_id, final_text);
+                    // Mid-turn queued messages send once the stream finishes.
+                    drain_chat_queue(stream_store_for_queue);
                 }
                 "error" => {
                     let message = event
@@ -813,5 +816,16 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                 AthenaInput {}
             }
         }
+    }
+}
+
+/// Turn finished: deliver the next queued chat message, if any.
+fn drain_chat_queue(mut athena: Signal<crate::stores::athena::AthenaState>) {
+    let mut queue = crate::stores::agent_queue::use_agent_queue_store();
+    let next = queue
+        .write()
+        .take_next(crate::components::athena::athena_input::CHAT_QUEUE_SCOPE);
+    if let Some(msg) = next {
+        crate::components::athena::athena_input::submit_message_text_public(&msg.text, &mut athena);
     }
 }

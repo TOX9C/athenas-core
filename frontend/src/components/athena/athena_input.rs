@@ -1,3 +1,6 @@
+/// Queue scope for the Athena chat composer (terminal panes key by pane id).
+pub(crate) const CHAT_QUEUE_SCOPE: &str = "chat";
+
 use crate::components::shared::icon::{IconClose, IconMic};
 use crate::stores::athena::{use_athena_store, AthenaMessage, AthenaState, MessageRole};
 use crate::stores::ui::use_ui_store;
@@ -198,6 +201,11 @@ fn autosize_composer() {
 
 /// Add the user message to the log and start the streaming request. Shared by
 /// the composer, the empty-state quick prompts, and the inline retry action.
+/// submit_message_text wraps the real submit; exposed for the queue drain.
+pub(crate) fn submit_message_text_public(text: &str, athena_state: &mut Signal<AthenaState>) {
+    submit_message_text(text, athena_state)
+}
+
 pub(crate) fn submit_message_text(text: &str, athena_state: &mut Signal<AthenaState>) {
     if text.trim().is_empty() {
         return;
@@ -326,6 +334,7 @@ pub fn AthenaInput() -> Element {
     let mut athena_state = use_athena_store();
     let mut ui_state = use_ui_store();
     let mut input_text = use_signal(String::new);
+    let mut agent_queue = crate::stores::agent_queue::use_agent_queue_store();
     let mut input_history = use_signal(Vec::<String>::new);
     let mut history_idx = use_signal(|| None::<usize>);
     // Voice input state: recording toggle + busy/error lines. Recording is
@@ -430,6 +439,62 @@ pub fn AthenaInput() -> Element {
                 }
             }
 
+            // Queued messages deliver when the current turn finishes;
+            // reorder/remove inline.
+            {
+                let queued = agent_queue.read().queued(CHAT_QUEUE_SCOPE);
+                if queued.is_empty() {
+                    rsx! {}
+                } else {
+                    rsx! {
+                        div { style: "display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; padding: 8px; border: 1px dashed var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
+                            span { style: "font-size: 10px; color: var(--textDim); font-weight: 600; letter-spacing: 0.05em;", "QUEUED ({queued.len()}) — sent when the turn ends" }
+                            for msg in queued.iter() {
+                                {
+                                    let id = msg.id.clone();
+                                    let text = msg.text.clone();
+                                    rsx! {
+                                        div { key: "{id}", style: "display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text);",
+                                            span { style: "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", "{text}" }
+                                            button {
+                                                class: "btn-ghost",
+                                                style: "font-size: 10px; padding: 1px 6px;",
+                                                title: "Move up in queue",
+                                                onclick: {
+                                                    let id = id.clone();
+                                                    move |_| agent_queue.write().move_up(CHAT_QUEUE_SCOPE, &id)
+                                                },
+                                                "↑"
+                                            }
+                                            button {
+                                                class: "btn-ghost",
+                                                style: "font-size: 10px; padding: 1px 6px;",
+                                                title: "Move down in queue",
+                                                onclick: {
+                                                    let id = id.clone();
+                                                    move |_| agent_queue.write().move_down(CHAT_QUEUE_SCOPE, &id)
+                                                },
+                                                "↓"
+                                            }
+                                            button {
+                                                class: "btn-ghost",
+                                                style: "font-size: 10px; padding: 1px 6px; color: var(--error);",
+                                                title: "Remove from queue",
+                                                onclick: {
+                                                    let id = id.clone();
+                                                    move |_| agent_queue.write().remove(CHAT_QUEUE_SCOPE, &id)
+                                                },
+                                                "×"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Composer — a rounded field that grows with its content. The
             // toolbar row stays fixed so nothing jumps while streaming.
             div {
@@ -450,12 +515,18 @@ pub fn AthenaInput() -> Element {
                         autosize_composer();
                     },
                     onkeydown: move |e: KeyboardEvent| {
-                        // Ignore Enter while blocked — there's nowhere to send.
-                        if is_blocked || is_loading { return; }
+                        if is_blocked { return; }
                         if e.key() == Key::Enter && !e.modifiers().contains(Modifiers::SHIFT) {
                             e.prevent_default();
                             let text = input_text.read().clone();
-                            if !text.trim().is_empty() {
+                            if text.trim().is_empty() { return; }
+                            if is_loading {
+                                // Mid-turn typing queues for delivery when the
+                                // agent returns to the prompt (see the panel's
+                                // stream-finished handler).
+                                agent_queue.write().enqueue(CHAT_QUEUE_SCOPE, &text);
+                                input_text.set(String::new());
+                            } else {
                                 submit_message(&text, &mut athena_state, &mut input_text, &mut input_history, &mut history_idx);
                             }
                         } else if e.key() == Key::ArrowUp {
