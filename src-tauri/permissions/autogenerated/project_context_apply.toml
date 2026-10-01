@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-project-context-apply"
+description = "Enables the project_context_apply command without any pre-configured scope."
+commands.allow = ["project_context_apply"]
+
+[[permission]]
+identifier = "deny-project-context-apply"
+description = "Denies the project_context_apply command without any pre-configured scope."
+commands.deny = ["project_context_apply"]

@@ -106,6 +106,10 @@ pub struct AthenaOrchestrator {
     plan_manager: Option<Arc<crate::plan_manager::PlanManager>>,
     /// Reference to the agent comms service for reading active sessions.
     agent_comms: Option<Arc<crate::agent_comms::AgentComms>>,
+    /// Discovered project-convention content for the active workspace
+    /// (AGENTS.md et al., per the user's settings selection). Refreshed when
+    /// the workspace changes or settings toggles flip.
+    project_context: Arc<parking_lot::Mutex<Option<String>>>,
     /// The name of the currently active workspace (updated at runtime).
     workspace_name: Arc<parking_lot::Mutex<Option<String>>>,
     /// Optional session store for persisting conversations.
@@ -178,6 +182,7 @@ impl AthenaOrchestrator {
             output_buffer: None,
             plan_manager: None,
             agent_comms: None,
+            project_context: Arc::new(parking_lot::Mutex::new(None)),
             workspace_name: Arc::new(parking_lot::Mutex::new(None)),
             session_store: None,
             kv_store: None,
@@ -227,6 +232,7 @@ impl AthenaOrchestrator {
             plan_manager: Some(plan_manager),
             agent_comms: Some(agent_comms),
             workspace_name: Arc::new(parking_lot::Mutex::new(None)),
+            project_context: Arc::new(parking_lot::Mutex::new(None)),
             session_store,
             kv_store,
             snapshot_cache: parking_lot::Mutex::new(None),
@@ -270,6 +276,7 @@ impl AthenaOrchestrator {
             stream_coalescer: crate::types::StreamDeltaCoalescer::default(),
             tool_event_sender: Arc::new(parking_lot::Mutex::new(Some(tool_event_sender))),
             auto_save_task: Arc::new(parking_lot::Mutex::new(None)),
+            project_context: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -298,6 +305,12 @@ impl AthenaOrchestrator {
     }
 
     /// Set the LLM provider configuration.
+    /// Attach the workspace's project-convention content (AGENTS.md etc.)
+    /// to every chat turn of this session. `None` clears it.
+    pub fn set_project_context(&self, context: Option<String>) {
+        *self.project_context.lock() = context;
+    }
+
     pub fn set_provider_config(&self, config: ProviderConfig) {
         *self.provider_config.lock() = Some(config);
     }
@@ -352,7 +365,20 @@ impl AthenaOrchestrator {
         // for this request. Keeping it out of the persisted user text means the
         // message history doesn't accumulate stale, conflicting snapshots — the
         // model always sees exactly one, current, snapshot.
-        let snapshot = self.build_app_state_snapshot();
+        let snapshot = {
+            let mut snapshot = self.build_app_state_snapshot();
+            if let Some(ctx) = self.project_context.lock().clone() {
+                if !ctx.trim().is_empty() {
+                    snapshot.push_str("
+
+## Project conventions
+
+");
+                    snapshot.push_str(&ctx);
+                }
+            }
+            snapshot
+        };
 
         let (provider, api_key, model, system_prompt, base_url) = {
             let guard = self.provider_config.lock();

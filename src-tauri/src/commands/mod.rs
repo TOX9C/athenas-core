@@ -10,6 +10,7 @@ fn html_escape(s: &str) -> String {
 mod agent_notify;
 mod agents;
 mod athena;
+pub(crate) mod context;
 mod browser;
 pub mod caps;
 mod diagnostics;
@@ -54,6 +55,7 @@ pub use browser::{
 };
 pub use diagnostics::diagnostics_export;
 pub use drop::pty_stage_drop_file;
+pub use context::{project_context_apply, project_context_list};
 pub use filesystem::{
     fs_exists, fs_list_dir, fs_read_file, fs_read_file_as_base64, fs_search_files,
     fs_show_image_dialog, fs_show_open_dialog, fs_write_file,

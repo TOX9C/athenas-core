@@ -102,6 +102,9 @@ pub(super) fn GeneralSettings() -> Element {
             }
         }
 
+        GroupLabel { label: "Project context" }
+        ProjectContextSection {}
+
         GroupLabel { label: "Swarm" }
 
         /* ── Worktree cleanup label + toggle row ── */
@@ -1248,6 +1251,120 @@ pub(super) fn MobileMirrorSettings() -> Element {
                 }
             }
             p { class: "mobile-pairing-warning", "The link grants access to this desktop while Mobile Mirror is enabled. Treat it like a password; do not post it publicly." }
+        }
+    }
+}
+
+
+/// Convention files (AGENTS.md, CLAUDE.md, .cursorrules, .goosehints)
+/// discovered in the active workspace, with per-file chat/swarm toggles.
+#[component]
+fn ProjectContextSection() -> Element {
+    let workspace = crate::stores::workspace::use_workspace_store();
+    let mut files = use_signal(Vec::<serde_json::Value>::new);
+    let mut loaded = use_signal(|| false);
+    let active_dir = workspace
+        .read()
+        .active_space_id
+        .as_ref()
+        .and_then(|id| {
+            workspace
+                .read()
+                .spaces
+                .iter()
+                .find(|s| &s.id == id)
+                .map(|s| s.dir.clone())
+        });
+
+    use_effect(move || {
+        if loaded() {
+            return;
+        }
+        loaded.set(true);
+        if let Some(dir) = active_dir.clone() {
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(raw) = crate::tauri_bridge::project_context_list(&dir).await {
+                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<serde_json::Value>>(raw) {
+                        files.set(list);
+                    }
+                }
+            });
+        }
+    });
+
+    let mut toggle = move |path: String, scope: &'static str, next: bool| {
+        let path_for_spawn = path.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let key = "project_context.selection";
+            let mut sel: serde_json::Value = crate::tauri_bridge::store_get(key)
+                .await
+                .ok()
+                .and_then(|v| serde_json::from_str(&v).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            let entry = sel
+                .as_object_mut()
+                .map(|m| {
+                    m.entry(path_for_spawn.clone())
+                        .or_insert_with(|| serde_json::json!({"chat": true, "swarm": true}))
+                })
+                .cloned()
+                .and_then(|e| e.as_object().cloned());
+            if let Some(mut entry) = entry {
+                entry.insert(scope.to_string(), serde_json::Value::from(next));
+                sel[path_for_spawn.clone()] = serde_json::Value::Object(entry);
+                let _ = crate::tauri_bridge::store_set(key, &sel.to_string()).await;
+            }
+        });
+        // optimistic refresh of local list
+        let mut next_files = files.read().clone();
+        if let Some(f) = next_files.iter_mut().find(|f| {
+            f.get("path").and_then(|v| v.as_str()) == Some(path.as_str())
+        }) {
+            if let Some(obj) = f.as_object_mut() {
+                obj.insert(scope.to_string(), serde_json::Value::from(next));
+            }
+        }
+        files.set(next_files);
+    };
+
+    if files.read().is_empty() {
+        rsx! {
+            span { style: "font-size: 11px; color: var(--textDim);", "No AGENTS.md/CLAUDE.md/.cursorrules/.goosehints in the active workspace (searched up to your home directory)." }
+        }
+    } else {
+        rsx! {
+            for f in files.read().iter() {
+                {
+                    let id = f.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let bytes = f.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let chat_on = f.get("chat").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let swarm_on = f.get("swarm").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let id_chat = id.clone();
+                    let id_swarm = id.clone();
+                    rsx! {
+                        div { key: "{id}", style: "display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 6px; background: var(--bgSecondary);",
+                            span { style: "flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis;", title: "{id}", "{name} · {bytes} B" }
+                            label { style: "display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--textMuted);",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: chat_on,
+                                    onchange: move |e| toggle(id_chat.clone(), "chat", e.checked()),
+                                }
+                                "chat"
+                            }
+                            label { style: "display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--textMuted);",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: swarm_on,
+                                    onchange: move |e| toggle(id_swarm.clone(), "swarm", e.checked()),
+                                }
+                                "swarm"
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

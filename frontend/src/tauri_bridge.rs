@@ -222,6 +222,22 @@ pub async fn git_worktree_remove(path: &str, name: &str) -> TauriResult<()> {
     .await
 }
 
+pub async fn project_context_list(path: &str) -> TauriResult<JsValue> {
+    invoke(
+        "project_context_list",
+        &serde_json::json!({ "path": path }).to_string(),
+    )
+    .await
+}
+
+pub async fn project_context_apply(path: &str) -> TauriResult<JsValue> {
+    invoke(
+        "project_context_apply",
+        &serde_json::json!({ "path": path }).to_string(),
+    )
+    .await
+}
+
 pub async fn git_diff_file(
     path: &str,
     staged: bool,

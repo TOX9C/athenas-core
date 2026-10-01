@@ -39,6 +39,8 @@ const COMMANDS: &[&str] = &[
     "git_diff",
     "git_worktree_add",
     "git_worktree_remove",
+    "project_context_list",
+    "project_context_apply",
     "git_diff_file",
     "git_apply_hunk",
     "git_apply_file",

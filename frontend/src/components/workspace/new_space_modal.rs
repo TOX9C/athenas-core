@@ -407,6 +407,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     return;
                                                 }
                                             }
+                                            // Copy opted-in project-convention files into each
+                                            // worktree so agent CLIs pick them up natively.
+                                            let _ = crate::tauri_bridge::project_context_apply(&swarm_dir).await;
 
                                             let space = Space {
                                                 id: generate_id(),

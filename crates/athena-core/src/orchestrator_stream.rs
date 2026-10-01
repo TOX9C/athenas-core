@@ -228,7 +228,20 @@ impl AthenaOrchestrator {
         ),
         OrchestratorError,
     > {
-        let snapshot = self.build_app_state_snapshot();
+        let snapshot = {
+            let mut snapshot = self.build_app_state_snapshot();
+            if let Some(ctx) = self.project_context.lock().clone() {
+                if !ctx.trim().is_empty() {
+                    snapshot.push_str("
+
+## Project conventions
+
+");
+                    snapshot.push_str(&ctx);
+                }
+            }
+            snapshot
+        };
         let guard = self.provider_config.lock();
         if let Some(config) = guard.as_ref() {
             let base = if config.system_prompt.trim().is_empty() {

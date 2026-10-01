@@ -939,6 +939,18 @@
           "markdownDescription": "Enables the plugin_unregister command without any pre-configured scope."
         },
         {
+          "description": "Enables the project_context_apply command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-project-context-apply",
+          "markdownDescription": "Enables the project_context_apply command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the project_context_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-project-context-list",
+          "markdownDescription": "Enables the project_context_list command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pty_agent_info command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pty-agent-info",
@@ -1867,6 +1879,18 @@
           "type": "string",
           "const": "deny-plugin-unregister",
           "markdownDescription": "Denies the plugin_unregister command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the project_context_apply command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-project-context-apply",
+          "markdownDescription": "Denies the project_context_apply command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the project_context_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-project-context-list",
+          "markdownDescription": "Denies the project_context_list command without any pre-configured scope."
         },
         {
           "description": "Denies the pty_agent_info command without any pre-configured scope.",

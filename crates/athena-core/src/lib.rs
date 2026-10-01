@@ -7,6 +7,7 @@ pub mod llm_models;
 pub mod mcp;
 pub mod notification;
 pub mod orchestrator;
+pub mod project_context;
 pub mod output_buffer;
 pub mod plan_manager;
 pub mod resume_scanner;

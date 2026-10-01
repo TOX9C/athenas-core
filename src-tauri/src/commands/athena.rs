@@ -63,6 +63,11 @@ pub async fn athena_chat_stream(
             return Err("API key is required. Please set it in Settings → Athena.".to_string());
         }
     }
+    // Inject opt-in project-convention files (AGENTS.md/CLAUDE.md/…) of the
+    // active workspace into the session's system context before streaming.
+    if let Some(workspace_dir) = active_workspace_dir(&state.store) {
+        super::context::apply_chat_context(&state, &workspace_dir);
+    }
     let cancel = orchestrator
         .register_request(&request_id)
         .map_err(|e| e.to_string())?;
@@ -70,6 +75,20 @@ pub async fn athena_chat_stream(
         .stream_message(request_id, session_id, message, None, cancel)
         .await
         .map_err(|e| provider_chat_error(&state, e))
+}
+
+/// Read the active workspace directory from the persisted spaces list
+/// (frontend-synced `workspaces` KV key). `None` if unset / unmappable.
+fn active_workspace_dir(store: &athena_store::KeyValueStore) -> Option<String> {
+    let json = store.get::<String>("workspaces").ok().flatten()?;
+    let val: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let active_id = val.get("active_space_id")?.as_str()?;
+    let spaces = val.get("spaces")?.as_array()?;
+    spaces
+        .iter()
+        .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(active_id))
+        .and_then(|s| s.get("dir").and_then(|v| v.as_str()))
+        .map(str::to_string)
 }
 
 /// Cancel an in-flight streaming chat request.
@@ -94,6 +113,9 @@ pub async fn athena_chat_with_session(
         Err(ProviderConfigError::MissingApiKey) => {
             return Err("API key is required. Please set it in Settings → Athena.".to_string());
         }
+    }
+    if let Some(workspace_dir) = active_workspace_dir(&state.store) {
+        super::context::apply_chat_context(&state, &workspace_dir);
     }
     orchestrator
         .send_message_with_session(session_id, message, None)

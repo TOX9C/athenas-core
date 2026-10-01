@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — M3: Project context layer
+
+AGENTS.md / CLAUDE.md / .cursorrules / .goosehints are auto-discovered in the active workspace (and parents up to `$HOME`); Settings → General → **Project context** lists each with per-file chat/swarm toggles (persisted in `project_context.selection`). Chat turns merge the chat-enabled contents into the system prompt (`athena_chat_stream` + `athena_chat_with_session` rebuild it from the active workspace dir before each send; capped at 64 KB/file with truncation markers); swarm launches copy swarm-enabled files into every agent worktree via `project_context_apply` (existing repo files win; never overwritten). New IPC: `project_context_list`, `project_context_apply`. 3 crate tests (discovery + read caps + copy semantics).
+
 ## 🚀 2026-10-01 — M2: Per-agent message queues
 
 Typing while an agent is busy no longer dead-ends: per-scope message queues with inline reorder (↑/↓) and remove (×) chips, capped at 50 per pane (oldest evicts). The Athena chat composer queues mid-turn Enter presses and auto-sends in FIFO order when the stream completes; the terminal agent status bar gets a queue composer that writes straight through when the agent is idle and queues while it's working — OSC 6337-driven status transitions (Thinking/Working → anything) drain the queue into the pane's PTY in order. Store: `stores/agent_queue.rs` (HashMap of VecDeques, 4 unit tests: FIFO order, reorder/remove, eviction cap, empty-scope safety).

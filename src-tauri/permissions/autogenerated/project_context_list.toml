@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-project-context-list"
+description = "Enables the project_context_list command without any pre-configured scope."
+commands.allow = ["project_context_list"]
+
+[[permission]]
+identifier = "deny-project-context-list"
+description = "Denies the project_context_list command without any pre-configured scope."
+commands.deny = ["project_context_list"]
