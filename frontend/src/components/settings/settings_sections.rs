@@ -699,6 +699,141 @@ pub(super) fn AthenaSettings() -> Element {
                 None => rsx! {},
             }
         }
+
+        PricingAndUsage {}
+    }
+}
+
+/// Pricing table (USD per 1M input/output tokens) and the persisted
+/// per-session usage ledger. Costs shown in the chat badge resolve against
+/// this table with longest-prefix match.
+#[component]
+fn PricingAndUsage() -> Element {
+    let mut athena_state = use_athena_store();
+    let mut text = use_signal(String::new);
+    let mut save_err = use_signal(String::new);
+    let mut loaded = use_signal(|| false);
+
+    use_effect(move || {
+        if loaded() {
+            return;
+        }
+        loaded.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            // Pricing rows override the built-in defaults.
+            if let Ok(raw) = crate::tauri_bridge::store_get(
+                crate::stores::athena::MODEL_PRICING_STORE_KEY,
+            )
+            .await
+            {
+                if let Ok(rows) =
+                    serde_json::from_str::<Vec<(String, f64, f64)>>(&raw)
+                {
+                    if !rows.is_empty() {
+                        athena_state.write().pricing = rows.clone();
+                        text.set(serde_json::to_string_pretty(&rows).unwrap_or_default());
+                    }
+                }
+            }
+            // Hydrate the persisted usage ledger once per session.
+            if let Ok(raw) = crate::tauri_bridge::store_get(
+                crate::stores::athena::TOKEN_USAGE_STORE_KEY,
+            )
+            .await
+            {
+                if let Ok(map) = serde_json::from_str::<
+                    std::collections::HashMap<String, crate::stores::athena::UsageLedgerEntry>,
+                >(&raw)
+                {
+                    athena_state.write().usage_ledger = map;
+                }
+            }
+            // Show the effective table in the editor when nothing was saved.
+            if text.read().is_empty() {
+                text.set(
+                    serde_json::to_string_pretty(&athena_state.read().pricing).unwrap_or_default(),
+                );
+            }
+        });
+    });
+
+    let ledger_rows: Vec<crate::stores::athena::UsageLedgerEntry> = {
+        let mut rows: Vec<_> = athena_state.read().usage_ledger.values().cloned().collect();
+        rows.sort_by_key(|e| std::cmp::Reverse(e.last_activity));
+        rows.truncate(10);
+        rows
+    };
+    let total_cost: f64 = ledger_rows
+        .iter()
+        .filter_map(|e| {
+            crate::stores::athena::estimate_cost(
+                &athena_state.read().pricing,
+                &e.model,
+                e.input_tokens,
+                e.output_tokens,
+            )
+        })
+        .sum();
+
+    rsx! {
+        GroupLabel { label: "Token pricing" }
+
+        LabeledField {
+            label: "Pricing table",
+            description: Some("JSON array of [model prefix, $/1M in, $/1M out]. Longest prefix wins; overrides the built-in defaults. Used for the per-message cost badge."),
+            div {
+                textarea {
+                    class: "field",
+                    style: "width: 100%; min-height: 120px; font-family: var(--font-mono); font-size: 11px;",
+                    value: "{text}",
+                    oninput: move |e| {
+                        text.set(e.value());
+                        match serde_json::from_str::<Vec<(String, f64, f64)>>(&e.value()) {
+                            Ok(rows) => {
+                                save_err.set(String::new());
+                                let pricing = rows.clone();
+                                athena_state.write().pricing = pricing.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let _ = crate::tauri_bridge::store_set(
+                                        crate::stores::athena::MODEL_PRICING_STORE_KEY,
+                                        &serde_json::to_string(&pricing).unwrap_or_default(),
+                                    )
+                                    .await;
+                                });
+                            }
+                            Err(err) => save_err.set(format!("{err}")),
+                        }
+                    },
+                }
+                if !save_err.read().is_empty() {
+                    span { style: "font-size: 11px; color: var(--error);", "{save_err}" }
+                }
+            }
+        }
+
+        GroupLabel { label: "Usage ledger" }
+
+        if ledger_rows.is_empty() {
+            span { style: "font-size: 11px; color: var(--textDim);", "No usage recorded yet. It appears after your first provider response." }
+        } else {
+            div { style: "font-size: 11px; color: var(--textDim); margin-bottom: 6px;",
+                "Estimated spend across sessions: ${total_cost:.4}"
+            }
+            for row in ledger_rows.iter() {
+                div {
+                    key: "{row.session_id}",
+                    style: "display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 10px; color: var(--textMuted);",
+                    span { style: "min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                        "{row.model} · {row.session_id}"
+                    }
+                    if row.mismatched_requests > 0 {
+                        span { "{row.input_tokens} in / {row.output_tokens} out · {row.mismatched_requests} mismatch" }
+                    } else {
+                        span { "{row.input_tokens} in / {row.output_tokens} out" }
+                    }
+                }
+            }
+        }
     }
 }
 

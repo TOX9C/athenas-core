@@ -150,6 +150,12 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
             })
             .unwrap_or(0);
         let retry_notice = athena_state.read().retry_notice.clone();
+        let cost_str = msg
+            .usage
+            .as_ref()
+            .and_then(|u| u.cost_usd)
+            .map(|c| format!(" · ${c:.4}"))
+            .unwrap_or_default();
         rsx! {
             div {
                 class: "athena-chat-row is-assistant",
@@ -184,6 +190,23 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
                     // Content blocks (plans, evaluations, ask-user, etc.)
                     for block in msg.blocks.iter() {
                         ContentBlockRenderer { key: "{block:?}", block: block.clone() }
+                    }
+
+                    // Per-turn token/cost ledger badge (provider-reported).
+                    if let Some(u) = &msg.usage {
+                        div {
+                            style: "font-size: 10px; color: var(--textMuted); display: flex; align-items: center; gap: 6px; padding-top: 2px;",
+                            span {
+                                "{u.model} · {u.input_tokens} in / {u.output_tokens} out{cost_str}"
+                            }
+                            if u.model_mismatch {
+                                span {
+                                    style: "color: var(--warning); font-weight: 600;",
+                                    title: "The provider answered with a different model than the one configured.",
+                                    "model mismatch"
+                                }
+                            }
+                        }
                     }
 
                     // Image attachments.

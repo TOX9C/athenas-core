@@ -101,6 +101,35 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         }
         mounted.set(true);
 
+        // Hydrate pricing + the persisted usage ledger so the cost badge is
+        // correct before any session mount of Settings.
+        let mut usage_store = athena_state;
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(raw) = crate::tauri_bridge::store_get(
+                crate::stores::athena::MODEL_PRICING_STORE_KEY,
+            )
+            .await
+            {
+                if let Ok(rows) = serde_json::from_str::<Vec<(String, f64, f64)>>(&raw) {
+                    if !rows.is_empty() {
+                        usage_store.write().pricing = rows;
+                    }
+                }
+            }
+            if let Ok(raw) = crate::tauri_bridge::store_get(
+                crate::stores::athena::TOKEN_USAGE_STORE_KEY,
+            )
+            .await
+            {
+                if let Ok(map) = serde_json::from_str::<
+                    std::collections::HashMap<String, crate::stores::athena::UsageLedgerEntry>,
+                >(&raw)
+                {
+                    usage_store.write().usage_ledger = map;
+                }
+            }
+        });
+
         let store = athena_state;
         let mut ui_state_for_listener = ui_state;
         let stream_delta_queue_for_listener = stream_delta_queue.clone();
@@ -131,6 +160,18 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                             stream_delta_queue_for_listener.clone(),
                             stream_delta_scheduled_for_listener.clone(),
                         );
+                    }
+                }
+                "usage" => {
+                    // Token ledger: provider-reported model + counters for one
+                    // round. Mismatch is a loud signal that the provider
+                    // silently served a different model.
+                    let model = event.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let input = event.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let output = event.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let mismatch = event.get("model_mismatch").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if !model.is_empty() || input > 0 || output > 0 {
+                        stream_store.write().record_usage(request_id, model, input, output, mismatch);
                     }
                 }
                 "status" => {
@@ -489,6 +530,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                                                         timestamp,
                                                         is_error,
                                                         images: Vec::new(),
+                                                        usage: None,
                                                         blocks: Vec::new(),
                                                     })
                                                 })

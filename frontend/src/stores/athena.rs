@@ -5,10 +5,76 @@ mod athena_model;
 
 pub use athena_model::{
     AskUserBlock, AskUserOption, AthenaMessage, ContentBlock, DraggableItem, EvaluationBlock,
-    ImageAttachment, ImageMediaType, MessageRole, PlanBlock, PlanStatus, PlanStepBlock,
-    PlanStepStatus, StepEvaluation,
+    ImageAttachment, ImageMediaType, MessageRole, MessageUsage, PlanBlock, PlanStatus,
+    PlanStepBlock, PlanStepStatus, StepEvaluation,
 };
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+
+/// Running usage counters for one in-flight request (summed over tool
+/// rounds; the first reported model wins to surface the serving identity).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct UsageAccumulator {
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model_mismatch: bool,
+}
+
+/// Lifetime ledger row persisted under `chat_usage` in the KV store,
+/// keyed per session. Bounded by `MAX_LEDGER_ENTRIES` (LRU-evicted).
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLedgerEntry {
+    pub session_id: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub mismatched_requests: u32,
+    pub last_activity: i64,
+}
+
+/// Cap on persisted ledger rows.
+pub const MAX_LEDGER_ENTRIES: usize = 200;
+
+pub const TOKEN_USAGE_STORE_KEY: &str = "chat_usage";
+pub const MODEL_PRICING_STORE_KEY: &str = "model_pricing";
+
+/// Persist the ledger to the KV store (best-effort; fire-and-forget).
+fn persist_ledger(ledger: &HashMap<String, UsageLedgerEntry>) {
+    let json = serde_json::to_string(ledger).unwrap_or_else(|_| "{}".to_string());
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = crate::tauri_bridge::store_set(TOKEN_USAGE_STORE_KEY, &json).await;
+    });
+}
+
+/// Built-in USD-per-1M-token prices (rough 2026 list prices, overridable in
+/// Settings → Athena). Longest-prefix model match wins at lookup time.
+pub fn default_pricing() -> Vec<(String, f64, f64)> {
+    vec![
+        ("gpt-5.2".to_string(), 1.75, 14.0),
+        ("gpt-5".to_string(), 1.25, 10.0),
+        ("gpt-4o-mini".to_string(), 0.15, 0.60),
+        ("gpt-4o".to_string(), 2.50, 10.0),
+        ("claude-opus-4".to_string(), 15.0, 75.0),
+        ("claude-sonnet-4".to_string(), 3.0, 15.0),
+        ("claude".to_string(), 3.0, 15.0),
+    ]
+}
+
+/// Estimate USD cost for a turn; `None` when no pricing row matches.
+pub fn estimate_cost(
+    pricing: &[(String, f64, f64)],
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> Option<f64> {
+    let (row_in, row_out) = pricing
+        .iter()
+        .filter(|(prefix, _, _)| model.starts_with(prefix.as_str()))
+        .max_by_key(|(prefix, _, _)| prefix.len())
+        .map(|(_, i, o)| (*i, *o))?;
+    Some((input_tokens as f64 * row_in + output_tokens as f64 * row_out) / 1_000_000.0)
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -55,6 +121,13 @@ pub struct AthenaState {
     pub bypass_mode: bool,
     pub auto_launch: bool,
     pub session_id: Option<String>,
+    /// Per-request usage accumulated from `usage` stream events until the
+    /// matching `completed` event folds it into the final assistant message.
+    pub pending_usage: std::collections::HashMap<String, UsageAccumulator>,
+    /// Loaded pricing table (model prefix → USD per 1M input/output tokens).
+    pub pricing: Vec<(String, f64, f64)>,
+    /// Lifetime ledger rows persisted in the KV store, keyed by session id.
+    pub usage_ledger: std::collections::HashMap<String, UsageLedgerEntry>,
     pub session_title: String,
     /// Items dragged/dropped or explicitly pinned to Athena's context for the current conversation.
     pub dropped_context: Vec<DraggableItem>,
@@ -101,6 +174,9 @@ impl AthenaState {
             auto_launch: DEFAULT_AUTO_LAUNCH,
             session_id: None,
             session_title: String::new(),
+            pending_usage: HashMap::new(),
+            pricing: default_pricing(),
+            usage_ledger: HashMap::new(),
             dropped_context: Vec::new(),
             api_configured: None,
             configured_model: None,
@@ -177,9 +253,79 @@ impl AthenaState {
         }
     }
 
+    /// Accumulate one round of provider-reported usage for a request.
+    pub fn record_usage(
+        &mut self,
+        request_id: &str,
+        model: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        model_mismatch: bool,
+    ) {
+        let entry = self
+            .pending_usage
+            .entry(request_id.to_string())
+            .or_default();
+        if entry.model.is_empty() {
+            entry.model = model;
+        }
+        entry.input_tokens += input_tokens;
+        entry.output_tokens += output_tokens;
+        entry.model_mismatch |= model_mismatch;
+    }
+
     pub fn finish_stream(&mut self, request_id: &str, final_text: Option<&str>) {
         if !self.accepts_stream_event(request_id) {
             return;
+        }
+        // Fold accumulated round usage into the bubble + the session ledger.
+        if let Some(acc) = self.pending_usage.remove(request_id) {
+            if !acc.model.is_empty() {
+                let cost = estimate_cost(
+                    &self.pricing,
+                    &acc.model,
+                    acc.input_tokens,
+                    acc.output_tokens,
+                );
+                if let Some(message) = self.messages.back_mut() {
+                    if message.role == MessageRole::Athena && !message.is_error {
+                        message.usage = Some(MessageUsage {
+                            model: acc.model.clone(),
+                            input_tokens: acc.input_tokens,
+                            output_tokens: acc.output_tokens,
+                            model_mismatch: acc.model_mismatch,
+                            cost_usd: cost,
+                        });
+                    }
+                }
+                if let Some(session_id) = self.session_id.clone() {
+                    let entry = self
+                        .usage_ledger
+                        .entry(session_id.clone())
+                        .or_insert_with(|| UsageLedgerEntry {
+                            session_id: session_id.clone(),
+                            ..Default::default()
+                        });
+                    entry.model = acc.model;
+                    entry.input_tokens += acc.input_tokens;
+                    entry.output_tokens += acc.output_tokens;
+                    if acc.model_mismatch {
+                        entry.mismatched_requests += 1;
+                    }
+                    entry.last_activity = chrono::Utc::now().timestamp();
+                    while self.usage_ledger.len() > MAX_LEDGER_ENTRIES {
+                        if let Some(oldest) = self
+                            .usage_ledger
+                            .iter()
+                            .min_by_key(|(_, e)| e.last_activity)
+                            .map(|(k, _)| k.clone())
+                        {
+                            self.usage_ledger.remove(&oldest);
+                        }
+                    }
+                    persist_ledger(&self.usage_ledger);
+                }
+            }
         }
         if let Some(final_text) = final_text {
             if let Some(message) = self.messages.back_mut() {
@@ -448,6 +594,7 @@ impl AthenaState {
                 timestamp,
                 is_error,
                 images: Vec::new(),
+                usage: None,
                 blocks: Vec::new(),
             });
         }
@@ -491,6 +638,7 @@ impl AthenaState {
             timestamp: chrono::Utc::now().timestamp(),
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: vec![ask_block],
         };
         self.add_message(msg);
@@ -562,6 +710,7 @@ impl AthenaState {
             timestamp: chrono::Utc::now().timestamp(),
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: vec![plan_block],
         };
         self.add_message(msg);
@@ -604,6 +753,7 @@ impl AthenaState {
             timestamp: chrono::Utc::now().timestamp(),
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: vec![eval_block],
         };
         self.add_message(msg);
@@ -696,6 +846,7 @@ mod tests {
             timestamp: 0,
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         }
     }
@@ -779,6 +930,7 @@ mod tests {
             timestamp: 0,
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
         s.add_message(AthenaMessage {
@@ -788,6 +940,7 @@ mod tests {
             timestamp: 0,
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
         s.add_message(AthenaMessage {
@@ -797,6 +950,7 @@ mod tests {
             timestamp: 0,
             is_error: true,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
         s.error = Some("timeout".into());
@@ -820,6 +974,7 @@ mod tests {
             timestamp: 0,
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
         s.add_message(AthenaMessage {
@@ -829,6 +984,7 @@ mod tests {
             timestamp: 0,
             is_error: true,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
         assert!(s.error.is_none());
@@ -847,6 +1003,7 @@ mod tests {
             timestamp: 0,
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
 
@@ -864,6 +1021,7 @@ mod tests {
             timestamp: 0,
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
         s.begin_stream("req-1".to_string());
@@ -874,6 +1032,7 @@ mod tests {
             timestamp: 0,
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
 
@@ -918,6 +1077,7 @@ mod tests {
             timestamp: 0,
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
 
@@ -939,6 +1099,7 @@ mod tests {
             timestamp: 0,
             is_error: false,
             images: Vec::new(),
+            usage: None,
             blocks: Vec::new(),
         });
 

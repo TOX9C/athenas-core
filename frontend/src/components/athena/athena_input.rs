@@ -156,6 +156,7 @@ async fn submit_message_async(text: String, athena_state: &mut Signal<AthenaStat
         timestamp: chrono::Utc::now().timestamp(),
         is_error: false,
         images: Vec::new(),
+        usage: None,
         blocks: Vec::new(),
     });
 
@@ -210,6 +211,7 @@ pub(crate) fn submit_message_text(text: &str, athena_state: &mut Signal<AthenaSt
         timestamp: chrono::Utc::now().timestamp(),
         is_error: false,
         images: Vec::new(),
+        usage: None,
         blocks: Vec::new(),
     };
     athena_state.write().add_message(user_msg);

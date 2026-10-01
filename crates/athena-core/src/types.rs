@@ -28,6 +28,18 @@ pub enum AthenaStreamEvent {
         request_id: String,
         text: String,
     },
+    /// Per provider round: resolved model id and token counters the
+    /// provider actually reported (plus whether it differs from the
+    /// requested model). Emitted before `Completed` for the same request.
+    Usage {
+        request_id: String,
+        model: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        /// Provider returned a different model id than was requested.
+        #[serde(default)]
+        model_mismatch: bool,
+    },
     Error {
         request_id: String,
         message: String,
@@ -431,6 +443,7 @@ mod tests {
                 | AthenaStreamEvent::Delta { request_id, .. }
                 | AthenaStreamEvent::Status { request_id, .. }
                 | AthenaStreamEvent::Completed { request_id, .. }
+                | AthenaStreamEvent::Usage { request_id, .. }
                 | AthenaStreamEvent::Error { request_id, .. } => request_id.as_str(),
             })
             .collect();

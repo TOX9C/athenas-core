@@ -333,6 +333,9 @@ impl AthenaOrchestrator {
                 "tools": to_openai_tools(),
                 "tool_choice": "auto",
                 "stream": true,
+                // Ask for a final usage-bearing chunk; providers that don't
+                // support it simply omit `usage` and we bill nothing.
+                "stream_options": {"include_usage": true},
             });
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(OrchestratorError::UserCancellation),
@@ -354,6 +357,7 @@ impl AthenaOrchestrator {
             let mut pending = Vec::<u8>::new();
             let mut reply = String::new();
             let mut calls: BTreeMap<String, (String, String, String)> = BTreeMap::new();
+            let mut usage_seen: Option<(String, u64, u64)> = None;
             while let Some(chunk) = tokio::select! {
                 _ = cancel.cancelled() => return Err(OrchestratorError::UserCancellation),
                 chunk = stream.next() => chunk,
@@ -368,6 +372,20 @@ impl AthenaOrchestrator {
                         continue;
                     }
                     let value: serde_json::Value = serde_json::from_str(data)?;
+                    // Final chunk carries usage + the resolved model id.
+                    if let Some(usage) = value.get("usage") {
+                        let input = usage["prompt_tokens"].as_u64().unwrap_or(0);
+                        let output = usage["completion_tokens"].as_u64().unwrap_or(0);
+                        let model = value["model"].as_str().unwrap_or_default().to_string();
+                        usage_seen = Some((model, input, output));
+                    } else if let Some(m) = value.get("model").and_then(|v| v.as_str()) {
+                        // Some providers report the model on every chunk.
+                        let (i0, o0) = usage_seen
+                            .as_ref()
+                            .map(|(_, i, o)| (*i, *o))
+                            .unwrap_or((0, 0));
+                        usage_seen = Some((m.to_string(), i0, o0));
+                    }
                     let delta = &value["choices"][0]["delta"];
                     if let Some(part) = delta["content"].as_str() {
                         reply.push_str(part);
@@ -392,6 +410,7 @@ impl AthenaOrchestrator {
                     }
                 }
             }
+            emit_round_usage(self, request_id, &model, &mut usage_seen);
             if calls.is_empty() {
                 self.openai_messages.lock().push(OpenAIMessage {
                     role: "assistant".to_string(),
@@ -604,6 +623,7 @@ impl AthenaOrchestrator {
             let mut pending = Vec::<u8>::new();
             let mut reply = String::new();
             let mut blocks: BTreeMap<usize, serde_json::Value> = BTreeMap::new();
+            let mut usage_seen: Option<(String, u64, u64)> = None;
             // Accumulate `input_json_delta` fragments here instead of
             // read-modify-writing the block Value: appending to a String is
             // O(n) total, the Value round-trip was O(n²) per tool call.
@@ -624,6 +644,25 @@ impl AthenaOrchestrator {
                     let event: serde_json::Value = serde_json::from_str(data)?;
                     let index = event["index"].as_u64().unwrap_or(0) as usize;
                     match event["type"].as_str().unwrap_or("") {
+                        "message_start" => {
+                            // Anthropic reports input tokens once and the
+                            // resolved model id on the announcing envelope.
+                            let input = event["message"]["usage"]["input_tokens"]
+                                .as_u64()
+                                .unwrap_or(0);
+                            let model = event["message"]["model"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string();
+                            usage_seen = Some((model, input, 0));
+                        }
+                        "message_delta" => {
+                            // Output tokens arrive on the closing delta(s).
+                            if let Some(output) = event["usage"]["output_tokens"].as_u64() {
+                                let (m, i, _) = usage_seen.clone().unwrap_or_default();
+                                usage_seen = Some((m, i, output));
+                            }
+                        }
                         "content_block_start" => {
                             blocks.insert(index, event["content_block"].clone());
                         }
@@ -737,6 +776,7 @@ impl AthenaOrchestrator {
                     tool_result_ids.insert(id.to_string());
                 }
             }
+            emit_round_usage(self, request_id, &model, &mut usage_seen);
             if tool_blocks.is_empty() {
                 self.openai_messages.lock().push(OpenAIMessage {
                     role: "assistant".into(),
@@ -762,6 +802,67 @@ impl AthenaOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_event_reports_resolved_model_and_mismatch() {
+        let orchestrator = AthenaOrchestrator::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        orchestrator.set_stream_emitter(Some(std::sync::Arc::new(move |event| {
+            tx.send(event).ok();
+        })));
+
+        // Same model: no mismatch; counters pass through verbatim.
+        let mut seen = Some(("gpt-5.2".to_string(), 12, 34));
+        emit_round_usage(&orchestrator, "req-1", "gpt-5.2", &mut seen);
+        let event = rx.try_recv().expect("usage event emitted");
+        match event {
+            crate::types::AthenaStreamEvent::Usage {
+                model,
+                input_tokens,
+                output_tokens,
+                model_mismatch,
+                ..
+            } => {
+                assert_eq!(model, "gpt-5.2");
+                assert_eq!((input_tokens, output_tokens), (12, 34));
+                assert!(!model_mismatch);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // Divergent model id: mismatch flagged, resolved model surfaced.
+        let mut seen = Some(("ephemeral-2026-01".to_string(), 5, 6));
+        emit_round_usage(&orchestrator, "req-2", "gpt-5.2", &mut seen);
+        match rx.try_recv().expect("usage event emitted") {
+            crate::types::AthenaStreamEvent::Usage {
+                model,
+                model_mismatch,
+                ..
+            } => {
+                assert_eq!(model, "ephemeral-2026-01");
+                assert!(model_mismatch);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // Providers that never report usage emit nothing (no fabricated data).
+        emit_round_usage(&orchestrator, "req-3", "gpt-5.2", &mut None);
+        // Empty string counts as "not reported": fall back to requested.
+        let mut seen = Some((String::new(), 1, 2));
+        emit_round_usage(&orchestrator, "req-4", "gpt-5.2", &mut seen);
+        match rx.try_recv().expect("usage event emitted") {
+            crate::types::AthenaStreamEvent::Usage {
+                model,
+                model_mismatch,
+                ..
+            } => {
+                assert_eq!(model, "gpt-5.2");
+                assert!(!model_mismatch);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
 
     #[test]
     fn duplicate_request_ids_are_rejected() {
@@ -1672,4 +1773,30 @@ mod tests {
         // delays. (A weak check on its own, but combined with the
         // single-message history assertion above it pins the contract.)
     }
+}
+
+/// Emit the per-round usage event when the provider reported it. The
+/// backend never fabricates token counts: providers without usage reports
+/// produce no event, and the badge shows nothing.
+fn emit_round_usage(
+    orch: &AthenaOrchestrator,
+    request_id: &str,
+    requested_model: &str,
+    usage_seen: &mut Option<(String, u64, u64)>,
+) {
+    let Some((model, input, output)) = usage_seen.take() else {
+        return;
+    };
+    let mismatch = !model.is_empty() && model != requested_model;
+    orch.emit_stream(crate::types::AthenaStreamEvent::Usage {
+        request_id: request_id.to_string(),
+        model: if model.is_empty() {
+            requested_model.to_string()
+        } else {
+            model
+        },
+        input_tokens: input,
+        output_tokens: output,
+        model_mismatch: mismatch,
+    });
 }

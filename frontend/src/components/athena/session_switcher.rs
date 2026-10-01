@@ -50,6 +50,7 @@ async fn do_load_session(
                                 timestamp,
                                 is_error,
                                 images: Vec::new(),
+                                usage: None,
                                 blocks: Vec::new(),
                             })
                         })

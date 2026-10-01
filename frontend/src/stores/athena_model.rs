@@ -146,6 +146,19 @@ pub enum MessageRole {
     Athena,
 }
 
+/// Token usage + resolved model id for one assistant turn, as reported by
+/// the provider's usage stream event. `model_mismatch` means the provider
+/// served a different model than the one requested.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MessageUsage {
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model_mismatch: bool,
+    /// Estimated cost in USD for this turn, if a pricing-table entry matched.
+    pub cost_usd: Option<f64>,
+}
+
 /// A single chat message in the Athena conversation.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AthenaMessage {
@@ -156,6 +169,7 @@ pub struct AthenaMessage {
     pub is_error: bool,
     pub images: Vec<ImageAttachment>,
     pub blocks: Vec<ContentBlock>,
+    pub usage: Option<MessageUsage>,
 }
 
 #[cfg(test)]
