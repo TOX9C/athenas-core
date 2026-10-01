@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## 🚀 2026-10-01 — O1: Plan gate before swarm launch
+
+Swarm missions default to drafting-first: "Draft plan & review" calls Athena (hidden scratch session, plan-gate prompt, `create_execution_plan` only, no dispatch) and shows the resulting plan as an editable card inline in the modal (steps editable, add/remove), with explicit "Approve & run" — only approval persists the plan into the plan manager (`plan_create`) and merges its steps into the mission goal every agent receives. Cancel while generating aborts the stream. The gate is a checkbox (`Review plan before launching`, default on; unchecking skip-launches immediately).
+
 ## 🚀 2026-10-01 — M5: Per-agent capability scoping for swarm
 
 Swarm slot rows gain capability toggles cycling on click: **sh✓/sh−/sh⌀** (shell: full → read-only-cwd → no-exec via additive `sandbox-exec` profiles `(deny file-write* (subpath "<cwd>"))` / `deny process-exec process-fork`), **net✓/net⌀** (best-effort: strips HTTP(S) proxy env + `deny network*`), **mcp✓/mcp⌀** (best-effort: `ATHENA_NO_MCP=1` + MCP_CONFIG_PATH=/dev/null markers; agent CLIs with their own config paths may ignore these — documented limit). Policies persist per role under `swarm_role_caps` in the KV store, are hydrated when the modal opens, and ride on every pane's `capabilities` field into the PTY spawn (`wrap_with_capabilities`). Tests cover pass-through, proxy strip, read-only, no-exec, quoting.

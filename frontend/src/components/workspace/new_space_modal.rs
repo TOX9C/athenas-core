@@ -106,6 +106,14 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
         });
     });
 
+    // Plan gate: default ON for swarm missions — before any execution, the
+    // orchestrator drafts a plan the user can edit and must approve.
+    let mut plan_gate = use_signal(|| true);
+    let mut plan_phase = use_signal(|| PlanPhase::Idle);
+    let mut plan_draft: Signal<Option<PlanDraft>> = use_signal(|| None);
+    let mut plan_error = use_signal(String::new);
+    let mut plan_skipped = use_signal(|| false);
+
     // E2E helper: allow skipping validation by setting window.__athenaE2E = true
     let is_e2e: bool = web_sys::window()
         .and_then(|w| js_sys::Reflect::get(&w, &"__athenaE2E".into()).ok())
@@ -276,14 +284,65 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     if step() == 2 && mode() == "swarm" {
                         {
         let swarm_disabled = !can_launch_swarm;
-                            rsx! {
-                                button {
-                                    class: "btn-primary",
-                                    disabled: swarm_disabled,
-                                    onclick: move |_| {
-                                        let dir = space_dir.read().trim().to_string();
-                                        let goal = space_goal.read().trim().to_string();
-                                        if dir.is_empty() || goal.is_empty() { return; }
+        // Shared by the Launch button (gated path) and the plan review's
+        // Approve action (direct path with the plan text baked in).
+        let run_launch = move |approved_plan_text: Option<String>| {
+            if approved_plan_text.is_none() && plan_gate() && plan_phase() == PlanPhase::Idle && !plan_skipped() {
+                let dir = space_dir.read().trim().to_string();
+                let goal = space_goal.read().trim().to_string();
+                if dir.is_empty() || goal.is_empty() { return; }
+                plan_phase.set(PlanPhase::Generating);
+                plan_error.set(String::new());
+                spawn(async move {
+                    match generate_plan_draft(&goal, &dir).await {
+                        Ok(draft) => {
+                            plan_draft.set(Some(draft));
+                            plan_phase.set(PlanPhase::Ready);
+                        }
+                        Err(e) => {
+                            plan_error.set(e);
+                            plan_phase.set(PlanPhase::Idle);
+                        }
+                    }
+                });
+                return;
+            }
+            let dir = space_dir.read().trim().to_string();
+            let mut goal = space_goal.read().trim().to_string();
+            if dir.is_empty() || goal.is_empty() { return; }
+            if let Some(ref text) = approved_plan_text {
+                goal = format!("{goal}
+
+Plan (approved):
+{text}");
+                plan_phase.set(PlanPhase::Idle);
+                plan_draft.set(None);
+                plan_skipped.set(false);
+            } else if plan_gate()
+                && plan_phase() == PlanPhase::Ready
+                && plan_draft.read().as_ref().is_some_and(|d| d.approved)
+            {
+                let draft = plan_draft.read().clone().unwrap();
+                goal = format!(
+                    "{goal}
+
+Plan (approved):
+{}
+{}",
+                    draft.goal,
+                    draft
+                        .steps
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| format!("{}. {}", i + 1, s))
+                        .collect::<Vec<_>>()
+                        .join("
+"),
+                );
+                plan_phase.set(PlanPhase::Idle);
+                plan_draft.set(None);
+                plan_skipped.set(false);
+            }
 
                                         let now_ts = js_sys::Date::now() as i64;
                                         let space_count = workspace_state.read().spaces.len();
@@ -486,8 +545,26 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 }
                                             }
                                         });
-                                    },
-                                    "Launch Swarm"
+
+        };
+
+        let mut run_launch = run_launch;
+                            rsx! {
+                                button {
+                                    class: "btn-primary",
+                                    disabled: swarm_disabled || plan_phase() == PlanPhase::Generating,
+                                    onclick: move |_| { run_launch(None); },
+                                    if plan_phase() == PlanPhase::Ready
+                                        && plan_draft.read().as_ref().is_some_and(|d| d.approved)
+                                    {
+                                        "Run approved plan"
+                                    } else if plan_gate() && plan_phase() == PlanPhase::Idle && !plan_skipped() {
+                                        "Draft plan & review"
+                                    } else if plan_phase() == PlanPhase::Generating {
+                                        "Drafting plan…"
+                                    } else {
+                                        "Launch Swarm"
+                                    }
                                 }
                             }
                         }
@@ -947,7 +1024,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                                         let mut guard = slots.write();
                                                                         guard.get_mut(idx).map(|s| {
                                                                             let caps = s.capabilities.get_or_insert_with(Default::default);
-                                                                            caps.network = !caps.network;;
+                                                                            caps.network = !caps.network;
                                                                             (s.role.clone(), caps.clone())
                                                                         })
                                                                     };
@@ -971,7 +1048,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                                         let mut guard = slots.write();
                                                                         guard.get_mut(idx).map(|s| {
                                                                             let caps = s.capabilities.get_or_insert_with(Default::default);
-                                                                            caps.mcp_tools = !caps.mcp_tools;;
+                                                                            caps.mcp_tools = !caps.mcp_tools;
                                                                             (s.role.clone(), caps.clone())
                                                                         })
                                                                     };
@@ -1007,6 +1084,114 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                 p { style: "font-size: var(--text-xs); color: var(--error); margin: 2px 0 0 0;", "{error}" }
                             }
 
+                            // Plan gate: review/approve a drafted plan before execution.
+                            label { style: "display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); color: var(--textMuted); cursor: pointer;",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: plan_gate(),
+                                    onchange: move |e| {
+                                        let on = e.checked();
+                                        plan_gate.set(on);
+                                        if !on {
+                                            plan_skipped.set(true);
+                                            plan_draft.set(None);
+                                            plan_phase.set(PlanPhase::Idle);
+                                        }
+                                    },
+                                }
+                                "Review plan before launching"
+                            }
+                            if plan_phase() == PlanPhase::Generating {
+                                div { style: "display: flex; align-items: center; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); margin-top: 8px; background: var(--bgSecondary);",
+                                    span { class: "animate-pulse", "Drafting plan for: " }
+                                    span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textMuted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", "{space_goal.read().clone()}" }
+                                    button {
+                                        class: "btn-ghost",
+                                        style: "font-size: 10px; padding: 3px 10px;",
+                                        onclick: move |_| {
+                                            let _ = spawn(async move {
+                                                let _ = crate::tauri_bridge::athena_cancel_stream("plan-gate").await;
+                                            });
+                                            plan_phase.set(PlanPhase::Idle);
+                                        },
+                                        "Cancel"
+                                    }
+                                }
+                            }
+                            if let Some(draft) = plan_draft.read().clone() {
+                                div { style: "margin-top: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
+                                    div { style: "font-size: var(--text-2xs); color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;", "Plan (edit before approving)" }
+                                    div { style: "font-size: 11px; color: var(--textMuted); margin-bottom: 8px;", "Goal: {draft.goal}" }
+                                    if !draft.reasoning.is_empty() {
+                                        p { style: "font-size: 11px; color: var(--textDim); margin: 0 0 8px 0;", "{draft.reasoning}" }
+                                    }
+                                    for (i, step) in draft.steps.iter().enumerate() {
+                                        {
+                                            let step_for_input = step.clone();
+                                            rsx! {
+                                                div { key: "{i}", style: "display: flex; gap: 6px; align-items: flex-start; margin-bottom: 4px;",
+                                                    span { style: "font-family: var(--font-mono); font-size: 10px; color: var(--textDim); min-width: 2ch; padding-top: 5px;", "{i + 1}." }
+                                                    input {
+                                                        style: "flex: 1; min-width: 0; font-size: 11px; padding: 4px 6px; background: var(--bgTertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text);",
+                                                        value: "{step_for_input}",
+                                                        oninput: move |e| {
+                                                            let v = e.value();
+                                                            plan_draft.write().as_mut().map(|d| {
+                                                                if let Some(s) = d.steps.get_mut(i) {
+                                                                    *s = v;
+                                                                }
+                                                            });
+                                                        },
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    {
+                                        let approved_plan_text = format!(
+                                            "{}
+{}",
+                                            draft.goal,
+                                            draft.steps.iter().enumerate().map(|(i, s)| format!("{}. {}", i + 1, s)).collect::<Vec<_>>().join("
+"),
+                                        );
+                                        rsx! {
+                                            div { style: "display: flex; gap: 8px; margin-top: 6px;",
+                                                button {
+                                                    class: "btn-primary",
+                                                    onclick: move |_| {
+                                                        let draft_opt = plan_draft.read().clone();
+                                                        if let Some(d) = draft_opt.clone() {
+                                                            spawn(async move {
+                                                                let _ = persist_plan(&d).await;
+                                                            });
+                                                        }
+                                                        // Mark the draft approved: the Launch button
+                                                        // now runs the mission with this plan.
+                                                        if let Some(d) = plan_draft.write().as_mut() {
+                                                            d.approved = true;
+                                                        }
+                                                    },
+                                                    "Approve & run"
+                                                }
+                                                button {
+                                                    class: "btn-ghost",
+                                                    onclick: move |_| {
+                                                        plan_phase.set(PlanPhase::Idle);
+                                                        plan_draft.set(None);
+                                                        plan_skipped.set(false);
+                                                    },
+                                                    "Back"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if !plan_error.read().is_empty() {
+                                p { style: "font-size: var(--text-xs); color: var(--error); margin: 6px 0 0 0;", "Plan error: {plan_error.read().clone()}" }
+                            }
+
                             // Validation messages
                             if coordinator_count != 1 {
                                 p { style: "font-size: var(--text-xs); color: var(--error); margin: 2px 0 0 0;", "Exactly 1 Coordinator required" }
@@ -1020,4 +1205,103 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
             }
         }
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// Plan gate (O1)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+enum PlanPhase {
+    Idle,
+    Generating,
+    Ready,
+}
+
+/// Draft plan shown for review before swarm launch.
+#[derive(Clone, PartialEq)]
+pub(super) struct PlanDraft {
+    goal: String,
+    reasoning: String,
+    steps: Vec<String>,
+    /// Set by the Approve button — the very next Launch click passes the
+    /// gate and embeds the plan text into the goal.
+    approved: bool,
+}
+
+/// Ask Athena (in a scratch session so the chat is not polluted) to draft a
+/// plan for `goal`, then read it out of the plan manager.
+async fn generate_plan_draft(goal: &str, workspace_dir: &str) -> Result<PlanDraft, String> {
+    let plan_session = format!("plan-gate-{}", crate::utils::time::now_ms());
+    let prompt = format!(
+        "You are in PLAN-GATE mode inside a swarm mission. Write a short, concrete execution plan for the goal below.\n\
+         \n\
+         Rules:\n\
+         - Use the create_execution_plan tool ONCE with goal, reasoning, and 3-7 self-contained steps (each a clear instruction an agent will execute as-is).\n\
+         - Mention files/areas to touch in each step's text when possible.\n\
+         - After the tool call, reply with a one-line status only.\n\
+         - Do NOT run any other tool. Do NOT dispatch agents or make changes.\n\
+         \n\
+         Goal: {goal}\n\nWorkspace: {workspace_dir}"
+    );
+    let request_id = format!("plangate-{}", crate::utils::time::now_ms());
+    crate::tauri_bridge::athena_chat_stream(&prompt, &plan_session, &request_id)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let raw = crate::tauri_bridge::plan_get()
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let plan: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("plan parse: {e}"))?;
+    let steps = plan
+        .get("steps")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.get("description").and_then(|v| v.as_str()).map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if steps.is_empty() {
+        return Err("The model did not produce a plan — try again or skip the gate.".into());
+    }
+    Ok(PlanDraft {
+        goal: plan
+            .get("goal")
+            .and_then(|v| v.as_str())
+            .unwrap_or(goal)
+            .to_string(),
+        reasoning: plan
+            .get("reasoning")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        steps,
+        approved: false,
+    })
+}
+
+/// Persist the approved plan (PlanManager active plan) so kanban/reporting
+/// paths can link back to it.
+async fn persist_plan(draft: &PlanDraft) -> Result<String, String> {
+    let steps: Vec<serde_json::Value> = draft
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, text)| serde_json::json!({"id": format!("step-{}", i + 1), "description": text}))
+        .collect();
+    crate::tauri_bridge::plan_create(
+        &draft.goal,
+        &draft.reasoning,
+        &serde_json::to_string(&steps).map_err(|e| e.to_string())?,
+    )
+    .await
+    .map_err(|e| format!("{e:?}"))
+    .map(|raw| {
+        serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(String::from))
+            .unwrap_or_default()
+    })
 }
