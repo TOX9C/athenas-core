@@ -1774,6 +1774,14 @@ impl TerminalSession {
         }
     }
 
+    /// Most recent OSC 52 clipboard payload written by the shell program,
+    /// if any. Stored on the grid by the ANSI handler; callers that own a
+    /// real clipboard (src-tauri) can poll or wrap `parse_bytes` and then
+    /// read this getter to lift the value to the OS clipboard.
+    pub async fn osc52_clipboard(&self) -> Option<String> {
+        self.grid.lock().await.osc52_clipboard.clone()
+    }
+
     /// Feed raw bytes through the persistent VTE parser and apply the
     /// resulting ops to the grid. Returns a `TerminalUpdate` with cell
     /// deltas only if the grid state actually changed.

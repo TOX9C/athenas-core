@@ -812,6 +812,32 @@ impl AthenaOrchestrator {
     }
 }
 
+/// Emit the per-round usage event when the provider reported it. The
+/// backend never fabricates token counts: providers without usage reports
+/// produce no event, and the badge shows nothing.
+fn emit_round_usage(
+    orch: &AthenaOrchestrator,
+    request_id: &str,
+    requested_model: &str,
+    usage_seen: &mut Option<(String, u64, u64)>,
+) {
+    let Some((model, input, output)) = usage_seen.take() else {
+        return;
+    };
+    let mismatch = !model.is_empty() && model != requested_model;
+    orch.emit_stream(crate::types::AthenaStreamEvent::Usage {
+        request_id: request_id.to_string(),
+        model: if model.is_empty() {
+            requested_model.to_string()
+        } else {
+            model
+        },
+        input_tokens: input,
+        output_tokens: output,
+        model_mismatch: mismatch,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1788,28 +1814,3 @@ mod tests {
     }
 }
 
-/// Emit the per-round usage event when the provider reported it. The
-/// backend never fabricates token counts: providers without usage reports
-/// produce no event, and the badge shows nothing.
-fn emit_round_usage(
-    orch: &AthenaOrchestrator,
-    request_id: &str,
-    requested_model: &str,
-    usage_seen: &mut Option<(String, u64, u64)>,
-) {
-    let Some((model, input, output)) = usage_seen.take() else {
-        return;
-    };
-    let mismatch = !model.is_empty() && model != requested_model;
-    orch.emit_stream(crate::types::AthenaStreamEvent::Usage {
-        request_id: request_id.to_string(),
-        model: if model.is_empty() {
-            requested_model.to_string()
-        } else {
-            model
-        },
-        input_tokens: input,
-        output_tokens: output,
-        model_mismatch: mismatch,
-    });
-}

@@ -699,34 +699,28 @@
           "markdownDescription": "Enables the kanban_update_task command without any pre-configured scope."
         },
         {
+          "description": "Enables the license_activate command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-license-activate",
+          "markdownDescription": "Enables the license_activate command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the license_deactivate command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-license-deactivate",
+          "markdownDescription": "Enables the license_deactivate command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the license_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-license-status",
+          "markdownDescription": "Enables the license_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the llm_list_models command without any pre-configured scope.",
           "type": "string",
           "const": "allow-llm-list-models",
           "markdownDescription": "Enables the llm_list_models command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the mcp_broadcast command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-mcp-broadcast",
-          "markdownDescription": "Enables the mcp_broadcast command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the mcp_handle_request command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-mcp-handle-request",
-          "markdownDescription": "Enables the mcp_handle_request command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the mcp_init command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-mcp-init",
-          "markdownDescription": "Enables the mcp_init command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the mcp_shutdown command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-mcp-shutdown",
-          "markdownDescription": "Enables the mcp_shutdown command without any pre-configured scope."
         },
         {
           "description": "Enables the mcp_tools command without any pre-configured scope.",
@@ -1165,30 +1159,6 @@
           "type": "string",
           "const": "allow-session-update",
           "markdownDescription": "Enables the session_update command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the shell_integration_compatible command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-shell-integration-compatible",
-          "markdownDescription": "Enables the shell_integration_compatible command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the shell_integration_parse command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-shell-integration-parse",
-          "markdownDescription": "Enables the shell_integration_parse command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the shell_integration_script command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-shell-integration-script",
-          "markdownDescription": "Enables the shell_integration_script command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the shell_integration_strip command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-shell-integration-strip",
-          "markdownDescription": "Enables the shell_integration_strip command without any pre-configured scope."
         },
         {
           "description": "Enables the store_api_key command without any pre-configured scope.",
@@ -1665,34 +1635,28 @@
           "markdownDescription": "Denies the kanban_update_task command without any pre-configured scope."
         },
         {
+          "description": "Denies the license_activate command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-license-activate",
+          "markdownDescription": "Denies the license_activate command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the license_deactivate command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-license-deactivate",
+          "markdownDescription": "Denies the license_deactivate command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the license_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-license-status",
+          "markdownDescription": "Denies the license_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the llm_list_models command without any pre-configured scope.",
           "type": "string",
           "const": "deny-llm-list-models",
           "markdownDescription": "Denies the llm_list_models command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the mcp_broadcast command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-mcp-broadcast",
-          "markdownDescription": "Denies the mcp_broadcast command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the mcp_handle_request command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-mcp-handle-request",
-          "markdownDescription": "Denies the mcp_handle_request command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the mcp_init command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-mcp-init",
-          "markdownDescription": "Denies the mcp_init command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the mcp_shutdown command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-mcp-shutdown",
-          "markdownDescription": "Denies the mcp_shutdown command without any pre-configured scope."
         },
         {
           "description": "Denies the mcp_tools command without any pre-configured scope.",
@@ -2131,30 +2095,6 @@
           "type": "string",
           "const": "deny-session-update",
           "markdownDescription": "Denies the session_update command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the shell_integration_compatible command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-shell-integration-compatible",
-          "markdownDescription": "Denies the shell_integration_compatible command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the shell_integration_parse command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-shell-integration-parse",
-          "markdownDescription": "Denies the shell_integration_parse command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the shell_integration_script command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-shell-integration-script",
-          "markdownDescription": "Denies the shell_integration_script command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the shell_integration_strip command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-shell-integration-strip",
-          "markdownDescription": "Denies the shell_integration_strip command without any pre-configured scope."
         },
         {
           "description": "Denies the store_api_key command without any pre-configured scope.",

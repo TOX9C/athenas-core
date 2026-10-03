@@ -197,10 +197,6 @@ fn main() {
             search_code,
             search_ripgrep,
             // MCP
-            mcp_init,
-            mcp_shutdown,
-            mcp_handle_request,
-            mcp_broadcast,
             mcp_tools,
             // Swarm
             swarm_create,
@@ -213,11 +209,6 @@ fn main() {
             swarm_update_task,
             swarm_send_message,
             swarm_read_mailbox,
-            // Shell integration
-            shell_integration_parse,
-            shell_integration_script,
-            shell_integration_compatible,
-            shell_integration_strip,
             // Browser
             browser_show,
             browser_hide,
@@ -253,6 +244,10 @@ fn main() {
             // Security
             store_api_key,
             clear_api_key,
+            // License (Lemon Squeezy activation — offline-forever afterward)
+            license_activate,
+            license_deactivate,
+            license_status,
             // Mobile mirror relay
             relay_start,
             relay_stop,

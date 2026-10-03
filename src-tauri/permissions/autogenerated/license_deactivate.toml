@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-license-deactivate"
+description = "Enables the license_deactivate command without any pre-configured scope."
+commands.allow = ["license_deactivate"]
+
+[[permission]]
+identifier = "deny-license-deactivate"
+description = "Denies the license_deactivate command without any pre-configured scope."
+commands.deny = ["license_deactivate"]

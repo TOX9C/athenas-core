@@ -11,12 +11,6 @@ use std::time::{Duration, Instant};
 /// Maximum bytes accepted by `fs_write_file` (10 MB).
 pub const MAX_FS_WRITE_BYTES: usize = 10 * 1024 * 1024;
 
-/// Maximum bytes accepted by `mcp_handle_request` (1 MB).
-pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
-
-/// Maximum bytes accepted by `shell_integration_parse` (1 MB).
-pub const MAX_DATA_BYTES: usize = 1024 * 1024;
-
 /// Maximum bytes accepted by `fs_read_file` / `fs_read_file_as_base64` (10 MB).
 pub const MAX_FS_READ_BYTES: usize = 10 * 1024 * 1024;
 

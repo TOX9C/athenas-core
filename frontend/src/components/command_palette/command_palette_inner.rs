@@ -45,7 +45,7 @@ fn palette_icon(cmd: &Command, color: &str) -> Element {
     }
 }
 
-const KBD_STYLE: &str = "font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--bgTertiary); border: 1px solid var(--border); color: var(--textMuted); font-family: var(--font-ui); line-height: 1.4;";
+const KBD_STYLE: &str = "font-size: 10px; padding: 1px 5px; border-radius: 4px; background: transparent; border: 1px solid var(--border); color: var(--textDim); font-family: var(--font-ui); line-height: 1.5;";
 
 #[component]
 pub fn CommandPalette() -> Element {
@@ -77,25 +77,25 @@ pub fn CommandPalette() -> Element {
         div {
             style: "position: fixed; inset: 0; z-index: 60; display: flex; justify-content: center; padding-top: 10vh;",
 
-            // Backdrop
+            // Backdrop — same scrim animation the modal system uses.
             div {
-                style: "position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 60%, transparent); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);",
+                style: "position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 60%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); animation: scrim-in var(--dur) var(--ease) both;",
                 onclick: move |_| command_state.write().close(),
             }
 
             // Palette container
             div {
                 class: "pane-astrolabe-mark",
-                style: "position: relative; z-index: 1; width: 600px; max-height: 480px; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);",
+                style: "position: relative; z-index: 1; width: 560px; max-width: calc(100vw - 32px); max-height: 440px; display: flex; flex-direction: column; overflow: hidden; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); animation: modal-rise var(--dur) var(--ease) both;",
                 role: "dialog",
                 "aria-modal": "true",
                 "aria-label": "Command palette",
 
                 // Search input
                 div {
-                    style: "display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border);",
+                    style: "display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--border);",
 
-                    IconSearch { size: Some(16), color: Some("var(--accent)".to_string()) }
+                    IconSearch { size: Some(15), color: Some("var(--textDim)".to_string()) }
 
                     input {
                         style: "flex: 1; background: transparent; border: none; outline: none; font-size: 15px; color: var(--text); font-family: var(--font-ui); caret-color: var(--accent);",
@@ -151,12 +151,12 @@ pub fn CommandPalette() -> Element {
                     }
 
                     div {
-                        style: "display: flex; align-items: center; gap: 6px;",
+                        style: "display: flex; align-items: center; gap: 8px; flex-shrink: 0;",
 
                         if !query.trim().is_empty() && flat_count > 0 {
                             span {
-                                style: "font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-family: var(--font-ui);",
-                                "{flat_count}"
+                                style: "font-size: 11px; color: var(--textDim); font-family: var(--font-ui);",
+                                "{flat_count} results"
                             }
                         }
 
@@ -200,9 +200,8 @@ pub fn CommandPalette() -> Element {
                                     let is_selected = idx == selected_idx();
                                     let shortcut_str = cmd.shortcut.as_ref().map(|s| format_shortcut(s));
                                     let icon_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
-                                    let cmd_text_color = if is_selected { "var(--accent)" } else { "var(--text)" };
-                                    let row_bg = if is_selected { "var(--bgHover)" } else { "transparent" };
-                                    let notch = if is_selected { "inset 2px 0 0 var(--accent)" } else { "inset 2px 0 0 transparent" };
+                                    let cmd_text_color = "var(--text)";
+                                    let row_bg = if is_selected { "color-mix(in srgb, var(--accent) 10%, transparent)" } else { "transparent" };
                                     let cmd_id = cmd.id.clone();
                                     let cmd_label = cmd.label.clone();
                                     let cmd_desc = cmd.description.clone();
@@ -210,7 +209,7 @@ pub fn CommandPalette() -> Element {
                                     items.push(rsx! {
                                         button {
                                             key: "{cmd_id}",
-                                            style: "display: flex; align-items: center; gap: 12px; padding: 9px 12px; width: 100%; text-align: left; border: none; border-radius: 8px; background: {row_bg}; box-shadow: {notch}; cursor: pointer; font-size: var(--text-sm); color: {cmd_text_color};",
+                                            style: "display: flex; align-items: center; gap: 12px; padding: 9px 12px; width: 100%; text-align: left; border: none; border-radius: 6px; background: {row_bg}; cursor: pointer; font-size: var(--text-sm); color: {cmd_text_color};",
                                             onmouseenter: move |_| selected_idx.set(idx),
                                             onclick: {
                                                 let handlers = handlers.clone();
@@ -245,7 +244,7 @@ pub fn CommandPalette() -> Element {
 
                                             if let Some(sc) = &shortcut_str {
                                                 kbd {
-                                                    style: "{KBD_STYLE} color: var(--accent);",
+                                                    style: "{KBD_STYLE}",
                                                     "{sc}"
                                                 }
                                             }
@@ -260,7 +259,7 @@ pub fn CommandPalette() -> Element {
 
                 // Footer
                 div {
-                    style: "display: flex; align-items: center; gap: 16px; padding: 9px 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--textDim); background: var(--bgSecondary);",
+                    style: "display: flex; align-items: center; gap: 14px; padding: 8px 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--textDim);",
 
                     span {
                         style: "display: inline-flex; align-items: center; gap: 5px;",

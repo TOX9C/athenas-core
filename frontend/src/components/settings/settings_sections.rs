@@ -126,9 +126,9 @@ pub(super) fn GeneralSettings() -> Element {
                 }
             }
             Toggle {
-                active: web_tools_on.read().clone(),
+                active: *web_tools_on.read(),
                 on_toggle: move |_| {
-                    let next = !web_tools_on.read().clone();
+                    let next = !*web_tools_on.read();
                     web_tools_on.set(next);
                     wasm_bindgen_futures::spawn_local(async move {
                         let _ = crate::tauri_bridge::store_set(
@@ -906,6 +906,182 @@ fn browser_diagnostic_value(object_name: &str, method_name: &str) -> String {
         .unwrap_or_default()
 }
 
+/// License activation (BUSL-1.1: commercial use requires a purchased
+/// license). Activate once — the record is stored locally and the app runs
+/// offline forever; this section informs, it never gates.
+#[component]
+fn LicenseSection() -> Element {
+    // None = not yet loaded; Some(json) mirrors the backend `license_status`
+    // response: {activated: bool, product?, customer_email?}.
+    let mut status = use_signal(|| Option::<serde_json::Value>::None);
+    let mut key_input = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    let toast_store = crate::components::shared::toast::use_toast_store();
+
+    let mut loaded = use_signal(|| false);
+    use_effect(move || {
+        if loaded() {
+            return;
+        }
+        loaded.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(raw) = crate::tauri_bridge::license_status().await {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    status.set(Some(value));
+                }
+            }
+        });
+    });
+
+    let activated = status
+        .read()
+        .as_ref()
+        .and_then(|s| s.get("activated"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let product = status
+        .read()
+        .as_ref()
+        .and_then(|s| s.get("product"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let email = status
+        .read()
+        .as_ref()
+        .and_then(|s| s.get("customer_email"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let on_activate = move |_| {
+        if busy() || key_input.read().trim().is_empty() {
+            return;
+        }
+        busy.set(true);
+        let key = key_input.read().trim().to_string();
+        let mut toast = toast_store;
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::tauri_bridge::license_activate(&key).await {
+                Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Ok(value) => {
+                        status.set(Some(value));
+                        key_input.set(String::new());
+                        toast.write().push(crate::components::shared::toast::Toast {
+                            id: next_toast_id("license"),
+                            toast_type: crate::components::shared::toast::ToastType::Success,
+                            title: "License activated".to_string(),
+                            message: "Activated. The app never re-checks — it runs offline forever."
+                                .to_string(),
+                            duration_ms: 5000,
+                        });
+                    }
+                    Err(e) => {
+                        toast.write().push(crate::components::shared::toast::Toast {
+                            id: next_toast_id("license"),
+                            toast_type: crate::components::shared::toast::ToastType::Error,
+                            title: "License activation failed".to_string(),
+                            message: format!("Bad status response: {e}"),
+                            duration_ms: 6000,
+                        });
+                    }
+                },
+                Err(e) => {
+                    toast.write().push(crate::components::shared::toast::Toast {
+                        id: next_toast_id("license"),
+                        toast_type: crate::components::shared::toast::ToastType::Error,
+                        title: "License activation failed".to_string(),
+                        message: format!("{:?}", e),
+                        duration_ms: 6000,
+                    });
+                }
+            }
+            busy.set(false);
+        });
+    };
+
+    let on_deactivate = move |_| {
+        if busy() {
+            return;
+        }
+        busy.set(true);
+        let mut toast = toast_store;
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::tauri_bridge::license_deactivate().await {
+                Ok(raw) => {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                        status.set(Some(value));
+                    }
+                }
+                Err(e) => {
+                    toast.write().push(crate::components::shared::toast::Toast {
+                        id: next_toast_id("license"),
+                        toast_type: crate::components::shared::toast::ToastType::Error,
+                        title: "License deactivation failed".to_string(),
+                        message: format!("{:?}", e),
+                        duration_ms: 6000,
+                    });
+                }
+            }
+            busy.set(false);
+        });
+    };
+
+    rsx! {
+        GroupLabel { label: "License", first: true }
+
+        if activated {
+            LabeledField {
+                label: "Status",
+                description: Some("Activated once and valid offline forever — the app never re-checks or degrades based on license state."),
+                div {
+                    style: "display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap;",
+                    span {
+                        style: "font-size: 10px; color: var(--textMuted); background: var(--bgTertiary); padding: 4px 9px; border-radius: var(--radius-sm); border: 1px solid var(--border); font-family: var(--font-ui);",
+                        "Activated — {product}"
+                    }
+                    if !email.is_empty() {
+                        span {
+                            style: "font-size: 10px; color: var(--textDim); font-family: var(--font-ui);",
+                            "{email}"
+                        }
+                    }
+                    button {
+                        class: "btn-secondary btn-sm",
+                        style: "padding: 4px 10px; font-weight: 500;",
+                        disabled: busy(),
+                        onclick: on_deactivate,
+                        "Deactivate"
+                    }
+                }
+            }
+        } else {
+            LabeledField {
+                label: "Commercial license",
+                description: Some("Personal/BUSL — free for non-commercial use. Commercial use requires a purchased license key; enter it here to activate."),
+                div {
+                    style: "display: flex; align-items: center; gap: 8px; margin-top: 4px;",
+                    input {
+                        class: "field",
+                        style: "flex: 1; box-sizing: border-box; font-family: var(--font-mono);",
+                        r#type: "text",
+                        placeholder: "XXXXXX-XXXXXX-XXXXXX-XXXXXX",
+                        value: "{key_input}",
+                        oninput: move |e| key_input.set(e.value()),
+                    }
+                    button {
+                        class: "btn-secondary btn-sm",
+                        style: "padding: 4px 10px; font-weight: 500;",
+                        disabled: busy() || key_input.read().trim().is_empty(),
+                        onclick: on_activate,
+                        if busy() { "Activating…" } else { "Activate" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub(super) fn AboutSettings() -> Element {
     let mut exporting = use_signal(|| false);
@@ -951,6 +1127,15 @@ pub(super) fn AboutSettings() -> Element {
             div {
                 style: "font-family: var(--font-display); font-style: italic; color: var(--textDim); font-size: 13px; margin-top: 14px; max-width: 380px; text-align: center; line-height: 1.6;",
                 "AI-powered software orchestration and development environment. Built with Tauri, Dioxus, and a lot of coffee."
+            }
+        }
+
+        // ── License ──
+        div {
+            style: "max-width: 620px; margin: 0 auto; padding: 0 20px 28px; width: 100%; box-sizing: border-box;",
+            div {
+                style: "border-top: 1px solid var(--border); padding-top: 24px; margin-top: 8px;",
+                LicenseSection {}
             }
         }
 

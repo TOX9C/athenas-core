@@ -38,11 +38,6 @@ impl CommandTracker {
     }
 }
 
-/// Create a new command tracker (mirrors the TS `createCommandTracker`).
-pub fn create_command_tracker() -> CommandTracker {
-    CommandTracker::new()
-}
-
 // ---------------------------------------------------------------------------
 // ShellIntegrationEvent
 // ---------------------------------------------------------------------------

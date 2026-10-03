@@ -496,16 +496,16 @@ pub(crate) fn attach_kitty_graphics(term_val: &JsValue, respond_js: &JsValue) ->
                 .ok()
                 .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
         })
-        .and_then(|attach_fn| attach_fn.call2(&term_val, &term_val, respond_js).ok());
+        .and_then(|attach_fn| attach_fn.call2(term_val, term_val, respond_js).ok());
     if let Some(addon) = attached {
         if let Ok(feed_fn) = js_sys::Reflect::get(&addon, &JsValue::from_str("feed")) {
             let _ = js_sys::Reflect::set(
-                &term_val,
+                term_val,
                 &JsValue::from_str("__athenaKittyFeed"),
                 &feed_fn,
             );
         }
-        return js_sys::Reflect::set(&term_val, &JsValue::from_str("__athenaKitty"), &addon)
+        return js_sys::Reflect::set(term_val, &JsValue::from_str("__athenaKitty"), &addon)
             .ok()
             .map(|_| addon);
     }

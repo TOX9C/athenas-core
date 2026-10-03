@@ -52,6 +52,10 @@ athena-store = { path = "../crates/athena-store" }
 athena-browser = { path = "../crates/athena-browser" }
 athena-plugins = { path = "../crates/athena-plugins" }
 athena-terminal = { path = "../crates/athena-terminal" }
+# Already in the dependency tree (pinned at 0.12.28 by athena-core) — declared
+# here so the license-activation commands can call the Lemon Squeezy API
+# without adding any new crate to the graph.
+reqwest = { version = "0.12", features = ["json"] }
 
 # WebDriver automation plugin: optional behind the `webdriver` feature and
 # only REGISTERED in debug builds (main.rs gates on cfg(debug_assertions) +

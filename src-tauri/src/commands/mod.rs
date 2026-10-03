@@ -18,6 +18,7 @@ mod drop;
 mod filesystem;
 mod git;
 mod kanban;
+mod license;
 mod mcp;
 mod notification;
 mod output;
@@ -31,7 +32,6 @@ mod resume;
 mod routines;
 mod search;
 mod session;
-mod shell;
 pub(crate) mod store;
 mod swarm;
 pub(crate) mod voice;
@@ -64,7 +64,8 @@ pub use filesystem::{
 };
 pub use git::{git_apply_file, git_apply_hunk, git_checkpoint_create, git_checkpoint_list, git_checkpoint_restore, git_diff, git_diff_file, git_discover, git_status, git_worktree_add, git_worktree_remove};
 pub use kanban::{kanban_create_task, kanban_delete_task, kanban_get_tasks, kanban_update_task};
-pub use mcp::{mcp_broadcast, mcp_handle_request, mcp_init, mcp_shutdown, mcp_tools};
+pub use license::{license_activate, license_deactivate, license_status};
+pub use mcp::mcp_tools;
 pub use notification::{
     notification_clear_all, notification_count, notification_counts, notification_dismiss,
     notification_history, notification_mark_all_read, notification_mark_read, notification_push,
@@ -108,10 +109,6 @@ pub(crate) use workspace::WORKSPACE_CHANGED_EVENT;
 pub use search::{search_code, search_ripgrep};
 pub use session::{
     session_add_message, session_create, session_delete, session_get, session_list, session_update,
-};
-pub use shell::{
-    shell_integration_compatible, shell_integration_parse, shell_integration_script,
-    shell_integration_strip,
 };
 pub use store::{store_delete, store_get, store_has, store_set, test_llm_api_key};
 pub use swarm::{
@@ -663,9 +660,10 @@ mod tests {
             &store,
             &ids(&[("pane-a", "new-resume-id")]),
             &ids(&[]),
+            true,
         )
         .unwrap();
-        assert_eq!(updated, 1);
+        assert!(updated.is_some());
 
         let json: String = store.get("workspaces").unwrap().unwrap();
         let root: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -694,25 +692,31 @@ mod tests {
             )
             .unwrap();
 
-        let updated =
-            merge_resume_ids_into_workspaces(&store, &ids(&[("pane-unknown", "rid")]), &ids(&[]))
-                .unwrap();
-        assert_eq!(updated, 0);
+        let updated = merge_resume_ids_into_workspaces(
+            &store,
+            &ids(&[("pane-unknown", "rid")]),
+            &ids(&[]),
+            true,
+        )
+        .unwrap();
+        assert!(updated.is_none());
     }
 
     #[test]
     fn merge_resume_ids_handles_missing_or_empty_workspaces_key() {
         let store = athena_store::KeyValueStore::new_empty();
         // Missing key.
-        assert_eq!(
-            merge_resume_ids_into_workspaces(&store, &ids(&[("p", "r")]), &ids(&[])).unwrap(),
-            0
+        assert!(
+            merge_resume_ids_into_workspaces(&store, &ids(&[("p", "r")]), &ids(&[]), true)
+                .unwrap()
+                .is_none()
         );
         // Empty string value.
         store.set_sync("workspaces", &"").unwrap();
-        assert_eq!(
-            merge_resume_ids_into_workspaces(&store, &ids(&[("p", "r")]), &ids(&[])).unwrap(),
-            0
+        assert!(
+            merge_resume_ids_into_workspaces(&store, &ids(&[("p", "r")]), &ids(&[]), true)
+                .unwrap()
+                .is_none()
         );
         // Empty ids map is a no-op even with a real workspace.
         store
@@ -721,9 +725,10 @@ mod tests {
                 &serde_json::json!({ "spaces": [], "active_space_id": null }).to_string(),
             )
             .unwrap();
-        assert_eq!(
-            merge_resume_ids_into_workspaces(&store, &ids(&[]), &ids(&[])).unwrap(),
-            0
+        assert!(
+            merge_resume_ids_into_workspaces(&store, &ids(&[]), &ids(&[]), true)
+                .unwrap()
+                .is_none()
         );
     }
 }

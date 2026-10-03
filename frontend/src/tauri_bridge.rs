@@ -330,6 +330,25 @@ pub async fn store_set(key: &str, value: &str) -> TauriResult<()> {
     result
 }
 
+/// License (Lemon Squeezy activation; offline-forever after activation).
+/// All three return the status JSON `{activated, product?, customer_email?}`.
+/// `license_status` is a local read only — it never touches the network.
+pub async fn license_activate(key: &str) -> TauriResult<String> {
+    invoke(
+        "license_activate",
+        &serde_json::json!({ "key": key }).to_string(),
+    )
+    .await
+}
+
+pub async fn license_deactivate() -> TauriResult<String> {
+    invoke("license_deactivate", "{}").await
+}
+
+pub async fn license_status() -> TauriResult<String> {
+    invoke("license_status", "{}").await
+}
+
 /// Export a redacted diagnostic bundle assembled by the native backend.
 /// `frontend_logs` and `frontend_metrics` are supplied by the bounded browser
 /// diagnostics ring in `frontend/index.html`.

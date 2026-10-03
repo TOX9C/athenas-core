@@ -13,8 +13,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
-/// Maximum accepted glob pattern characters.
-
 /// A time- and/or watch-triggered assistant job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutineRule {

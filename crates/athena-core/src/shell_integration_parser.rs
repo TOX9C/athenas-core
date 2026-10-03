@@ -167,13 +167,6 @@ impl Default for Osc633Parser {
         Self::new()
     }
 }
-
-/// Convenience function: parse a single chunk of data and return all sequences.
-pub fn parse_osc633(data: &str) -> Vec<ParsedSequence> {
-    let mut parser = Osc633Parser::new();
-    parser.feed(data)
-}
-
 // ---------------------------------------------------------------------------
 // parsePayload
 // ---------------------------------------------------------------------------
@@ -215,57 +208,6 @@ fn parse_payload(payload: &str) -> Option<ShellIntegrationSequence> {
         }
         _ => None,
     }
-}
-
-// ---------------------------------------------------------------------------
-// stripOsc633
-// ---------------------------------------------------------------------------
-
-/// Strip all OSC 633 sequences from a string, returning only the visible text.
-pub fn strip_osc633(data: &str) -> String {
-    let mut result = String::new();
-    let mut pos = 0;
-
-    while pos < data.len() {
-        let osc_start = match data[pos..].find(OSC_PREFIX) {
-            Some(i) => pos + i,
-            None => {
-                result.push_str(&data[pos..]);
-                break;
-            }
-        };
-
-        result.push_str(&data[pos..osc_start]);
-        let payload_start = osc_start + OSC_PREFIX.len();
-
-        let bel_idx = data[payload_start..]
-            .find(BEL)
-            .map(|i| payload_start + i + BEL.len_utf8());
-        let st_idx = data[payload_start..]
-            .find(ST)
-            .map(|i| payload_start + i + ST.len());
-
-        match (bel_idx, st_idx) {
-            (Some(bi), Some(si)) if bi < si => {
-                pos = bi;
-            }
-            (Some(_bi), Some(si)) => {
-                pos = si;
-            }
-            (Some(bi), None) => {
-                pos = bi;
-            }
-            (None, Some(si)) => {
-                pos = si;
-            }
-            (None, None) => {
-                result.push_str(&data[osc_start..]);
-                break;
-            }
-        }
-    }
-
-    result
 }
 
 #[cfg(test)]

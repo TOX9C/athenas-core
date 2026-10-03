@@ -4,7 +4,7 @@ pub mod cell;
 pub mod colors;
 pub mod row;
 
-use crate::grid::cell::{Cell, CellFlags};
+use crate::grid::cell::{Cell, CellExtra, CellFlags};
 use crate::grid::colors::Color;
 use crate::grid::row::Row;
 use serde::{Deserialize, Serialize};
@@ -67,6 +67,17 @@ pub struct Grid {
     pub cursor_style: CursorStyle,
     pub title: String,
     pub icon_name: String,
+    /// Last OSC 52 clipboard payload (decoded UTF-8), if any. The terminal
+    /// crate has no clipboard sink; the session exposes this upward.
+    pub osc52_clipboard: Option<String>,
+    /// G0 charset: true when DEC special graphics (ESC ( 0) is selected.
+    /// G0-only scope: G1 designates and SO/SI shifts are not tracked.
+    charset_graphics: bool,
+    /// OSC 8 hyperlink URI table; cells reference entries by id via
+    /// `CellExtra::hyperlink_id`, so Cell size stays unchanged.
+    hyperlinks: Vec<String>,
+    /// Currently active OSC 8 hyperlink (table index), if any.
+    current_hyperlink: Option<u16>,
     /// Current SGR (Select Graphic Rendition) state, applied to next cells
     current_fg: Color,
     current_bg: Color,
@@ -130,6 +141,10 @@ impl Grid {
             cursor_style: CursorStyle::Block,
             title: String::new(),
             icon_name: String::new(),
+            osc52_clipboard: None,
+            charset_graphics: false,
+            hyperlinks: Vec::new(),
+            current_hyperlink: None,
             current_fg: Color::Named(colors::NamedColor::Foreground),
             current_bg: Color::Named(colors::NamedColor::Background),
             current_flags: CellFlags::empty(),
@@ -181,6 +196,53 @@ impl Grid {
         self.mark_cols_dirty(row, 0..self.cols);
     }
 
+    /// Designate the G0 charset (DECSCL). Only `'0'` (DEC special graphics)
+    /// and `'B'` (ASCII) are honored; G1 and SO/SI are out of scope.
+    pub fn set_charset(&mut self, designator: u8) {
+        self.charset_graphics = designator == b'0';
+    }
+
+    /// Translate a printable char through the active G0 charset.
+    /// Unknown bytes in DEC graphics mode pass through unchanged.
+    pub fn map_charset(&self, c: char) -> char {
+        if !self.charset_graphics {
+            return c;
+        }
+        dec_special_map(c)
+    }
+
+    /// Set the active OSC 8 hyperlink (empty/None clears it). Reused URIs
+    /// share one table entry; table growth is bounded by distinct URIs seen.
+    pub fn set_hyperlink(&mut self, uri: Option<&str>) {
+        self.current_hyperlink = match uri {
+            Some(u) if !u.is_empty() => {
+                // ponytail: linear scan over distinct URIs; fine for realistic
+                // counts, hash if a terminal ever tracks thousands of links
+                let id = self
+                    .hyperlinks
+                    .iter()
+                    .position(|s| s == u)
+                    .unwrap_or_else(|| {
+                        // u16 id space: on overflow, drop the link rather than
+                        // misattributing it to a saturated shared id.
+                        if self.hyperlinks.len() >= u16::MAX as usize {
+                            self.hyperlinks.len()
+                        } else {
+                            self.hyperlinks.push(u.to_string());
+                            self.hyperlinks.len() - 1
+                        }
+                    });
+                u16::try_from(id).ok()
+            }
+            _ => None,
+        };
+    }
+
+    /// Look up a hyperlink URI by the id stored on a cell.
+    pub fn hyperlink_uri(&self, id: u16) -> Option<&str> {
+        self.hyperlinks.get(id as usize).map(String::as_str)
+    }
+
     /// Insert a character at the cursor position
     pub fn insert_char(&mut self, c: char) {
         if self.cursor.row >= self.rows_count || self.cursor.col >= self.cols {
@@ -203,13 +265,19 @@ impl Grid {
             if self.insert_mode {
                 row.shift_right(self.cursor.col, &self.default_cell);
             }
-            let cell = Cell {
+            let mut cell = Cell {
                 c,
                 fg: self.current_fg.clone(),
                 bg: self.current_bg.clone(),
                 flags: self.current_flags,
                 ..Default::default()
             };
+            if let Some(id) = self.current_hyperlink {
+                cell.extra = Some(Box::new(CellExtra {
+                    hyperlink_id: Some(id),
+                    ..Default::default()
+                }));
+            }
             row.set_cell(self.cursor.col, cell);
             Self::set_dirty_bit(&mut self.dirty_bits, self.cols, self.cursor.row, self.cursor.col);
             if self.cursor.col + 1 >= self.cols {
@@ -820,6 +888,42 @@ impl Grid {
             row.reset(&self.default_cell);
         }
         self.full_redraw = true;
+    }
+}
+
+/// VT100 DEC special-graphics charset (ESC ( 0). Chars not in this table
+/// pass through unchanged.
+pub fn dec_special_map(c: char) -> char {
+    match c {
+        '_' => ' ',
+        '`' => '◆',
+        'a' => '▒',
+        'f' => '°',
+        'g' => '±',
+        'h' => '␤',
+        'i' => '␛',
+        'j' => '┘',
+        'k' => '┐',
+        'l' => '┌',
+        'm' => '└',
+        'n' => '┼',
+        'o' => '⎺',
+        'p' => '⎻',
+        'q' => '─',
+        'r' => '⎼',
+        's' => '⎽',
+        't' => '├',
+        'u' => '┤',
+        'v' => '┴',
+        'w' => '┬',
+        'x' => '│',
+        'y' => '≤',
+        'z' => '≥',
+        '{' => 'π',
+        '|' => '≠',
+        '}' => '£',
+        '~' => '·',
+        other => other,
     }
 }
 

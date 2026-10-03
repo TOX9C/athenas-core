@@ -1,7 +1,6 @@
 //! Shell-specific integration scripts and environment helpers.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // Shell integration scripts
 // ---------------------------------------------------------------------------
@@ -52,21 +51,4 @@ fn get_bash_integration() -> String {
 
 fn get_fish_integration() -> String {
     include_str!("../../../shell/athena-fish.fish").to_string()
-}
-
-/// Check whether the given shell is compatible with shell integration.
-pub fn is_shell_integration_compatible(shell: &str) -> bool {
-    if cfg!(windows) {
-        return false;
-    }
-    let base = shell.rsplit('/').next().unwrap_or("");
-    matches!(base, "zsh" | "bash" | "fish" | "sh")
-}
-
-/// Build environment variables for shell integration.
-pub fn build_shell_integration_env(_shell: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    map.insert("ATHENA_SHELL_INTEGRATION".to_string(), "1".to_string());
-    map.insert("ATHENA_TERM".to_string(), "athena-core".to_string());
-    map
 }

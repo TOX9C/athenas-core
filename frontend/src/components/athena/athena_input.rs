@@ -263,7 +263,7 @@ pub(crate) fn retry_last_message(athena_state: &mut Signal<AthenaState>) {
         let state = athena_state.read();
         state.retry_not_before_ms.and_then(|not_before| {
             let remaining_ms = not_before - chrono::Utc::now().timestamp_millis();
-            (remaining_ms > 0).then_some((remaining_ms as u64 + 999) / 1000)
+            (remaining_ms > 0).then_some((remaining_ms as u64).div_ceil(1000))
         })
     };
     if let Some(wait) = cooldown_left_secs {

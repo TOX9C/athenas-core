@@ -602,10 +602,6 @@ pub struct AppState {
     /// PTY session manager for terminal operations.
     pub session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
 
-    /// Requires `Mutex` because `Osc633Parser::feed` takes `&mut self`.
-    pub shell_integration_parser:
-        Arc<parking_lot::Mutex<athena_core::shell_integration::Osc633Parser>>,
-
     /// Pending user-response questions shared between TauriEventSender and
     /// the athena_user_answer command.
     pub pending_questions:
@@ -737,9 +733,6 @@ impl AppState {
         // Tool executor reference for MCP server — wire it up after both are created
         let swarm_coordinator = Arc::new(tokio::sync::Mutex::new(
             athena_core::swarm::SwarmCoordinator::new(),
-        ));
-        let shell_integration_parser = Arc::new(parking_lot::Mutex::new(
-            athena_core::shell_integration::Osc633Parser::new(),
         ));
         let kanban_backend = Arc::new(athena_core::kanban::KanbanBackend::new(Arc::clone(&store)));
 
@@ -895,7 +888,6 @@ impl AppState {
             mcp_server,
             swarm_coordinator,
             session_manager,
-            shell_integration_parser,
             kanban_backend,
             pending_questions,
             relay_shared_panes: parking_lot::Mutex::new(HashSet::new()),
@@ -1685,6 +1677,39 @@ impl AppState {
                     {
                         if let Err(e) = plugin_manager.health_check() {
                             log::warn!("plugin health_check failed: {e}");
+                        }
+                    }
+                    // Drain host→plugin pending messages every heartbeat:
+                    // emit each on `plugin:event` (plugin_event_bus stores
+                    // these verbatim; relay/ws.rs forwards the channel) and
+                    // complete it so delivery happens once. Manager locks
+                    // are short-held inside list/get/complete only — never
+                    // across emit.
+                    {
+                        let mut drained = Vec::new();
+                        for session in plugin_manager.list_sessions() {
+                            drained.extend(plugin_manager.get_pending_messages(&session.id));
+                        }
+                        for message in drained {
+                            match serde_json::to_string(&message) {
+                                Ok(payload) => {
+                                    if let Some(handle) = app_handle.lock().clone() {
+                                        match handle.emit("plugin:event", payload) {
+                                            Ok(()) => {
+                                                // Complete only after confirmed delivery;
+                                                // a failed emit must not drop the message.
+                                                plugin_manager.complete_message(&message.id);
+                                            }
+                                            Err(e) => {
+                                                log::warn!("failed to emit pending plugin message; will retry: {e}");
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!("failed to serialize pending plugin message: {e}");
+                                }
+                            }
                         }
                     }
                     let plugin_panes: HashSet<String> = plugin_manager

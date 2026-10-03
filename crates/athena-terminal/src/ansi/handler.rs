@@ -103,7 +103,7 @@ pub fn apply_ops_with_responses(grid: &mut Grid, ops: Vec<AnsiOp>) -> Vec<Vec<u8
     for op in ops {
         match op {
             AnsiOp::Print(c) => {
-                grid.insert_char(c);
+                grid.insert_char(grid.map_charset(c));
             }
             AnsiOp::Execute(byte) => {
                 match byte {
@@ -163,9 +163,10 @@ pub fn apply_ops_with_responses(grid: &mut Grid, ops: Vec<AnsiOp>) -> Vec<Vec<u8
                         grid.move_cursor_to(0, 0);
                     }
                     b'H' if intermediates.is_empty() => grid.set_tab_stop(), // HTS
-                    // ESC ( B / ESC ) 0 select a character set. The grid
-                    // currently renders Unicode directly and has no alternate
-                    // charset state, so these selectors are safely consumed.
+                    // ESC ( Ps designates G0. Only '0' (DEC special graphics)
+                    // and 'B' (ASCII) are honored; G1 (ESC ) Ps) and SO/SI
+                    // shifts are out of scope — translated at insert time.
+                    _ if intermediates == b"(" => grid.set_charset(byte),
                     _ => {}
                 }
             }
@@ -182,17 +183,79 @@ pub fn apply_ops_with_responses(grid: &mut Grid, ops: Vec<AnsiOp>) -> Vec<Vec<u8
                                     let title = String::from_utf8_lossy(&params[1]).to_string();
                                     grid.title = title;
                                 }
+                            // OSC 8 ; params ; URI — open hyperlink. Embedded
+                            // URIs use empty params (";;"); empty URI closes.
+                            8 if params.len() > 2 => {
+                                let uri = String::from_utf8_lossy(&params[2]).to_string();
+                                grid.set_hyperlink(Some(&uri));
+                            }
+                            8 => grid.set_hyperlink(None),
+                            // OSC 52 ; selection ; base64 — clipboard write.
+                            // Stored on the grid (no clipboard sink in-crate);
+                            // "?" queries and invalid base64 are ignored.
+                            // ponytail: 1 MB decoded cap; bigger payloads are dropped silently.
+                            52 if params.len() > 2 => {
+                                const MAX_OSC52_BYTES: usize = 1024 * 1024;
+                                if params[2].len() <= MAX_OSC52_BYTES * 4 / 3 {
+                                    if let Some(text) = base64_decode(&params[2])
+                                        .and_then(|b| String::from_utf8(b).ok())
+                                        .filter(|t| t.len() <= MAX_OSC52_BYTES)
+                                    {
+                                        grid.osc52_clipboard = Some(text);
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
                 }
             }
+            // DCS (incl. Kitty graphics, `ESC P q … ESC \`) is dropped at
+            // the cell grid by design: images are rendered by the frontend
+            // `addon-kitty-graphics.js` overlay (see KITTY_WINDOW_ID in
+            // session.rs), never reflowed into cells.
             AnsiOp::DcsHook { .. } => {}
             AnsiOp::DcsPut(_) => {}
             AnsiOp::DcsUnhook => {}
         }
     }
     responses
+}
+
+/// Minimal base64 (RFC 4648) decoder for OSC 52 payloads. Returns None on
+/// malformed input; a crate dep isn't warranted for one call site.
+fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
+    fn val(b: u8) -> Option<u8> {
+        match b {
+            b'A'..=b'Z' => Some(b - b'A'),
+            b'a'..=b'z' => Some(b - b'a' + 26),
+            b'0'..=b'9' => Some(b - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let clean: Vec<u8> = input
+        .iter()
+        .copied()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    let body = &clean[..clean.len() - clean.iter().rev().take_while(|&&b| b == b'=').count()];
+    if clean.len() - body.len() > 2 || body.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(body.len() * 3 / 4 + 3);
+    let mut acc: u32 = 0;
+    let mut nbits = 0u32;
+    for &b in body {
+        acc = (acc << 6) | val(b)? as u32;
+        nbits += 6;
+        if nbits >= 8 {
+            nbits -= 8;
+            out.push((acc >> nbits) as u8);
+        }
+    }
+    Some(out)
 }
 
 fn apply_csi(
@@ -434,5 +497,41 @@ mod tests {
         parser.advance(&mut handler, b"\x1b[?1048l");
         let _ = apply_ops_with_responses(&mut grid, handler.ops());
         assert_eq!(grid.cursor.col, 2);
+    }
+
+    #[test]
+    fn dec_graphics_charset_translates_box_chars_and_ascii_restores() {
+        let (grid, _) = parse(b"\x1b(0lqk\x1b(Bx");
+        assert_eq!(grid.get_cell(0, 0).map(|c| c.c), Some('┌'));
+        assert_eq!(grid.get_cell(0, 1).map(|c| c.c), Some('─'));
+        assert_eq!(grid.get_cell(0, 2).map(|c| c.c), Some('┐'));
+        assert_eq!(grid.get_cell(0, 3).map(|c| c.c), Some('x'));
+
+        let (grid, _) = parse(b"\x1b(0jmx");
+        assert_eq!(grid.get_cell(0, 0).map(|c| c.c), Some('┘'));
+        assert_eq!(grid.get_cell(0, 1).map(|c| c.c), Some('└'));
+        assert_eq!(grid.get_cell(0, 2).map(|c| c.c), Some('│'));
+    }
+
+    #[test]
+    fn osc52_stores_decoded_clipboard() {
+        // "hello" in base64
+        let (grid, _) = parse(b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(grid.osc52_clipboard.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn osc8_attaches_and_clears_hyperlink() {
+        let (grid, _) =
+            parse(b"\x1b]8;;https://example.com\x07ab\x1b]8;;\x07c");
+        let a = grid.get_cell(0, 0).unwrap();
+        let b = grid.get_cell(0, 1).unwrap();
+        let id_a = a.extra.as_ref().and_then(|e| e.hyperlink_id).unwrap();
+        assert_eq!(
+            b.extra.as_ref().and_then(|e| e.hyperlink_id),
+            Some(id_a)
+        );
+        assert_eq!(grid.hyperlink_uri(id_a), Some("https://example.com"));
+        assert!(grid.get_cell(0, 2).unwrap().extra.is_none());
     }
 }
