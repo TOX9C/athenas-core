@@ -14,9 +14,38 @@ use serde_json::Value;
 // ---------------------------------------------------------------------------
 
 /// Allowed executable names for MCP server commands.
+///
+/// Shells (`sh`, `bash`, `zsh`) are deliberately excluded: with `-c` in args
+/// they turn the whitelist into arbitrary command execution.
 const ALLOWED_MCP_COMMANDS: &[&str] = &[
-    "node", "python", "python3", "ruby", "cargo", "sh", "bash", "zsh", "npx", "deno", "uv", "uvx",
-    "pipx",
+    "node", "python", "python3", "ruby", "cargo", "npx", "deno", "uv", "uvx", "pipx",
+];
+
+/// Interpreter flags that execute arbitrary argument text as code. Rejected
+/// for every whitelisted command so the whitelist cannot be bypassed through
+/// `args`.
+const FORBIDDEN_MCP_ARGS: &[&str] = &["-c", "-e", "--eval"];
+
+/// Environment variables that can inject code into, or hijack, the spawned
+/// MCP server process. Matched case-insensitively.
+const FORBIDDEN_MCP_ENV_VARS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "BASH_ENV",
+    "ENV",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "RUBYOPT",
+    "RUBYLIB",
+    "PERL5OPT",
+    "PERL5LIB",
 ];
 
 /// Shell metacharacters that indicate injection risk in hook scripts.
@@ -31,7 +60,11 @@ const SHELL_METACHARACTERS: &[char] = &[';', '|', '&', '$', '`', '\n'];
 ///   no absolute paths, no path traversal).
 /// - **MCP commands**: must be a whitelisted executable name (no absolute
 ///   paths, no `./` prefixes).
-/// - **MCP env**: must not override `PATH` or `HOME`.
+/// - **MCP args**: must not contain interpreter execution flags (`-c`,
+///   `-e`, `--eval`).
+/// - **MCP env**: must not set `PATH`, `HOME`, or code-injection variables
+///   such as `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`,
+///   `BASH_ENV`, or `PYTHONPATH`.
 pub fn validate_plugin_manifest(manifest: &PluginManifest) -> Result<(), PluginError> {
     validate_identifier("plugin id", &manifest.id, 128)?;
     validate_text("plugin name", &manifest.name, 256)?;
@@ -75,6 +108,7 @@ pub fn validate_plugin_manifest(manifest: &PluginManifest) -> Result<(), PluginE
     // Validate the embedded mcp_config if present.
     if let Some(ref mcp_config) = manifest.mcp_config {
         validate_mcp_command(&mcp_config.command)?;
+        validate_mcp_args(&mcp_config.args)?;
         if let Some(ref env) = mcp_config.env {
             validate_mcp_env(env)?;
         }
@@ -442,12 +476,11 @@ fn json_type_matches(kind: &str, value: &Value) -> bool {
 pub fn validate_plugin_install_method(method: &PluginInstallMethod) -> Result<(), PluginError> {
     match method {
         PluginInstallMethod::Builtin => Ok(()),
-        PluginInstallMethod::McpServer {
-            command,
-            args: _,
-            env,
-        } => {
+        PluginInstallMethod::McpServer { command, args, env } => {
             validate_mcp_command(command)?;
+            if let Some(args) = args {
+                validate_mcp_args(args)?;
+            }
             if let Some(ref env_map) = env {
                 validate_mcp_env(env_map)?;
             }
@@ -549,10 +582,23 @@ fn validate_text(kind: &str, value: &str, max_bytes: usize) -> Result<(), Plugin
     Ok(())
 }
 
+/// Reject interpreter-style execution flags (`-c`, `-e`, `--eval`) that would
+/// let a whitelisted executable run arbitrary code supplied via args.
+fn validate_mcp_args(args: &[String]) -> Result<(), PluginError> {
+    for arg in args {
+        if FORBIDDEN_MCP_ARGS.contains(&arg.as_str()) {
+            return Err(PluginError::ValidationFailed(format!(
+                "MCP args must not contain interpreter execution flag '{arg}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_mcp_env(env: &HashMap<String, String>) -> Result<(), PluginError> {
-    let forbidden = ["PATH", "HOME"];
     for key in env.keys() {
-        if forbidden.contains(&key.as_str()) {
+        let key_upper = key.to_ascii_uppercase();
+        if FORBIDDEN_MCP_ENV_VARS.contains(&key_upper.as_str()) {
             return Err(PluginError::ValidationFailed(format!(
                 "MCP env must not override '{key}'"
             )));

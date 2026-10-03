@@ -111,11 +111,13 @@ pub struct ToolDefinition {
 
 /// Build the MCP tools that are executable through the external transport.
 ///
-/// The historical protocol also contained agent-reporting tools that belong to
-/// the dedicated agent-comms channel, not this request/response executor. They
-/// are intentionally omitted here until they have a real MCP implementation;
-/// advertising a tool that returns a placeholder is worse than a smaller,
-/// accurate discovery result.
+/// `notify`, `status_update`, and `athena_forward_output` are
+/// agent-reporting push channels, not request/response tools; they are
+/// intentionally omitted from discovery. `request_input` is also omitted
+/// from discovery: dispatch answers `tools/call` for it via the agent
+/// comms handler (see `mcp_dispatch.rs`), so agents invoke it directly
+/// rather than via `tools/list`. Everything advertised here is backed by
+/// the canonical [`crate::tool_executor::ToolExecutor`].
 pub fn get_tools() -> Vec<ToolDefinition> {
     let tools = vec![
         ToolDefinition {
@@ -250,25 +252,13 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "read_agent_messages".into(),
-            description: "List all connected agent sessions.".into(),
+            description: "List connected agent sessions and their recent activity, optionally filtered by agent_id.".into(),
             input_schema: ToolSchema {
                 type_: "object".into(),
                 properties: serde_json::json!({
                     "agent_id": { "type": "string" }
                 }),
                 required: None,
-            },
-        },
-        ToolDefinition {
-            name: "request_input".into(),
-            description: "Request input from the user. Use this when an agent needs clarification or a decision to proceed.".into(),
-            input_schema: ToolSchema {
-                type_: "object".into(),
-                properties: serde_json::json!({
-                    "prompt": { "type": "string", "description": "The question or prompt to present to the user" },
-                    "title": { "type": "string", "description": "Optional title for the input request" }
-                }),
-                required: Some(vec!["prompt".into()]),
             },
         },
         ToolDefinition {
@@ -316,6 +306,8 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     | "spawn_agents"
                     | "get_output"
                     | "list_agent_panes"
+                    | "send_message_to_agent"
+                    | "read_agent_messages"
                     | "code_search"
                     | "search_files"
             )

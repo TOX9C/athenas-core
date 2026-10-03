@@ -19,7 +19,8 @@ pub(super) async fn handle_request_impl(
     match req.method.as_str() {
         "initialize" => {
             let params = &req.params;
-            if params.get("token").and_then(|t| t.as_str()) != Some(token) {
+            let supplied = params.get("token").and_then(|t| t.as_str());
+            if !supplied.is_some_and(|t| constant_time_eq(t, token)) {
                 return JsonRpcResponse {
                     jsonrpc: "2.0".into(),
                     id: req.id.clone(),
@@ -141,59 +142,58 @@ async fn handle_tool_call_impl(
         }
         "request_input" => {
             let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-            let _title = args
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Input Request");
-            // Prompts may contain credentials, private paths, or workspace data;
-            // never copy the user-supplied text into logs.
+            // Prompts may contain credentials, private paths, or workspace
+            // data; never copy the user-supplied text into logs.
             log::info!(
                 "[MCP request_input] title received; prompt length={}",
                 prompt.len()
             );
-            serde_json::json!({ "content": [{ "type": "text", "text": "Input request received. (Blocking input not yet available — use environment variables or config files for now.)" }] })
+            if let Some(handler) = agent_comms_handler {
+                handler("request_input", &args)
+            } else {
+                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'request_input' requires the agent comms handler, which is not configured on this server" }] })
+            }
         }
         "create_tasks" => {
             if let Some(handler) = task_handler {
                 handler("create_tasks", &args)
             } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'create_tasks' not yet implemented" }] })
+                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'create_tasks' requires the tool executor, which is not configured on this server" }] })
             }
         }
         "get_next_task" => {
             if let Some(handler) = task_handler {
                 handler("get_next_task", &args)
             } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'get_next_task' not yet implemented" }] })
+                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'get_next_task' requires the tool executor, which is not configured on this server" }] })
             }
         }
         "update_task_status" => {
             if let Some(handler) = task_handler {
                 handler("update_task_status", &args)
             } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'update_task_status' not yet implemented" }] })
+                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'update_task_status' requires the tool executor, which is not configured on this server" }] })
             }
         }
         "spawn_agents" => {
             if let Some(handler) = spawn_handler {
                 handler(&args)
             } else {
-                let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                serde_json::json!({ "content": [{ "type": "text", "text": format!("Spawn request received for {} agents (placeholder — real implementation requires PTY access)", count) }] })
+                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'spawn_agents' requires the tool executor, which is not configured on this server" }] })
             }
         }
         "get_output" => {
             if let Some(handler) = output_handler {
                 handler("get_output", &args)
             } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'get_output' not yet implemented" }] })
+                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'get_output' requires the tool executor, which is not configured on this server" }] })
             }
         }
         "list_agent_panes" => {
             if let Some(handler) = output_handler {
                 handler("list_agent_panes", &args)
             } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'list_agent_panes' not yet implemented" }] })
+                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'list_agent_panes' requires the tool executor, which is not configured on this server" }] })
             }
         }
         "athena_forward_output" => {
@@ -214,14 +214,14 @@ async fn handle_tool_call_impl(
             if let Some(handler) = agent_comms_handler {
                 handler("send_message_to_agent", &args)
             } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'send_message_to_agent' not yet implemented" }] })
+                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'send_message_to_agent' requires the tool executor, which is not configured on this server" }] })
             }
         }
         "read_agent_messages" => {
             if let Some(handler) = agent_comms_handler {
                 handler("read_agent_messages", &args)
             } else {
-                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'read_agent_messages' not yet implemented" }] })
+                serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "Tool 'read_agent_messages' requires the tool executor, which is not configured on this server" }] })
             }
         }
         "code_search" => {
@@ -505,6 +505,27 @@ fn parse_scalar_at(raw: &str, j: usize) -> Option<serde_json::Value> {
     None
 }
 
+/// Compare the supplied MCP auth token against the expected token without
+/// leaking it through timing side channels.
+///
+/// Constant-time by construction: the compare loop always visits every
+/// byte and folds differences with bitwise OR instead of short-circuiting.
+/// (The token is loopback-only today, but it is the sole auth for a socket
+/// that can spawn shells, so it gets a timing-safe compare anyway.)
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    // Length mismatch is not sensitive (length is public); bail early but
+    // never bail on content mismatch.
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Map MCP tool names to ToolExecutor tool names.
 pub(super) fn map_mcp_to_executor_name(mcp_name: &str) -> &str {
     match mcp_name {
@@ -515,7 +536,10 @@ pub(super) fn map_mcp_to_executor_name(mcp_name: &str) -> &str {
         "get_output" => "read_agent_output",
         "list_agent_panes" => "list_agents",
         "code_search" => "fs_search",
-        "search_files" => "fs_search",
+        // NOTE: "search_files" is intentionally NOT aliased to "fs_search":
+        // the MCP tool is a filename-list search (`rg --files`), while
+        // "fs_search" is a content search. `is_executor_mcp_tool` excludes
+        // it, so it always reaches the direct handler below.
         "run_command_in_terminals" => "run_command_in_terminals",
         "close_terminals" => "close_terminals",
         "prompt_agent" => "prompt_agent",

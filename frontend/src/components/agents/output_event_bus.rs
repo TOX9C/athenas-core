@@ -1,6 +1,6 @@
 use crate::stores::agent_output::{is_stderr_like, use_agent_output_store};
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatusUpdate};
-use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
+use crate::stores::terminal::{use_terminal_registry, use_terminal_store, TerminalDataEvent};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
@@ -9,6 +9,7 @@ use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use wasm_bindgen::JsValue;
 
 #[path = "output_bus_event.rs"]
 mod output_bus_event;
@@ -32,6 +33,14 @@ struct TitleRequestTracker {
 
 impl TitleRequestTracker {
     fn observe(&mut self, pane_id: &str, request: TitleRequestKey) {
+        // Drop the previous key from `started` so the set stays bounded by
+        // the number of panes (not by the number of session changes on a
+        // long-lived pane).
+        if let Some(old) = self.latest_by_pane.get(pane_id) {
+            if old != &request {
+                self.started.remove(&(pane_id.to_string(), old.clone()));
+            }
+        }
         self.latest_by_pane.insert(pane_id.to_string(), request);
     }
 
@@ -56,6 +65,111 @@ impl TitleRequestTracker {
     }
 }
 
+/// Wire payload of the `agent:status` event.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(non_snake_case)]
+struct AgentStatusEvent {
+    paneId: String,
+    status: Option<String>,
+    message: Option<String>,
+    progress: Option<AgentProgressWire>,
+    fgProcess: Option<String>,
+    taskTitle: Option<String>,
+    sessionId: Option<String>,
+    rawPrompt: Option<String>,
+    generation: Option<u64>,
+}
+
+/// Progress sub-object of the `agent:status` payload.
+#[derive(Debug, serde::Deserialize)]
+struct AgentProgressWire {
+    current: usize,
+    total: usize,
+    label: Option<String>,
+}
+
+/// Wire payload of the `terminal:exit` event (object form).
+#[derive(Debug, serde::Deserialize)]
+#[allow(non_snake_case)]
+struct TerminalExitEvent {
+    paneId: String,
+    generation: Option<u64>,
+}
+
+/// Decode a bridge event payload to a JSON value.
+///
+/// Handles both wire forms: a plain JSON object, or a JSON-encoded string
+/// (the backend stringifies some events before emitting them).
+fn decode_json_value(payload: &JsValue) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    if payload.is_string() {
+        let inner = payload
+            .as_string()
+            .ok_or("payload reported as string but has no string value")?;
+        Ok(serde_json::from_str(&inner)?)
+    } else {
+        Ok(serde_wasm_bindgen::from_value(payload.clone())?)
+    }
+}
+
+/// Parse the wire status string into `AgentRunStatus`. One table — the two
+/// status listeners must agree on aliases.
+fn parse_run_status(status: &str) -> AgentRunStatus {
+    match status {
+        "thinking" => AgentRunStatus::Thinking,
+        "working" => AgentRunStatus::Working,
+        "waiting_for_input" | "waiting_input" => AgentRunStatus::WaitingForInput,
+        "completed" => AgentRunStatus::Completed,
+        "error" => AgentRunStatus::Error,
+        "cancelled" => AgentRunStatus::Cancelled,
+        "disconnected" => AgentRunStatus::Disconnected,
+        _ => AgentRunStatus::Idle,
+    }
+}
+
+/// Status text persisted to the active mission's agent record. Every
+/// swarm-status flush below uses this one mapping so the lexicon cannot
+/// drift between code paths.
+fn persisted_status_str(status: &AgentRunStatus) -> &'static str {
+    match status {
+        AgentRunStatus::Thinking => "thinking",
+        AgentRunStatus::Working => "writing",
+        AgentRunStatus::WaitingForInput => "waiting",
+        AgentRunStatus::Completed => "done",
+        AgentRunStatus::Error => "blocked",
+        AgentRunStatus::Disconnected => "stalled",
+        _ => "idle",
+    }
+}
+
+/// Look up the (space dir, swarm agent id) a pane's status should persist
+/// to, if the pane belongs to the active mission. Status events from
+/// unrelated terminals return None (the backend maps by pane id).
+fn swarm_target(
+    workspace: &Signal<crate::stores::workspace::WorkspaceState>,
+    swarm_state: &Signal<crate::stores::swarm::SwarmState>,
+    pane_id: &str,
+) -> Option<(String, String)> {
+    let dir = {
+        let state = workspace.read();
+        state.active_space_id.as_ref().and_then(|id| {
+            state
+                .spaces
+                .iter()
+                .find(|space| &space.id == id)
+                .map(|space| space.dir.clone())
+        })
+    }?;
+    let agent_id = swarm_state.read().active_swarm.as_ref().and_then(|swarm| {
+        swarm
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .map(|agent| agent.id.clone())
+    })?;
+    Some((dir, agent_id))
+}
+
 /// Output event bus component - renders nothing, handles IPC events.
 ///
 /// Wires Tauri push events to the agent status and agent output stores:
@@ -74,6 +188,9 @@ impl TitleRequestTracker {
 pub fn OutputEventBus() -> Element {
     let agent_status = use_agent_status_store();
     let agent_output = use_agent_output_store();
+    // Separate clone moved into the listen effect below (the dispatcher
+    // coroutine owns the render-top binding via its `move` closure).
+    let agent_output_for_effect = agent_output.clone();
     // `use_terminal_store()` and `use_terminal_registry()` are Dioxus hooks
     // (`use_context`). They may only run synchronously during render — calling
     // them inside the `use_coroutine` async body (which runs after render, on
@@ -116,10 +233,12 @@ pub fn OutputEventBus() -> Element {
         // `async move`), so the async block owns a fresh clone and the `FnMut`
         // outer closure never moves the render-top capture out twice.
         let terminal_registry = terminal_registry.clone();
+        let agent_output = agent_output.clone();
+        let agent_status = agent_status.clone();
         let swarm_writer = swarm_writer;
         async move {
-            let mut agent_status = agent_status;
-            let mut agent_output = agent_output;
+            let agent_status = agent_status;
+            let agent_output = agent_output;
             let mut terminal_store = terminal_store;
             let swarm_state = swarm_state;
             // Tracks the latest title request identity per pane. The tracker
@@ -147,11 +266,8 @@ pub fn OutputEventBus() -> Element {
                         }
                         let stale_generation = generation.is_some_and(|incoming| {
                             agent_status
-                                .read()
-                                .statuses
-                                .iter()
-                                .find(|(id, _)| id == &pane_id)
-                                .and_then(|(_, current)| current.generation)
+                                .peek_status(&pane_id, |current| current.generation)
+                                .flatten()
                                 .is_some_and(|current| current != incoming)
                         });
                         if stale_generation {
@@ -166,7 +282,7 @@ pub fn OutputEventBus() -> Element {
                             pane_generation_guard.reopen(&pane_id);
                         }
 
-                        agent_status.write().update_status(
+                        agent_status.update_status(
                             &pane_id,
                             AgentStatusUpdate {
                                 generation,
@@ -193,8 +309,8 @@ pub fn OutputEventBus() -> Element {
                             .observe(&pane_id, title_request.clone());
                         {
                             let old_sid = terminal_registry
-                                .peek_session(&pane_id)
-                                .and_then(|s| s.session_id);
+                                .peek_field(&pane_id, |s| s.session_id.clone())
+                                .flatten();
                             if old_sid.as_deref() != Some(sid.as_str()) && !sid.is_empty() {
                                 if let Some(mut inner) = terminal_registry.write_session(&pane_id) {
                                     inner.title_state = crate::utils::pane_label::TitleState::Idle;
@@ -220,38 +336,13 @@ pub fn OutputEventBus() -> Element {
                         // active mission. The backend maps by pane id, so a
                         // status event from an unrelated terminal is ignored
                         // without an extra mission-specific event channel.
-                        let swarm_dir = {
-                            let state = workspace.read();
-                            state.active_space_id.as_ref().and_then(|id| {
-                                state
-                                    .spaces
-                                    .iter()
-                                    .find(|space| &space.id == id)
-                                    .map(|space| space.dir.clone())
-                            })
-                        };
-                        let swarm_agent_id =
-                            swarm_state.read().active_swarm.as_ref().and_then(|swarm| {
-                                swarm
-                                    .agents
-                                    .iter()
-                                    .find(|agent| agent.pane_id == pane_id)
-                                    .map(|agent| agent.id.clone())
-                            });
-                        if let (Some(dir), Some(agent_id)) = (swarm_dir, swarm_agent_id) {
-                            let persisted_status = match status {
-                                AgentRunStatus::Thinking => "thinking",
-                                AgentRunStatus::Working => "writing",
-                                AgentRunStatus::WaitingForInput => "waiting",
-                                AgentRunStatus::Completed => "done",
-                                AgentRunStatus::Error => "blocked",
-                                AgentRunStatus::Disconnected => "stalled",
-                                _ => "idle",
-                            };
+                        if let Some((dir, agent_id)) =
+                            swarm_target(&workspace, &swarm_state, &pane_id)
+                        {
                             let update = SwarmStatusUpdate {
                                 dir,
                                 agent_id,
-                                status: persisted_status,
+                                status: persisted_status_str(&status),
                                 last_action: message.clone(),
                             };
                             if swarm_sync.should_send(&pane_id, update.clone(), now) {
@@ -291,8 +382,8 @@ pub fn OutputEventBus() -> Element {
                                 let result =
                                     crate::tauri_bridge::summarize_agent_title(&raw_prompt).await;
                                 let current_session_id = registry_for_spawn
-                                    .peek_session(&pane)
-                                    .and_then(|session| session.session_id);
+                                    .peek_field(&pane, |session| session.session_id.clone())
+                                    .flatten();
                                 if !title_requests_for_spawn.borrow().accepts_result(
                                     &pane,
                                     &title_request_for_spawn,
@@ -341,11 +432,8 @@ pub fn OutputEventBus() -> Element {
                         // boundary. Ignore an old PTY's exit after a pane id
                         // has already been reused by a newer generation.
                         let is_current = agent_status
-                            .read()
-                            .statuses
-                            .iter()
-                            .find(|(id, _)| id == &pane_id)
-                            .map(|(_, status)| match (generation, status.generation) {
+                            .peek_status(&pane_id, |status| {
+                                match (generation, status.generation) {
                                 // A generation-bearing exit is safe to apply
                                 // only when the pane still has that exact PTY
                                 // generation. Never let a late old exit stall
@@ -357,10 +445,11 @@ pub fn OutputEventBus() -> Element {
                                 // Legacy exit events without a generation can
                                 // still retire the current pane status.
                                 (None, _) => true,
+                                }
                             })
                             .unwrap_or(generation.is_none());
                         if is_current {
-                            agent_status.write().remove_status(&pane_id);
+                            agent_status.remove_status(&pane_id);
                         }
                         if !is_current {
                             continue;
@@ -368,25 +457,9 @@ pub fn OutputEventBus() -> Element {
                         title_requests.borrow_mut().invalidate(&pane_id);
                         pane_generation_guard.retire(&pane_id, generation);
                         swarm_sync.remove(&pane_id);
-                        let swarm_dir = {
-                            let state = workspace.read();
-                            state.active_space_id.as_ref().and_then(|id| {
-                                state
-                                    .spaces
-                                    .iter()
-                                    .find(|space| &space.id == id)
-                                    .map(|space| space.dir.clone())
-                            })
-                        };
-                        let swarm_agent_id =
-                            swarm_state.read().active_swarm.as_ref().and_then(|swarm| {
-                                swarm
-                                    .agents
-                                    .iter()
-                                    .find(|agent| agent.pane_id == pane_id)
-                                    .map(|agent| agent.id.clone())
-                            });
-                        if let (Some(dir), Some(agent_id)) = (swarm_dir, swarm_agent_id) {
+                        if let Some((dir, agent_id)) =
+                            swarm_target(&workspace, &swarm_state, &pane_id)
+                        {
                             swarm_writer.send(SwarmStatusUpdate {
                                 dir,
                                 agent_id,
@@ -397,11 +470,11 @@ pub fn OutputEventBus() -> Element {
                     }
                     OutputBusEvent::TerminalData {
                         session_id,
-                        payload,
+                        event,
                     } => {
                         terminal_store
                             .write()
-                            .on_data(&terminal_registry, &session_id, &payload);
+                            .on_data(&terminal_registry, &session_id, &event);
                     }
                     OutputBusEvent::AgentConnected { pane_id, now } => {
                         // A generationless connection cannot prove that it is
@@ -411,32 +484,16 @@ pub fn OutputEventBus() -> Element {
                         if !pane_generation_guard.accepts(&pane_id, None) {
                             continue;
                         }
-                        agent_status.write().connect_agent(pane_id, now);
+                        agent_status.connect_agent(pane_id, now);
                     }
                     OutputBusEvent::AgentDisconnected { pane_id, now } => {
                         title_requests.borrow_mut().invalidate(&pane_id);
                         pane_generation_guard.retire(&pane_id, None);
-                        agent_status.write().disconnect_agent(&pane_id, now);
+                        agent_status.disconnect_agent(&pane_id, now);
                         swarm_sync.remove(&pane_id);
-                        let swarm_dir = {
-                            let state = workspace.read();
-                            state.active_space_id.as_ref().and_then(|id| {
-                                state
-                                    .spaces
-                                    .iter()
-                                    .find(|space| &space.id == id)
-                                    .map(|space| space.dir.clone())
-                            })
-                        };
-                        let swarm_agent_id =
-                            swarm_state.read().active_swarm.as_ref().and_then(|swarm| {
-                                swarm
-                                    .agents
-                                    .iter()
-                                    .find(|agent| agent.pane_id == pane_id)
-                                    .map(|agent| agent.id.clone())
-                            });
-                        if let (Some(dir), Some(agent_id)) = (swarm_dir, swarm_agent_id) {
+                        if let Some((dir, agent_id)) =
+                            swarm_target(&workspace, &swarm_state, &pane_id)
+                        {
                             swarm_writer.send(SwarmStatusUpdate {
                                 dir,
                                 agent_id,
@@ -454,7 +511,7 @@ pub fn OutputEventBus() -> Element {
                         if !pane_generation_guard.accepts(&pane_id, None) {
                             continue;
                         }
-                        agent_status.write().update_status(
+                        agent_status.update_status(
                             &pane_id,
                             AgentStatusUpdate {
                                 generation: None,
@@ -464,34 +521,10 @@ pub fn OutputEventBus() -> Element {
                             },
                             now,
                         );
-                        let persisted_status = match status {
-                            AgentRunStatus::Thinking => "thinking",
-                            AgentRunStatus::Working => "writing",
-                            AgentRunStatus::WaitingForInput => "waiting",
-                            AgentRunStatus::Completed => "done",
-                            AgentRunStatus::Error => "blocked",
-                            AgentRunStatus::Disconnected => "stalled",
-                            _ => "idle",
-                        };
-                        let swarm_dir = {
-                            let state = workspace.read();
-                            state.active_space_id.as_ref().and_then(|id| {
-                                state
-                                    .spaces
-                                    .iter()
-                                    .find(|space| &space.id == id)
-                                    .map(|space| space.dir.clone())
-                            })
-                        };
-                        let swarm_agent_id =
-                            swarm_state.read().active_swarm.as_ref().and_then(|swarm| {
-                                swarm
-                                    .agents
-                                    .iter()
-                                    .find(|agent| agent.pane_id == pane_id)
-                                    .map(|agent| agent.id.clone())
-                            });
-                        if let (Some(dir), Some(agent_id)) = (swarm_dir, swarm_agent_id) {
+                        let persisted_status = persisted_status_str(&status);
+                        if let Some((dir, agent_id)) =
+                            swarm_target(&workspace, &swarm_state, &pane_id)
+                        {
                             let update = SwarmStatusUpdate {
                                 dir,
                                 agent_id,
@@ -513,17 +546,17 @@ pub fn OutputEventBus() -> Element {
                         // emits notifications:new. This bus only updates the
                         // live agent status; creating a second frontend-only
                         // record caused missing persistence and duplicate rows.
-                        agent_status.write().request_input(pane_id, message, now);
+                        agent_status.request_input(pane_id, message, now);
                     }
                     OutputBusEvent::OutputBatch { pane_id, lines } => {
-                        agent_output.write().append_batch(&pane_id, lines);
+                        agent_output.append_batch(&pane_id, lines);
                     }
                     OutputBusEvent::PaneRegistered {
                         pane_id,
                         agent_type,
                         now,
                     } => {
-                        agent_output.write().register_pane(pane_id, agent_type, now);
+                        agent_output.register_pane(pane_id, agent_type, now);
                     }
                 }
             }
@@ -541,88 +574,52 @@ pub fn OutputEventBus() -> Element {
         // Listener for agent:status
 
         let status_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("agent:status", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let pane_id = val
-                    .get("paneId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if pane_id.is_empty() {
-                    return;
+        if let Ok(u) = tauri_bridge::listen("agent:status", move |payload: JsValue| {
+            // The backend may emit this event either as a JSON object or as
+            // a JSON-encoded string (historically double-encoded) — guard both.
+            let val: AgentStatusEvent = match if payload.is_string() {
+                payload
+                    .as_string()
+                    .ok_or_else(|| <serde_json::Error as serde::de::Error>::custom("empty payload"))
+                    .and_then(|inner| serde_json::from_str(&inner))
+            } else {
+                serde_wasm_bindgen::from_value(payload)
+                    .map_err(|e| <serde_json::Error as serde::de::Error>::custom(e.to_string()))
+            } {
+                Ok(val) => val,
+                Err(_) => return,
+            };
+            let pane_id = val.paneId;
+            if pane_id.is_empty() {
+                return;
+            }
+
+            let status_enum = parse_run_status(val.status.as_deref().unwrap_or("idle"));
+
+            let progress = val.progress.map(|progress| {
+                crate::stores::agent_status::AgentProgress {
+                    current: progress.current,
+                    total: progress.total,
+                    label: progress.label.unwrap_or_default(),
                 }
+            });
 
-                let status = val.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
-                let status_enum = match status {
-                    "thinking" => AgentRunStatus::Thinking,
-                    "working" => AgentRunStatus::Working,
-                    "waiting_for_input" | "waiting_input" => AgentRunStatus::WaitingForInput,
-                    "completed" => AgentRunStatus::Completed,
-                    "error" => AgentRunStatus::Error,
-                    "cancelled" => AgentRunStatus::Cancelled,
-                    "disconnected" => AgentRunStatus::Disconnected,
-                    _ => AgentRunStatus::Idle,
-                };
-
-                let message = val
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let progress = val.get("progress").and_then(|p| {
-                    let current = p.get("current").and_then(|v| v.as_u64())? as usize;
-                    let total = p.get("total").and_then(|v| v.as_u64())? as usize;
-                    let label = p
-                        .get("label")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    Some(crate::stores::agent_status::AgentProgress {
-                        current,
-                        total,
-                        label,
-                    })
-                });
-
+            let now = js_sys::Date::now() as i64;
+            dispatcher.send(OutputBusEvent::AgentStatus {
+                pane_id,
+                status: status_enum,
+                message: val.message,
+                progress,
+                now,
                 // Enriched fields (single-poller consolidation): the backend
                 // tracker's heartbeat carries the raw foreground label + the
                 // scraped session metadata so the frontend never polls `ps`.
-                let fg_process = val
-                    .get("fgProcess")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-                let task_title = val
-                    .get("taskTitle")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-                let session_id = val
-                    .get("sessionId")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-                let raw_prompt = val
-                    .get("rawPrompt")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-
-                let now = js_sys::Date::now() as i64;
-                let generation = val.get("generation").and_then(|v| v.as_u64());
-                dispatcher.send(OutputBusEvent::AgentStatus {
-                    pane_id,
-                    status: status_enum,
-                    message,
-                    progress,
-                    now,
-                    fg_process,
-                    task_title,
-                    session_id,
-                    raw_prompt,
-                    generation,
-                });
-            }
+                fg_process: val.fgProcess.filter(|s| !s.is_empty()),
+                task_title: val.taskTitle.filter(|s| !s.is_empty()),
+                session_id: val.sessionId.filter(|s| !s.is_empty()),
+                raw_prompt: val.rawPrompt.filter(|s| !s.is_empty()),
+                generation: val.generation,
+            });
         }) {
             status_unlistens.borrow_mut().push(u);
         }
@@ -630,20 +627,33 @@ pub fn OutputEventBus() -> Element {
         // Listener for terminal:exit
 
         let exit_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("terminal:exit", move |payload: String| {
-            let pane_id = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                val.get("paneId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            } else {
-                payload.trim_matches('"').to_string()
-            };
+        if let Ok(u) = tauri_bridge::listen("terminal:exit", move |payload: JsValue| {
+            // Wire forms: bare JSON string `"pane-1"`, or object
+            // `{ "paneId": …, "generation": … }`. The backend may also
+            // double-encode the object as a JSON string.
+            let mut pane_id: Option<String> = None;
+            let mut generation: Option<u64> = None;
+            if payload.is_string() {
+                // Bare or double-encoded JSON string payload.
+                if let Some(inner) = payload.as_string() {
+                    if let Ok(val) = serde_json::from_str::<TerminalExitEvent>(&inner) {
+                        // Wire form: object `{ "paneId": "…" }`.
+                        pane_id = Some(val.paneId);
+                        generation = val.generation;
+                    } else if let Ok(bare) = serde_json::from_str::<String>(&inner) {
+                        // Wire form: bare JSON string `"pane-1"`.
+                        pane_id = Some(bare);
+                    } else {
+                        // Legacy non-JSON bare string.
+                        pane_id = Some(inner.trim_matches('"').to_string());
+                    }
+                }
+            } else if let Ok(val) = serde_wasm_bindgen::from_value::<TerminalExitEvent>(payload) {
+                pane_id = Some(val.paneId);
+                generation = val.generation;
+            }
 
-            if !pane_id.is_empty() {
-                let generation = serde_json::from_str::<serde_json::Value>(&payload)
-                    .ok()
-                    .and_then(|value| value.get("generation").and_then(|v| v.as_u64()));
+            if let Some(pane_id) = pane_id.filter(|id| !id.is_empty()) {
                 dispatcher.send(OutputBusEvent::TerminalExit {
                     pane_id,
                     generation,
@@ -656,20 +666,28 @@ pub fn OutputEventBus() -> Element {
         // Listener for terminal:data
 
         let terminal_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("terminal:data", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                let session_id = val
-                    .get("sessionId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !session_id.is_empty() {
-                    dispatcher.send(OutputBusEvent::TerminalData {
-                        session_id,
-                        payload,
-                    });
-                }
+        if let Ok(u) = tauri_bridge::listen("terminal:data", move |payload: JsValue| {
+            // The backend emits this event as a JSON-encoded string (see
+            // pty.rs flush_grid_deltas); guard for the object form anyway.
+            let event: TerminalDataEvent = match if payload.is_string() {
+                payload
+                    .as_string()
+                    .ok_or_else(|| <serde_json::Error as serde::de::Error>::custom("empty payload"))
+                    .and_then(|inner| serde_json::from_str(&inner))
+            } else {
+                serde_wasm_bindgen::from_value(payload)
+                    .map_err(|e| <serde_json::Error as serde::de::Error>::custom(e.to_string()))
+            } {
+                Ok(event) => event,
+                Err(_) => return,
+            };
+            if event.sessionId.is_empty() {
+                return;
             }
+            dispatcher.send(OutputBusEvent::TerminalData {
+                session_id: event.sessionId.clone(),
+                event,
+            });
         }) {
             terminal_unlistens.borrow_mut().push(u);
         }
@@ -677,8 +695,8 @@ pub fn OutputEventBus() -> Element {
         // Listener for agents:connected
 
         let connect_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("agents:connected", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+        if let Ok(u) = tauri_bridge::listen("agents:connected", move |payload: JsValue| {
+            if let Ok(val) = decode_json_value(&payload) {
                 let pane_id = val
                     .get("paneId")
                     .and_then(|v| v.as_str())
@@ -696,8 +714,8 @@ pub fn OutputEventBus() -> Element {
         // Listener for agents:disconnected
 
         let disconnect_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("agents:disconnected", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+        if let Ok(u) = tauri_bridge::listen("agents:disconnected", move |payload: JsValue| {
+            if let Ok(val) = decode_json_value(&payload) {
                 let pane_id = val
                     .get("paneId")
                     .and_then(|v| v.as_str())
@@ -715,8 +733,8 @@ pub fn OutputEventBus() -> Element {
         // Listener for agents:statusUpdate
 
         let update_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("agents:statusUpdate", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+        if let Ok(u) = tauri_bridge::listen("agents:statusUpdate", move |payload: JsValue| {
+            if let Ok(val) = decode_json_value(&payload) {
                 let pane_id = val
                     .get("paneId")
                     .and_then(|v| v.as_str())
@@ -726,16 +744,7 @@ pub fn OutputEventBus() -> Element {
                     return;
                 }
                 let status = val.get("status").and_then(|v| v.as_str()).unwrap_or("idle");
-                let status_enum = match status {
-                    "thinking" => AgentRunStatus::Thinking,
-                    "working" => AgentRunStatus::Working,
-                    "waiting_for_input" | "waiting_input" => AgentRunStatus::WaitingForInput,
-                    "completed" => AgentRunStatus::Completed,
-                    "error" => AgentRunStatus::Error,
-                    "cancelled" => AgentRunStatus::Cancelled,
-                    "disconnected" => AgentRunStatus::Disconnected,
-                    _ => AgentRunStatus::Idle,
-                };
+                let status_enum = parse_run_status(status);
                 let message = val
                     .get("message")
                     .and_then(|v| v.as_str())
@@ -755,8 +764,8 @@ pub fn OutputEventBus() -> Element {
         // Listener for agents:inputRequested
 
         let input_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("agents:inputRequested", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+        if let Ok(u) = tauri_bridge::listen("agents:inputRequested", move |payload: JsValue| {
+            if let Ok(val) = decode_json_value(&payload) {
                 let pane_id = val
                     .get("paneId")
                     .and_then(|v| v.as_str())
@@ -787,11 +796,18 @@ pub fn OutputEventBus() -> Element {
             input_unlistens.borrow_mut().push(u);
         }
 
-        // Listener for output-capture:batch (replaces per-line emission)
+        // Listener for output-capture:batch (replaces per-line emission).
+        // Cheap consumer gate: when the Agent Inspector is closed nobody reads
+        // captured buffers, so skip the JSON walk + parse + store write
+        // entirely (this event fires per agent output burst per pane).
 
         let batch_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("output-capture:batch", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+        let agent_output_gate = agent_output_for_effect.clone();
+        if let Ok(u) = tauri_bridge::listen("output-capture:batch", move |payload: JsValue| {
+            if !agent_output_gate.capture_wanted() {
+                return;
+            }
+            if let Ok(val) = decode_json_value(&payload) {
                 let pane_id = val
                     .get("paneId")
                     .and_then(|v| v.as_str())
@@ -822,7 +838,9 @@ pub fn OutputEventBus() -> Element {
                                             .and_then(|v| v.as_i64())
                                             .unwrap_or(0),
                                         is_stderr: is_stderr_like(&text),
-                                        text,
+                                        // Rc<str>: cloning lines in the panel
+                                        // window memo is a refcount bump.
+                                        text: std::rc::Rc::from(text.as_str()),
                                     }
                                 })
                                 .collect::<Vec<_>>()
@@ -845,8 +863,8 @@ pub fn OutputEventBus() -> Element {
 
         let register_unlistens = unlistens_effect.clone();
         if let Ok(u) =
-            tauri_bridge::listen("output-capture:paneRegistered", move |payload: String| {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+            tauri_bridge::listen("output-capture:paneRegistered", move |payload: JsValue| {
+                if let Ok(val) = decode_json_value(&payload) {
                     let pane_id = val
                         .get("paneId")
                         .and_then(|v| v.as_str())

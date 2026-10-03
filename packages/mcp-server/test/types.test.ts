@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type {
   AgentStatus,
-  SpecAgentStatus,
   NotificationType,
   NotificationPriority,
   TransportType,
@@ -17,9 +16,6 @@ import type {
   PaneState,
   TaskState,
   ServerConfig,
-  PluginEvent,
-  McpSession,
-  PluginManifest,
   OutputEntry,
   OutputReadOptions,
   OutputSinceOptions,
@@ -38,21 +34,6 @@ describe('MCP Type Definitions', () => {
         'done',
         'blocked',
         'stalled',
-      ]
-      expect(statuses).toHaveLength(7)
-    })
-  })
-
-  describe('SpecAgentStatus', () => {
-    it('accepts all spec-compliant status values', () => {
-      const statuses: SpecAgentStatus[] = [
-        'idle',
-        'thinking',
-        'working',
-        'waiting_for_input',
-        'completed',
-        'error',
-        'cancelled',
       ]
       expect(statuses).toHaveLength(7)
     })
@@ -241,66 +222,6 @@ describe('MCP Type Definitions', () => {
         { name: 'a', version: '1.0.0', transport: 'tcp', tcpPort: 4545 },
       ]
       expect(configs).toHaveLength(3)
-    })
-  })
-
-  describe('PluginEvent', () => {
-    it('constructs a notification event', () => {
-      const event: PluginEvent = {
-        id: 'evt-1',
-        type: 'notification',
-        source: { sessionId: 's1', paneId: null, agentType: 'claude', agentId: null },
-        payload: { level: 'info', message: 'Hello' },
-        timestamp: Date.now(),
-      }
-      expect(event.type).toBe('notification')
-    })
-  })
-
-  describe('McpSession', () => {
-    it('constructs a session', () => {
-      const session: McpSession = {
-        sessionId: 'sess-1',
-        token: 'tok-1',
-        paneId: 'pane-1',
-        agentType: 'claude',
-        capabilities: ['notifications', 'status'],
-        connectedAt: Date.now(),
-        lastActivityAt: Date.now(),
-      }
-      expect(session.capabilities).toContain('notifications')
-    })
-  })
-
-  describe('PluginManifest', () => {
-    it('constructs a builtin manifest', () => {
-      const manifest: PluginManifest = {
-        id: 'com.athena.core',
-        name: 'Athena Core Plugin',
-        version: '1.0.0',
-        description: 'Core plugin',
-        author: 'Athena',
-        minAthenaVersion: '0.1.0',
-        capabilities: ['notifications', 'status'],
-        tools: [],
-        install: { type: 'builtin' },
-      }
-      expect(manifest.install.type).toBe('builtin')
-    })
-
-    it('constructs an mcp_server install manifest', () => {
-      const manifest: PluginManifest = {
-        id: 'com.example.plugin',
-        name: 'Example',
-        version: '1.0.0',
-        description: 'Example plugin',
-        author: 'Example',
-        minAthenaVersion: '0.1.0',
-        capabilities: ['notifications'],
-        tools: [],
-        install: { type: 'mcp_server', command: 'node', args: ['server.js'], env: { KEY: 'val' } },
-      }
-      expect(manifest.install.type).toBe('mcp_server')
     })
   })
 

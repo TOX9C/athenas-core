@@ -130,17 +130,19 @@ impl<'de> serde::Deserialize<'de> for ProviderConfig {
 /// Kept as a self-contained pure function (no traits, no allocations beyond
 /// the result) so it can run inside a `fern` formatter closure.
 pub fn sanitize_error_message(msg: &str) -> String {
-    let patterns = [
-        (r"sk-[a-zA-Z0-9]{20,}", "sk-[REDACTED]"),
-        (r"x-api-key: [^\s]+", "x-api-key: [REDACTED]"),
-        (r"Bearer [^\s]+", "Bearer [REDACTED]"),
-        (r"api[_-]?key[:=][^\s]+", "api_key=[REDACTED]"),
-    ];
+    use std::sync::LazyLock;
+    // Compiled once per process instead of on every API-error path.
+    static PATTERNS: LazyLock<[(regex::Regex, &'static str); 4]> = LazyLock::new(|| {
+        [
+            (regex::Regex::new(r"sk-[a-zA-Z0-9]{20,}").unwrap(), "sk-[REDACTED]"),
+            (regex::Regex::new(r"x-api-key: [^\s]+").unwrap(), "x-api-key: [REDACTED]"),
+            (regex::Regex::new(r"Bearer [^\s]+").unwrap(), "Bearer [REDACTED]"),
+            (regex::Regex::new(r"api[_-]?key[:=][^\s]+").unwrap(), "api_key=[REDACTED]"),
+        ]
+    });
     let mut result = msg.to_string();
-    for (pat, repl) in &patterns {
-        if let Ok(re) = regex::Regex::new(pat) {
-            result = re.replace_all(&result, *repl).to_string();
-        }
+    for (re, repl) in PATTERNS.iter() {
+        result = re.replace_all(&result, *repl).to_string();
     }
     result
 }
@@ -158,8 +160,7 @@ pub(super) fn classify_api_error(
     sanitized: String,
 ) -> OrchestratorError {
     if status == reqwest::StatusCode::GONE
-        || (status == reqwest::StatusCode::NOT_FOUND
-            && sanitized.to_lowercase().contains("model"))
+        || (status == reqwest::StatusCode::NOT_FOUND && sanitized.to_lowercase().contains("model"))
     {
         OrchestratorError::ModelUnavailable {
             status: status.as_u16(),
@@ -450,7 +451,11 @@ mod tests {
             classify_api_error("OpenAI", StatusCode::NOT_FOUND, "model not found".into()),
             OrchestratorError::ModelUnavailable { status: 404, .. }
         ));
-        let generic = classify_api_error("Anthropic", StatusCode::NOT_FOUND, "unknown endpoint".into());
+        let generic = classify_api_error(
+            "Anthropic",
+            StatusCode::NOT_FOUND,
+            "unknown endpoint".into(),
+        );
         assert!(
             matches!(generic, OrchestratorError::Generic(_)),
             "plain 404 keeps the legacy generic shape: {generic:?}"
@@ -509,9 +514,18 @@ mod tests {
 
     #[test]
     fn url_host_handles_userinfo_port_and_ipv6() {
-        assert_eq!(super::url_host("https://user:pw@example.com:8443/v1").as_deref(), Some("example.com"));
-        assert_eq!(super::url_host("http://[::1]:11434/v1").as_deref(), Some("::1"));
-        assert_eq!(super::url_host("https://[2001:db8::1]/v1").as_deref(), Some("2001:db8::1"));
+        assert_eq!(
+            super::url_host("https://user:pw@example.com:8443/v1").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            super::url_host("http://[::1]:11434/v1").as_deref(),
+            Some("::1")
+        );
+        assert_eq!(
+            super::url_host("https://[2001:db8::1]/v1").as_deref(),
+            Some("2001:db8::1")
+        );
         assert_eq!(super::url_host("no-scheme"), None);
     }
 
@@ -564,7 +578,10 @@ mod tests {
         assert_eq!(parts[0]["image_url"]["url"], "data:image/jpeg;base64,QUJD");
         assert_eq!(parts[1], serde_json::json!({"type": "text", "text": "hi"}));
         // No images → plain string, matching Anthropic behaviour.
-        assert_eq!(super::build_openai_content("hi", None), serde_json::json!("hi"));
+        assert_eq!(
+            super::build_openai_content("hi", None),
+            serde_json::json!("hi")
+        );
     }
 
     #[test]

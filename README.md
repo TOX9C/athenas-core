@@ -22,7 +22,7 @@
 - **An AI that knows your workspace** — chat with Claude, OpenAI, NVIDIA NIM, or local models, attach screenshots, and let Athena run commands, search your code, and manage your tasks.
 - **A task board** — keep work in To Do → In Progress → In Review → Complete.
 - **An agent team** — launch a swarm of agents that coordinate on a shared goal while you watch.
-- **Everything else nearby** — an embedded browser, plugins, six themes, and notifications that keep you posted.
+- **Everything else nearby** — an embedded browser, plugins, twelve themes, and notifications that keep you posted.
 
 ## Screenshots
 

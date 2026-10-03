@@ -1,15 +1,14 @@
 use super::inline_svg;
 use dioxus::prelude::*;
-// The Athena mark is her spear drawn as a solid lambda: a diamond point at
-// the apex above two strong legs. Solid fills — no strokes — so it stays
-// bold and legible from 15px chrome up to 1024px app icons. Keep this
-// aligned with CoreMark, athena.svg, and the promo mark so the identity
-// remains consistent.
+// The Athena mark is the wave squiggle from the app icon: a single flowing
+// marble line — low rise on the left, dip in the middle, tall peak right of
+// center. Stroked, round caps, so it stays bold and legible from 15px chrome
+// up to 1024px app icons. Keep this aligned with CoreMark and athena.svg
+// so the identity remains consistent.
 
-/// Spear legs — solid lambda slash-open at the bottom.
-const ATHENA_FRAME: &str = "M12 7.6 L19.2 20 L15.9 20 L12 12.6 L8.1 20 L4.8 20 Z";
-/// Spearhead — diamond point floating above the legs.
-const ATHENA_CORE: &str = "M12 3.2 L13.3 4.9 L12 6.7 L10.7 4.9 Z";
+/// Wave squiggle matching the app icon mark.
+const ATHENA_WAVE: &str =
+    "M2.5 17 C3.5 12, 5 9.5, 7 10 C9.5 10.5, 10 15, 13 13.5 C16 12, 16.5 6.5, 19 8 C20.7 9.2, 21.8 11.5, 21.5 14";
 fn brand_svg(children: Element, size: u8, color: &str) -> Element {
     let size_str = format!("{size}px");
     rsx! {
@@ -26,30 +25,28 @@ fn brand_svg(children: Element, size: u8, color: &str) -> Element {
     }
 }
 
-/// Athena — the compact spear-A mark for titlebars and toolbars.
+/// Athena — the compact wave mark for titlebars and toolbars.
 #[component]
 pub fn IconAthena(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(16);
     let c = color.as_deref().unwrap_or("currentColor");
     brand_svg(
         rsx! {
-            path { d: "{ATHENA_FRAME}", fill: c, stroke: "none" }
-            path { d: "{ATHENA_CORE}", fill: c, stroke: "none" }
+            path { d: "{ATHENA_WAVE}", fill: "none", stroke: c, stroke_width: 3.4 }
         },
         s,
         c,
     )
 }
 
-/// Seal — the larger presentation version of the spear-A mark.
+/// Seal — the larger presentation version of the wave mark.
 #[component]
 pub fn IconSeal(size: Option<u8>, color: Option<String>) -> Element {
     let s = size.unwrap_or(16);
     let c = color.as_deref().unwrap_or("currentColor");
     brand_svg(
         rsx! {
-            path { d: "{ATHENA_FRAME}", fill: c, stroke: "none" }
-            path { d: "{ATHENA_CORE}", fill: c, stroke: "none" }
+            path { d: "{ATHENA_WAVE}", fill: "none", stroke: c, stroke_width: 3.4 }
         },
         s,
         c,

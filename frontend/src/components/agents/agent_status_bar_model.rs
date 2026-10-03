@@ -49,8 +49,23 @@ pub(super) fn time_ago(ts: i64) -> String {
     format!("{}h", diff_secs / 3600)
 }
 
+/// Dot color for an inspector status row, keyed by status string.
+pub fn status_dot_color(status: &str) -> &'static str {
+    match status {
+        "idle" => "var(--textDim)",
+        "thinking" => "var(--accent)",
+        "working" => "var(--accent)",
+        "waiting_for_input" => "var(--warning)",
+        "completed" => "var(--success)",
+        "error" => "var(--error)",
+        "cancelled" => "var(--error)",
+        "disconnected" => "var(--textDim)",
+        _ => "var(--textDim)",
+    }
+}
+
 /// Convert store AgentStatus to the component-level AgentPaneStatus.
-pub(super) fn to_pane_status(agent_status: &AgentStatus) -> AgentPaneStatus {
+pub fn to_pane_status(agent_status: &AgentStatus) -> AgentPaneStatus {
     AgentPaneStatus {
         pane_id: agent_status.pane_id.clone(),
         status: match agent_status.status {

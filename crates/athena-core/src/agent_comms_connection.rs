@@ -32,6 +32,59 @@ fn emit_to_renderer(event_emitter: &EventEmitter, channel: &str, data: &serde_js
     log::debug!("[agent-comms] event emitted on channel {channel}");
 }
 
+/// Drain the per-connection outbound queue onto the socket.
+///
+/// This is the only consumer of the channel created in [`handle_connection`];
+/// `send_to_agent` / `broadcast_to_agents` only ever `try_send` into the
+/// queue, so a slow or hung client never stalls the rest of the comms
+/// service. `set_write_timeout` bounds each `write_all`; a failed write
+/// exits the task. The task also exits when every sender is dropped
+/// (session evicted / connection closed) or within [`WRITER_IDLE_POLL`]
+/// of `alive` being cleared, whichever comes first.
+fn writer_task(
+    stream: TcpStream,
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let mut stream = stream;
+    let _ = stream.set_write_timeout(Some(WRITER_WRITE_TIMEOUT));
+    loop {
+        match rx.recv_timeout(WRITER_IDLE_POLL) {
+            Ok(mut bytes) => {
+                bytes.push(b'\n');
+                if let Err(e) = stream.write_all(&bytes) {
+                    log::warn!("agent-comms: outbound write failed, closing writer: {}", e);
+                    alive.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !alive.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// How long a socket write from the writer task may block before the write
+/// fails and the writer task exits. Only the dedicated writer task can ever
+/// be stuck on `write_all`; the connection reader and the sessions mutex are
+/// never affected.
+const WRITER_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How often the writer task re-checks for disconnection while the outbound
+/// queue is idle (i.e. how long the task may linger after its connection is
+/// already closed, when no messages keep flowing).
+const WRITER_IDLE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Outbound-channel capacity per connected agent. Larger than any realistic
+/// burst of backend→agent messages; when full, `send_to_agent` and
+/// `broadcast_to_agents` drop and log rather than stall the whole comms
+/// service behind one slow agent.
+const OUTBOUND_QUEUE_CAP: usize = 1024;
+
 pub(super) fn handle_connection(
     stream: TcpStream,
     sessions: Arc<Mutex<HashMap<String, SessionInternal>>>,
@@ -45,11 +98,27 @@ pub(super) fn handle_connection(
         .unwrap_or_default();
     log::info!("Agent comms: new connection from {}", peer);
 
-    let (tx, _rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
+    // Outbound queue consumed by a dedicated writer task so that
+    // `send_to_agent` / `broadcast_to_agents` are pure in-memory
+    // `try_send`s, never touching the socket — and never blocking or
+    // holding the sessions mutex across a (possibly slow) client write.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(OUTBOUND_QUEUE_CAP);
+    // Retired sessions keep their session map entry out, so a stale sender
+    // snapshot somewhere cannot re-deliver to a recycled identity. The
+    // writer exits when all senders are dropped OR when the fallible
+    // `alive` flag below flips to false (e.g. this connection's session
+    // was evicted by a same-agent reconnect and its stream dropped).
+    let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    if let Ok(writer_stream) = stream.try_clone() {
+        let alive_writer = Arc::clone(&alive);
+        std::thread::spawn(move || writer_task(writer_stream, rx, alive_writer));
+    }
+
     let mut reader = match stream.try_clone() {
         Ok(s) => BufReader::new(s),
         Err(e) => {
             log::error!("failed to clone stream: {}", e);
+            alive.store(false, std::sync::atomic::Ordering::SeqCst);
             return;
         }
     };
@@ -68,6 +137,10 @@ pub(super) fn handle_connection(
     // (rather than BufRead::lines()) is what lets us enforce the cap before
     // the full line is materialized.
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    // The session this connection registered via `initialize`. Cleanup is
+    // keyed by session id (not peer_addr) so a reconnecting agent cannot
+    // remove a duplicate/ recycled session attached to another socket.
+    let mut conn_session_id: Option<String> = None;
     'conn: loop {
         buf.clear();
         let mut total: usize = 0;
@@ -101,7 +174,20 @@ pub(super) fn handle_connection(
         };
         let line = match line_result {
             Some(l) => l,
-            None => break,
+            None => {
+                // EOF or read error: the line-based protocol requires every
+                // message to be newline-terminated, so any leftover bytes are
+                // an unterminated final line. Log metadata (never content —
+                // it may contain prompts or credentials) before discarding.
+                if !buf.is_empty() {
+                    log::warn!(
+                        "Agent comms: discarding {} unterminated trailing bytes at EOF from {}",
+                        buf.len(),
+                        peer
+                    );
+                }
+                break;
+            }
         };
         let trimmed = line.trim().to_string();
         if trimmed.is_empty() {
@@ -157,8 +243,17 @@ pub(super) fn handle_connection(
 
         // initialize is the only method that may run while unauthenticated.
         if msg.method == "initialize" {
-            if handle_initialize(&stream, msg, &sessions, &token, &event_emitter, &tx) {
+            if let Some(session_id) = handle_initialize(
+                &stream,
+                msg,
+                &sessions,
+                &pending_input,
+                &token,
+                &event_emitter,
+                &tx,
+            ) {
                 authenticated = true;
+                conn_session_id = Some(session_id);
                 log::info!("Agent comms: client authenticated from {}", peer);
             }
             continue;
@@ -167,7 +262,17 @@ pub(super) fn handle_connection(
         handle_incoming_message(&stream, msg, &sessions, &pending_input, &event_emitter);
     }
 
-    cleanup_connection(&stream, &sessions, &pending_input, &event_emitter);
+    cleanup_connection(
+        conn_session_id.as_deref(),
+        &sessions,
+        &pending_input,
+        &event_emitter,
+    );
+    // Release the outbound queue: dropping this thread's `tx` (plus the
+    // session-map copy, removed by cleanup) lets the writer task exit, and
+    // the flag covers the case where inserts raced ahead of cleanup.
+    alive.store(false, std::sync::atomic::Ordering::SeqCst);
+    drop(tx);
     log::info!("Agent comms: connection closed from {}", peer);
 }
 
@@ -209,10 +314,11 @@ fn handle_initialize(
     stream: &TcpStream,
     msg: AgentMessage,
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
+    pending_input: &Arc<Mutex<HashMap<String, PendingInput>>>,
     token: &str,
     event_emitter: &EventEmitter,
     tx: &SyncSender<Vec<u8>>,
-) -> bool {
+) -> Option<String> {
     let incoming_token = msg
         .params
         .get("data")
@@ -231,7 +337,7 @@ fn handle_initialize(
                 }
             }),
         );
-        return false;
+        return None;
     }
 
     let session_id = generate_uuid();
@@ -264,13 +370,65 @@ fn handle_initialize(
         peer_addr,
     };
 
-    if let Ok(mut map) = sessions.lock() {
-        // Evict any existing session from the same peer address to prevent
-        // memory leaks when a client reconnects without proper cleanup.
-        if let Some(addr) = peer_addr {
-            map.retain(|_, existing| existing.peer_addr != Some(addr));
+    // Evict stale sessions for the same stable identity before inserting.
+    // `peer_addr` (client ephemeral port) cannot recognize a reconnect from
+    // the same agent, so eviction is keyed on `(plugin_id, agent_id)`. An
+    // agent that *defaults* its agent_id (`agent-<random>`) effectively
+    // claims a fresh identity each reconnect and relies on socket EOF plus
+    // `cleanup_connection` to retire its old session.
+    //
+    // Collect the sessions to evict inside the lock, then insert the new
+    // session; all cross-lock cleanup (pending-input drop, renderer events)
+    // runs after both locks are released so we never take `pending_input`
+    // while holding `sessions` — any handler doing the reverse cannot
+    // deadlock with us.
+    let evicted = if let Ok(mut map) = sessions.lock() {
+        let evict_ids: Vec<String> = map
+            .values()
+            .filter(|existing| {
+                existing.session.plugin_id == plugin_id && existing.session.agent_id == agent_id
+            })
+            .map(|existing| existing.session.id.clone())
+            .collect();
+        let mut evicted = Vec::with_capacity(evict_ids.len());
+        for id in evict_ids {
+            if let Some(old) = map.remove(&id) {
+                evicted.push(old.session);
+            }
+        }
+        if !evicted.is_empty() {
+            log::info!(
+                "Agent comms: evicting {} stale session(s) for same agent identity",
+                evicted.len()
+            );
         }
         map.insert(session_id.clone(), internal);
+        evicted
+    } else {
+        Vec::new()
+    };
+
+    if !evicted.is_empty() {
+        // Dropping an evicted session's pending-input senders wakes its
+        // `recv_timeout` with `Disconnected`, so an agent that reconnected
+        // while an input dialog was open gets a prompt cancellation instead
+        // of hanging for the full 30s timeout.
+        if let Ok(mut pending) = pending_input.lock() {
+            let ids: std::collections::HashSet<&str> =
+                evicted.iter().map(|s| s.id.as_str()).collect();
+            pending.retain(|_, entry| !ids.contains(entry.session_id.as_str()));
+        }
+        for old in &evicted {
+            emit_to_renderer(
+                event_emitter,
+                "agents:disconnected",
+                &serde_json::json!({
+                    "sessionId": old.id,
+                    "agentId": old.agent_id,
+                    "pluginId": old.plugin_id,
+                }),
+            );
+        }
     }
 
     send_to_socket(
@@ -304,7 +462,7 @@ fn handle_initialize(
         session.plugin_id.len(),
         session.agent_id.len()
     );
-    true
+    Some(session_id)
 }
 
 fn handle_notification(
@@ -518,13 +676,42 @@ pub(super) fn handle_request_input(
                     return;
                 }
             };
-            map.insert(
-                request_id.clone(),
-                PendingInput {
-                    session_id: session.id.clone(),
-                    sender: input_tx,
-                },
-            );
+            // Reject duplicate request ids instead of overwriting: inserting
+            // over an existing entry would silently drop the original sender
+            // and wake its waiter with a spurious `Disconnected`/cancelled.
+            match map.entry(request_id.clone()) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(PendingInput {
+                        session_id: session.id.clone(),
+                        sender: input_tx,
+                    });
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    drop(map);
+                    send_to_socket(
+                        stream,
+                        &serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": msg.id,
+                            "error": {
+                                "code": -32000,
+                                "message": "input request id already in progress",
+                            }
+                        }),
+                    );
+                    update_session_status(sessions, &session.id, SessionStatus::Active);
+                    emit_to_renderer(
+                        event_emitter,
+                        "agents:statusUpdate",
+                        &serde_json::json!({
+                            "sessionId": session.id,
+                            "agentId": session.agent_id,
+                            "status": "active",
+                        }),
+                    );
+                    return;
+                }
+            }
         }
 
         match input_rx.recv_timeout(INPUT_REQUEST_TIMEOUT) {
@@ -565,6 +752,19 @@ pub(super) fn handle_request_input(
                         }
                     }),
                 );
+                // The agent is no longer waiting for this input; restore
+                // the session state so the UI badge does not stick on
+                // `waiting_input` forever.
+                update_session_status(sessions, &session.id, SessionStatus::Active);
+                emit_to_renderer(
+                    event_emitter,
+                    "agents:statusUpdate",
+                    &serde_json::json!({
+                        "sessionId": session.id,
+                        "agentId": session.agent_id,
+                        "status": "active",
+                    }),
+                );
             }
             Err(RecvTimeoutError::Disconnected) => {
                 // Sender was dropped, most likely by cancel_input_request
@@ -578,6 +778,20 @@ pub(super) fn handle_request_input(
                             "code": -32000,
                             "message": "Input request cancelled",
                         }
+                    }),
+                );
+                // On user-driven cancellation the session is still alive and
+                // returns to `Active`; when the disconnect came from
+                // `cleanup_connection` the session entry is already gone and
+                // this status update is a no-op on an absent id.
+                update_session_status(sessions, &session.id, SessionStatus::Active);
+                emit_to_renderer(
+                    event_emitter,
+                    "agents:statusUpdate",
+                    &serde_json::json!({
+                        "sessionId": session.id,
+                        "agentId": session.agent_id,
+                        "status": "active",
                     }),
                 );
             }
@@ -677,35 +891,29 @@ fn update_session_status(
 }
 
 fn cleanup_connection(
-    stream: &TcpStream,
+    session_id: Option<&str>,
     sessions: &Arc<Mutex<HashMap<String, SessionInternal>>>,
     pending_input: &Arc<Mutex<HashMap<String, PendingInput>>>,
     event_emitter: &EventEmitter,
 ) {
-    let peer_addr = match stream.peer_addr() {
-        Ok(addr) => Some(addr),
-        Err(_) => return,
+    // Keyed by the session this connection registered — `peer_addr` would
+    // collide with sibling reconnects sharing neither socket nor identity,
+    // and using it here could tear down a *different* agent's session.
+    //
+    // Remove the session and drop its pending-input senders in one pass:
+    // session removal takes the `sessions` lock, then pending pruning takes
+    // `pending_input` after the first lock is released, keeping this path
+    // incompatible with any handler nesting these locks the other way.
+    let Some(session_id) = session_id else {
+        return;
     };
     let session = {
-        let guard = match sessions.lock() {
-            Ok(g) => g,
-            Err(_) => return,
+        let Ok(mut guard) = sessions.lock() else {
+            return;
         };
-        guard
-            .values()
-            .find(|s| s.peer_addr == peer_addr)
-            .map(|s| s.session.clone())
+        guard.remove(session_id).map(|internal| internal.session)
     };
-
     if let Some(s) = session {
-        if let Ok(mut guard) = sessions.lock() {
-            guard.retain(|_, internal| internal.session.id != s.id);
-        }
-
-        // Drop any pending input senders that belong to this session.
-        // Removing them wakes the corresponding `recv_timeout` with
-        // `Disconnected`, so the agent's input handler thread can exit
-        // immediately instead of waiting the full 30s for the timeout.
         if let Ok(mut pending) = pending_input.lock() {
             pending.retain(|_, entry| entry.session_id != s.id);
         }

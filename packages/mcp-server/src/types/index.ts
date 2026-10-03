@@ -1,11 +1,8 @@
 export type {
   AgentStatus,
-  SpecAgentStatus,
   NotificationType,
   NotificationPriority,
   TransportType,
-  PluginEventType,
-  PluginCapability,
 } from './interfaces.js'
 
 export type {
@@ -20,13 +17,6 @@ export type {
   SpaceState,
   PaneState,
   TaskState,
-  PluginEvent,
-  PluginEventPayload,
-  McpSession,
-  PluginManifest,
-  PluginToolDefinition,
-  PluginConfigSchema,
-  PluginInstallMethod,
   ServerConfig,
   OutputEntry,
   OutputReadOptions,

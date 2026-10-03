@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-25T00:00:00Z",
+  "title": "Design System: Athena's Core — Obsidian (brand world)",
+  "extensions": {
+    "authoritativeFiles": ["branding/BRAND.md", "branding/DESIGN.md", "branding/tokens.json"],
+    "colorMeta": {
+      "ink": { "role": "neutral", "displayName": "Ink (obsidian)", "canonical": "#0B0B0C", "tonalRamp": ["#070708", "#0B0B0C", "#16171A", "#1F2024"] },
+      "attic-gold": { "role": "primary", "displayName": "Attic Gold", "canonical": "#C9A24B", "tonalRamp": ["#C9A24B"] },
+      "electrum": { "role": "primary", "displayName": "Electrum", "canonical": "#E2C26C", "tonalRamp": ["#E2C26C"] },
+      "marble": { "role": "neutral", "displayName": "Marble", "canonical": "#F5F2EA", "tonalRamp": ["#F5F2EA"] }
+    },
+    "motion": [
+      { "name": "rise", "value": "translateY(26px) → 0, 0.7s cubic-bezier(0.16,0.84,0.3,1), staggered", "purpose": "Hero mount-in and scroll reveals; one authored motion, transform+opacity only." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "760px" },
+      { "name": "md", "value": "800px" },
+      { "name": "rows-stack", "value": "860px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Gold Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Solid Attic Gold on ink; hover lifts to Electrum.",
+      "html": "<a class=\"btn btn-gold\">Download the build &#8599;</a>",
+      "css": ".btn-gold { background: #c9a24b; color: #070708; border: 1px solid #c9a24b; border-radius: 6px; padding: .9rem 1.75rem; font: 600 .85rem 'Hanken Grotesk'; letter-spacing: .1em; text-transform: uppercase; } .btn-gold:hover { background: #e2c26c; border-color: #e2c26c; }"
+    },
+    {
+      "name": "Codex Rule",
+      "kind": "custom",
+      "description": "1px hairline hr with 48px gold prefix; brand-closed ornament.",
+      "html": "<hr class=\"codex-rule\" />",
+      "css": ".codex-rule { height: 1px; background: #1f2024; position: relative; } .codex-rule::after { content: ''; position: absolute; left: 0; top: 0; width: 48px; height: 1px; background: #c9a24b; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The strategist's workbench — obsidian fields framed with electrum.",
+    "overview": "Dark-native workspace brand: black-figure ink inverted into software. Gold is the signature and stays rare; flat classical layering instead of glow or glass.",
+    "keyCharacteristics": ["60/30/10 Ink/neutrals/gold", "One metal per surface", "Ornaments closed set: meander, laurel, codex-rule", "Calm strategist voice; no hype, no exclamation marks"],
+    "rules": [
+      { "name": "The Rarity Rule", "body": "Attic Gold on no more than 10% of any surface; its rarity is the point.", "section": "colors" },
+      { "name": "The Locked Mark Rule", "body": "The mark is never recolored, tinted, glowed, or restyled; approved presentations only.", "section": "colors" }
+    ],
+    "dos": ["Do use the brand's dark layering — Ink Deep, Ink, Ink Raised + Hairline.", "Do write copy in the calm strategist register.", "Do let real captures carry the proof."],
+    "donts": ["Don't glow the mark or use glass/noise textures.", "Don't mix Gold and Bronze on one canvas.", "Don't use exclamation marks or hype words."]
+  }
+}

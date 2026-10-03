@@ -1,4 +1,5 @@
 use super::plugin_event_bus::PluginEntry;
+use crate::components::shared::toast::{use_toast_store, Toast, ToastType};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 
@@ -9,6 +10,7 @@ pub struct PluginCardProps {
 
 #[component]
 pub fn PluginCard(props: PluginCardProps) -> Element {
+    let toast_store = use_toast_store();
     let (status_color, status_label) = if props.plugin.error.is_some() {
         ("var(--error)", "Error".to_string())
     } else if props.plugin.enabled {
@@ -73,11 +75,21 @@ pub fn PluginCard(props: PluginCardProps) -> Element {
                     onclick: move |_| {
                         let plugin_id = props.plugin.id.clone();
                         let currently_enabled = props.plugin.enabled;
+                        let mut toast_store = toast_store;
                         spawn(async move {
-                            if currently_enabled {
-                                let _ = tauri_bridge::plugin_disable(&plugin_id).await;
+                            let result = if currently_enabled {
+                                tauri_bridge::plugin_disable(&plugin_id).await
                             } else {
-                                let _ = tauri_bridge::plugin_enable(&plugin_id).await;
+                                tauri_bridge::plugin_enable(&plugin_id).await
+                            };
+                            if let Err(error) = result {
+                                toast_store.write().push(Toast {
+                                    id: format!("toast-plugin-toggle-{}", chrono::Utc::now().timestamp_millis()),
+                                    toast_type: ToastType::Error,
+                                    title: "Could not toggle plugin".to_string(),
+                                    message: format!("{plugin_id}: {error:?}"),
+                                    duration_ms: 6000,
+                                });
                             }
                         });
                     },

@@ -65,7 +65,7 @@ impl Default for UIState {
     fn default() -> Self {
         Self {
             panel: Panel::default(),
-            sidebar_visible: true,
+            sidebar_visible: false,
             sidebar_section: SidebarSection::default(),
             sidebar_width: 240.0,
             theme: UITheme::default(),

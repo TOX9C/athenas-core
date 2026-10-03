@@ -5,7 +5,13 @@ edition = "2021"
 rust-version = "1.82"
 
 [dependencies]
+# `devtools`: tauri compiles the inspector out of release builds
+# automatically (it is debug-assertions gated upstream), so keeping it
+# unconditional is safe and keeps `tauri dev` zero-config.
+# `unstable`: required by APIs used across commands/window management; Tauri
+# offers no per-feature narrowing for these, so it stays enabled.
 tauri = { version = "2.0", features = ["devtools", "unstable"] }
+regex = "1.10"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
@@ -20,9 +26,6 @@ thiserror = { workspace = true }
 tokio = { version = "1.43", features = ["rt", "sync", "time", "fs", "macros"] }
 log = { workspace = true }
 base64 = "0.22"
-path-clean = "1.0"
-regex = "1.10"
-chrono = { workspace = true }
 tauri-runtime = "2"
 uuid = { workspace = true }
 # keyring v3 ships NO default backends — without an explicit platform
@@ -37,20 +40,26 @@ keyring = { version = "3", features = [
     "linux-native-sync-persistent",
     "crypto-rust",
 ] }
-env_logger = "0.11"
 # Used for platform-native log and diagnostics export locations.
 dirs = "6"
-libc = "0.2"
 parking_lot = { version = "0.12", features = ["send_guard"] }
+# athena-fs is deliberately not listed here even though athena-core re-uses
+# it: the app must not depend on it directly (it was an unused duplicate
+# dependency); it reaches the graph transitively via athena-core.
 athena-core = { path = "../crates/athena-core" }
 athena-git = { path = "../crates/athena-git" }
-athena-fs = { path = "../crates/athena-fs" }
 athena-store = { path = "../crates/athena-store" }
 athena-browser = { path = "../crates/athena-browser" }
 athena-plugins = { path = "../crates/athena-plugins" }
 athena-terminal = { path = "../crates/athena-terminal" }
 
-tauri-plugin-webdriver-automation = "0.1.3"
+# WebDriver automation plugin: optional behind the `webdriver` feature and
+# only REGISTERED in debug builds (main.rs gates on cfg(debug_assertions) +
+# TAURI_WEBVIEW_AUTOMATION). Cargo cannot conditionalize dependencies on
+# debug_assertions ([target.'cfg(debug_assertions)'] is unsupported), so the
+# dep stays optional and release builds avoid it by leaving the feature off
+# the default set; the e2e runner builds with `--features webdriver`.
+tauri-plugin-webdriver-automation = { version = "0.1.3", optional = true }
 
 # ── Mobile mirror relay ───────────────────────────────────────────────────────
 # Serves the desktop frontend dist + WS bridge to the real command handlers,
@@ -60,30 +69,50 @@ tauri-plugin-webdriver-automation = "0.1.3"
 # from Settings (persisted, default off) — see the `relay_*` Tauri commands and
 # `relay::RelayHandle`. This is experimental and must not be exposed to the
 # public internet.
-axum = { version = "0.7", features = ["ws"] }
-tower-http = { version = "0.6", features = ["fs", "cors"] }
-tower = "0.5"
-qrcode = { version = "0.14", features = ["svg"] }
-local-ip-address = "0.6"
+axum = { version = "0.7", features = ["ws"], optional = true }
+tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
+qrcode = { version = "0.14", features = ["svg"], optional = true }
+local-ip-address = { version = "0.6", optional = true }
 futures-util = "0.3"
-mdns-sd = "0.11"
+mdns-sd = { version = "0.11", optional = true }
 
 # ── Athena voice input ───────────────────────────────────────────────────────
 # Microphone capture (cpal) → WAV (hound) → macOS on-device speech recognition
 # (Apple Speech framework via the auto-generated objc2 bindings — pure
 # Objective-C, no Swift runtime, so it works on macOS 13–26 without bundling
 # Swift dylibs; macOS-26 dropped the Swift concurrency runtime from the OS).
-cpal = "0.14"
-hound = "3"
+cpal = { version = "0.14", optional = true }
+hound = { version = "3", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-block2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSBundle", "NSError", "NSString", "NSURL"] }
-objc2-speech = "0.3"
+objc2 = { version = "0.6", optional = true }
+block2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", features = ["NSBundle", "NSError", "NSString", "NSURL"], optional = true }
+objc2-speech = { version = "0.3", optional = true }
 
 [features]
-default = []
+# Both feature groups are on by default so release behavior is unchanged;
+# they exist so minimal builds can drop the relay/mic dependency trees.
+default = ["voice", "relay"]
+voice = [
+    "dep:cpal",
+    "dep:hound",
+    "dep:objc2",
+    "dep:block2",
+    "dep:objc2-foundation",
+    "dep:objc2-speech",
+]
+relay = [
+    "dep:axum",
+    "dep:tower-http",
+    "dep:qrcode",
+    "dep:mdns-sd",
+    "dep:local-ip-address",
+]
+# WebDriver e2e automation. Off by default so release builds/link never see
+# the plugin; main.rs registers it only in debug builds behind
+# TAURI_WEBVIEW_AUTOMATION. E2e runners must build with `--features webdriver`.
+webdriver = ["dep:tauri-plugin-webdriver-automation"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

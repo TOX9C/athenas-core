@@ -171,20 +171,17 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
     let input_queue: Rc<RefCell<VecDeque<String>>> =
         use_hook(|| Rc::new(RefCell::new(VecDeque::new())));
     let input_draining = use_hook(|| Rc::new(RefCell::new(false)));
-    // One-shot Ctrl modifier for the keybar (tap Ctrl, then a key).
+    // One-shot Ctrl modifier for the keybar (tap Ctrl, then a key). A single
+    // Signal is both the render state and the value read by xterm's onData
+    // callback: consuming the byte resets the signal, so the button state can
+    // never desync from the armed flag (an earlier signal→Cell mirror let a
+    // consumed Ctrl silently re-arm).
     let mut ctrl_armed = use_signal(|| false);
-    let ctrl_cell = use_hook(|| Rc::new(std::cell::Cell::new(false)));
-    // Mirror the Cell so the JS callback path sees taps (plain comment —
-    // `///` on a statement is a lint error).
-    #[allow(unused)]
-    let _ = ctrl_cell.clone();
-    ctrl_cell.set(ctrl_armed());
 
     let pane_id_for_keybar = pane_id.clone();
     let active_for_keybar = active.clone();
     let input_queue_for_effect = input_queue.clone();
     let input_draining_for_effect = input_draining.clone();
-    let ctrl_for_effect = ctrl_cell.clone();
     use_effect(move || {
         if *mounted.borrow() {
             return;
@@ -194,7 +191,7 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
         // effect closure is FnMut (re-runnable).
         let input_queue_for_effect = input_queue_for_effect.clone();
         let input_draining_for_effect = input_draining_for_effect.clone();
-        let ctrl_for_effect = ctrl_for_effect.clone();
+        let ctrl_for_effect = ctrl_armed;
 
         let Some(window) = web_sys::window() else {
             return;
@@ -393,6 +390,21 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             // first, xterm's DOM renderer as silent fallback (older WebViews
             // or exhausted GL contexts simply return None here).
             let webgl_addon = new_addon(&window_for_task, "WebglAddon", &term);
+            // Same context-loss recovery as the desktop mount: dispose on
+            // loss, re-attach a fresh WebglAddon on webglcontextrestored.
+            // ponytail: the returned closure is leaked (forget) — one small
+            // closure per mount; mobile cleanup has no JS-closure field.
+            if let Some(addon) = webgl_addon.as_ref() {
+                if let Some(loss_closure) =
+                    crate::components::workspace::xterm_mount::xterm_helpers::wire_webgl_context_recovery(
+                        &window_for_task,
+                        &term,
+                        addon,
+                    )
+                {
+                    loss_closure.forget();
+                }
+            }
 
             // Replay best-effort scrollback before resuming the raw VT stream.
             // Raw replay (when present) is exact VT state; text history is the
@@ -452,6 +464,9 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             let active_for_attach = active_for_task.clone();
             let unlisten = listener.unlisten;
             let unlisten_raw = listener.unlisten_raw;
+            // Relay mode attaches without a raw channel — binary frames come
+            // via the shim sink (`unlisten_raw`) instead.
+            let channel = listener.channel;
             wasm_bindgen_futures::spawn_local(async move {
                 for attempt in 0..4 {
                     if !*active_for_attach.borrow() {
@@ -461,6 +476,7 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                         &pane_for_attach,
                         listener_owner_for_attach.as_str(),
                         has_session,
+                        channel.as_ref(),
                     )
                     .await
                     {
@@ -508,11 +524,13 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             let on_data_draining = input_draining_for_effect.clone();
             let on_data_active = active_for_task.clone();
             let pane_for_data = pane_id_for_task.clone();
-            let ctrl_for_data = ctrl_for_effect.clone();
+            let mut ctrl_for_data = ctrl_for_effect;
             let on_data = Closure::wrap(Box::new(move |data: String| {
                 // Keybar Ctrl is a one-shot modifier: when armed, translate a
                 // single character to its control byte (c → 0x03) and disarm.
-                let data = if ctrl_for_data.get() {
+                // Consuming reads/writes the same signal the keybar renders,
+                // so the button un-lights immediately on consume.
+                let data = if *ctrl_for_data.peek() {
                     ctrl_for_data.set(false);
                     ctrl_modified(&data).unwrap_or(data)
                 } else {
@@ -701,7 +719,6 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                     onclick: move |_| {
                         let next = !ctrl_armed();
                         ctrl_armed.set(next);
-                        ctrl_cell.set(next);
                     },
                     "ctrl"
                 }

@@ -94,46 +94,77 @@ mod tests {
         assert_eq!(status.last_updated_at, 42);
     }
 
+    // Signals require a live Dioxus runtime; run the store-mutating tests
+    // inside a throwaway VirtualDom (same harness as agent_output tests).
+    mod dom {
+        use crate::stores::agent_status::AgentStatusRegistry;
+        use dioxus::prelude::*;
+        use std::cell::RefCell;
+
+        thread_local! {
+            static PENDING_BODY: RefCell<Option<Box<dyn FnOnce(&AgentStatusRegistry)>>> =
+                const { RefCell::new(None) };
+        }
+
+        pub fn run_in_dom(body: impl FnOnce(&AgentStatusRegistry) + 'static) {
+            PENDING_BODY.with(|cell| cell.replace(Some(Box::new(body))));
+            let mut dom = VirtualDom::new(|| {
+                let store = use_context_provider(AgentStatusRegistry::new);
+                PENDING_BODY.with(|cell| {
+                    if let Some(b) = cell.borrow_mut().take() {
+                        b(&store);
+                    }
+                });
+                rsx! {}
+            });
+            dom.rebuild_to_vec();
+        }
+    }
+
     #[test]
     fn terminal_exit_cleanup_removes_transient_status() {
-        let mut state = crate::stores::agent_status::AgentStatusState::new();
-        state.update_status(
-            "pane-1",
-            AgentStatusUpdate {
-                generation: Some(1),
-                status: Some(AgentRunStatus::Working),
-                ..Default::default()
-            },
-            1,
-        );
-        state.remove_status("pane-1");
-        assert!(state.statuses.is_empty());
+        dom::run_in_dom(|state| {
+            state.update_status(
+                "pane-1",
+                AgentStatusUpdate {
+                    generation: Some(1),
+                    status: Some(AgentRunStatus::Working),
+                    ..Default::default()
+                },
+                1,
+            );
+            state.remove_status("pane-1");
+            assert!(state.status_signal("pane-1").is_none());
+        });
     }
 
     #[test]
     fn stale_generation_update_cannot_overwrite_reused_pane() {
-        let mut state = crate::stores::agent_status::AgentStatusState::new();
-        state.update_status(
-            "pane-1",
-            AgentStatusUpdate {
-                generation: Some(2),
-                status: Some(AgentRunStatus::Working),
-                ..Default::default()
-            },
-            2,
-        );
-        state.update_status(
-            "pane-1",
-            AgentStatusUpdate {
-                generation: Some(1),
-                status: Some(AgentRunStatus::Completed),
-                ..Default::default()
-            },
-            3,
-        );
-        let status = &state.statuses[0].1;
-        assert_eq!(status.generation, Some(2));
-        assert_eq!(status.status, AgentRunStatus::Working);
-        assert_eq!(status.last_updated_at, 2);
+        dom::run_in_dom(|state| {
+            state.update_status(
+                "pane-1",
+                AgentStatusUpdate {
+                    generation: Some(2),
+                    status: Some(AgentRunStatus::Working),
+                    ..Default::default()
+                },
+                2,
+            );
+            state.update_status(
+                "pane-1",
+                AgentStatusUpdate {
+                    generation: Some(1),
+                    status: Some(AgentRunStatus::Completed),
+                    ..Default::default()
+                },
+                3,
+            );
+            let status = state
+                .peek_status("pane-1", |s| s.clone())
+                .expect("status exists");
+            assert_eq!(status.generation, Some(2));
+            assert_eq!(status.status, AgentRunStatus::Working);
+            assert_eq!(status.last_updated_at, 2);
+        });
     }
 }

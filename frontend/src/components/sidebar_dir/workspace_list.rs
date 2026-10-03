@@ -43,7 +43,7 @@ pub fn WorkspaceList() -> Element {
                         // helper for presence detection but is intentionally not
                         // rendered as a redundant badge.
                         let counts: SpaceCounts =
-                            count_space_agents(&space.panes, &agent_status.read().statuses);
+                            count_space_agents(&space.panes, &agent_status.snapshot());
                         // Active agents (working/thinking/waiting/errored/finished)
                         // mean closing kills a live session → confirm first.
                         let close_requires_confirm = counts.working > 0 || counts.attention > 0;

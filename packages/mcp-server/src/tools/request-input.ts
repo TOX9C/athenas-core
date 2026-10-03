@@ -8,16 +8,17 @@ export const requestInputSchema = z.object({
   timeoutMs: z
     .number()
     .min(0)
+    .max(600_000)
     .default(120_000)
-    .describe('Maximum wait time in milliseconds. 0 = no timeout'),
+    .describe(
+      'Maximum wait time in milliseconds (max 600000). 0 = wait indefinitely with no timeout',
+    ),
   agentId: z.string().optional().describe('ID of the agent requesting input'),
 })
 
 export type RequestInputInput = z.infer<typeof requestInputSchema>
 
 export async function requestInput(bridge: AthenaBridge, input: RequestInputInput) {
-  const timeout = input.timeoutMs === 0 ? 600_000 : input.timeoutMs
-
   const promptParts = [input.prompt]
   if (input.options && input.options.length > 0) {
     promptParts.push(`Options: ${input.options.join(', ')}`)
@@ -29,7 +30,8 @@ export async function requestInput(bridge: AthenaBridge, input: RequestInputInpu
   const response = await bridge.requestInput({
     prompt: promptParts.join('\n'),
     defaultResponse: input.options?.[0] ?? '',
-    timeout,
+    // 0 disables the timeout entirely; bridge treats absent as 120s default.
+    timeout: input.timeoutMs === 0 ? 0 : input.timeoutMs,
     agentId: input.agentId ?? 'unknown',
   })
 
@@ -38,7 +40,7 @@ export async function requestInput(bridge: AthenaBridge, input: RequestInputInpu
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ error: `Input request timed out after ${timeout}ms` }),
+          text: JSON.stringify({ error: `Input request timed out after ${input.timeoutMs}ms` }),
         },
       ],
       isError: true,

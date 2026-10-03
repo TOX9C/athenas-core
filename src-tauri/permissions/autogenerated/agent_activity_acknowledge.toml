@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-activity-acknowledge"
+description = "Enables the agent_activity_acknowledge command without any pre-configured scope."
+commands.allow = ["agent_activity_acknowledge"]
+
+[[permission]]
+identifier = "deny-agent-activity-acknowledge"
+description = "Denies the agent_activity_acknowledge command without any pre-configured scope."
+commands.deny = ["agent_activity_acknowledge"]

@@ -52,3 +52,18 @@ lto = true
 # every subsequent render or task poll hit the poisoned cell and crash
 # the WASM runtime until the page is reloaded.
 panic = "unwind"
+
+# The terminal grid/parser and the core orchestrator are hot per-keystroke
+# paths, not size-constrained; the global "z" leaves them at a fraction of
+# their achievable speed. Per-package overrides restore speed while the
+# WASM frontend keeps the workspace-wide "z" sizing.
+[profile.release.package.athena-terminal]
+opt-level = 3
+
+[profile.release.package.athena-core]
+opt-level = 3
+
+# The PTY read-loop/flush glue in src-tauri is a hot per-output-chunk path;
+# "z" sizing throttles the 8ms flush pipeline.
+[profile.release.package.athenas-core]
+opt-level = 3

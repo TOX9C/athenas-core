@@ -26,22 +26,39 @@ if [ -d "$BUILD_DIR/assets" ]; then
   find "$BUILD_DIR/assets" -maxdepth 1 \( -name 'athena-frontend_bg-dx*.wasm' -o -name 'athena-frontend-dx*.js' \) -delete 2>/dev/null || true
 fi
 
-~/.cargo/bin/dx build $DX_FLAG
+# Prefer the cargo bin dx: CI installs dioxus-cli there too (ci.yml), and a
+# Homebrew binary also named `dx` (unrelated tool) can shadow it in PATH.
+DX_BIN="$HOME/.cargo/bin/dx"
+if [ ! -x "$DX_BIN" ]; then
+  DX_BIN="$(command -v dx || true)"
+fi
+if [ -z "$DX_BIN" ] || [ ! -x "$DX_BIN" ]; then
+  echo "error: dioxus-cli (`dx`) not found; install with: cargo install dioxus-cli" >&2
+  exit 1
+fi
+"$DX_BIN" build $DX_FLAG
 
-# Optimize WASM with wasm-opt if available.
-# wasm-opt typically shaves 20-30% off release WASM size.
-# Fallback: if wasm-opt is not installed, log a warning and continue.
+# wasm-opt is REQUIRED for release distribution builds: it shaves 20-30% off
+# the release WASM, and silently shipping the unoptimized artifact produced
+# noticeably slower cold starts. Fail loudly with install instructions
+# instead of continuing.
+if ! command -v wasm-opt &>/dev/null; then
+  echo "error: wasm-opt (binaryen) not found; install it before building:" >&2
+  echo "  macOS:  brew install binaryen" >&2
+  echo "  Ubuntu: sudo apt-get install -y binaryen" >&2
+  exit 1
+fi
+
 wasm_opt_run() {
   local input_wasm="$1"
-  if command -v wasm-opt &>/dev/null; then
-    tmpfile=$(mktemp)
-    if wasm-opt -Oz "$input_wasm" -o "$tmpfile" 2>/dev/null; then
-      mv "$tmpfile" "$input_wasm"
-      echo "wasm-opt: optimized $(basename "$input_wasm")"
-    else
-      rm -f "$tmpfile"
-      echo "wasm-opt: optimization failed for $(basename "$input_wasm")"
-    fi
+  tmpfile=$(mktemp)
+  if wasm-opt -Oz "$input_wasm" -o "$tmpfile" 2>/dev/null; then
+    mv "$tmpfile" "$input_wasm"
+    echo "wasm-opt: optimized $(basename "$input_wasm")"
+  else
+    rm -f "$tmpfile"
+    echo "error: wasm-opt optimization failed for $(basename "$input_wasm")" >&2
+    exit 1
   fi
 }
 
@@ -130,8 +147,13 @@ fi
 # These must become relative paths: ./wasm/... ./assets/...
 perl -pi -e 's|href="/\./|href="./|g; s|src="/\./|src="./|g' "$DIST_DIR/index.html"
 
-# Fix the same pattern inside any JS bundles
-find "$DIST_DIR" -name '*.js' -exec perl -pi -e 's|"/\./|"./|g; s|/\./assets/|./assets/|g; s|/\./wasm/|./wasm/|g' {} +
+# Fix the same pattern inside the JS entry bundle. Only the entry alias is
+# rewritten: it contains the wasm-bindgen bootstrap fetch URLs. Rewriting
+# every *.js would silently corrupt unrelated bundles whose string literals
+# legitimately contain "/./assets/..."
+for js in "$DIST_DIR/assets/athena-frontend.js" "$DIST_DIR/wasm/athena-frontend.js"; do
+  [ -f "$js" ] && perl -pi -e 's|"/\./|"./|g; s|/\./assets/|./assets/|g; s|/\./wasm/|./wasm/|g' "$js"
+done
 
 echo "Done. Files in $DIST_DIR:"
 find "$DIST_DIR" -type f -o -type l | sort

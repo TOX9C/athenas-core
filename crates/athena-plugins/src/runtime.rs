@@ -6,10 +6,79 @@ use std::time::Instant;
 use super::{
     now_millis, scoped_capabilities_with_manifest, AgentType, HealthCheckResult, PendingMessage,
     PluginCapability, PluginError, PluginEvent, PluginEventPayload, PluginEventSource,
-    PluginEventType, PluginManager, PluginSession, SessionStatus, MAX_PENDING_PLUGIN_MESSAGES,
-    MAX_PLUGIN_EVENT_BYTES, MAX_PLUGIN_SESSIONS, MAX_SESSION_SUBSCRIPTIONS,
-    PENDING_PLUGIN_MESSAGE_TTL,
+    PluginEventType, PluginManager, PluginManagerInner, PluginSession, SessionStatus,
+    MAX_PENDING_PLUGIN_MESSAGES, MAX_PLUGIN_EVENT_BYTES, MAX_PLUGIN_SESSIONS,
+    MAX_SESSION_SUBSCRIPTIONS, PENDING_PLUGIN_MESSAGE_TTL,
 };
+
+/// Drop pending messages older than the shared TTL. Uses `saturating_sub`
+/// so a backwards clock shift keeps messages instead of panicking.
+fn purge_expired_pending(inner: &mut PluginManagerInner, now: i64) {
+    inner.pending_messages.retain(|_, message| {
+        now.saturating_sub(message.sent_at) <= PENDING_PLUGIN_MESSAGE_TTL.as_millis() as i64
+    });
+}
+
+/// Remove a pending message, returning it only when its session still exists.
+fn remove_pending_message(
+    inner: &mut PluginManagerInner,
+    message_id: &str,
+) -> Option<PendingMessage> {
+    let message = inner.pending_messages.remove(message_id)?;
+    if !inner.sessions.contains_key(&message.session_id) {
+        return None;
+    }
+    Some(message)
+}
+
+/// Conservative (never undercounting) bound on the serialized size of a JSON
+/// value, in bytes. Strings are bounded at 6x their UTF-8 length, which
+/// covers the worst case where every character escapes as `\uXXXX`.
+fn json_size_upper_bound(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::Null | serde_json::Value::Bool(_) => 8,
+        serde_json::Value::Number(_) => 32,
+        serde_json::Value::String(s) => 2 + 6 * s.len(),
+        serde_json::Value::Array(a) => 2 + a.iter().map(json_size_upper_bound).sum::<usize>(),
+        serde_json::Value::Object(o) => {
+            2 + o
+                .iter()
+                .map(|(k, val)| 3 + 6 * k.len() + json_size_upper_bound(val))
+                .sum::<usize>()
+        }
+    }
+}
+
+/// Upper bound on the serialized [`PluginEventPayload`] size without paying
+/// for an encoding pass. The exact check runs only when this crosses the cap.
+fn payload_size_upper_bound(p: &PluginEventPayload) -> usize {
+    // Structural slack: braces, field keys, colons, commas, and the
+    // fixed-size `level`/`exit_code` scalars.
+    let mut size = 256usize;
+    for field in [
+        &p.message,
+        &p.title,
+        &p.task_title,
+        &p.result,
+        &p.error,
+        &p.prompt,
+        &p.request_id,
+        &p.response,
+        &p.command,
+        &p.session_id,
+        &p.agent_id,
+        &p.plugin_id,
+    ] {
+        size += field.as_ref().map_or(0, |s| 2 + 6 * s.len());
+    }
+    if let Some(options) = &p.options {
+        size += 2 + options.iter().map(|o| 3 + 6 * o.len()).sum::<usize>();
+    }
+    if let Some(metadata) = &p.metadata {
+        size += json_size_upper_bound(metadata);
+    }
+    size
+}
 
 impl PluginManager {
     pub fn register_session(
@@ -102,12 +171,40 @@ impl PluginManager {
     }
 
     pub fn remove_session(&self, session_id: &str) -> Result<(), PluginError> {
+        self.remove_session_impl(None, session_id)
+    }
+
+    /// Remove a session only when it belongs to `plugin_id`.
+    ///
+    /// This is the ownership-aware seam for authenticated plugin-host callers;
+    /// the legacy ID-only method remains for trusted in-process cleanup paths.
+    pub fn remove_session_owned(
+        &self,
+        plugin_id: &str,
+        session_id: &str,
+    ) -> Result<(), PluginError> {
+        self.remove_session_impl(Some(plugin_id), session_id)
+    }
+
+    fn remove_session_impl(
+        &self,
+        owner: Option<&str>,
+        session_id: &str,
+    ) -> Result<(), PluginError> {
         let mut inner = self.inner.lock()?;
 
         let session = inner
             .sessions
             .get(session_id)
             .ok_or_else(|| PluginError::SessionNotFound(session_id.to_string()))?;
+        if let Some(plugin_id) = owner {
+            if session.plugin_id != plugin_id {
+                return Err(PluginError::SessionOwnership {
+                    session_id: session_id.to_string(),
+                    plugin_id: plugin_id.to_string(),
+                });
+            }
+        }
 
         let agent_id = session.agent_id.clone();
 
@@ -130,43 +227,19 @@ impl PluginManager {
         Ok(())
     }
 
-    /// Remove a session only when it belongs to `plugin_id`.
-    ///
-    /// This is the ownership-aware seam for authenticated plugin-host callers;
-    /// the legacy ID-only method remains for trusted in-process cleanup paths.
-    pub fn remove_session_owned(
-        &self,
-        plugin_id: &str,
-        session_id: &str,
-    ) -> Result<(), PluginError> {
-        let mut inner = self.inner.lock()?;
-        let session = inner
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| PluginError::SessionNotFound(session_id.to_string()))?;
-        if session.plugin_id != plugin_id {
-            return Err(PluginError::SessionOwnership {
-                session_id: session_id.to_string(),
-                plugin_id: plugin_id.to_string(),
-            });
-        }
-        let agent_id = session.agent_id.clone();
-        for subscribers in inner.event_subscriptions.values_mut() {
-            subscribers.remove(session_id);
-        }
-        inner
-            .pending_messages
-            .retain(|_, msg| msg.session_id != session_id);
-        inner.sessions.remove(session_id);
-        drop(inner);
-        self.callbacks.on_session_removed(session_id, &agent_id);
-        Ok(())
-    }
-
     /// Subscribe a session only when it belongs to `plugin_id`.
     pub fn subscribe_session_owned(
         &self,
         plugin_id: &str,
+        session_id: &str,
+        event_types: &[PluginEventType],
+    ) -> Result<(), PluginError> {
+        self.subscribe_session_impl(Some(plugin_id), session_id, event_types)
+    }
+
+    fn subscribe_session_impl(
+        &self,
+        owner: Option<&str>,
         session_id: &str,
         event_types: &[PluginEventType],
     ) -> Result<(), PluginError> {
@@ -180,16 +253,19 @@ impl PluginManager {
             .sessions
             .get(session_id)
             .ok_or_else(|| PluginError::SessionNotFound(session_id.to_string()))?;
-        if session.plugin_id != plugin_id {
-            return Err(PluginError::SessionOwnership {
-                session_id: session_id.to_string(),
-                plugin_id: plugin_id.to_string(),
-            });
+        let owner_plugin_id = session.plugin_id.clone();
+        if let Some(plugin_id) = owner {
+            if session.plugin_id != plugin_id {
+                return Err(PluginError::SessionOwnership {
+                    session_id: session_id.to_string(),
+                    plugin_id: plugin_id.to_string(),
+                });
+            }
         }
         let plugin = inner
             .plugins
-            .get(plugin_id)
-            .ok_or_else(|| PluginError::PluginNotFound(plugin_id.to_string()))?;
+            .get(&owner_plugin_id)
+            .ok_or_else(|| PluginError::PluginNotFound(owner_plugin_id.clone()))?;
         if matches!(
             plugin.status,
             super::PluginStatus::Disabled | super::PluginStatus::Error
@@ -223,6 +299,16 @@ impl PluginManager {
         method: &str,
         params: serde_json::Value,
     ) -> Result<PendingMessage, PluginError> {
+        self.send_message_impl(Some(plugin_id), session_id, method, params)
+    }
+
+    fn send_message_impl(
+        &self,
+        owner: Option<&str>,
+        session_id: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<PendingMessage, PluginError> {
         if method.len() > 256 {
             return Err(PluginError::LimitExceeded(
                 "plugin message method is too long".to_string(),
@@ -237,30 +323,31 @@ impl PluginManager {
             ));
         }
         let mut inner = self.inner.lock()?;
-        let session = inner
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| PluginError::SessionNotFound(session_id.to_string()))?;
-        if session.plugin_id != plugin_id {
-            return Err(PluginError::SessionOwnership {
-                session_id: session_id.to_string(),
-                plugin_id: plugin_id.to_string(),
-            });
-        }
         let now = now_millis();
-        inner.pending_messages.retain(|_, message| {
-            now.saturating_sub(message.sent_at) <= PENDING_PLUGIN_MESSAGE_TTL.as_millis() as i64
-        });
+        purge_expired_pending(&mut inner, now);
         if inner.pending_messages.len() >= MAX_PENDING_PLUGIN_MESSAGES {
             return Err(PluginError::LimitExceeded(
                 "maximum pending plugin message count reached".to_string(),
             ));
         }
+        let session = inner
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| PluginError::SessionNotFound(session_id.to_string()))?;
+        if let Some(plugin_id) = owner {
+            if session.plugin_id != plugin_id {
+                return Err(PluginError::SessionOwnership {
+                    session_id: session_id.to_string(),
+                    plugin_id: plugin_id.to_string(),
+                });
+            }
+        }
+        let owner_plugin_id = session.plugin_id.clone();
         let plugin_status = inner
             .plugins
-            .get(plugin_id)
+            .get(&owner_plugin_id)
             .map(|plugin| plugin.status)
-            .ok_or_else(|| PluginError::PluginNotFound(plugin_id.to_string()))?;
+            .ok_or_else(|| PluginError::PluginNotFound(owner_plugin_id.clone()))?;
         if matches!(
             plugin_status,
             super::PluginStatus::Disabled | super::PluginStatus::Error
@@ -278,7 +365,7 @@ impl PluginManager {
         }
         session.last_activity_at = now;
         let message = PendingMessage {
-            id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..12]),
+            id: format!("msg-{}", uuid::Uuid::new_v4()),
             session_id: session_id.to_string(),
             method: method.to_string(),
             params,
@@ -320,51 +407,7 @@ impl PluginManager {
         session_id: &str,
         event_types: &[PluginEventType],
     ) -> Result<(), PluginError> {
-        if event_types.len() > MAX_SESSION_SUBSCRIPTIONS {
-            return Err(PluginError::LimitExceeded(
-                "too many event subscriptions".to_string(),
-            ));
-        }
-        let mut inner = self.inner.lock()?;
-
-        let session = inner
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| PluginError::SessionNotFound(session_id.to_string()))?;
-        let plugin = inner
-            .plugins
-            .get(&session.plugin_id)
-            .ok_or_else(|| PluginError::PluginNotFound(session.plugin_id.clone()))?;
-        if matches!(
-            plugin.status,
-            super::PluginStatus::Disabled | super::PluginStatus::Error
-        ) {
-            return Err(PluginError::ValidationFailed(
-                "plugin is disabled or in an error state".to_string(),
-            ));
-        }
-        if let Some(declared) = &plugin.manifest.subscribes_to {
-            if event_types.iter().any(|event| !declared.contains(event)) {
-                return Err(PluginError::ValidationFailed(
-                    "event subscription is not declared by the plugin".to_string(),
-                ));
-            }
-        }
-
-        // Verify the session exists.
-        if !inner.sessions.contains_key(session_id) {
-            return Err(PluginError::SessionNotFound(session_id.to_string()));
-        }
-
-        for event_type in event_types {
-            inner
-                .event_subscriptions
-                .entry(event_type.clone())
-                .or_insert_with(HashSet::new)
-                .insert(session_id.to_string());
-        }
-
-        Ok(())
+        self.subscribe_session_impl(None, session_id, event_types)
     }
 
     pub fn get_subscribers(&self, event_type: &PluginEventType) -> Vec<PluginSession> {
@@ -397,36 +440,21 @@ impl PluginManager {
         event_type: PluginEventType,
         source: PluginEventSource,
         payload: PluginEventPayload,
-    ) -> PluginEvent {
-        let payload_size = serde_json::to_vec(&payload)
-            .map(|bytes| bytes.len())
-            .unwrap_or(usize::MAX);
-        if payload_size > MAX_PLUGIN_EVENT_BYTES {
-            log::warn!("[plugin-manager] dropping oversized event payload: {payload_size} bytes");
-            return PluginEvent {
-                id: format!("evt-{}", &uuid::Uuid::new_v4().to_string()[..12]),
-                event_type,
-                source,
-                payload: PluginEventPayload {
-                    level: Some(super::PayloadLevel::Error),
-                    message: Some("plugin event payload exceeded size limit".to_string()),
-                    title: None,
-                    metadata: None,
-                    task_title: None,
-                    result: None,
-                    error: None,
-                    prompt: None,
-                    options: None,
-                    request_id: None,
-                    response: None,
-                    exit_code: None,
-                    command: None,
-                    session_id: None,
-                    agent_id: None,
-                    plugin_id: None,
-                },
-                timestamp: now_millis(),
-            };
+    ) -> Result<PluginEvent, PluginError> {
+        // Fast path: a conservative upper bound on the serialized payload
+        // size avoids encoding every event twice (`to_vec` for the size
+        // check, then again in the emit below). Only payloads whose bound
+        // crosses the cap pay for the exact encoding.
+        if payload_size_upper_bound(&payload) > MAX_PLUGIN_EVENT_BYTES
+            && serde_json::to_vec(&payload)
+                .map(|bytes| bytes.len())
+                .unwrap_or(usize::MAX)
+                > MAX_PLUGIN_EVENT_BYTES
+        {
+            log::warn!("[plugin-manager] rejecting oversized event payload (> {MAX_PLUGIN_EVENT_BYTES} bytes)");
+            return Err(PluginError::LimitExceeded(
+                "plugin event payload exceeds 256 KiB".to_string(),
+            ));
         }
         let event = PluginEvent {
             id: format!("evt-{}", &uuid::Uuid::new_v4().to_string()[..12]),
@@ -449,7 +477,7 @@ impl PluginManager {
             }),
         );
 
-        event
+        Ok(event)
     }
 
     pub fn send_message(
@@ -458,81 +486,36 @@ impl PluginManager {
         method: &str,
         params: serde_json::Value,
     ) -> Result<PendingMessage, PluginError> {
-        if method.len() > 256 {
-            return Err(PluginError::LimitExceeded(
-                "plugin message method is too long".to_string(),
-            ));
-        }
-        let params_size = serde_json::to_vec(&params)
-            .map(|bytes| bytes.len())
-            .unwrap_or(usize::MAX);
-        if params_size > MAX_PLUGIN_EVENT_BYTES {
-            return Err(PluginError::LimitExceeded(
-                "plugin message parameters exceed 256 KiB".to_string(),
-            ));
-        }
-        let mut inner = self.inner.lock()?;
-        let now = now_millis();
-        inner.pending_messages.retain(|_, message| {
-            now.saturating_sub(message.sent_at) <= PENDING_PLUGIN_MESSAGE_TTL.as_millis() as i64
-        });
-        if inner.pending_messages.len() >= MAX_PENDING_PLUGIN_MESSAGES {
-            return Err(PluginError::LimitExceeded(
-                "maximum pending plugin message count reached".to_string(),
-            ));
-        }
-
-        let plugin_id = inner
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| PluginError::SessionNotFound(session_id.to_string()))?
-            .plugin_id
-            .clone();
-        let plugin_status = inner
-            .plugins
-            .get(&plugin_id)
-            .map(|plugin| plugin.status)
-            .ok_or_else(|| PluginError::PluginNotFound(plugin_id.clone()))?;
-        if plugin_status == super::PluginStatus::Disabled
-            || plugin_status == super::PluginStatus::Error
-        {
-            return Err(PluginError::ValidationFailed(
-                "plugin is disabled or in an error state".to_string(),
-            ));
-        }
-        let session = inner
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| PluginError::SessionNotFound(session_id.to_string()))?;
-
-        if session.status == SessionStatus::Disconnected {
-            return Err(PluginError::SessionNotFound(session_id.to_string()));
-        }
-        session.last_activity_at = now_millis();
-
-        let msg_id = format!("msg-{}", uuid::Uuid::new_v4());
-        let pending = PendingMessage {
-            id: msg_id,
-            session_id: session_id.to_string(),
-            method: method.to_string(),
-            params,
-            sent_at: now_millis(),
-        };
-
-        inner
-            .pending_messages
-            .insert(pending.id.clone(), pending.clone());
-
-        Ok(pending)
+        self.send_message_impl(None, session_id, method, params)
     }
 
+    /// Consume a pending message by id (trusted in-process callers only; the
+    /// id is not ownership-checked).
     pub fn complete_message(&self, message_id: &str) -> Option<PendingMessage> {
         let mut inner = self.inner.lock().ok()?;
-        let message = inner.pending_messages.remove(message_id)?;
-        if !inner.sessions.contains_key(&message.session_id) {
-            return None;
+        remove_pending_message(&mut inner, message_id)
+    }
+
+    /// Consume a pending message only when its session belongs to
+    /// `plugin_id`. This is the ownership-aware seam for authenticated
+    /// plugin-host callers.
+    pub fn complete_message_owned(
+        &self,
+        plugin_id: &str,
+        message_id: &str,
+    ) -> Result<Option<PendingMessage>, PluginError> {
+        let mut inner = self.inner.lock()?;
+        if let Some(message) = inner.pending_messages.get(message_id) {
+            if let Some(session) = inner.sessions.get(&message.session_id) {
+                if session.plugin_id != plugin_id {
+                    return Err(PluginError::SessionOwnership {
+                        session_id: session.id.clone(),
+                        plugin_id: plugin_id.to_string(),
+                    });
+                }
+            }
         }
-        Some(message)
+        Ok(remove_pending_message(&mut inner, message_id))
     }
 
     pub fn get_pending_messages(&self, session_id: &str) -> Vec<PendingMessage> {
@@ -540,10 +523,7 @@ impl PluginManager {
             Ok(g) => g,
             Err(_) => return Vec::new(),
         };
-        let now = now_millis();
-        inner.pending_messages.retain(|_, message| {
-            now.saturating_sub(message.sent_at) <= PENDING_PLUGIN_MESSAGE_TTL.as_millis() as i64
-        });
+        purge_expired_pending(&mut inner, now_millis());
         inner
             .pending_messages
             .values()
@@ -556,9 +536,7 @@ impl PluginManager {
         let mut inner = self.inner.lock()?;
 
         let now = now_millis();
-        inner.pending_messages.retain(|_, message| {
-            now.saturating_sub(message.sent_at) <= PENDING_PLUGIN_MESSAGE_TTL.as_millis() as i64
-        });
+        purge_expired_pending(&mut inner, now);
         let stall_timeout_ms = inner.stall_timeout.as_millis() as i64;
         let mut stalled_ids = Vec::new();
 
@@ -576,8 +554,10 @@ impl PluginManager {
                     active += 1;
                 }
                 SessionStatus::Active | SessionStatus::Idle => {
-                    let elapsed = now - session.last_activity_at;
-                    if elapsed > stall_timeout_ms {
+                    let elapsed = now.saturating_sub(session.last_activity_at);
+                    if session.status == SessionStatus::Active && elapsed > stall_timeout_ms {
+                        // Only notify on the Active -> Idle transition so an
+                        // already-idle session is not re-reported every pass.
                         session.status = SessionStatus::Idle;
                         stalled += 1;
                         stalled_ids.push(session.id.clone());

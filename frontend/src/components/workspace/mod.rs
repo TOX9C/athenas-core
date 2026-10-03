@@ -1,4 +1,3 @@
-pub mod grid_template;
 pub mod new_space_modal;
 pub mod pill_drag;
 pub mod terminal_controller;

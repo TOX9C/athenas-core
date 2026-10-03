@@ -247,11 +247,20 @@ pub fn SettingsContent(props: SettingsContentProps) -> Element {
         section_vii,
     ];
     let numerals: [&'static str; 7] = ["I", "II", "III", "IV", "V", "VI", "VII"];
+    let titles: [&'static str; 7] = [
+        "General",
+        "Athena",
+        "Agents",
+        "Themes",
+        "Shortcuts",
+        "Mobile Mirror",
+        "About",
+    ];
 
     rsx! {
         div {
             class: "pane-astrolabe-mark",
-            style: "display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--bgSecondary); color: var(--text);",
+            style: "display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);",
 
             /* ── Interior masthead (decorative; modal close button is owned by Modal) ── */
             if props.show_masthead {
@@ -301,7 +310,7 @@ pub fn SettingsContent(props: SettingsContentProps) -> Element {
                                     key: "{idx}",
                                     class: "{cls}",
                                     r#type: "button",
-                                    aria_label: "Jump to section {numerals[idx]}",
+                                    aria_label: "Jump to {titles[idx]}",
                                     onclick: move |_| {
                                         onidx.set(idx_u8);
                                         if let Some(window) = web_sys::window() {
@@ -312,8 +321,9 @@ pub fn SettingsContent(props: SettingsContentProps) -> Element {
                                             }
                                         }
                                     },
-                                    span { "{numerals[idx]}" }
                                     span { class: "glyph", {section_glyph(idx)} }
+                                    span { "{numerals[idx]}" }
+                                    span { class: "codex-index-label", "{titles[idx]}" }
                                 }
                             }
                         }

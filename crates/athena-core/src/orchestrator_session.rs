@@ -22,6 +22,23 @@ fn snapshot_store_messages(openai: &[OpenAIMessage]) -> Vec<StoreMessage> {
         let content = match &msg.content {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Null => String::new(),
+            // Structured assistant content (text/tool-use blocks): persist
+            // only the text portions. Stringifying the raw JSON would store
+            // a blob that, after reload, the model reads back as its own
+            // prose — wasting context and confusing summaries.
+            serde_json::Value::Array(blocks) => blocks
+                .iter()
+                .filter_map(|b| {
+                    if let Some(s) = b.as_str() {
+                        Some(s)
+                    } else if b["type"] == "text" {
+                        b["text"].as_str()
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
             other => other.to_string(),
         };
         store_messages.push(StoreMessage {
@@ -162,6 +179,9 @@ impl AthenaOrchestrator {
                 role: match msg.role {
                     StoreMessageRole::User => "user".to_string(),
                     StoreMessageRole::Athena => "assistant".to_string(),
+                    // Anthropic has no system message role in the messages
+                    // array; surface persisted system entries as user.
+                    StoreMessageRole::System => "user".to_string(),
                 },
                 content: serde_json::Value::String(msg.content.clone()),
             })
@@ -174,6 +194,7 @@ impl AthenaOrchestrator {
                 role: match msg.role {
                     StoreMessageRole::User => "user".to_string(),
                     StoreMessageRole::Athena => "assistant".to_string(),
+                    StoreMessageRole::System => "system".to_string(),
                 },
                 content: serde_json::Value::String(msg.content.clone()),
                 tool_calls: None,

@@ -12,32 +12,21 @@ use crate::utils::agent_display::{get_agent_color_str, get_agent_label_str};
 const CLAUDE_SKIP_PERMISSIONS_FLAG: &str = "--dangerously-skip-permissions";
 
 /// Get the CLI command for an agent type.
-/// Quote one literal as a single-quoted POSIX shell argument.
-fn shq(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\"'\"'"))
-}
-
 pub fn get_agent_command(
     agent_type: &AgentType,
     custom_cmd: Option<&str>,
     bypass: bool,
-    model: Option<&str>,
 ) -> Option<String> {
-    // The model string travels to the CLI verbatim; force-quote it.
-    let model_flag = model
-        .filter(|m| !m.trim().is_empty())
-        .map(|m| format!(" --model {}", shq(m.trim())))
-        .unwrap_or_default();
     match agent_type {
         AgentType::Claude => {
             if bypass {
-                Some(format!("claude {}{}", CLAUDE_SKIP_PERMISSIONS_FLAG, model_flag))
+                Some(format!("claude {}", CLAUDE_SKIP_PERMISSIONS_FLAG))
             } else {
-                Some(format!("claude{}", model_flag))
+                Some("claude".to_string())
             }
         }
-        AgentType::Codex => Some(format!("codex{}", model_flag)),
-        AgentType::Opencode => Some(format!("opencode{}", model_flag)),
+        AgentType::Codex => Some("codex".to_string()),
+        AgentType::Opencode => Some("opencode".to_string()),
         AgentType::Gemini => Some("gemini".to_string()),
         AgentType::Qwen => Some("qwen-code".to_string()),
         AgentType::Aider => Some("aider".to_string()),
@@ -49,13 +38,26 @@ pub fn get_agent_command(
     }
 }
 
+/// Session ids are interpolated into shell command lines; restrict them to a
+/// charset that can never inject shell syntax (`[A-Za-z0-9._-]+`).
+fn is_safe_resume_id(resume_id: &str) -> bool {
+    !resume_id.is_empty()
+        && resume_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// Build the resume/continuation command for an agent that supports session
 /// restoration.
 ///
 /// Returns `None` for agents whose resume protocol is not known (Qwen, Aider,
-/// Cursor, Custom, and Shell). The returned string has NO trailing newline —
+/// Cursor, Custom, and Shell), and for a `resume_id` that fails
+/// [`is_safe_resume_id`]. The returned string has NO trailing newline —
 /// callers decide whether to execute it (append `\n`) or merely display it.
 pub fn get_agent_resume_command(agent_type: &AgentType, resume_id: &str) -> Option<String> {
+    if !is_safe_resume_id(resume_id) {
+        return None;
+    }
     match agent_type {
         AgentType::Claude => Some(format!("claude --resume {}", resume_id)),
         AgentType::Codex => Some(format!("codex --resume {}", resume_id)),
@@ -80,7 +82,9 @@ pub fn agent_process_name(agent_type: &AgentType) -> Option<&'static str> {
         AgentType::Codex => Some("codex"),
         AgentType::Opencode => Some("opencode"),
         AgentType::Gemini => Some("gemini"),
-        AgentType::Qwen => Some("qwen"),
+        // The CLI command is `qwen-code`; the OS reports the process by its
+        // executable name, so detection must use the same string.
+        AgentType::Qwen => Some("qwen-code"),
         AgentType::Aider => Some("aider"),
         AgentType::Cursor => Some("cursor-agent"),
         AgentType::Freebuff => Some("freebuff"),
@@ -110,6 +114,9 @@ pub fn custom_agent_process_name(is_claude: bool) -> Option<&'static str> {
 /// least one entry when called with a real id.
 pub fn claude_resume_variants(resume_id: &str, claude_aliases: &[CustomAgent]) -> Vec<String> {
     let mut variants: Vec<String> = vec![];
+    if !is_safe_resume_id(resume_id) {
+        return variants;
+    }
 
     // 1. Priority agent first (default selection)
     if let Some(agent) = claude_aliases.iter().find(|a| a.is_claude && a.priority) {
@@ -176,23 +183,23 @@ mod tests {
     #[test]
     fn built_in_agent_commands_cover_omp_and_bypass() {
         assert_eq!(
-            get_agent_command(&AgentType::Omp, None, false, None),
+            get_agent_command(&AgentType::Omp, None, false),
             Some("omp".to_string())
         );
         assert_eq!(
-            get_agent_command(&AgentType::Claude, None, true, None),
+            get_agent_command(&AgentType::Claude, None, true),
             Some("claude --dangerously-skip-permissions".to_string())
         );
-        assert_eq!(get_agent_command(&AgentType::Shell, None, false, None), None);
+        assert_eq!(get_agent_command(&AgentType::Shell, None, false), None);
     }
 
     #[test]
     fn custom_agent_command_is_used_without_duplicate_launch() {
         assert_eq!(
-            get_agent_command(&AgentType::Custom, Some("my-agent --interactive"), false, None),
+            get_agent_command(&AgentType::Custom, Some("my-agent --interactive"), false),
             Some("my-agent --interactive".to_string())
         );
-        assert_eq!(get_agent_command(&AgentType::Custom, None, false, None), None);
+        assert_eq!(get_agent_command(&AgentType::Custom, None, false), None);
     }
 
     #[test]
@@ -322,114 +329,16 @@ mod tests {
         assert!(v.contains(&format!("claude --model sonnet --resume {}", ID)));
         assert!(v.contains(&format!("claude --model opus --resume {}", ID)));
     }
-}
-
-/// Build the spawn command for a scoped pane: prepend proxy/MCP env-strip
-/// when disallowed, wrap the agent in `sandbox-exec` (macOS-only; this app
-/// targets macOS) for the file/network restrictions.
-///
-/// If `sandbox-exec` is genuinely missing the spawn fails loudly, which is
-/// correct for a security boundary (no silent partial protection).
-pub fn wrap_with_capabilities(
-    cmd: String,
-    caps: Option<&crate::types::workspace::RoleCapabilities>,
-    cwd: &str,
-) -> String {
-    use crate::types::workspace::ShellPolicy;
-    let Some(c) = caps else { return cmd };
-    if c.shell == ShellPolicy::Full && c.network && c.mcp_tools {
-        return cmd;
-    }
-
-    // 1) env strip for proxy + MCP plumbing, best-effort.
-    let mut env_prefix = String::new();
-    if !c.network {
-        env_prefix.push_str(
-            "env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ",
-        );
-    }
-    if !c.mcp_tools {
-        env_prefix.push_str("ATHENA_NO_MCP=1 MCP_CONFIG_PATH=/dev/null ");
-    }
-
-    // 2) sandbox profile for fs/network restrictions.
-    let need_sandbox = c.shell != ShellPolicy::Full || !c.network;
-    if !need_sandbox {
-        return format!("{env_prefix}{cmd}");
-    }
-    let mut profile = String::from("(version 1) (allow default)");
-    if c.shell != ShellPolicy::Full {
-        // Deny writes under the agent's cwd (the read-only contract:
-        // agents may read/exec, never mutate the tree).
-        let escaped_cwd = cwd.replace('"', "\\\"");
-        profile.push_str(&format!(
-            " (deny file-write* (subpath \"{escaped_cwd}\"))"
-        ));
-        if c.shell == ShellPolicy::None {
-            profile.push_str(" (deny process-exec process-fork)");
-        }
-    }
-    if !c.network {
-        profile.push_str(" (deny network*)");
-    }
-    let inner = format!("{}sh -c {}", env_prefix, sh_quote(&cmd));
-    format!("sandbox-exec -p {} {}", sh_quote(&profile), inner)
-}
-
-/// POSIX single-quoted literal for strings inside a generated `sh -c`.
-fn sh_quote(s: &str) -> String {
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.'))
-    {
-        return s.to_string();
-    }
-    let escaped = s.replace('\'', "'\\''");
-    format!("'{escaped}'")
-}
-
-#[cfg(test)]
-mod wrap_tests {
-    use super::*;
-    use crate::types::workspace::{RoleCapabilities, ShellPolicy};
 
     #[test]
-    fn default_caps_pass_through() {
-        let caps = RoleCapabilities::default();
-        assert_eq!(wrap_with_capabilities("claude".into(), Some(&caps), "/x"), "claude");
-        assert_eq!(wrap_with_capabilities("claude".into(), None, "/x"), "claude");
+    fn hostile_resume_id_yields_no_shell_command() {
+        let hostile = "abc; rm -rf ~";
+        assert_eq!(get_agent_resume_command(&AgentType::Claude, hostile), None);
+        assert!(claude_resume_variants(hostile, &[]).is_empty());
     }
 
     #[test]
-    fn network_off_strips_proxies_and_denies_network() {
-        let caps = RoleCapabilities { network: false, ..Default::default() };
-        let out = wrap_with_capabilities("claude".into(), Some(&caps), "/x");
-        assert!(out.contains("env -u HTTP_PROXY"), "{out}");
-        assert!(out.contains("deny network"), "{out}");
-        assert!(out.contains("sandbox-exec"), "{out}");
-    }
-
-    #[test]
-    fn readonly_denies_cwd_writes() {
-        let caps = RoleCapabilities { shell: ShellPolicy::ReadOnly, ..Default::default() };
-        let out = wrap_with_capabilities("claude".into(), Some(&caps), "/repo");
-        assert!(out.contains("file-write*"), "{out}");
-        assert!(out.contains("/repo"), "{out}");
-        assert!(!out.contains("network"), "{out}");
-    }
-
-    #[test]
-    fn none_mode_drops_exec_and_mcp() {
-        let caps = RoleCapabilities { shell: ShellPolicy::None, network: false, mcp_tools: false };
-        let out = wrap_with_capabilities("claude".into(), Some(&caps), "/r");
-        assert!(out.contains("process-exec"), "{out}");
-        assert!(out.contains("ATHENA_NO_MCP=1"), "{out}");
-    }
-
-    #[test]
-    fn quoting_preserves_inner_command() {
-        let caps = RoleCapabilities { shell: ShellPolicy::ReadOnly, ..Default::default() };
-        let out = wrap_with_capabilities("codex --model x".into(), Some(&caps), "/r");
-        assert!(out.contains("sh -c"), "{out}");
-        assert!(out.contains("'codex --model x'"), "{out}");
+    fn qwen_process_name_matches_binary() {
+        assert_eq!(agent_process_name(&AgentType::Qwen), Some("qwen-code"));
     }
 }

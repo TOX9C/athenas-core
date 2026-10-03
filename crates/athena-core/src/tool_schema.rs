@@ -36,11 +36,7 @@ pub struct ToolInput {
     pub message_type: Option<String>,
     // Kanban
     pub title: Option<String>,
-    /// Optional JSON TaskEvidence(diff,test_log,pane_id?) attached to an
-    /// update on an agent-owned card; required when moving such a card to
-    /// In Review via `kanban_update_task`.
     pub description: Option<String>,
-    pub evidence: Option<String>,
     pub status: Option<String>,
     pub task_id: Option<String>,
     pub space_id: Option<String>,

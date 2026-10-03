@@ -187,8 +187,14 @@ impl NotificationService {
 
     fn persist(&self) {
         let Some(store) = &self.store else { return };
-        let history = self.history.read().clone();
-        if let Err(error) = store.set_sync(HISTORY_KEY, &history) {
+        // Serialize straight from the read guard (no whole-history clone)
+        // and defer the disk write to the background flusher — a whole-store
+        // fsync per notification op was O(store size) write amplification.
+        let result = {
+            let history = self.history.read();
+            store.set_deferred(HISTORY_KEY, &*history)
+        };
+        if let Err(error) = result {
             log::warn!("failed to persist notification history: {error}");
         } else if store.has(LEGACY_HISTORY_KEY) {
             // Migrate the old key after a successful canonical write. This
@@ -300,6 +306,25 @@ impl NotificationService {
                 return existing.clone();
             }
         }
+        // Pane-scoped agent attention events (finished / needs input / errored
+        // / success) surface ONLY as the pane's pulsing border highlight, per
+        // product decision — no bell badge, no history row, no native macOS
+        // popup or dock badge (those react to `notifications:new`). The pane-
+        // status events (`agent:status`) that drive the highlight are a
+        // separate channel and are unaffected.
+        let pane_attention_only = record.pane_id.is_some()
+            && matches!(
+                record.r#type,
+                NotificationType::NeedsInput
+                    | NotificationType::TaskComplete
+                    | NotificationType::TaskError
+                    | NotificationType::Error
+                    | NotificationType::Success
+            );
+        if pane_attention_only {
+            return record;
+        }
+
         history.push(record.clone());
 
         // Trim to max history
@@ -338,33 +363,31 @@ impl NotificationService {
     }
 
     /// Get notification history with optional filtering.
+    ///
+    /// Filters newest-first directly over the read guard — the previous
+    /// version cloned the entire history (up to `MAX_HISTORY` records) just
+    /// to discard most of it, on every history poll.
     pub fn get_history(&self, options: Option<&HistoryOptions>) -> Vec<NotificationRecord> {
         let history = self.history.read();
-        let mut results: Vec<NotificationRecord> = history.clone();
-        drop(history);
-
-        if let Some(opts) = options {
-            if opts.unread_only == Some(true) {
-                results.retain(|n| !n.read);
-            }
-            if let Some(ref t) = opts.r#type {
-                results.retain(|n| &n.r#type == t);
-            }
-            if let Some(ref src) = opts.source {
-                results.retain(|n| &n.source == src);
-            }
-            if let Some(limit) = opts.limit {
-                let start = results.len().saturating_sub(limit);
-                results = results.split_off(start);
-                results.reverse();
-            } else {
-                results.reverse();
-            }
-        } else {
-            results.reverse();
-        }
-
-        results
+        history
+            .iter()
+            .rev()
+            .filter(|n| {
+                options.is_none_or(|o| o.unread_only != Some(true) || !n.read)
+            })
+            .filter(|n| {
+                options
+                    .and_then(|o| o.r#type.as_ref())
+                    .is_none_or(|t| &n.r#type == t)
+            })
+            .filter(|n| {
+                options
+                    .and_then(|o| o.source.as_ref())
+                    .is_none_or(|s| &n.source == s)
+            })
+            .take(options.and_then(|o| o.limit).unwrap_or(usize::MAX))
+            .cloned()
+            .collect()
     }
 
     /// Return all notification history, unfiltered. Equivalent to `get_history(None)`.

@@ -9,6 +9,7 @@ use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
 use dioxus::prelude::*;
+use wasm_bindgen::JsValue;
 
 /// Simple file tree node data.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -28,10 +29,22 @@ struct DirEntry {
     is_dir: bool,
 }
 
+/// fs_list_dir response envelope: entries may be truncated past a 10k cap.
+#[derive(serde::Deserialize)]
+struct DirListing {
+    entries: Vec<DirEntry>,
+    #[allow(dead_code)]
+    truncated: bool,
+}
+
 /// Parse the JSON response from fs_list_dir into FileNode entries.
-fn parse_dir_entries(response: &str) -> Vec<FileNode> {
-    serde_json::from_str::<Vec<DirEntry>>(response)
-        .unwrap_or_default()
+pub(super) fn parse_dir_entries(response: &str) -> Vec<FileNode> {
+    serde_json::from_str::<DirListing>(response)
+        .unwrap_or_else(|_| DirListing {
+            entries: Vec::new(),
+            truncated: false,
+        })
+        .entries
         .into_iter()
         .map(|e| FileNode {
             name: e.name,
@@ -43,10 +56,16 @@ fn parse_dir_entries(response: &str) -> Vec<FileNode> {
         .collect()
 }
 
-/// Detect language from file extension.
+/// Detect language from file extension. Extensionless files (and names whose
+/// "extension" is really the whole filename via `rsplit('.')` quirks) map to
+/// plaintext.
 fn detect_language(path: &str) -> String {
-    if let Some(ext) = path.rsplit('.').next() {
-        match ext {
+    match std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+    {
+        Some(ext) => match ext.as_str() {
             "rs" => "rust".to_string(),
             "ts" | "tsx" => "typescript".to_string(),
             "js" | "jsx" => "javascript".to_string(),
@@ -60,10 +79,9 @@ fn detect_language(path: &str) -> String {
             "go" => "go".to_string(),
             "c" | "h" => "c".to_string(),
             "cpp" | "hpp" | "cc" => "cpp".to_string(),
-            _ => ext.to_string(),
-        }
-    } else {
-        "plaintext".to_string()
+            other => other.to_string(),
+        },
+        None => "plaintext".to_string(),
     }
 }
 
@@ -71,15 +89,6 @@ fn detect_language(path: &str) -> String {
 pub fn FileTree() -> Element {
     let workspace = use_workspace_store();
     let editor = use_editor_store();
-
-    let active_dir = workspace.read().active_space_id.as_ref().and_then(|id| {
-        workspace
-            .read()
-            .spaces
-            .iter()
-            .find(|s| s.id == *id)
-            .map(|s| s.dir.clone())
-    });
 
     let nodes = use_signal(Vec::new);
     let loading = use_signal(|| true);
@@ -112,14 +121,23 @@ pub fn FileTree() -> Element {
         });
     }
 
-    // Fetch directory contents when active_dir changes.
+    // Fetch directory contents whenever the active workspace changes. The
+    // workspace store is read *inside* the effect so the subscription tracks
+    // workspace switches instead of the mount-time directory.
     {
-        let dir_for_effect = active_dir.clone();
         let mut nodes_for_effect = nodes;
         let mut loading_for_effect = loading;
         let mut load_error_for_effect = load_error;
         use_effect(move || {
-            if let Some(dir_path) = dir_for_effect.clone() {
+            let dir = {
+                let state = workspace.read();
+                state
+                    .active_space_id
+                    .as_ref()
+                    .and_then(|id| state.spaces.iter().find(|s| &s.id == id))
+                    .map(|s| s.dir.clone())
+            };
+            if let Some(dir_path) = dir {
                 load_dir(
                     dir_path,
                     nodes_for_effect,
@@ -158,7 +176,13 @@ pub fn FileTree() -> Element {
             let mut loading_for_listen = loading;
             let mut load_error_for_listen = load_error;
 
-            if let Ok(u) = tauri_bridge::listen("fs:change:*", move |_payload: String| {
+            // F16: monotonically increasing request id. Each fs:change bumps
+            // it; only the last event's debounced task survives to issue a
+            // single in-flight fs_list_dir, and older in-flight results are
+            // dropped when a newer id exists (stale response guard).
+            let fs_refresh_gen: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+
+            if let Ok(u) = tauri_bridge::listen("fs:change:*", move |_payload: JsValue| {
                 // Re-read the current active dir from the live workspace state.
                 let dir_path = workspace_for_listen
                     .read()
@@ -172,26 +196,41 @@ pub fn FileTree() -> Element {
                             .find(|s| s.id == *id)
                             .map(|s| s.dir.clone())
                     });
-                if let Some(dir) = dir_path {
+                let Some(dir) = dir_path else { return };
+                let request_id = {
+                    let mut g = fs_refresh_gen.borrow_mut();
+                    *g += 1;
+                    *g
+                };
+                let gen_for_task = fs_refresh_gen.clone();
+                // NB: this closure runs from a raw Tauri JS event, *outside*
+                // any Dioxus scope. `dioxus_core::spawn` would panic in
+                // `current_scope_id().unwrap()` and poison the runtime.
+                wasm_bindgen_futures::spawn_local(async move {
+                    // Debounce save-frenzy bursts (~250ms); a newer event
+                    // bumped the id, so this task is stale.
+                    gloo::timers::future::TimeoutFuture::new(250).await;
+                    if *gen_for_task.borrow() != request_id {
+                        return;
+                    }
                     loading_for_listen.set(true);
                     load_error_for_listen.set(false);
-                    // NB: this closure runs from a raw Tauri JS event, *outside*
-                    // any Dioxus scope. `dioxus_core::spawn` would panic in
-                    // `current_scope_id().unwrap()` and poison the runtime.
-                    wasm_bindgen_futures::spawn_local(async move {
-                        match tauri_bridge::fs_list_dir(&dir).await {
-                            Ok(response) => {
-                                nodes_for_listen.set(parse_dir_entries(&response));
-                                load_error_for_listen.set(false);
-                            }
-                            Err(_) => {
-                                nodes_for_listen.set(Vec::new());
-                                load_error_for_listen.set(true);
-                            }
+                    let result = tauri_bridge::fs_list_dir(&dir).await;
+                    if *gen_for_task.borrow() != request_id {
+                        return;
+                    }
+                    loading_for_listen.set(false);
+                    match result {
+                        Ok(response) => {
+                            nodes_for_listen.set(parse_dir_entries(&response));
+                            load_error_for_listen.set(false);
                         }
-                        loading_for_listen.set(false);
-                    });
-                }
+                        Err(_) => {
+                            nodes_for_listen.set(Vec::new());
+                            load_error_for_listen.set(true);
+                        }
+                    }
+                });
             }) {
                 unlisteners_clone.borrow_mut().push(u);
             }

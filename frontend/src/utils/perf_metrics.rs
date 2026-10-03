@@ -34,6 +34,9 @@ static EVENT_BYTES: AtomicU64 = AtomicU64::new(0);
 /// fixed set of push events, so leaks are bounded and one-time).
 fn static_key(key: &str) -> &'static str {
     match key {
+        // Parameterized per-pane events: normalize before keying so pane churn
+        // doesn't grow the cache/maps without bound.
+        _ if key.starts_with("pty:raw:") => "pty:raw:*",
         "pty:raw" => "pty:raw",
         "terminal:data" => "terminal:data",
         "terminal:exit" => "terminal:exit",

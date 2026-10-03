@@ -63,16 +63,45 @@ impl ToolExecutor {
             });
         }
 
-        match std::fs::read_to_string(&validated) {
-            Ok(contents) => Ok(ToolCallResult {
-                text: contents,
-                is_error: None,
-            }),
-            Err(e) => Ok(ToolCallResult {
-                text: format!("Failed to read file '{}': {}", validated.display(), e),
-                is_error: Some(true),
-            }),
+        // Cap reads at 1 MiB so an agent cannot blow up the LLM context (and
+        // process memory) by reading a multi-hundred-MB log or binary file.
+        const MAX_READ_BYTES: u64 = 1024 * 1024;
+        use std::io::Read as _;
+        let file = match std::fs::File::open(&validated) {
+            Ok(f) => f,
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Failed to read file '{}': {}", validated.display(), e),
+                    is_error: Some(true),
+                })
+            }
+        };
+        let total_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let mut buf = Vec::new();
+        match file.take(MAX_READ_BYTES + 1).read_to_end(&mut buf) {
+            Ok(_) => {}
+            Err(e) => {
+                return Ok(ToolCallResult {
+                    text: format!("Failed to read file '{}': {}", validated.display(), e),
+                    is_error: Some(true),
+                })
+            }
         }
+        let truncated = buf.len() as u64 > MAX_READ_BYTES || total_size > MAX_READ_BYTES;
+        buf.truncate(MAX_READ_BYTES as usize);
+        let contents = String::from_utf8_lossy(&buf);
+        let text = if truncated {
+            format!(
+                "{}\n\n[...truncated: file is {total_size} bytes, showing first {MAX_READ_BYTES}]",
+                contents.trim_end()
+            )
+        } else {
+            contents.into_owned()
+        };
+        Ok(ToolCallResult {
+            text,
+            is_error: None,
+        })
     }
 
     pub(super) fn fs_list_dir(
@@ -174,17 +203,28 @@ impl ToolExecutor {
             context_lines: Some(2),
         };
 
-        // Drive the async `search_code` on the current Tokio runtime.
-        // `fs_search` is sync because `execute_tool_call` dispatches it
-        // without an `await` in the Tauri command handler (`spawn_blocking`
-        // closure) and the orchestrator lock-guard chain. We must keep the
-        // signature sync to avoid cascading `async`/`Send` changes, so we
-        // bridge via `Handle::current().block_on`. The runtime is always
-        // available in practice (Tauri main + MCP server are both async),
-        // and this replaces a `std::process::Command` that would block
-        // the worker thread.
-        let search_result =
-            tokio::runtime::Handle::current().block_on(crate::search::search_code(&options));
+        // Drive the async `search_code` without stalling the Tokio worker
+        // thread. `fs_search` is sync because `execute_tool_call` dispatches
+        // it without an `await` in the Tauri command handler (`spawn_blocking`
+        // closure) and the orchestrator lock-guard chain, so we keep the
+        // signature sync and bridge via `block_in_place`, which moves the
+        // current task off the worker before driving the future — safe inside
+        // `spawn_blocking` and on multi-thread runtimes. If no runtime is
+        // available (pure sync context), build a throwaway current-thread
+        // runtime for the search; in every case we own the thread, so no
+        // "cannot block_on within a runtime" panic is possible.
+        let search_result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(crate::search::search_code(&options))
+            }),
+            Err(_) => tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| {
+                    ToolExecutorError::Io(std::io::Error::other(e.to_string()))
+                })?
+                .block_on(crate::search::search_code(&options)),
+        };
 
         match search_result {
             Ok(result) => {

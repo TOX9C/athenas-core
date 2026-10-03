@@ -18,11 +18,24 @@ fn write_file_atomic(path: &std::path::Path, content: &[u8]) -> Result<(), std::
         .unwrap_or_else(|| std::path::Path::new("."));
     let temp_path = parent.join(format!(".tmp-write-{}", uuid::Uuid::new_v4()));
 
+    // Preserving the existing mode matters: `rename` replaces the destination
+    // wholesale, so without this an overwrite of an executable or a 0600
+    // settings file would silently reset its permissions to the umask default.
+    #[cfg(unix)]
+    let existing_mode: Option<u32> = std::fs::metadata(path)
+        .ok()
+        .map(|m| std::os::unix::fs::MetadataExt::mode(&m) & 0o7777);
+
     let write_result = (|| {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp_path)?;
+        #[cfg(unix)]
+        if let Some(mode) = existing_mode {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        }
         file.write_all(content)?;
         file.flush()?;
         std::fs::rename(&temp_path, path)
@@ -50,6 +63,23 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&target).unwrap(), "new");
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_destination_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("athena-fs-mode-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("settings.toml");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_file_atomic(&target, b"new").unwrap();
+
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -113,16 +143,34 @@ struct DirEntry {
     is_dir: bool,
 }
 
+/// Maximum entries returned by `fs_list_dir`; beyond this the listing is
+/// truncated and the `truncated` flag is set so huge directories (pathological
+/// `node_modules`, bind-mounted loops) can't produce unbounded JSON blobs.
+const MAX_DIR_ENTRIES: usize = 10_000;
+
 /// List the contents of a directory, sorted with directories first.
+///
+/// Returns `{"entries": [...], "truncated": bool}`; `truncated` is true when
+/// the directory had more than [`MAX_DIR_ENTRIES`] entries.
 #[tauri::command]
 pub async fn fs_list_dir(state: State<'_, AppState>, path: String) -> Result<String, CommandError> {
+    if !state.rate_limiter.check("fs_list_dir") {
+        return Err(CommandError::InvalidInput(
+            "Rate limit exceeded. Please wait a moment.".to_string(),
+        ));
+    }
     let path_ref = std::path::Path::new(&path);
     let validated = validate_path_exists(&state.store, path_ref)?;
     tokio::task::spawn_blocking(move || {
         let mut entries: Vec<DirEntry> = Vec::new();
+        let mut truncated = false;
         let read_dir =
             std::fs::read_dir(&validated).map_err(|e| CommandError::Internal(e.to_string()))?;
         for entry_result in read_dir {
+            if entries.len() >= MAX_DIR_ENTRIES {
+                truncated = true;
+                break;
+            }
             let entry = entry_result.map_err(|e| CommandError::Internal(e.to_string()))?;
             let file_type = entry
                 .file_type()
@@ -137,7 +185,11 @@ pub async fn fs_list_dir(state: State<'_, AppState>, path: String) -> Result<Str
             (false, true) => std::cmp::Ordering::Greater,
             _ => a.name.cmp(&b.name),
         });
-        serde_json::to_string(&entries).map_err(|e| CommandError::Internal(e.to_string()))
+        serde_json::to_string(&serde_json::json!({
+            "entries": entries,
+            "truncated": truncated,
+        }))
+        .map_err(|e| CommandError::Internal(e.to_string()))
     })
     .await
     .map_err(|e| CommandError::Internal(format!("Read task failed: {e}")))?
@@ -176,14 +228,23 @@ pub async fn fs_write_file(
 
 /// Check whether a path exists and is within the allowed directory.
 ///
-/// Synchronous (not `async`) because Tauri forbids async commands that return
-/// a bare non-`Result` type. Sync commands run on the runtime's blocking
-/// thread, so the canonicalize inside `validate_path_exists` won't stall the
-/// async executor.
+/// Async: `validate_path_exists` canonicalizes the path and may hit the
+/// filesystem on a cold cache. In Tauri 2 sync commands run on the MAIN
+/// thread, so a stalled mount would freeze the UI — dispatch the check via
+/// `spawn_blocking`. (Async commands may return a bare non-`Result` type;
+/// the previous sync-for-shape rationale was wrong.)
 #[tauri::command]
-pub fn fs_exists(state: State<'_, AppState>, path: String) -> bool {
-    let path_ref = std::path::Path::new(&path);
-    validate_path_exists(&state.store, path_ref).is_ok()
+pub async fn fs_exists(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<bool, CommandError> {
+    let store = std::sync::Arc::clone(&state.store);
+    Ok(tokio::task::spawn_blocking(move || {
+        let path_ref = std::path::Path::new(&path);
+        validate_path_exists(&store, path_ref).is_ok()
+    })
+    .await
+    .unwrap_or(false))
 }
 
 /// Read a file and return its contents as a base64-encoded string.

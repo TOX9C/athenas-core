@@ -27,6 +27,12 @@ pub fn PluginDashboard() -> Element {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
+                                // Empty ids would all upsert into one shared
+                                // "" key — skip them (mirrors the registry
+                                // parse in plugin_event_bus).
+                                if id.is_empty() {
+                                    continue;
+                                }
                                 let name = item
                                     .get("name")
                                     .and_then(|v| v.as_str())

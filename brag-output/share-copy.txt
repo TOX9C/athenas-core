@@ -1,0 +1,1 @@
+Introducing Athena's Core: the strategist's workbench. Terminal, AI chat, task board, and agent team — one native macOS window, ~15 MB of Rust, no telemetry. Built by one person, in public beta.

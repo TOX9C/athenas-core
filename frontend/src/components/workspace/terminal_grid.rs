@@ -39,10 +39,8 @@ fn render_shell_pane(
     resume_id: Option<String>,
     custom_cmd: Option<String>,
     bypass_mode: Option<bool>,
-    capabilities: Option<crate::types::workspace::RoleCapabilities>,
-    model: Option<String>,
 ) -> Element {
-    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id, custom_cmd, bypass_mode, capabilities, model } }
+    rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id, custom_cmd, bypass_mode } }
 }
 
 #[cfg(not(feature = "xterm"))]
@@ -116,6 +114,54 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     // The fullscreen `PillDragOverlay` (mounted below) owns pointermove/up for
     // the duration of a drag, mirroring the resize `DragOverlay` pattern.
     let pill_drag = use_signal(|| None::<crate::components::workspace::pill_drag::PillDrag>);
+    let agent_status = use_agent_status_store();
+    // F17: per-pane status as an O(1) map lookup, rebuilt once per
+    // agent_status change instead of `statuses.iter().find()` per pane per
+    // render (O(panes × statuses)). The registry's per-pane signals make
+    // heartbeat writes touch only the affected pane; `snapshot()` subscribes
+    // this memo to membership plus each pane's value signal.
+    let status_map = use_memo(move || {
+        agent_status
+            .snapshot()
+            .into_iter()
+            .map(|(id, s)| (id, s.status))
+            .collect::<std::collections::HashMap<String, AgentRunStatus>>()
+    });
+    // F17: layout-derived style strings keyed on the row/col weight signals
+    // (drag-resize / grid reshape). Built here once, not per status tick.
+    let row_styles = use_memo(move || {
+        row_heights
+            .read()
+            .iter()
+            .map(|w| {
+                format!("display: flex; flex-direction: row; flex: {w}; min-height: 0; min-width: 0; gap: 0;")
+            })
+            .collect::<Vec<String>>()
+    });
+    let wrapper_styles = use_memo(move || {
+        let cw = col_widths.read();
+        let row_count = row_heights.read().len().max(1);
+        cw.iter()
+            .enumerate()
+            .map(|(row_idx, row)| {
+                row.iter()
+                    .enumerate()
+                    .map(|(rel_idx, w)| {
+                        let mut s = format!(
+                            "position: relative; flex: {w}; min-height: 0; min-width: 0; padding: 0; display: flex; flex-direction: column; box-sizing: border-box;"
+                        );
+                        if rel_idx + 1 < row.len() {
+                            s.push_str(" border-right: 1px solid var(--border);");
+                        }
+                        if row_idx + 1 < row_count {
+                            s.push_str(" border-bottom: 1px solid var(--border);");
+                        }
+                        s
+                    })
+                    .collect::<Vec<String>>()
+            })
+            .collect::<Vec<Vec<String>>>()
+    });
     let terminal_store = use_terminal_store();
     let athena_store = use_athena_store();
     let panel_store = use_panel_manager_store();
@@ -173,23 +219,22 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                     let start_pane = row_idx * cols;
                     let end_pane = ((row_idx + 1) * cols).min(pane_count);
                     let row_panes = &space.panes[start_pane..end_pane];
-                    let row_weight = row_heights.read().get(row_idx).copied().unwrap_or(1.0);
+                    let row_style = row_styles
+                        .read()
+                        .get(row_idx)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            let w = row_heights.read().get(row_idx).copied().unwrap_or(1.0);
+                            format!("display: flex; flex-direction: row; flex: {w}; min-height: 0; min-width: 0; gap: 0;")
+                        });
 
                     rsx! {
                         div {
                             key: "row-{space.id}-{row_idx}",
-                            style: "display: flex; flex-direction: row; flex: {row_weight}; min-height: 0; min-width: 0; gap: 0;",
+                            style: "{row_style}",
 
                             for (rel_idx, pane) in row_panes.iter().enumerate() {
                                 {
-                                    let flex_weight = {
-                                        let cw = col_widths.read();
-                                        if let Some(row) = cw.get(row_idx) {
-                                            *row.get(rel_idx).unwrap_or(&1.0)
-                                        } else {
-                                            1.0
-                                        }
-                                    };
                                     let has_right = rel_idx + 1 < row_panes.len();
                                     let has_bottom = row_idx + 1 < actual_row_count;
                                     let is_active = active_pane_id.as_deref() == Some(pane.id.as_str());
@@ -200,17 +245,29 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                     } else if fullscreen_pane_id.read().is_some() {
                                         "display: none;".to_string()
                                     } else {
-                                        let mut s = format!(
-                                            "position: relative; flex: {}; min-height: 0; min-width: 0; padding: 0; display: flex; flex-direction: column; box-sizing: border-box;",
-                                            flex_weight
-                                        );
-                                        if has_right {
-                                            s.push_str(" border-right: 1px solid var(--border);");
-                                        }
-                                        if has_bottom {
-                                            s.push_str(" border-bottom: 1px solid var(--border);");
-                                        }
-                                        s
+                                        wrapper_styles
+                                            .read()
+                                            .get(row_idx)
+                                            .and_then(|r| r.get(rel_idx))
+                                            .cloned()
+                                            .unwrap_or_else(|| {
+                                                let w = col_widths
+                                                    .read()
+                                                    .get(row_idx)
+                                                    .and_then(|r| r.get(rel_idx))
+                                                    .copied()
+                                                    .unwrap_or(1.0);
+                                                let mut s = format!(
+                                                    "position: relative; flex: {w}; min-height: 0; min-width: 0; padding: 0; display: flex; flex-direction: column; box-sizing: border-box;"
+                                                );
+                                                if has_right {
+                                                    s.push_str(" border-right: 1px solid var(--border);");
+                                                }
+                                                if has_bottom {
+                                                    s.push_str(" border-bottom: 1px solid var(--border);");
+                                                }
+                                                s
+                                            })
                                     };
 
                                     // DnD target highlight: gold ring while this pane is
@@ -222,10 +279,24 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                         .is_some_and(|target| {
                                             matches!(target, crate::components::workspace::pill_drag::PillDropTarget::Pane(id) if id == &pane.id)
                                         });
+                                    // Attention ring: a finished / waiting / errored agent in a
+                                    // background shell highlights that shell's border. Single
+                                    // accent color + pulse — distinct from the always-static
+                                    // focus ring. State-specific colors live on the status dot.
+                                    // The active pane never rings; statuses clear on click.
+                                    let pane_status =
+                                        status_map.read().get(&pane.id).cloned();
+                                    let ring_attention = !is_active
+                                        && matches!(
+                                            pane_status.as_ref(),
+                                            Some(AgentRunStatus::WaitingForInput)
+                                                | Some(AgentRunStatus::Error)
+                                                | Some(AgentRunStatus::Completed)
+                                        );
                                     let wrapper_class = if is_dnd_target {
-                                        "pane-wrap is-dnd-target"
+                                        "pane-wrap is-dnd-target".to_string()
                                     } else {
-                                        "pane-wrap"
+                                        "pane-wrap".to_string()
                                     };
 
                                     rsx! {
@@ -238,14 +309,21 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                             if is_active && !is_fullscreenmode {
                                                 div { class: "pane-focus-ring" }
                                             }
+                                            if !is_fullscreenmode && ring_attention {
+                                                div { class: "pane-attention-ring" }
+                                            }
 
                                             PaneItem {
                                                 key: "pane-{space.id}-{pane.id}",
                                                 is_active,
                                                 is_dimmed: has_active_pane && !is_active,
+                                                pane_status,
                                                 space_id: space.id.clone(),
                                                 pane_id: pane.id.clone(),
-                                                cwd: space.dir.clone(),
+                                                cwd: pane
+                                                    .cwd
+                                                    .clone()
+                                                    .unwrap_or_else(|| space.dir.clone()),
                                                 agent_type: pane.agent_type.clone(),
                                                 // Every PTY-backed pane uses xterm.js. The legacy cell
                                                 // grid has no keyboard input surface, so restricting this
@@ -258,8 +336,6 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
                                                 custom_cmd: pane.custom_cmd.clone(),
                                                 custom_agent_id: pane.custom_agent_id.clone(),
                                                 bypass_mode: pane.bypass_mode,
-                                                capabilities: pane.capabilities.clone(),
-                                                model: pane.model_name.clone(),
                                                 label: pane.label.clone(),
                                                 fullscreen_pane_id: fullscreen_pane_id,
                                                 pill_drag: pill_drag,
@@ -343,6 +419,9 @@ struct PaneItemProps {
     pane_id: String,
     is_active: bool,
     is_dimmed: bool,
+    /// Agent run state for this pane, resolved once by the grid so the wrapper
+    /// (border highlight) and the pill (status dot) share one store lookup.
+    pane_status: Option<AgentRunStatus>,
     cwd: String,
     agent_type: AgentType,
     /// Whether this PTY-backed pane should use xterm.js for rendering and input.
@@ -355,8 +434,6 @@ struct PaneItemProps {
     custom_cmd: Option<String>,
     custom_agent_id: Option<String>,
     bypass_mode: Option<bool>,
-    capabilities: Option<crate::types::workspace::RoleCapabilities>,
-    model: Option<String>,
     label: Option<String>,
     fullscreen_pane_id: Signal<Option<String>>,
     pill_drag: Signal<Option<crate::components::workspace::pill_drag::PillDrag>>,
@@ -367,6 +444,10 @@ fn PaneItem(props: PaneItemProps) -> Element {
     crate::utils::perf_metrics::mark_render("PaneItem");
     let mut workspace = use_workspace_store();
     let mut terminal_store = use_terminal_store();
+    // Clearing a pane's attention status on click — the user-focused 1 of 3
+    // call sites (xterm_mount handlers are the other two). Programmatic
+    // set_active (spawn, close-fallback, space switch) never clears rings.
+    let agent_status = use_agent_status_store();
     let ui_state = use_ui_store();
     // Per-session terminal registry — captured once, synchronously, at render
     // top. The lookup `registry.session_signal(&pane_id)` is a plain method
@@ -381,7 +462,6 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let pane_id_for_close = props.pane_id.clone();
     let space_id_for_close = props.space_id.clone();
     let agent_label = get_agent_label(&props.agent_type);
-    let _display_id: String = props.pane_id.chars().take(10).collect();
     let is_fullscreen = fullscreen_pane_id.read().as_deref() == Some(&props.pane_id);
     let pane_id_for_fullscreen = props.pane_id.clone();
 
@@ -493,7 +573,7 @@ fn PaneItem(props: PaneItemProps) -> Element {
         AgentType::Custom => custom_agent.as_ref().map(|a| a.is_claude).unwrap_or(false),
         AgentType::Shell => display_resume_cmd
             .as_deref()
-            .map(|c| c.starts_with("claude"))
+            .map(|c| c == "claude" || c.starts_with("claude "))
             .unwrap_or(false),
         _ => false,
     };
@@ -552,11 +632,26 @@ fn PaneItem(props: PaneItemProps) -> Element {
                 if !has_resume {
                     return;
                 }
+                // Once the pane's PTY is gone the call fails on every tick;
+                // stop polling after a few consecutive errors instead of
+                // polling forever. The threshold is generous so a transient
+                // IPC failure during mount doesn't kill detection.
+                const MAX_CONSECUTIVE_ERRORS: u32 = 5;
+                let mut consecutive_errors: u32 = 0;
                 loop {
-                    if let Ok(info) = pty_agent_info(&poll_pane_id).await {
-                        let running = info.foreground_process == want;
-                        if agent_running() != running {
-                            agent_running.set(running);
+                    match pty_agent_info(&poll_pane_id).await {
+                        Ok(info) => {
+                            consecutive_errors = 0;
+                            let running = info.foreground_process == want;
+                            if agent_running() != running {
+                                agent_running.set(running);
+                            }
+                        }
+                        Err(_) => {
+                            consecutive_errors += 1;
+                            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                return;
+                            }
                         }
                     }
                     // Shorter interval than the general status poll: once the
@@ -576,44 +671,6 @@ fn PaneItem(props: PaneItemProps) -> Element {
     let show_resume_banner = (!resume_variants.is_empty() || display_resume_cmd.is_some())
         && !banner_dismissed()
         && (!has_detectable_agent || !agent_running());
-
-    // Diagnostic breadcrumb for resume regressions. It is opt-in so normal
-    // rendering does not emit one console message per pane refresh. It records
-    // only pane metadata and lengths, never terminal output or the full session ID.
-    let diagnostics_enabled = web_sys::window()
-        .and_then(|window| window.location().search().ok())
-        .map(|search| search.contains("diagnostics=1"))
-        .unwrap_or(false);
-    {
-        let pane_id = props.pane_id.clone();
-        let agent = props.agent_type.to_string();
-        let resume_id_len = props.resume_id.as_deref().map(str::len).unwrap_or(0);
-        let has_resume_cmd = props.resume_cmd.is_some();
-        let variant_count = resume_variants.len();
-        let detectable_process = known_process.map(str::to_string);
-        use_effect(move || {
-            if !diagnostics_enabled {
-                return;
-            }
-            let running = agent_running();
-            let dismissed = banner_dismissed();
-            web_sys::console::log_1(
-                &format!(
-                    "[resume-debug] pane={} agent={} id_len={} cmd_present={} variants={} process={:?} running={} dismissed={} show={}",
-                    pane_id,
-                    agent,
-                    resume_id_len,
-                    has_resume_cmd,
-                    variant_count,
-                    detectable_process,
-                    running,
-                    dismissed,
-                    show_resume_banner
-                )
-                .into(),
-            );
-        });
-    }
 
     let left_label = crate::utils::pane_label::resolve_pane_label(
         props.label.as_deref(),
@@ -642,13 +699,8 @@ fn PaneItem(props: PaneItemProps) -> Element {
 
     // Per-pane agent-status dot — mirrors the space-level badges: gold while
     // the agent is working, amber + pulse when it finished / waits / errored.
-    let agent_status = use_agent_status_store();
-    let pane_status = agent_status
-        .read()
-        .statuses
-        .iter()
-        .find(|(id, _)| id == &props.pane_id)
-        .map(|(_, s)| s.status.clone());
+    // Status is resolved by the grid (shared with the pane border highlight).
+    let pane_status = props.pane_status.clone();
     let pane_dot_class = match pane_status.as_ref() {
         Some(AgentRunStatus::Working) => "status-dot is-working",
         // Thinking renders as a pulsing dot — distinct from the solid
@@ -698,6 +750,13 @@ fn PaneItem(props: PaneItemProps) -> Element {
             style: "flex: 1; width: 100%; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; box-sizing: border-box;",
             onpointerdown: move |_| {
                 terminal_store.write().set_active(props.pane_id.clone());
+                // Click-to-acknowledge: the ring/dot for this shell clears the
+                // moment the user clicks it (also fires for the already-active
+                // pane — deliberate). Backend ack keeps redraws from re-arming.
+                crate::stores::agent_status::acknowledge_pane_attention(
+                    agent_status.clone(),
+                    &props.pane_id,
+                );
             },
 
             // Pill header — distinct, refined, sits inside the pane
@@ -1126,8 +1185,6 @@ fn PaneItem(props: PaneItemProps) -> Element {
                         props.resume_id.clone(),
                         props.custom_cmd.clone(),
                         props.bypass_mode,
-                        props.capabilities.clone(),
-                        props.model.clone(),
                     ) }
                 } else {
                     TerminalPaneBody { pane_id: props.pane_id.clone() }

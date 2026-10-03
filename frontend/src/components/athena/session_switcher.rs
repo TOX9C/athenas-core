@@ -1,83 +1,18 @@
 use crate::components::shared::confirm_dialog::ConfirmDialog;
 use crate::components::shared::icon::{IconChevronDown, IconChevronUp, IconPlus, IconTrash};
-use crate::stores::athena::{use_athena_store, AthenaMessage, MessageRole};
+use crate::stores::athena::use_athena_store;
 use crate::tauri_bridge;
-use crate::utils::session::{fetch_sessions, format_time_ago, SessionListItem};
+use crate::utils::session::{
+    fetch_sessions, format_time_ago, load_session_into_store, SessionListItem,
+};
 use dioxus::prelude::*;
 
 async fn do_load_session(
     session_id: &str,
     athena_state: &mut Signal<crate::stores::athena::AthenaState>,
 ) -> Result<(), String> {
-    // Cancel the previous turn before replacing the visible conversation.
-    // This closes the race where late chunks from session A could land in
-    // session B after a user switches chats.
-    let previous_request = athena_state.read().active_request_id.clone();
-    if let Some(request_id) = previous_request {
-        let _ = tauri_bridge::athena_cancel_stream(&request_id).await;
-        athena_state.write().invalidate_active_request();
-    }
-    match tauri_bridge::session_get(session_id).await {
-        Ok(json) => {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-                if let Some(messages) = val.get("messages").and_then(|v| v.as_array()) {
-                    let loaded: Vec<AthenaMessage> = messages
-                        .iter()
-                        .filter_map(|m| {
-                            let role_str = m.get("role")?.as_str()?;
-                            let role = if role_str.eq("user") {
-                                MessageRole::User
-                            } else {
-                                MessageRole::Athena
-                            };
-                            let content = m.get("content")?.as_str()?.to_string();
-                            let id = m
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default()
-                                .to_string();
-                            let timestamp = m
-                                .get("timestamp")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or_else(|| chrono::Utc::now().timestamp() as u64)
-                                as i64;
-                            let is_error =
-                                m.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
-                            Some(AthenaMessage {
-                                id,
-                                role,
-                                content,
-                                timestamp,
-                                is_error,
-                                images: Vec::new(),
-                                usage: None,
-                                blocks: Vec::new(),
-                            })
-                        })
-                        .collect();
-
-                    let title = val
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("New Chat")
-                        .to_string();
-
-                    athena_state.write().set_messages(loaded);
-                    athena_state
-                        .write()
-                        .set_session_id(Some(session_id.to_string()));
-                    athena_state.write().set_session_title(title);
-                    return Ok(());
-                }
-                Err("No messages field in session data".to_string())
-            } else {
-                Err("Failed to parse session data".to_string())
-            }
-        }
-        Err(e) => Err(format!("Failed to load session: {:?}", e)),
-    }
+    load_session_into_store(session_id, athena_state).await
 }
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -305,6 +240,13 @@ pub fn SessionSwitcher() -> Element {
                                     }
                                 }
                                 if athena.read().session_id.as_deref() == Some(&sid) {
+                                    // Cancel the in-flight turn before
+                                    // discarding the conversation, same as
+                                    // the create-new-chat path above.
+                                    let request_id = athena.read().active_request_id.clone();
+                                    if let Some(request_id) = request_id {
+                                        let _ = tauri_bridge::athena_cancel_stream(&request_id).await;
+                                    }
                                     athena.write().clear_messages();
                                     athena.write().set_session_id(None);
                                     athena.write().set_session_title(String::new());

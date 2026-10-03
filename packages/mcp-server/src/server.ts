@@ -48,6 +48,7 @@ import type {
 import { connectStdio } from './transport/stdio-transport.js'
 import { WebSocketTransport } from './transport/websocket-transport.js'
 import { TcpTransport } from './transport/tcp-transport.js'
+import { SessionMcpTransport } from './transport/session-mcp-transport.js'
 
 const DEFAULT_CONFIG: ServerConfig = {
   name: 'athena-mcp-server',
@@ -70,7 +71,21 @@ export class AthenaMcpServer {
   constructor(config: Partial<ServerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
 
-    this.server = new McpServer(
+    this.bridge = new AthenaBridge({
+      athenaHost: this.config.athenaHost!,
+      athenaPort: this.config.athenaPort!,
+      authToken: this.config.authToken,
+    })
+
+    this.outputBuffer = new OutputBufferManager()
+
+    this.server = this.buildMcpServer()
+  }
+
+  /** Build a fully registered MCP server instance. TCP/WS sessions each get
+   * their own instance so JSON-RPC request routing stays per-connection. */
+  private buildMcpServer(): McpServer {
+    const server = new McpServer(
       {
         name: this.config.name,
         version: this.config.version,
@@ -116,22 +131,16 @@ export class AthenaMcpServer {
       },
     )
 
-    this.bridge = new AthenaBridge({
-      athenaHost: this.config.athenaHost!,
-      athenaPort: this.config.athenaPort!,
-      authToken: this.config.authToken,
-    })
+    this.registerTools(server)
+    registerResources(server, this.bridge)
 
-    this.outputBuffer = new OutputBufferManager()
-
-    this.registerTools()
-    registerResources(this.server, this.bridge)
+    return server
   }
 
-  private registerTools(): void {
+  private registerTools(server: McpServer): void {
     // -- Spec-compliant Phase 1 tools ---
 
-    this.server.tool(
+    server.tool(
       'notify',
       'Send a notification to the Athena UI. Use this to alert the user when a task completes, fails, or requires attention.',
       {
@@ -146,7 +155,7 @@ export class AthenaMcpServer {
       async (params) => notify(this.bridge, params as NotifyInput),
     )
 
-    this.server.tool(
+    server.tool(
       'status_update',
       'Report the current status of this agent. Athena uses this to track agent health and display status in the UI.',
       {
@@ -159,7 +168,7 @@ export class AthenaMcpServer {
       async (params) => statusUpdate(this.bridge, params as StatusUpdateInput),
     )
 
-    this.server.tool(
+    server.tool(
       'request_input',
       'Request input from the user. The notification appears in the UI with response options. The tool call blocks until the user responds or a timeout is reached.',
       {
@@ -174,7 +183,7 @@ export class AthenaMcpServer {
 
     // -- Extended athena_ prefixed tools ---
 
-    this.server.tool(
+    server.tool(
       'athena_notify',
       'Send a notification to the user through the Athena UI. Extended version with priority levels and agent identification.',
       {
@@ -187,7 +196,7 @@ export class AthenaMcpServer {
       async (params) => athenaNotify(this.bridge, params as AthenaNotifyInput),
     )
 
-    this.server.tool(
+    server.tool(
       'athena_request_input',
       'Request input from the user. This blocks until the user responds, dismisses the prompt, or the timeout expires.',
       {
@@ -199,7 +208,7 @@ export class AthenaMcpServer {
       async (params) => athenaRequestInput(this.bridge, params as AthenaRequestInputInput),
     )
 
-    this.server.tool(
+    server.tool(
       'athena_update_status',
       'Update the agent status on the Athena dashboard. Call frequently to keep the UI current with your progress.',
       {
@@ -212,7 +221,7 @@ export class AthenaMcpServer {
       async (params) => athenaUpdateStatus(this.bridge, params as AthenaUpdateStatusInput),
     )
 
-    this.server.tool(
+    server.tool(
       'athena_report_error',
       'Report an error to the Athena system. Set recoverable=true if the agent can continue, false if it must stop.',
       {
@@ -226,7 +235,7 @@ export class AthenaMcpServer {
       async (params) => athenaReportError(this.bridge, params as AthenaReportErrorInput),
     )
 
-    this.server.tool(
+    server.tool(
       'athena_report_completion',
       'Report that a task has been completed. Include a summary of what was accomplished and any artifacts created.',
       {
@@ -241,7 +250,7 @@ export class AthenaMcpServer {
 
     // -- Output tools ---
 
-    this.server.tool(
+    server.tool(
       'athena_read_output',
       'Read the full or recent output buffer for a given pane ID. Returns line-numbered entries, optionally filtered by recency or timestamp.',
       {
@@ -252,7 +261,7 @@ export class AthenaMcpServer {
       async (params) => athenaReadOutput(this.outputBuffer, params as AthenaReadOutputInput),
     )
 
-    this.server.tool(
+    server.tool(
       'athena_stream_output',
       'Open a streaming subscription to receive real-time output chunks for a pane. Returns a snapshot of recent lines, then collects new output for up to 60 seconds or 100 lines.',
       {
@@ -261,14 +270,14 @@ export class AthenaMcpServer {
       async (params) => athenaStreamOutput(this.outputBuffer, params as AthenaStreamOutputInput),
     )
 
-    this.server.tool(
+    server.tool(
       'athena_list_agents',
       'List all active agents with their pane IDs, types, and statuses. No parameters required.',
       {},
       async (params) => athenaListAgents(this.bridge, params as AthenaListAgentsInput),
     )
 
-    this.server.tool(
+    server.tool(
       'athena_get_output_since',
       'Get output for a pane since a given timestamp or line number. At least one of sinceTimestamp or sinceLine must be provided.',
       {
@@ -282,7 +291,7 @@ export class AthenaMcpServer {
 
     // -- Search tools ---
 
-    this.server.tool(
+    server.tool(
       'search_files',
       'Search the codebase for a pattern using ripgrep. Returns matching file paths, line numbers, and surrounding context. Supports regex, file type filtering, and glob patterns.',
       {
@@ -321,31 +330,115 @@ export class AthenaMcpServer {
     const port = this.config.websocketPort ?? 4546
     this.wsTransport = new WebSocketTransport(port, '127.0.0.1')
 
-    this.wsTransport.onMessage(async (message, sessionId) => {
-      this.wsTransport?.send(sessionId, {
-        jsonrpc: '2.0',
-        id: (message as { id?: unknown })?.id,
-        result: { status: 'received' },
-      })
+    this.wsTransport.onMessage((message, sessionId) => {
+      this.enqueueInbound(this.wsTransport!, message, sessionId)
     })
+    this.wsTransport.onClose((sessionId) => this.dropSession(sessionId))
 
     await this.wsTransport.start()
+    this.warnIfUnauthenticated('websocket')
   }
 
   private async startTcp(): Promise<void> {
     const port = this.config.tcpPort ?? 4545
     this.tcpTransport = new TcpTransport(port, '127.0.0.1')
 
-    this.tcpTransport.onMessage(async (message, sessionId) => {
-      this.tcpTransport?.send(sessionId, {
-        jsonrpc: '2.0',
-        id: (message as { id?: unknown })?.id,
-        result: { status: 'received' },
-      })
+    this.tcpTransport.onMessage((message, sessionId) => {
+      this.enqueueInbound(this.tcpTransport!, message, sessionId)
     })
+    this.tcpTransport.onClose((sessionId) => this.dropSession(sessionId))
 
     await this.tcpTransport.start()
+    this.warnIfUnauthenticated('tcp')
   }
+
+  /** Per-session message chains keep the auth handshake + first MCP message
+   * in order: both usually arrive coalesced in a single socket read. */
+  private sessionChains = new Map<string, Promise<void>>()
+
+  private enqueueInbound(
+    host: WebSocketTransport | TcpTransport,
+    message: unknown,
+    sessionId: string,
+  ): void {
+    const prev = this.sessionChains.get(sessionId) ?? Promise.resolve()
+    const next = prev
+      .then(() => this.dispatchInbound(host, message, sessionId))
+      .catch((err) => console.error(`[mcp-server] session ${sessionId} dispatch failed`, err))
+    this.sessionChains.set(sessionId, next)
+  }
+
+  /** Inbound transports bind loopback only. With ATHENA_MCP_TOKEN set, the
+   * first message on a session must be `{"type":"auth","token":"…"}`. */
+  private warnIfUnauthenticated(kind: string): void {
+    if (!this.config.authToken) {
+      console.error(
+        `[mcp-server] WARNING: ${kind} transport listening on 127.0.0.1 without ATHENA_MCP_TOKEN — any local process can call tools. Set ATHENA_MCP_TOKEN to require auth.`,
+      )
+    }
+  }
+
+  /** Route one inbound message to the session's MCP server. Each connection
+   * gets its own `McpServer` + `SessionMcpTransport`; the SDK only answers
+   * requests — notifications (no `id`) are dispatched without a reply. */
+  private async dispatchInbound(
+    host: WebSocketTransport | TcpTransport,
+    message: unknown,
+    sessionId: string,
+  ): Promise<void> {
+    const existing = this.sessionServers.get(sessionId)
+    if (existing) {
+      existing.transport.dispatch(message)
+      return
+    }
+
+    if (this.config.authToken) {
+      const auth = message as { type?: string; token?: string } | null
+      if (auth?.type !== 'auth' || auth.token !== this.config.authToken) {
+        host.send(sessionId, {
+          error: 'unauthorized: first message must be {"type":"auth","token":"<ATHENA_MCP_TOKEN>"}',
+        })
+        host.close(sessionId)
+        return
+      }
+      await this.attachSession(host, sessionId)
+      return
+    }
+
+    await this.attachSession(host, sessionId)
+    this.sessionServers.get(sessionId)?.transport.dispatch(message)
+  }
+
+  private async attachSession(
+    host: WebSocketTransport | TcpTransport,
+    sessionId: string,
+  ): Promise<void> {
+    const transport = new SessionMcpTransport(
+      (msg) => host.send(sessionId, msg),
+      () => host.close(sessionId),
+      sessionId,
+    )
+    const server = this.buildMcpServer()
+    try {
+      await server.connect(transport)
+    } catch (err) {
+      console.error(`[mcp-server] failed to connect session ${sessionId} to MCP server`, err)
+      host.send(sessionId, { error: 'failed to initialize MCP session' })
+      host.close(sessionId)
+      return
+    }
+    this.sessionServers.set(sessionId, { server, transport })
+  }
+
+  private dropSession(sessionId: string): void {
+    this.sessionChains.delete(sessionId)
+    const entry = this.sessionServers.get(sessionId)
+    if (!entry) return
+    this.sessionServers.delete(sessionId)
+    void entry.server.close().catch(() => {})
+  }
+
+  private sessionServers = new Map<string, { server: McpServer; transport: SessionMcpTransport }>()
 
   async connectToAthena(): Promise<void> {
     await this.bridge.connect()
@@ -373,6 +466,16 @@ export class AthenaMcpServer {
 
   async stop(): Promise<void> {
     await this.bridge.disconnect()
+    // Best-effort concurrent close with a deadline: one hung session must not
+    // stall signal-driven shutdown of the whole server.
+    const CLOSE_TIMEOUT_MS = 2000
+    const closes = [...this.sessionServers.values()].map((entry) =>
+      entry.server.close().catch(() => {}),
+    )
+    const { promise: deadline, resolve: onDeadline } = Promise.withResolvers<void>()
+    setTimeout(onDeadline, CLOSE_TIMEOUT_MS)
+    await Promise.race([Promise.allSettled(closes), deadline])
+    this.sessionServers.clear()
     if (this.wsTransport) {
       await this.wsTransport.stop()
     }

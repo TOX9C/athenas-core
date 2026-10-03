@@ -1,14 +1,8 @@
 use dioxus::prelude::*;
 
-/// A single output line from an agent.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct OutputLine {
-    pub pane_id: String,
-    pub line_num: usize,
-    pub text: String,
-    pub timestamp: i64,
-    pub is_stderr: bool,
-}
+// The single OutputLine lives in the store layer; display code reuses it so
+// a field addition can't silently desync a copy.
+pub use crate::stores::agent_output::OutputLine;
 
 /// Format a unix-ms timestamp as HH:MM:SS.
 fn format_time(ts: i64) -> String {

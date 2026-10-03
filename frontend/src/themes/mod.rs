@@ -27,11 +27,16 @@ pub fn apply_theme_to_dom(theme_name: &str) {
     let c = get_theme(theme_name);
     set_data_theme(theme_name);
 
-    let derived_ring = c
-        .accent_subtle
-        .replace("0.12", "0.55")
-        .replace("0.13", "0.55")
-        .replace("0.14", "0.55");
+    // Structurally replace the alpha channel of the accent_subtle rgba()/hsla()
+    // string instead of searching for a literal alpha value — a palette edit
+    // (e.g. alpha 0.135) would otherwise break the ring derivation silently.
+    let derived_ring = {
+        let trimmed = c.accent_subtle.trim();
+        match trimmed.rfind(',').filter(|_| trimmed.ends_with(')')) {
+            Some(comma) => format!("{}, 0.55)", &trimmed[..comma]),
+            None => c.accent_subtle.to_string(),
+        }
+    };
     let props: [(&str, &str); 23] = [
         ("--bg", &c.bg),
         ("--bgSecondary", &c.bg_secondary),

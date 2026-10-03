@@ -43,15 +43,35 @@ impl ToolExecutor {
             })
             .collect();
 
+        // Reject duplicate step ids up front: llm-generated plans sometimes
+        // repeat an id, which would make dispatch/status updates silently
+        // target the wrong step.
+        {
+            let mut seen = std::collections::HashSet::new();
+            for s in &steps {
+                if !s.id.is_empty() && !seen.insert(s.id.clone()) {
+                    return Ok(ToolCallResult {
+                        text: format!(
+                            "Plan rejected: duplicate step id '{}'. Step ids must be unique.",
+                            s.id
+                        ),
+                        is_error: Some(true),
+                    });
+                }
+            }
+        }
+
         let plan = self.plan_manager.set_active_plan(PlanInput {
             goal: goal.to_string(),
             reasoning: reasoning.to_string(),
             steps,
         })?;
 
-        self.event_sender.plan_update(&plan);
+        let stream_request_id = Self::current_stream_request_id();
+        self.event_sender
+            .plan_update_with_context(stream_request_id.as_deref(), &plan);
 
-        if let Some(ref svc) = self.notification_service {
+        if let Some(svc) = self.notification_service.as_ref() {
             let _ = svc.notify(
                 crate::notification::NotificationType::Info,
                 "Plan Created",
@@ -105,6 +125,22 @@ impl ToolExecutor {
             }
         };
 
+        // Refuse to re-dispatch a step that is already running or done:
+        // otherwise a plan loop can spawn duplicate panes for the same step.
+        match &step.status {
+            StepStatus::Pending => {}
+            status => {
+                return Ok(ToolCallResult {
+                    text: format!(
+                        "Step '{}' is {:?}; only Pending steps can be dispatched. \
+                         Call `evaluate_results` to check its progress.",
+                        step_id, status
+                    ),
+                    is_error: Some(true),
+                });
+            }
+        }
+
         // Dispatch the agent. The step carries an optional agent_type so a
         // plan can target shell/codex/gemini agents; default to "claude".
         let agent_type = step
@@ -126,10 +162,12 @@ impl ToolExecutor {
             .update_step_status(step_id, StepStatus::InProgress, Some(&pane_id))?;
 
         if let Some(updated_plan) = self.plan_manager.get_active_plan() {
-            self.event_sender.plan_update(&updated_plan);
+            let stream_request_id = Self::current_stream_request_id();
+            self.event_sender
+                .plan_update_with_context(stream_request_id.as_deref(), &updated_plan);
         }
 
-        if let Some(ref svc) = self.notification_service {
+        if let Some(svc) = self.notification_service.as_ref() {
             let _ = svc.notify(
                 crate::notification::NotificationType::Info,
                 "Step Dispatched",
@@ -231,10 +269,13 @@ impl ToolExecutor {
             }
         };
 
-        self.event_sender.plan_update(&updated_plan);
+        let stream_request_id = Self::current_stream_request_id();
+        self.event_sender
+            .plan_update_with_context(stream_request_id.as_deref(), &updated_plan);
 
         let evals = args.step_evaluations.as_deref().unwrap_or(&[]);
-        self.event_sender.plan_evaluated(
+        self.event_sender.plan_evaluated_with_context(
+            stream_request_id.as_deref(),
             &plan.id,
             overall_status,
             evals,

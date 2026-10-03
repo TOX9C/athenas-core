@@ -1,4 +1,7 @@
-use crate::components::shared::icon::{IconChevronRight, IconSearch};
+use crate::components::shared::icon::{
+    IconAthena, IconChevronRight, IconEye, IconFile, IconGrid, IconKanban, IconList, IconMinus,
+    IconPlus, IconRefresh, IconSearch, IconSettings, IconSpaces, IconSwarm, IconTerminal, IconTune,
+};
 use crate::stores::command::{
     dispatch_command, filter_commands, use_command_handlers, use_command_store, Command,
 };
@@ -17,6 +20,32 @@ fn format_shortcut(shortcut: &str) -> String {
         .replace("Backspace", "\u{232b}")
         .replace("Tab", "\u{21e5}")
 }
+
+/// Resolve a command's icon key to a glyph. Falls back to a chevron so
+/// commands without an icon still align in the icon column.
+fn palette_icon(cmd: &Command, color: &str) -> Element {
+    let size = Some(15);
+    let color = Some(color.to_string());
+    match cmd.icon.as_deref() {
+        Some("athena") => rsx! { IconAthena { size, color } },
+        Some("spaces") => rsx! { IconSpaces { size, color } },
+        Some("refresh") => rsx! { IconRefresh { size, color } },
+        Some("list") => rsx! { IconList { size, color } },
+        Some("grid") => rsx! { IconGrid { size, color } },
+        Some("terminal") => rsx! { IconTerminal { size, color } },
+        Some("file") => rsx! { IconFile { size, color } },
+        Some("kanban") => rsx! { IconKanban { size, color } },
+        Some("swarm") => rsx! { IconSwarm { size, color } },
+        Some("eye") => rsx! { IconEye { size, color } },
+        Some("plus") => rsx! { IconPlus { size, color } },
+        Some("minus") => rsx! { IconMinus { size, color } },
+        Some("tune") => rsx! { IconTune { size, color } },
+        Some("settings") => rsx! { IconSettings { size, color } },
+        _ => rsx! { IconChevronRight { size, color } },
+    }
+}
+
+const KBD_STYLE: &str = "font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--bgTertiary); border: 1px solid var(--border); color: var(--textMuted); font-family: var(--font-ui); line-height: 1.4;";
 
 #[component]
 pub fn CommandPalette() -> Element {
@@ -46,30 +75,30 @@ pub fn CommandPalette() -> Element {
 
     rsx! {
         div {
-            style: "position: fixed; inset: 0; z-index: 60; display: flex; justify-content: center; padding-top: 12vh;",
+            style: "position: fixed; inset: 0; z-index: 60; display: flex; justify-content: center; padding-top: 10vh;",
 
             // Backdrop
             div {
-                style: "position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 70%, transparent);",
+                style: "position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 60%, transparent); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);",
                 onclick: move |_| command_state.write().close(),
             }
 
             // Palette container
             div {
                 class: "pane-astrolabe-mark",
-                style: "position: relative; z-index: 1; width: 520px; max-height: 400px; display: flex; flex-direction: column; overflow: hidden; background: var(--bgSecondary); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);",
+                style: "position: relative; z-index: 1; width: 600px; max-height: 480px; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);",
                 role: "dialog",
                 "aria-modal": "true",
                 "aria-label": "Command palette",
 
                 // Search input
                 div {
-                    style: "display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border);",
+                    style: "display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border);",
 
-                    IconSearch { size: Some(15), color: Some("var(--textDim)".to_string()) }
+                    IconSearch { size: Some(16), color: Some("var(--accent)".to_string()) }
 
                     input {
-                        style: "flex: 1; background: transparent; border: none; outline: none; font-size: 14px; color: var(--text); font-family: var(--font-ui); caret-color: var(--accent);",
+                        style: "flex: 1; background: transparent; border: none; outline: none; font-size: 15px; color: var(--text); font-family: var(--font-ui); caret-color: var(--accent);",
                         role: "searchbox",
                         "aria-label": "Search commands",
                         value: "{query}",
@@ -115,39 +144,36 @@ pub fn CommandPalette() -> Element {
                         _ => {}
                     }
                 },
-                        placeholder: "Type a command...",
+                        placeholder: "Type a command or search...",
                         spellcheck: false,
                         autocomplete: "off",
                         autofocus: true,
                     }
 
                     div {
-                        style: "display: flex; align-items: center; gap: 4px;",
+                        style: "display: flex; align-items: center; gap: 6px;",
 
                         if !query.trim().is_empty() && flat_count > 0 {
                             span {
-                                class: "badge",
+                                style: "font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-family: var(--font-ui);",
                                 "{flat_count}"
                             }
                         }
 
                         kbd {
-                            style: "font-size: var(--text-2xs); padding: 2px 6px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); color: var(--textDim); font-family: var(--fontFamily);",
+                            style: "{KBD_STYLE}",
                             "esc"
                         }
                     }
                 }
 
-                // Great-circle rule — gold seam between input header and results.
-                div { class: "great-circle-rule" }
-
                 // Command list
                 div {
-                    style: "flex: 1; overflow-y: auto;",
+                    style: "flex: 1; overflow-y: auto; padding: 6px 8px;",
 
                     if flat_count == 0 {
                         div {
-                            style: "display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 36px; color: var(--textDim);",
+                            style: "display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px; color: var(--textDim);",
                             IconSearch { size: Some(28), color: Some("var(--textDim)".to_string()) }
                             span {
                                 style: "font-size: var(--text-sm); color: var(--textMuted);",
@@ -164,7 +190,7 @@ pub fn CommandPalette() -> Element {
                                 items.push(rsx! {
                                     div {
                                         key: "group-{group_label}",
-                                        style: "display: flex; align-items: center; gap: 6px; padding: 10px 14px 4px 14px; font-family: var(--font-display); font-size: var(--text-2xs); font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em;",
+                                        style: "padding: 12px 12px 6px 12px; font-family: var(--font-display); font-size: 10px; font-weight: 700; color: var(--textMuted); text-transform: uppercase; letter-spacing: 0.12em;",
                                         "{group_label}"
                                     }
                                 });
@@ -173,16 +199,18 @@ pub fn CommandPalette() -> Element {
                                     running_idx += 1;
                                     let is_selected = idx == selected_idx();
                                     let shortcut_str = cmd.shortcut.as_ref().map(|s| format_shortcut(s));
-                                    // selection now carried by text + icon color-shift only (flat-quiet)
                                     let icon_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
                                     let cmd_text_color = if is_selected { "var(--accent)" } else { "var(--text)" };
+                                    let row_bg = if is_selected { "var(--bgHover)" } else { "transparent" };
+                                    let notch = if is_selected { "inset 2px 0 0 var(--accent)" } else { "inset 2px 0 0 transparent" };
                                     let cmd_id = cmd.id.clone();
                                     let cmd_label = cmd.label.clone();
+                                    let cmd_desc = cmd.description.clone();
+                                    let icon_el = palette_icon(cmd, icon_color);
                                     items.push(rsx! {
                                         button {
                                             key: "{cmd_id}",
-                                            class: "lit-sweep",
-                                            style: "display: flex; align-items: center; gap: 10px; padding: 7px 14px; width: 100%; text-align: left; border: none; background: transparent; cursor: pointer; font-size: var(--text-sm); color: {cmd_text_color};",
+                                            style: "display: flex; align-items: center; gap: 12px; padding: 9px 12px; width: 100%; text-align: left; border: none; border-radius: 8px; background: {row_bg}; box-shadow: {notch}; cursor: pointer; font-size: var(--text-sm); color: {cmd_text_color};",
                                             onmouseenter: move |_| selected_idx.set(idx),
                                             onclick: {
                                                 let handlers = handlers.clone();
@@ -195,18 +223,29 @@ pub fn CommandPalette() -> Element {
                                             },
 
                                             span {
-                                                style: "display: inline-flex; align-items: center; justify-content: center; width: 16px;",
-                                                IconChevronRight { size: Some(13), color: Some(icon_color.to_string()) }
+                                                style: "display: inline-flex; align-items: center; justify-content: center; width: 20px; flex-shrink: 0;",
+                                                {icon_el}
                                             }
 
                                             span {
-                                                style: "flex: 1; font-size: var(--text-sm);",
-                                                "{cmd_label}"
+                                                style: "flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0;",
+
+                                                span {
+                                                    style: "font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                                                    "{cmd_label}"
+                                                }
+
+                                                if let Some(desc) = cmd_desc {
+                                                    span {
+                                                        style: "font-size: 11px; color: var(--textDim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                                                        "{desc}"
+                                                    }
+                                                }
                                             }
 
-                                            if let Some(ref sc) = shortcut_str {
+                                            if let Some(sc) = &shortcut_str {
                                                 kbd {
-                                                    style: "font-size: var(--text-2xs); padding: 2px 7px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); color: var(--accent); font-family: var(--fontFamily); display: inline-flex; align-items: center; justify-content: center; min-width: 24px;",
+                                                    style: "{KBD_STYLE} color: var(--accent);",
                                                     "{sc}"
                                                 }
                                             }
@@ -221,80 +260,26 @@ pub fn CommandPalette() -> Element {
 
                 // Footer
                 div {
-                    style: "display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--border); font-size: var(--text-2xs); color: var(--textDim);",
+                    style: "display: flex; align-items: center; gap: 16px; padding: 9px 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--textDim); background: var(--bgSecondary);",
 
                     span {
-                        kbd { style: "font-size: var(--text-2xs); padding: 2px 5px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); font-family: var(--fontFamily);", "\u{2191}\u{2193}" }
+                        style: "display: inline-flex; align-items: center; gap: 5px;",
+                        kbd { style: "{KBD_STYLE}", "\u{2191}\u{2193}" }
                         " navigate"
                     }
 
                     span {
-                        kbd { style: "font-size: var(--text-2xs); padding: 2px 5px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); font-family: var(--fontFamily);", "\u{21b5}" }
-                        " execute"
+                        style: "display: inline-flex; align-items: center; gap: 5px;",
+                        kbd { style: "{KBD_STYLE}", "\u{21b5}" }
+                        " run"
                     }
 
                     span {
-                        kbd { style: "font-size: var(--text-2xs); padding: 2px 5px; border-radius: var(--radius-sm); background: var(--bgTertiary); border: 1px solid var(--border); font-family: var(--fontFamily);", "esc" }
-                        " close"
-                    }
-
-                    span {
-                        style: "margin-left: auto; opacity: 0.5;",
+                        style: "margin-left: auto; opacity: 0.6;",
                         "{total_commands} commands"
                     }
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::stores::command::{Command, CommandCategory};
-
-    fn cmd(id: &str, label: &str) -> Command {
-        Command {
-            id: id.to_string(),
-            label: label.to_string(),
-            category: CommandCategory::Workspace,
-            description: None,
-            keywords: vec![],
-            shortcut: None,
-            handler_key: id.to_string(),
-            when_key: None,
-        }
-    }
-
-    /// H8 regression: a multi-byte (non-ASCII) query MUST NOT panic the
-    /// subsequence matcher. Previously the matcher did
-    /// `lower.chars().nth(qi).unwrap()` where `qi` was a byte index; for any
-    /// multi-byte query `qi` exceeds the char count and `nth()` returns
-    /// `None`, panicking and aborting the WASM renderer.
-    #[test]
-    fn fuzzy_match_handles_non_ascii_query_without_panicking() {
-        let commands = vec![
-            cmd("open", "Open File"),
-            cmd("save", "Save Workspace"),
-            cmd("term", "New Terminal"),
-        ];
-        // Accented, CJK, and emoji — all multi-byte in UTF-8. The old code
-        // panicked on any of these.
-        for q in ["fïlé", "终端", "😀", "café"] {
-            // Must not panic. (Result may be empty — that's fine; the point
-            // is that non-ASCII input doesn't abort the renderer.)
-            let _ = filter_commands(&commands, &[], q, |_| false);
-        }
-    }
-
-    /// Sanity: ASCII subsequence matching still works after the rewrite.
-    #[test]
-    fn fuzzy_match_ascii_subsequence_still_works() {
-        let commands = vec![cmd("term", "New Terminal"), cmd("save", "Save")];
-        // "trm" is a subsequence of "new terminal".
-        let groups = filter_commands(&commands, &[], "trm", |_| false);
-        assert!(groups
-            .iter()
-            .any(|g| g.commands.iter().any(|c| c.id == "term")));
     }
 }

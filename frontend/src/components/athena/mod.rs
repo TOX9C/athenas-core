@@ -5,7 +5,6 @@ pub mod chat_message;
 pub mod content_block;
 pub mod eval_block;
 pub mod plan_block;
-pub mod session_list;
 pub mod session_switcher;
 pub mod thinking;
 

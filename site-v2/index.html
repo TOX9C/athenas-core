@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Athena's Core — Every tool. One window.</title>
+<meta name="description" content="A native macOS workspace for people who command armies of agents. Terminals, AI chat, kanban, swarms — one window. Rust + Tauri 2. Public beta.">
+<link rel="icon" href="assets/favicon.png">
+<style>
+/* ============ fonts (self-hosted, CSP-friendly) ============ */
+@font-face{font-family:'Hanken Grotesk';src:url('fonts/HankenGrotesk-400.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'Hanken Grotesk';src:url('fonts/HankenGrotesk-500.woff2') format('woff2');font-weight:500;font-style:normal;font-display:swap}
+@font-face{font-family:'Hanken Grotesk';src:url('fonts/HankenGrotesk-600.woff2') format('woff2');font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:'Hanken Grotesk';src:url('fonts/HankenGrotesk-700.woff2') format('woff2');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:'Monaspace Neon';src:url('fonts/MonaspaceNeon-400.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'Monaspace Neon';src:url('fonts/MonaspaceNeon-500.woff2') format('woff2');font-weight:500;font-style:normal;font-display:swap}
+
+/* ============ tokens ============ */
+:root{
+  --obsidian:#050505; --ink:#0B0C0F; --panel:#101116; --line:#26262B;
+  --bone:#EFEBE3; --marble:#F5F2EA; --ash:#8E8A7F; --faint:#55524B;
+  --bronze:#E0B64E; --bronze-deep:#9E7A2E; --bronze-glow:rgba(224,182,78,.16);
+  --lime:#D6FF4B;
+  --sans:'Hanken Grotesk',-apple-system,'SF Pro Text',sans-serif;
+  --mono:'Monaspace Neon','SF Mono',ui-monospace,Menlo,monospace;
+  --w:1240px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--obsidian);color:var(--bone);font-family:var(--sans);font-weight:400;line-height:1.55;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+::selection{background:var(--bronze);color:#0B0C0F}
+a{color:inherit;text-decoration:none}
+img,video{display:block;max-width:100%}
+button{font:inherit;background:none;border:0;cursor:pointer;color:inherit}
+
+/* scrollbar */
+::-webkit-scrollbar{width:10px}
+::-webkit-scrollbar-track{background:var(--obsidian)}
+::-webkit-scrollbar-thumb{background:#2A2A30;border-radius:5px;border:2px solid var(--obsidian)}
+::-webkit-scrollbar-thumb:hover{background:var(--bronze-deep)}
+
+/* grain overlay */
+body::after{content:"";position:fixed;inset:0;z-index:999;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E")}
+
+/* ============ preloader ============ */
+#veil{position:fixed;inset:0;z-index:1000;background:var(--obsidian);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;animation:veilOut .7s ease 1.9s forwards}
+#veil.gone{opacity:0;visibility:hidden}
+@keyframes veilOut{to{opacity:0;visibility:hidden}}
+#veil img{width:72px;height:72px;filter:drop-shadow(0 0 24px var(--bronze-glow));animation:veilPulse 1.6s ease-in-out infinite}
+@keyframes veilPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+#veil .word{font-family:var(--mono);font-size:12px;letter-spacing:.42em;color:var(--ash);text-transform:uppercase}
+#veil .bar{width:180px;height:1px;background:var(--line);overflow:hidden}
+#veil .bar i{display:block;height:100%;width:0;background:var(--bronze);animation:load 1.8s ease forwards}
+@keyframes load{to{width:100%}}
+@media(prefers-reduced-motion:reduce){#veil{display:none;animation:none}}
+
+/* ============ header ============ */
+header{position:fixed;top:0;left:0;right:0;z-index:100;transition:background .35s,border-color .35s;border-bottom:1px solid transparent}
+header.scrolled{background:rgba(5,5,5,.82);backdrop-filter:blur(14px);border-color:var(--line)}
+.nav{max-width:var(--w);margin:0 auto;padding:18px 28px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.mark{display:flex;align-items:center;gap:12px}
+.mark img{width:26px;height:26px}
+.mark b{font-weight:700;font-size:15px;letter-spacing:.14em;text-transform:uppercase}
+.mark b em{font-style:normal;color:var(--bronze)}
+.nav-links{display:flex;gap:30px;align-items:center;font-size:13.5px;letter-spacing:.02em;color:var(--ash)}
+.nav-links a{transition:color .2s}
+.nav-links a:hover{color:var(--bone)}
+.nav-links .dl{color:var(--obsidian);background:var(--bronze);padding:9px 18px;border-radius:99px;font-weight:600;letter-spacing:0;transition:transform .2s,box-shadow .2s}
+.nav-links .dl:hover{color:var(--obsidian);transform:translateY(-1px);box-shadow:0 6px 24px var(--bronze-glow)}
+@media(max-width:720px){.nav-links a:not(.dl){display:none}}
+
+/* ============ hero ============ */
+.hero{min-height:100svh;display:flex;flex-direction:column;align-items:center;justify-content:center;max-width:var(--w);margin:0 auto;padding:130px 28px 60px;position:relative;text-align:center}
+.hero::before{content:"";position:absolute;top:50%;left:50%;transform:translateX(-50%) translateY(-50%);width:min(900px,90vw);height:min(600px,80vh);background:radial-gradient(closest-side,var(--bronze-glow),transparent 70%);pointer-events:none;z-index:0}
+.hero>div:first-child{position:relative;z-index:1}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.34em;color:var(--bronze);text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:30px}
+.eyebrow::before{content:"";width:44px;height:1px;background:var(--bronze-deep)}
+h1{font-size:clamp(52px,8.2vw,116px);line-height:.98;font-weight:700;letter-spacing:-.03em}
+h1 .u{display:block;overflow:hidden}
+h1 .u span{display:inline-block}
+h1 .gold{color:transparent;-webkit-text-stroke:1.5px var(--bronze)}
+.lede{margin-top:30px;font-size:clamp(16px,1.6vw,20px);color:var(--ash);max-width:52ch;font-weight:400;margin-left:auto;margin-right:auto}
+.lede b{color:var(--bone);font-weight:500}
+.cta-row{display:flex;gap:14px;margin-top:38px;flex-wrap:wrap;align-items:center;justify-content:center}
+.btn{display:inline-flex;align-items:center;gap:10px;padding:16px 28px;border-radius:99px;font-weight:600;font-size:15px;letter-spacing:.01em;transition:transform .2s,box-shadow .2s,background .2s,border-color .2s}
+.btn.primary{background:var(--bronze);color:var(--obsidian)}
+.btn.primary:hover{transform:translateY(-2px);box-shadow:0 10px 40px var(--bronze-glow)}
+.btn.ghost{border:1px solid var(--line);color:var(--bone)}
+.btn.ghost:hover{border-color:var(--bronze-deep);color:var(--bronze)}
+.btn .arrow{font-family:var(--mono)}
+.meta-row{display:flex;gap:26px;margin-top:44px;flex-wrap:wrap;font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.06em;justify-content:center}
+.meta-row span b{display:block;color:var(--bone);font-size:15px;letter-spacing:.02em;font-weight:500}
+.scroll-cue{position:absolute;bottom:26px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:10.5px;letter-spacing:.3em;color:var(--faint);text-transform:uppercase;display:flex;flex-direction:column;align-items:center;gap:12px}
+.scroll-cue::after{content:"";width:1px;height:34px;background:linear-gradient(var(--bronze),transparent);animation:drip 2s ease-in-out infinite}
+@keyframes drip{0%{transform:scaleY(0);transform-origin:top}50%{transform:scaleY(1);transform-origin:top}51%{transform:scaleY(1);transform-origin:bottom}100%{transform:scaleY(0);transform-origin:bottom}}
+
+/* site-wide interactive starfield */
+#stars{position:fixed;inset:0;width:100vw;height:100vh;z-index:-1;pointer-events:auto;cursor:crosshair}
+body>section,body>div.marquee,body>footer,header{position:relative;z-index:1}
+section,.marquee,footer{background:rgba(5,5,5,.82)}
+header{background:transparent}
+header.scrolled{background:rgba(5,5,5,.85)}
+@media(max-width:960px){
+  .hero{padding-top:110px}
+}
+@media(max-width:960px){.scroll-cue{display:none}}
+
+/* ============ marquee ============ */
+.marquee{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:20px 0;overflow:hidden;background:var(--ink)}
+.marquee .track{display:flex;gap:0;white-space:nowrap;width:max-content;animation:slide 30s linear infinite}
+.marquee span{font-family:var(--mono);font-size:13px;letter-spacing:.3em;text-transform:uppercase;color:var(--ash);padding:0 28px;display:inline-flex;align-items:center;gap:28px}
+.marquee span::after{content:"✦";color:var(--bronze);font-size:11px}
+@keyframes slide{to{transform:translateX(-50%)}}
+@media(prefers-reduced-motion:reduce){.marquee .track{animation:none}}
+
+/* ============ shared section chrome ============ */
+section{position:relative}
+.wrap{max-width:var(--w);margin:0 auto;padding:0 28px}
+.sec-head{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:baseline;margin-bottom:56px}
+.sec-no{font-family:var(--mono);color:var(--bronze);font-size:13px;letter-spacing:.2em}
+.sec-title{font-size:clamp(34px,4.6vw,64px);font-weight:700;letter-spacing:-.02em;line-height:1.02}
+.sec-sub{color:var(--ash);max-width:54ch;margin-top:16px;font-size:16.5px}
+.meander{height:14px;background-repeat:repeat-x;background-size:auto 100%;opacity:.5;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='14' viewBox='0 0 56 14'%3E%3Cpath d='M2 12V4h10v5h-6V7h14V4h10v5h-6V7h14V4h10v5h-6V7h6' fill='none' stroke='%239E7A2E' stroke-width='1.6'/%3E%3C/svg%3E")}
+
+/* reveal on scroll */
+.rv{opacity:0;transform:translateY(26px);transition:opacity .8s ease,transform .8s ease}
+.rv.in{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){.rv{opacity:1;transform:none;transition:none}}
+
+/* ============ film ============ */
+.film{padding:120px 0 90px}
+.film .stage{position:relative;max-width:980px;margin:0 auto}
+.film .mat{border:1px solid var(--line);padding:12px;background:linear-gradient(160deg,#101116,#0A0B0E);position:relative}
+.film .mat::before{content:"";position:absolute;inset:5px;border:1px solid rgba(224,182,78,.28);pointer-events:none}
+.film video{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000}
+.glow-media{position:relative}
+.glow-media::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(320px circle at var(--gx,50%) var(--gy,50%),rgba(224,182,78,.10),transparent 65%)}
+.film .note{display:flex;justify-content:space-between;gap:16px;margin-top:18px;font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.14em;text-transform:uppercase;flex-wrap:wrap}
+.film .note em{font-style:normal;color:var(--ash)}
+.film .play{position:absolute;inset:0;display:grid;place-items:center;z-index:2}
+.film .play button{width:92px;height:92px;border-radius:50%;border:1px solid var(--bronze-deep);display:grid;place-items:center;background:rgba(5,5,5,.55);backdrop-filter:blur(6px);transition:transform .25s,box-shadow .25s}
+.film .play button:hover{transform:scale(1.08);box-shadow:0 0 60px var(--bronze-glow)}
+.film .play i{width:0;height:0;border-style:solid;border-width:13px 0 13px 22px;border-color:transparent transparent transparent var(--bronze);margin-left:5px}
+.film .stage.playing .play{display:none}
+
+/* ============ exhibits (horizontal) ============ */
+.exhibits{border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.pin{height:520vh}
+.pin .rail{position:sticky;top:0;height:100svh;display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+.pin .head{display:flex;justify-content:space-between;align-items:baseline;padding:0 28px;margin-bottom:34px;gap:20px}
+.pin h2{font-size:clamp(30px,4vw,54px);font-weight:700;letter-spacing:-.02em}
+.pin .hint{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.28em;text-transform:uppercase;white-space:nowrap}
+.strip{display:flex;gap:34px;padding-left:max(28px,calc(50vw - 620px));will-change:transform}
+.exhibit{flex:0 0 auto;width:min(760px,78vw)}
+.exhibit .card{border:1px solid var(--line);background:var(--panel);padding:10px;position:relative}
+.exhibit img{width:100%;aspect-ratio:16/10;object-fit:cover;object-position:top;background:#000}
+.exhibit .cap{display:flex;justify-content:space-between;align-items:baseline;padding:14px 8px 6px;gap:14px}
+.exhibit .cap b{font-weight:600;font-size:15px}
+.exhibit .cap span{font-family:var(--mono);font-size:11px;color:var(--bronze);letter-spacing:.2em}
+.exhibit .desc{color:var(--ash);font-size:13.5px;padding:0 8px 8px;max-width:64ch}
+.progress{height:2px;background:var(--line);margin:38px 28px 0;position:relative;overflow:hidden}
+.progress i{position:absolute;inset:0;background:var(--bronze);transform:scaleX(0);transform-origin:left}
+@media(prefers-reduced-motion:reduce){
+  .pin{height:auto}
+  .pin .rail{position:static;height:auto;overflow:visible;padding:70px 0}
+  .strip{transform:none!important;flex-wrap:wrap;justify-content:center}
+  .exhibit{width:min(760px,100%)}
+  .progress{display:none}
+}
+@media(max-width:960px){
+  .pin{height:auto}
+  .pin .rail{position:static;height:auto;padding:70px 0}
+  .strip{transform:none!important;overflow-x:auto;scroll-snap-type:x mandatory;padding-right:28px;scrollbar-width:none}
+  .strip::-webkit-scrollbar{display:none}
+  .exhibit{scroll-snap-align:center}
+  .progress{display:none}
+}
+
+/* ============ pantheon ============ */
+.pantheon{padding:130px 0 110px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+@media(max-width:1080px){.cards{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:620px){.cards{grid-template-columns:1fr}}
+.god{border:1px solid var(--line);background:linear-gradient(170deg,#101116,#0A0B0E);padding:30px 26px;position:relative;overflow:hidden;transition:border-color .3s,transform .3s}
+.god:hover{border-color:var(--bronze-deep);transform:translateY(-4px)}
+.god::before{content:attr(data-no);position:absolute;top:14px;right:18px;font-family:var(--mono);font-size:12px;color:var(--bronze);letter-spacing:.2em;opacity:.85}
+.god .glyph{width:40px;height:40px;border:1px solid var(--bronze-deep);display:grid;place-items:center;font-size:17px;margin-bottom:26px;background:var(--bronze-glow)}
+.god h3{font-size:21px;font-weight:700;letter-spacing:-.01em}
+.god h4{font-family:var(--mono);font-weight:400;font-size:11px;color:var(--bronze);letter-spacing:.26em;text-transform:uppercase;margin:8px 0 16px}
+.god p{color:var(--ash);font-size:14px}
+.god .more{display:inline-block;margin-top:18px;font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.12em;border-bottom:1px solid var(--line);padding-bottom:2px;transition:color .2s,border-color .2s}
+.god:hover .more{color:var(--bronze);border-color:var(--bronze-deep)}
+
+/* ============ stats ============ */
+.stats{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--ink)}
+.stats .wrap{display:grid;grid-template-columns:repeat(4,1fr);text-align:center;padding-top:56px;padding-bottom:56px;gap:20px}
+@media(max-width:860px){.stats .wrap{grid-template-columns:repeat(2,1fr)}}
+.stats b{display:block;font-size:clamp(40px,5vw,64px);font-weight:700;letter-spacing:-.03em;color:var(--bone)}
+.stats b i{font-style:normal;color:var(--bronze)}
+.stats span{font-family:var(--mono);font-size:11px;letter-spacing:.3em;color:var(--faint);text-transform:uppercase}
+
+/* ============ codex (marble) ============ */
+.codex{padding:130px 0;background:var(--ink);color:var(--bone);position:relative}
+.codex .sec-title{color:var(--bone)}
+.codex .sec-no{color:var(--bronze)}
+.codex .sec-sub{color:var(--ash)}
+.codex .inner{background:var(--panel);border:1px solid var(--line);padding:44px 40px;display:grid;grid-template-columns:1fr auto;gap:30px;box-shadow:0 30px 80px rgba(0,0,0,.5);position:relative}
+.codex .inner::before{content:"";position:absolute;inset:8px;border:1px solid rgba(224,182,78,.25);pointer-events:none}
+@media(max-width:860px){.codex .inner{grid-template-columns:1fr;padding:30px 22px}}
+.codex .lead{font-size:17px;color:var(--ash);max-width:46ch}
+.codex .lead b{color:var(--bone)}
+.keys{display:grid;gap:13px;font-family:var(--mono);font-size:13.5px;min-width:min(380px,100%)}
+.keys .row{display:flex;justify-content:space-between;gap:22px;border-bottom:1px dashed var(--line);padding-bottom:10px}
+.keys .row span{color:var(--ash)}
+kbd{background:#1B1C22;color:var(--bone);border:1px solid #2E2F36;border-radius:6px;padding:4px 10px;font-family:var(--mono);font-size:12px;box-shadow:0 2px 0 #000;white-space:nowrap}
+.keys .row kbd i{font-style:normal;color:var(--bronze);padding:0 2px}
+
+/* ============ get it ============ */
+.get{padding:130px 0 110px;text-align:center}
+.get .mark{width:66px;margin:0 auto 30px;filter:drop-shadow(0 0 26px var(--bronze-glow))}
+.get h2{font-size:clamp(40px,6vw,84px);font-weight:700;letter-spacing:-.03em;line-height:1}
+.get h2 em{font-style:normal;color:transparent;-webkit-text-stroke:1.5px var(--bronze)}
+.get .sub{color:var(--ash);margin:22px auto 0;max-width:46ch;font-size:17px}
+.get .cta-row{justify-content:center;margin-top:40px}
+.get .brew{margin:44px auto 0;max-width:560px;text-align:left;border:1px solid var(--line);background:var(--panel);border-radius:14px;overflow:hidden}
+.get .brew .bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.get .brew .bar i{width:10px;height:10px;border-radius:50%;background:#3A3A40}
+.get .brew .bar i:first-child{background:#5A3A3A}
+.get .brew .bar i:nth-child(2){background:#5A5238}
+.get .brew .bar em{font-style:normal;font-family:var(--mono);font-size:11px;color:var(--faint);margin-left:auto;letter-spacing:.1em}
+.get .brew .cmd{display:flex;align-items:center;gap:14px;padding:18px 20px;font-family:var(--mono);font-size:14px;color:var(--lime)}
+.get .brew .cmd .dollar{color:var(--faint)}
+.get .brew .cmd button{margin-left:auto;color:var(--faint);font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;border:1px solid var(--line);padding:7px 12px;border-radius:8px;transition:color .2s,border-color .2s}
+.get .brew .cmd button:hover{color:var(--bronze);border-color:var(--bronze-deep)}
+.get .gate{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em;margin-top:20px;max-width:560px;margin-inline:auto;line-height:1.8}
+.get .gate code{color:var(--ash)}
+
+/* ============ support / license ============ */
+.support{border-top:1px solid var(--line);padding:90px 0}
+.support .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:860px){.support .grid{grid-template-columns:1fr}}
+.slab{border:1px solid var(--line);padding:34px 30px;background:linear-gradient(170deg,#101116,#0A0B0E)}
+.slab h3{font-size:19px;font-weight:700;display:flex;gap:12px;align-items:center}
+.slab h3 .dot{width:8px;height:8px;background:var(--bronze);border-radius:50%;box-shadow:0 0 12px var(--bronze)}
+.slab p{color:var(--ash);font-size:14px;margin-top:12px;max-width:56ch}
+.slab .lines{margin-top:22px;display:grid;gap:10px}
+.addr{display:flex;align-items:center;gap:12px;border:1px solid var(--line);padding:12px 14px;font-family:var(--mono);font-size:12px;color:var(--ash);cursor:pointer;transition:border-color .2s,color .2s;overflow:hidden}
+.addr:hover{border-color:var(--bronze-deep);color:var(--bone)}
+.addr b{color:var(--bronze);font-weight:500;flex:0 0 auto;letter-spacing:.1em}
+.addr span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.addr .copied{margin-left:auto;color:var(--lime);flex:0 0 auto;opacity:0;transition:opacity .3s}
+.addr.ok .copied{opacity:1}
+.slab a.link{display:inline-block;margin-top:20px;font-family:var(--mono);font-size:12px;color:var(--bronze);letter-spacing:.14em;border-bottom:1px solid var(--bronze-deep);padding-bottom:2px}
+.slab a.link:hover{color:var(--bone);border-color:var(--bone)}
+
+/* ============ footer ============ */
+footer{border-top:1px solid var(--line);padding:60px 0 50px}
+footer .wrap{display:flex;justify-content:space-between;gap:26px;align-items:center;flex-wrap:wrap}
+footer .fmark{display:flex;align-items:center;gap:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;font-size:13px}
+footer .fmark img{width:22px;height:22px}
+footer .fmark em{font-style:normal;color:var(--bronze)}
+footer .fine{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.08em}
+footer .fine a{color:var(--ash)}
+footer .fine a:hover{color:var(--bronze)}
+footer .meander{margin-top:44px;opacity:.3}
+
+/* toast */
+#toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,20px);background:var(--bronze);color:var(--obsidian);font-family:var(--mono);font-size:12px;letter-spacing:.12em;padding:12px 22px;border-radius:99px;opacity:0;pointer-events:none;transition:opacity .3s,transform .3s;z-index:998}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+
+<!-- preloader -->
+<div id="veil" aria-hidden="true">
+  <img src="assets/favicon.png" alt="">
+  <div class="word">Athena&rsquo;s Core</div>
+  <div class="bar"><i id="veil-bar"></i></div>
+</div>
+
+<canvas id="stars" aria-hidden="true"></canvas>
+
+<header id="top">
+  <div class="nav">
+    <a class="mark" href="#top" aria-label="Athena's Core home">
+      <img src="assets/favicon.png" alt="">
+      <b>ATHENA<em>&rsquo;S</em> CORE</b>
+    </a>
+    <nav class="nav-links">
+      <a href="#film">Film</a>
+      <a href="#exhibits">Exhibits</a>
+      <a href="#pantheon">The Pantheon</a>
+      <a href="#codex">Codex</a>
+      <a class="dl" href="#get">Get the beta</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ============ HERO ============ -->
+<section class="hero" id="hero">
+  <div>
+    <div class="eyebrow"><span style="color:var(--bronze)">&mdash;</span> Native macOS &middot; Rust + Tauri 2 &middot; Public Beta <span style="color:var(--bronze)">&mdash;</span></div>
+    <h1 id="headline">
+      <span class="u"><span>Every tool.</span></span>
+      <span class="u"><span class="gold">One window.</span></span>
+    </h1>
+    <p class="lede">
+      Athena&rsquo;s Core is a native macOS workspace for people who command
+      <b>armies of AI agents</b>. Multi-pane terminals, workspace-aware chat, a
+      kanban board, and swarm orchestration &mdash; fused into a single,
+      fast, beautiful window. No browser. No Electron. No mercy on your RAM.
+    </p>
+    <div class="cta-row">
+      <a class="btn primary" href="#get">Download the beta <span class="arrow">&rarr;</span></a>
+      <a class="btn ghost" href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">Star on GitHub</a>
+    </div>
+    <div class="meta-row">
+      <span><b>macOS 13+</b>Apple silicon</span>
+      <span><b>144</b>IPC commands</span>
+      <span><b>6</b>native themes</span>
+      <span><b>0</b>bytes of Electron</span>
+    </div>
+  </div>
+  <div class="scroll-cue">Descend</div>
+</section>
+<div class="marquee" aria-hidden="true"><div class="track" id="ticker"></div></div>
+
+<!-- ============ FILM ============ -->
+<section class="film" id="film">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="sec-no">I &middot; THE FILM</span>
+    </div>
+    <h2 class="sec-title rv" style="margin-top:-40px;margin-bottom:40px">Twenty-five seconds.<br>No mockups. Only proof.</h2>
+    <div class="stage rv" id="film-stage">
+      <div class="mat glow-media">
+        <video id="film-video" playsinline preload="metadata" poster="assets/workspace-climax.png">
+          <source src="assets/athenas-core-one-window.mp4" type="video/mp4">
+        </video>
+        <div class="play"><button id="film-play" aria-label="Play the film"><i></i></button></div>
+      </div>
+      <div class="note">
+        <span><em>Every frame</em> &mdash; a real capture of the real app</span>
+        <span>00:25 &middot; one window</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="meander" aria-hidden="true"></div>
+
+<!-- ============ EXHIBITS ============ -->
+<section class="exhibits" id="exhibits">
+  <div class="pin" id="pin">
+    <div class="rail">
+      <div class="head">
+        <div>
+          <span class="sec-no">II &middot; THE EXHIBITS</span>
+          <h2>Caught in the wild</h2>
+        </div>
+        <span class="hint">Scroll &mdash; the museum moves sideways</span>
+      </div>
+      <div class="strip" id="strip">
+        <figure class="exhibit">
+          <div class="card glow-media"><img src="assets/04-workspace.png" alt="The workspace: multiple panes in one window"></div>
+          <div class="cap"><b>The Workspace</b><span>FIG. 01</span></div>
+          <p class="desc">Terminals, chat, and board breathing in one window. Spaces keep projects apart; panes keep thoughts together.</p>
+        </figure>
+        <figure class="exhibit">
+          <div class="card glow-media"><img src="assets/05-athena.png" alt="Athena chat panel"></div>
+          <div class="cap"><b>Athena, the Oracle</b><span>FIG. 02</span></div>
+          <p class="desc">Workspace-aware AI chat. She reads your project, remembers your space, answers like she lives there &mdash; because she does.</p>
+        </figure>
+        <figure class="exhibit">
+          <div class="card glow-media"><img src="assets/06-swarm.png" alt="Agent swarm orchestration view"></div>
+          <div class="cap"><b>The Swarm</b><span>FIG. 03</span></div>
+          <p class="desc">Dispatch a phalanx of agents. Watch every one glow gold while it thinks, amber when it asks, still when it rests.</p>
+        </figure>
+        <figure class="exhibit">
+          <div class="card glow-media"><img src="assets/07-kanban.png" alt="Kanban board"></div>
+          <div class="cap"><b>The Agora</b><span>FIG. 04</span></div>
+          <p class="desc">A kanban board that talks to your terminals and your agents. Tasks move; the swarm notices.</p>
+        </figure>
+        <figure class="exhibit">
+          <div class="card glow-media"><img src="assets/03-launch-config.png" alt="Launch configuration"></div>
+          <div class="cap"><b>The Rite of Launch</b><span>FIG. 05</span></div>
+          <p class="desc">Configure spaces before they breathe. Shells, agents, panes &mdash; chosen once, summoned forever.</p>
+        </figure>
+        <figure class="exhibit">
+          <div class="card glow-media"><img src="assets/02-new-space-dialog.png" alt="New space dialog"></div>
+          <div class="cap"><b>Founding a Space</b><span>FIG. 06</span></div>
+          <p class="desc">Every empire starts as a dialog. Name it, seed it, and the window bends around your intent.</p>
+        </figure>
+        <figure class="exhibit">
+          <div class="card glow-media"><img src="assets/01-welcome.png" alt="Welcome screen"></div>
+          <div class="cap"><b>First Contact</b><span>FIG. 07</span></div>
+          <p class="desc">No login. No telemetry handshake. You open the window, and it is already yours.</p>
+        </figure>
+        <figure class="exhibit">
+          <div class="card glow-media"><img src="assets/workspace-climax.png" alt="Workspace at full occupancy"></div>
+          <div class="cap"><b>Full Occupancy</b><span>FIG. 08</span></div>
+          <p class="desc">The climax: every pane alive, three agents at work, one human calmly watching it happen.</p>
+        </figure>
+      </div>
+      <div class="progress" aria-hidden="true"><i id="strip-progress"></i></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PANTHEON ============ -->
+<section class="pantheon" id="pantheon">
+  <div class="wrap">
+    <div class="sec-head rv"><span class="sec-no">III &middot; THE PANTHEON</span></div>
+    <h2 class="sec-title rv">Four gods in one window</h2>
+    <p class="sec-sub rv">Not a bundle of apps glued with wishful thinking &mdash; one native surface where each discipline keeps its craft.</p>
+    <div class="cards" style="margin-top:56px">
+      <article class="god rv" data-no="01">
+        <div class="glyph">&#9650;</div>
+        <h3>Terminals</h3><h4>The Forge</h4>
+        <p>Multi-pane native terminals with splits, search, and per-pane agent detection. When an agent works, the pane glows &mdash; gold while thinking, amber when it needs you.</p>
+        <span class="more">Cmd+T to summon</span>
+      </article>
+      <article class="god rv" data-no="02">
+        <div class="glyph">&#9673;</div>
+        <h3>Athena Chat</h3><h4>The Oracle</h4>
+        <p>Workspace-aware AI chat that reads your project and writes with context. Local models or remote APIs &mdash; she speaks to whatever you trust.</p>
+        <span class="more">Cmd+K to consult</span>
+      </article>
+      <article class="god rv" data-no="03">
+        <div class="glyph">&#9638;</div>
+        <h3>Kanban</h3><h4>The Agora</h4>
+        <p>Tasks argued in the open. Drag work between columns while terminals and agents watch the same board &mdash; no sync rituals, no export ceremonies.</p>
+        <span class="more">Cmd+B to convene</span>
+      </article>
+      <article class="god rv" data-no="04">
+        <div class="glyph">&#10022;</div>
+        <h3>Swarm</h3><h4>The Phalanx</h4>
+        <p>Orchestrate many agents across panes and spaces. Status on the dock badge, motion in the menu bar, verdicts in your face &mdash; never in your way.</p>
+        <span class="more">Cmd+Shift+S to march</span>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- stats -->
+<div class="stats">
+  <div class="wrap">
+    <div class="rv"><b>144</b><span>IPC commands</span></div>
+    <div class="rv"><b>6</b><span>native themes</span></div>
+    <div class="rv"><b>1</b><span>app, not five</span></div>
+    <div class="rv"><b>0</b><span>Electron bytes</span></div>
+  </div>
+</div>
+
+<!-- ============ CODEX ============ -->
+<section class="codex" id="codex">
+  <div class="wrap">
+    <div class="sec-head rv"><span class="sec-no">IV &middot; THE CODEX</span></div>
+    <h2 class="sec-title rv">Command it like a language</h2>
+    <div class="inner rv" style="margin-top:56px">
+      <div>
+        <p class="lead"><b>Everything is one keystroke away.</b> The whole surface speaks fluent keyboard &mdash; memorize six chords and the mouse becomes optional jewelry. Etched below, the essential rites:</p>
+        <p class="lead" style="margin-top:18px;color:#8A8471;font-size:13.5px;font-family:var(--mono)">Inscribed for muscle memory &middot; v0.3.0 beta</p>
+      </div>
+      <div class="keys">
+        <div class="row"><span>Command palette</span><kbd>⌘ <i>K</i></kbd></div>
+        <div class="row"><span>New terminal pane</span><kbd>⌘ <i>T</i></kbd></div>
+        <div class="row"><span>Toggle kanban board</span><kbd>⌘ <i>B</i></kbd></div>
+        <div class="row"><span>March the swarm</span><kbd>⇧ ⌘ <i>S</i></kbd></div>
+        <div class="row"><span>New space</span><kbd>⇧ ⌘ <i>N</i></kbd></div>
+        <div class="row"><span>Command the window</span><kbd>⌘ <i>,</i></kbd></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ GET ============ -->
+<section class="get" id="get">
+  <div class="wrap">
+    <img class="mark rv" src="assets/favicon.png" alt="">
+    <h2 class="rv">The window is <em>open.</em></h2>
+    <p class="sub rv">Public beta, free for the curious. Bring your agents, your terminals, and your ambition &mdash; Athena keeps the rest.</p>
+    <div class="cta-row rv">
+      <a class="btn primary" href="https://github.com/TOX9C/athenas-core/releases/latest" target="_blank" rel="noopener">Download for macOS <span class="arrow">&rarr;</span></a>
+      <a class="btn ghost" href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">View source</a>
+    </div>
+    <div class="brew rv">
+      <div class="bar"><i></i><i></i><i></i><em>athenas-core &mdash; latest release</em></div>
+      <div class="cmd">
+        <span class="dollar">$</span><span>brew install --no-quarantine tox9c/tap/athenas-core</span>
+        <button data-copy="brew install --no-quarantine tox9c/tap/athenas-core">Copy</button>
+      </div>
+    </div>
+    <p class="gate rv">First run on a fresh Mac: right-click the app &rarr; <code>Open</code> (or <code>xattr -cr</code> it) &mdash; unsigned beta, honest code.<br>Solo-dev project. Rust + Tauri 2. BUSL-1.1 &mdash; free for non-commercial use; a seat for commercial fleets.</p>
+  </div>
+</section>
+
+<!-- ============ SUPPORT ============ -->
+<section class="support" id="support">
+  <div class="wrap">
+    <div class="sec-head rv"><span class="sec-no">V &middot; KEEP THE LAMPS LIT</span></div>
+    <h2 class="sec-title rv" style="font-size:clamp(30px,4vw,54px)">Fuel the pantheon</h2>
+    <div class="grid" style="margin-top:48px">
+      <div class="slab rv">
+        <h3><span class="dot"></span>GitHub</h3>
+        <p>Stars, issues, and blunt feedback &mdash; the beta improves by argument. File what breaks; the swarm listens.</p>
+        <a class="link" href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">GITHUB.COM/TOX9C/ATHENAS-CORE &rarr;</a>
+      </div>
+      <div class="slab rv">
+        <h3><span class="dot"></span>NowPayments</h3>
+        <p>Direct support through NowPayments &mdash; cards and crypto, no ceremony.</p>
+        <a class="link" href="https://nowpayments.io/donation/tox9c" target="_blank" rel="noopener">NOWPAYMENTS.IO/DONATION/TOX9C &rarr;</a>
+      </div>
+      <div class="slab rv">
+        <h3><span class="dot"></span>Bitcoin</h3>
+        <p>The original fixed supply. Click the line to copy.</p>
+        <div class="lines">
+          <div class="addr" data-copy="bc1qn8ehwc7rxlpgvljztr5k6npqf307xq00dqatf8"><b>BTC</b><span>bc1qn8ehwc7rxlpgvljztr5k6npqf307xq00dqatf8</span><span class="copied">copied ✓</span></div>
+        </div>
+      </div>
+      <div class="slab rv">
+        <h3><span class="dot"></span>Ethereum / TRON</h3>
+        <p>ETH, USDT, USDC &mdash; EVM or TRC-20. Click a line to copy.</p>
+        <div class="lines">
+          <div class="addr" data-copy="0x4260456e1dbdc880d69d75949726953215a93586"><b>ETH</b><span>0x4260456e1dbdc880d69d75949726953215a93586</span><span class="copied">copied ✓</span></div>
+          <div class="addr" data-copy="TSBUpAreTjmUscbUbf4L1wkX1fvvJvSRGW"><b>USDT</b><span>TSBUpAreTjmUscbUbf4L1wkX1fvvJvSRGW</span><span class="copied">copied ✓</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer>
+  <div class="wrap">
+    <div class="fmark"><img src="assets/favicon.png" alt="">ATHENA<em>&rsquo;S</em> CORE</div>
+    <div class="fine">Built by one human &middot; <a href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">source</a> &middot; BUSL-1.1 &middot; every image on this page is the real app</div>
+  </div>
+  <div class="meander"></div>
+</footer>
+
+<div id="toast">Copied</div>
+
+<script>
+(function(){
+"use strict";
+var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+/* ---------- starfield: site-wide gold stars, cursor-reactive ---------- */
+(function(){
+  var cv=document.getElementById('stars');
+  if(!cv) return;
+  var ctx=cv.getContext('2d'), stars=[], mouse={x:-999,y:-999,lx:-999,ly:-999,vx:0,vy:0};
+  function init(){
+    var w=cv.clientWidth||innerWidth, h=cv.clientHeight||innerHeight;
+    cv.width=w; cv.height=h;
+    var count=Math.round(w*h/2200);
+    stars=[];
+    for(var i=0;i<count;i++){
+      var r=Math.random();
+      var x=Math.random()*w, y=Math.random()*h;
+      stars.push({x:x,y:y,ox:x,oy:y,
+        s:r>.85?Math.random()*1.5+1.5:r>.6?Math.random()*.8+.7:Math.random()*.5+.4,
+        ph:Math.random()*Math.PI*2});
+    }
+  }
+  function frame(t){
+    ctx.clearRect(0,0,cv.width,cv.height);
+    var mSpeed=Math.sqrt(mouse.vx*mouse.vx+mouse.vy*mouse.vy);
+    var R = 160 + Math.min(mSpeed*8,120);
+    /* connections */
+    for(var j=0;j<stars.length;j++){
+      var A=stars[j];
+      var dmX=A.x-mouse.x, dmY=A.y-mouse.y, dm=Math.sqrt(dmX*dmX+dmY*dmY);
+      var nearM=dm<R?1:(dm<300?0.3:0);
+      var linkR=dtype=>110 + (nearM?100:0);
+      for(var k=j+1;k<stars.length;k++){
+        var B=stars[k], dx=A.x-B.x, dy=A.y-B.y, d2=dx*dx+dy*dy;
+        var rr=linkR();
+        if(d2<rr*rr){
+          var al=(1-Math.sqrt(d2)/rr)* (nearM?.5:.28);
+          ctx.strokeStyle='rgba(224,182,78,'+al.toFixed(3)+')';
+          ctx.lineWidth=.6 + (nearM?.6:0);
+          ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke();
+        }
+      }
+    }
+    /* stars: physics */
+    for(var m=0;m<stars.length;m++){
+      var s=stars[m];
+      var dmX=mouse.x-s.x, dmY=mouse.y-s.y, dist2=dmX*dmX+dmY*dmY, dist=Math.sqrt(dist2);
+      var gx=0, gy=0;
+      if(dist<R && dist>1 && !reduced){
+        var pull=(1-dist/R)*.55;
+        var push=(1-dist/R)*.35*mSpeed*.4;
+        var dirX=dmX/dist, dirY=dmY/dist;
+        gx=dirX*pull - dirX*push;
+        gy=dirY*pull - dirY*push;
+      }
+      s.x=s.ox + (reduced?0:Math.sin(t/2100+s.ph)*3.5) + gx;
+      s.y=s.oy + (reduced?0:Math.cos(t/2100+s.ph)*3.5) + gy;
+      var tw=reduced?.7:.45+.4*Math.sin(t/800+s.ph*3);
+      var glow=dist<R?(1-dist/R)*.6:0;
+      ctx.fillStyle='rgba(224,182,78,'+Math.min(1,(tw+glow)).toFixed(3)+')';
+      ctx.beginPath(); ctx.arc(s.x,s.y,s.s,0,Math.PI*2); ctx.fill();
+      if(s.s>1.8 || glow>0){
+        var halo=(s.s>1.8?s.s*3.5:0) + glow*8;
+        if(halo>1){
+          ctx.fillStyle='rgba(224,182,78,'+(Math.min(.5,(.15+(glow*.3)))).toFixed(3)+')';
+          ctx.beginPath(); ctx.arc(s.x,s.y,halo,0,Math.PI*2); ctx.fill();
+        }
+      }
+    }
+    mouse.lx=mouse.x; mouse.ly=mouse.y;
+    requestAnimationFrame(frame);
+  }
+  document.addEventListener('mousemove',function(e){
+    mouse.vx = mouse.lx>-900 ? e.clientX-mouse.lx : 0;
+    mouse.vy = mouse.ly>-900 ? e.clientY-mouse.ly : 0;
+    mouse.x=e.clientX; mouse.y=e.clientY;
+  });
+  addEventListener('resize',function(){ init(); });
+  init(); frame(0);
+})();
+
+/* ---------- preloader (CSS animation owns it; JS belt-and-braces) ---------- */
+var veil = document.getElementById('veil');
+if(reduced){ veil.classList.add('gone'); }
+addEventListener('load',function(){ setTimeout(function(){ veil.classList.add('gone'); },2500); });
+
+/* ---------- headline split reveal ---------- */
+var h1=document.getElementById('headline');
+if(!reduced){
+  h1.querySelectorAll('.u span').forEach(function(line,i){
+    var txt=line.textContent; line.textContent='';
+    txt.split('').forEach(function(ch){
+      var s=document.createElement('span');
+      s.textContent=ch===' '?'\u00A0':ch;
+      s.style.display='inline-block';
+      s.style.transform='translateY(110%)';
+      s.style.opacity='0';
+      s.style.transition='transform .9s cubic-bezier(.16,1,.3,1) '+(i*.12)+'s,opacity .6s ease '+(i*.12)+'s';
+      line.appendChild(s);
+    });
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){
+      line.querySelectorAll('span').forEach(function(s,j){
+        s.style.transitionDelay=(i*.12+j*.028)+'s';
+        s.style.transform='none'; s.style.opacity='1';
+      });
+    });});
+  });
+}
+
+/* ---------- ticker ---------- */
+var words=['Multi-pane terminals','Workspace-aware chat','Kanban','Agent swarms','In-app browser','Plugins','Six themes','One window','No Electron'];
+var track=document.getElementById('ticker');
+var html=words.map(function(w){return '<span>'+w+'</span>';}).join('');
+track.innerHTML=html+html;
+
+/* ---------- header ---------- */
+var header=document.getElementById('top');
+addEventListener('scroll',function(){ header.classList.toggle('scrolled',scrollY>10); },{passive:true});
+
+/* ---------- reveals ---------- */
+var io=new IntersectionObserver(function(es){
+  es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target);} });
+},{threshold:.12});
+document.querySelectorAll('.rv').forEach(function(el){ io.observe(el); });
+
+/* ---------- glow follows cursor on media ---------- */
+if(matchMedia('(pointer:fine)').matches){
+  document.querySelectorAll('.glow-media').forEach(function(m){
+    m.addEventListener('mousemove',function(e){
+      var r=m.getBoundingClientRect();
+      m.style.setProperty('--gx',((e.clientX-r.left)/r.width*100)+'%');
+      m.style.setProperty('--gy',((e.clientY-r.top)/r.height*100)+'%');
+    });
+  });
+}
+
+/* ---------- film ---------- */
+var v=document.getElementById('film-video'), stage=document.getElementById('film-stage');
+document.getElementById('film-play').addEventListener('click',function(){ v.play(); stage.classList.add('playing'); });
+v.addEventListener('click',function(){ v.paused?v.play():v.pause(); });
+v.addEventListener('play',function(){ stage.classList.add('playing'); });
+v.addEventListener('pause',function(){ if(v.currentTime>0&&!v.ended) stage.classList.remove('playing'); });
+
+/* ---------- pinned horizontal strip ---------- */
+var pin=document.getElementById('pin'), strip=document.getElementById('strip'), prog=document.getElementById('strip-progress');
+var pinned = matchMedia('(min-width:961px)').matches && !reduced;
+if(pinned){
+  function onScroll(){
+    var r=pin.getBoundingClientRect();
+    var total=r.height-innerHeight;
+    var y=Math.min(Math.max(-r.top,0),total);
+    var max=strip.scrollWidth-strip.parentElement.clientWidth;
+    var x=y/total*max;
+    strip.style.transform='translateX('+(-x)+'px)';
+    if(prog) prog.style.transform='scaleX('+(max?x/max:0)+')';
+  }
+  addEventListener('scroll',onScroll,{passive:true});
+  addEventListener('resize',onScroll);
+  onScroll();
+}
+
+/* ---------- copy-to-clipboard ---------- */
+var toast=document.getElementById('toast'), tt;
+function showToast(msg){
+  toast.textContent=msg; toast.classList.add('show');
+  clearTimeout(tt); tt=setTimeout(function(){ toast.classList.remove('show'); },1600);
+}
+function doCopy(text,el){
+  function ok(){ if(el){ el.classList.add('ok'); setTimeout(function(){ el.classList.remove('ok'); },1400); } showToast('Copied ✓'); }
+  if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(ok,function(){fallback();}); }
+  else fallback();
+  function fallback(){ var ta=document.createElement('textarea'); ta.value=text; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy'); ok();}catch(e){} ta.remove(); }
+}
+document.querySelectorAll('[data-copy]').forEach(function(el){
+  el.addEventListener('click',function(){ doCopy(el.getAttribute('data-copy'),el.classList.contains('addr')?el:null); });
+});
+})();
+</script>
+</body>
+</html>

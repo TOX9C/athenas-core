@@ -15,7 +15,6 @@ pub fn new_shell_pane() -> PaneConfig {
         id: format!("shell-{}", Uuid::new_v4()),
         agent_type: AgentType::Shell,
         cwd: None,
-        capabilities: None,
         custom_cmd: None,
         custom_agent_id: None,
         label: None,

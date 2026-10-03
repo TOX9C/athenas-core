@@ -1,5 +1,6 @@
-use super::file_tree::FileNode;
+use super::file_tree::{parse_dir_entries, FileNode};
 use crate::components::shared::icon::{IconChevronRight, IconFolder};
+use crate::tauri_bridge;
 use crate::utils::file_icons::get_file_icon;
 use dioxus::prelude::*;
 
@@ -15,6 +16,10 @@ pub struct FileTreeNodeProps {
 pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
     let mut expanded = use_signal(|| props.node.is_expanded);
     let mut hovered = use_signal(|| false);
+    // Directory children are fetched lazily on first expand; `None` means
+    // "not loaded yet", `Some(vec![])` means loaded empty (or failed).
+    let children: Signal<Option<Vec<FileNode>>> = use_signal(|| None);
+    let children_loading = use_signal(|| false);
     let indent = (props.depth * 16) as i32;
     let chevron_rotation: i32 = if expanded() { 90 } else { 0 };
 
@@ -56,6 +61,8 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
 
     let node_for_click = props.node.clone();
     let on_file_open = props.on_file_open;
+    let mut children_for_click = children;
+    let mut children_loading_for_click = children_loading;
 
     rsx! {
         div {
@@ -71,6 +78,24 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
 
                 onclick: move |_| {
                     if node_for_click.is_dir {
+                        // First expand of a directory: fetch its children.
+                        if !expanded()
+                            && children_for_click.read().is_none()
+                            && !children_loading_for_click()
+                        {
+                            children_loading_for_click.set(true);
+                            let dir_path = node_for_click.path.clone();
+                            spawn(async move {
+                                match tauri_bridge::fs_list_dir(&dir_path).await {
+                                    Ok(response) => {
+                                        children_for_click
+                                            .set(Some(parse_dir_entries(&response)));
+                                    }
+                                    Err(_) => children_for_click.set(Some(Vec::new())),
+                                }
+                                children_loading_for_click.set(false);
+                            });
+                        }
                         expanded.set(!expanded());
                     } else {
                         on_file_open.call(node_for_click.path.clone());
@@ -105,12 +130,27 @@ pub fn FileTreeNode(props: FileTreeNodeProps) -> Element {
             }
 
             if props.node.is_dir && expanded() {
-                for child in props.node.children.iter() {
-                    FileTreeNode {
-                        key: "{child.path}",
-                        node: child.clone(),
-                        depth: props.depth + 1,
-                        on_file_open: props.on_file_open,
+                if children_loading() {
+                    div {
+                        style: "padding: 2px 8px 2px {indent + 16}px; font-size: var(--text-sm); color: var(--textDim);",
+                        "Loading…"
+                    }
+                } else {
+                    {
+                        let child_nodes = children
+                            .read()
+                            .clone()
+                            .unwrap_or_else(|| props.node.children.clone());
+                        rsx! {
+                            for child in child_nodes.iter() {
+                                FileTreeNode {
+                                    key: "{child.path}",
+                                    node: child.clone(),
+                                    depth: props.depth + 1,
+                                    on_file_open: props.on_file_open,
+                                }
+                            }
+                        }
                     }
                 }
             }

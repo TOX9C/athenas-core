@@ -32,7 +32,7 @@ pub fn WorkspaceTab(props: WorkspaceTabProps) -> Element {
     // workspaces close immediately). Mirrors the sidebar row behavior.
     let agent_status = use_agent_status_store();
     let mut confirm_close = use_signal(|| false);
-    let counts = count_space_agents(&props.space.panes, &agent_status.read().statuses);
+    let counts = count_space_agents(&props.space.panes, &agent_status.snapshot());
     let close_requires_confirm = counts.working > 0 || counts.attention > 0;
     let space_name_for_confirm = props.space.name.clone();
 

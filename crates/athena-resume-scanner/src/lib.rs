@@ -13,6 +13,8 @@ use std::collections::HashSet;
 pub const MAX_SCAN_BUFFER: usize = 1024;
 
 const MAX_ID_LEN: usize = 256;
+// Must stay pre-lowercased: `extract_resume_id` matches these against
+// lowercased text without re-lowercasing them per scan.
 const PREFIXES: &[&str] = &[
     "claude --resume ",
     "codex --resume ",
@@ -21,6 +23,22 @@ const PREFIXES: &[&str] = &[
     "freebuff --continue ",
     "omp --resume ",
 ];
+
+const fn max_prefix_len() -> usize {
+    let mut max = 0;
+    let mut i = 0;
+    while i < PREFIXES.len() {
+        if PREFIXES[i].len() > max {
+            max = PREFIXES[i].len();
+        }
+        i += 1;
+    }
+    max
+}
+
+/// Length of the longest entry in [`PREFIXES`]; used to size the straddle
+/// overlap when a stateful scanner scans only newly appended text.
+const MAX_PREFIX_LEN: usize = max_prefix_len();
 
 /// Streaming ANSI remover that preserves partial escape-sequence state across
 /// input chunks. It emits ordinary text immediately and suppresses complete
@@ -72,7 +90,14 @@ impl AnsiStripper {
                     match byte {
                         b'[' => self.state = AnsiState::Csi,
                         b']' => self.state = AnsiState::Osc,
-                        _ => self.state = AnsiState::Text,
+                        _ => {
+                            // Lone ESC followed by a non-sequence byte: fall
+                            // back to text mode WITHOUT consuming the byte, so
+                            // it is reprocessed below as ordinary output
+                            // instead of being silently eaten.
+                            self.state = AnsiState::Text;
+                            continue;
+                        }
                     }
                     i += 1;
                 }
@@ -169,9 +194,8 @@ pub fn extract_resume_id(text: &str) -> Option<(String, String)> {
     let mut last_match: Option<(usize, String, String)> = None;
 
     for pattern in PREFIXES {
-        let pattern_lower = pattern.to_ascii_lowercase();
         let mut search_from = 0;
-        while let Some(relative_idx) = lower[search_from..].find(&pattern_lower) {
+        while let Some(relative_idx) = lower[search_from..].find(pattern) {
             let match_start = search_from + relative_idx;
             let id_start = match_start + pattern.len();
             if id_start > text.len() {
@@ -181,8 +205,10 @@ pub fn extract_resume_id(text: &str) -> Option<(String, String)> {
             let id: String = text[id_start..]
                 .chars()
                 .take(MAX_ID_LEN)
-                .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
-                .collect();
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                .collect::<String>()
+                .trim_end_matches('.')
+                .to_string();
             let prefix = pattern[..pattern.len() - 1].to_string();
             if is_valid_resume_id(&prefix, &id)
                 && last_match
@@ -217,10 +243,12 @@ pub struct ResumeScanner {
     /// Accumulated ANSI-stripped tail of the last feed(s); never grows
     /// beyond [`MAX_SCAN_BUFFER`].
     buf: String,
-    /// Every id reported during this PTY lifecycle. A single `last_matched`
-    /// value is insufficient because replayed/redrawn output can alternate
-    /// between older IDs and cause the same ID to be emitted repeatedly.
-    seen_ids: HashSet<String>,
+    /// Every `(prefix, id)` pair reported during this PTY lifecycle. A single
+    /// `last_matched` value is insufficient because replayed/redrawn output
+    /// can alternate between older IDs and cause the same ID to be emitted
+    /// repeatedly. Keying on the pair keeps a shared id under a different CLI
+    /// prefix from being wrongly suppressed.
+    seen_ids: HashSet<(String, String)>,
     ansi: AnsiStripper,
 }
 
@@ -249,6 +277,7 @@ impl ResumeScanner {
     /// between the words do not break matching.
     pub fn feed(&mut self, text: &str) -> Option<(String, String)> {
         let stripped = self.ansi.feed(text);
+        let tail_len = stripped.len();
         self.buf.push_str(&stripped);
 
         // Trim oldest bytes to keep the buffer bounded.
@@ -265,14 +294,26 @@ impl ResumeScanner {
             self.buf = self.buf[safe_cut..].to_string();
         }
 
-        let matched = extract_resume_id(&self.buf);
+        // Only the newly appended tail can produce a *new* match. A prefix or
+        // a previously truncated id may straddle the append boundary, so
+        // include the maximum straddle span (`MAX_PREFIX_LEN + MAX_ID_LEN`)
+        // of older text. Anything matched entirely before that window was
+        // already reported (or deduplicated) by an earlier feed.
+        let mut scan_from = self
+            .buf
+            .len()
+            .saturating_sub(tail_len + MAX_PREFIX_LEN + MAX_ID_LEN);
+        while scan_from < self.buf.len() && !self.buf.is_char_boundary(scan_from) {
+            scan_from += 1;
+        }
+        let matched = extract_resume_id(&self.buf[scan_from..]);
         match matched {
             Some((prefix, id)) => {
                 // Only surface ids we haven't already reported this scanner.
                 // This is intentionally a set rather than a last-value check:
                 // terminal redraw/replay can alternate between several old
                 // resume lines.
-                if self.seen_ids.insert(id.clone()) {
+                if self.seen_ids.insert((prefix.clone(), id.clone())) {
                     Some((prefix, id))
                 } else {
                     None
@@ -622,5 +663,47 @@ mod tests {
         let (prefix, id) = captured.expect("scanner failed to capture the resume id");
         assert_eq!(prefix, "claude --resume");
         assert_eq!(id, ID);
+    }
+
+    #[test]
+    fn lone_escape_does_not_eat_following_character() {
+        // A stray ESC followed by plain text must not swallow the next byte:
+        // "\x1bc" strips the ESC but keeps the 'c'.
+        assert_eq!(strip_ansi("x\x1bclaude --resume y"), "xclaude --resume y");
+        // Split across feed boundaries too.
+        let mut stripper = AnsiStripper::new();
+        assert_eq!(stripper.feed("ab\x1b"), "ab");
+        assert_eq!(stripper.feed("c"), "c");
+    }
+
+    #[test]
+    fn strips_trailing_period_and_unicode_from_id() {
+        // A sentence-ending period must not be part of the id.
+        assert_eq!(
+            extract_resume_id("run claude --resume abc123.\nnext"),
+            Some(("claude --resume".to_string(), "abc123".to_string()))
+        );
+        // Non-ASCII text right after the id must not be absorbed.
+        assert_eq!(
+            extract_resume_id("claude --resume abc123日本語\n"),
+            Some(("claude --resume".to_string(), "abc123".to_string()))
+        );
+    }
+
+    #[test]
+    fn stateful_dedup_key_includes_prefix() {
+        let mut s = ResumeScanner::new();
+        let id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        assert_eq!(
+            s.feed(&format!("claude --resume {id}\n")),
+            Some(("claude --resume".to_string(), id.to_string()))
+        );
+        // The same id under a different CLI prefix is a different match.
+        assert_eq!(
+            s.feed(&format!("codex --resume {id}\n")),
+            Some(("codex --resume".to_string(), id.to_string()))
+        );
+        // But the same (prefix, id) pair still dedupes.
+        assert_eq!(s.feed(&format!("claude --resume {id}\n")), None);
     }
 }

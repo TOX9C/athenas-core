@@ -185,6 +185,83 @@ impl ToolExecutor {
         })
     }
 
+    /// Deliver a message to a connected agent over the agent-comms channel.
+    pub(super) fn send_message_to_agent(
+        &self,
+        args: &ToolInput,
+    ) -> Result<ToolCallResult, ToolExecutorError> {
+        let target = args
+            .target_agent_id
+            .as_deref()
+            .or(args.agent_id.as_deref())
+            .ok_or_else(|| ToolExecutorError::MissingParam("target_agent_id".to_string()))?;
+        let message = args
+            .message
+            .as_deref()
+            .ok_or_else(|| ToolExecutorError::MissingParam("message".to_string()))?;
+        let message_type = args.message_type.as_deref().unwrap_or("notification");
+        if !matches!(
+            message_type,
+            "instruction" | "query" | "result" | "notification"
+        ) {
+            return Ok(ToolCallResult {
+                text: format!(
+                    "Invalid message_type \"{message_type}\". Expected one of: instruction, query, result, notification."
+                ),
+                is_error: Some(true),
+            });
+        }
+
+        let params = serde_json::json!({ "message": message, "message_type": message_type });
+        self.agent_comms
+            .send_to_agent(target, "athena/message", &params)?;
+
+        Ok(ToolCallResult {
+            text: format!("Message delivered to agent {target}."),
+            is_error: None,
+        })
+    }
+
+    /// List connected agent-comms sessions, optionally filtered by agent id.
+    pub(super) fn read_agent_messages(
+        &self,
+        args: &ToolInput,
+    ) -> Result<ToolCallResult, ToolExecutorError> {
+        let sessions = self.agent_comms.get_agent_sessions();
+        let sessions: Vec<_> = match args.agent_id.as_deref() {
+            Some(agent_id) => sessions
+                .into_iter()
+                .filter(|s| s.agent_id == agent_id || s.id == agent_id)
+                .collect(),
+            None => sessions,
+        };
+
+        if sessions.is_empty() {
+            return Ok(ToolCallResult {
+                text: "No connected agent sessions.".to_string(),
+                is_error: None,
+            });
+        }
+
+        let mut parts = Vec::with_capacity(sessions.len());
+        for s in &sessions {
+            parts.push(format!(
+                "  {} [{}] — plugin: {}, last activity: {}",
+                s.agent_id,
+                s.status,
+                s.plugin_id,
+                chrono::DateTime::from_timestamp_millis(s.last_activity_at as i64)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default()
+            ));
+        }
+
+        Ok(ToolCallResult {
+            text: format!("Connected agent sessions:\n{}", parts.join("\n")),
+            is_error: None,
+        })
+    }
+
     pub(super) fn check_agent_status(
         &self,
         args: &ToolInput,

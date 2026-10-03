@@ -162,13 +162,10 @@ window.addEventListener('unhandledrejection', function(e) {
   if (reason && reason.stack) console.error('[UNHANDLED REJECTION] Stack:', reason.stack);
   showOverlayError('Promise error: ' + (reason && reason.message || String(reason)));
 });
-// Monitor the module script for load errors
-var _entryScript = document.querySelector('script[src^=\"__FRONTEND_ENTRY__\"]');
-if (_entryScript) {
-  _entryScript.onerror = function(e) {
-    showOverlayError('Failed to load entry script: ' + e);
-  };
-}
+// (The former per-script onerror hook was dead: at <head>-parse time the
+// entry script element does not exist yet, and build substitution rewrites
+// its src, so the selector never matched. The global 'error' listener above
+// already surfaces failed loads.)
 
 // Dismiss loading overlay once Dioxus mounts
 function dismissOverlay() {
@@ -354,22 +351,27 @@ document.createElement = function(tag) {
   return el;
 };
 
-// Browse button: intercept clicks on "Browse" buttons and open native folder dialog.
+// Browse button: intercept clicks on buttons marked `data-athena-browse` and
+// open the native folder dialog, writing the result into the sibling input
+// marked `data-athena-browse-target`. Explicit markers (not button text) keep
+// the hijack scoped — any other "Browse" button in the app is unaffected.
 // The WASM invoke wrapper fails in Dioxus spawn(async) context due to __TAURI__.core
 // cast issues in WKWebView, so we handle it entirely in JS.
 document.addEventListener('click', function(event) {
   var target = event.target;
   if (target && target.nodeType === 3) target = target.parentElement;
-  var btn = target && target.closest ? target.closest('button') : null;
+  var btn = target && target.closest ? target.closest('button[data-athena-browse]') : null;
   if (!btn) return;
-  if ((btn.textContent || '').trim() !== 'Browse') return;
 
   event.stopPropagation();
   event.preventDefault();
 
-  var input = btn.parentElement ? btn.parentElement.querySelector('input') : null;
+  var key = btn.getAttribute('data-athena-browse');
+  var input = btn.parentElement
+    ? btn.parentElement.querySelector('input[data-athena-browse-target="' + key + '"]')
+    : null;
   if (!input) {
-    console.error('[BROWSE-JS] No input found next to Browse button');
+    console.error('[BROWSE-JS] No input[data-athena-browse-target="' + key + '"] found next to Browse button');
     return;
   }
 
@@ -415,13 +417,15 @@ document.addEventListener('click', function(event) {
 <div id="wasm-watchdog-error"></div>
 <button id="wasm-watchdog-reload" type="button" onclick="try { sessionStorage.removeItem('athena-wasm-watchdog-reloaded'); sessionStorage.removeItem('athena-wasm-watchdog-stabilizing'); } catch (e) {} window.location.reload();">Reload interface</button>
 <div id="console-log"></div>
-<script src="./vendor/xterm/xterm.js"></script>
-<script src="./vendor/xterm/addon-fit.js"></script>
-<script src="./vendor/xterm/addon-web-links.js"></script>
-<script src="./vendor/xterm/addon-unicode11.js"></script>
-<script src="./vendor/xterm/addon-search.js"></script>
-<script src="./vendor/xterm/addon-serialize.js"></script>
-<script src="./vendor/xterm/addon-webgl.js"></script>
+<script defer src="./vendor/xterm/xterm.js"></script>
+<script defer src="./vendor/xterm/addon-fit.js"></script>
+<script defer src="./vendor/xterm/addon-web-links.js"></script>
+<script defer src="./vendor/xterm/addon-unicode11.js"></script>
+<script defer src="./vendor/xterm/addon-search.js"></script>
+<script defer src="./vendor/xterm/addon-serialize.js"></script>
+<script defer src="./vendor/xterm/addon-canvas.js"></script>
+<script defer src="./vendor/xterm/addon-webgl.js"></script>
+<script defer src="./vendor/xterm/addon-kitty-graphics.js"></script>
 <script type="module" async src="__FRONTEND_ENTRY__"></script>
 </body>
 </html>

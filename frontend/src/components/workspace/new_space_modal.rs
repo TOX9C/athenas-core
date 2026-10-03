@@ -12,9 +12,8 @@ use dioxus::prelude::*;
 #[path = "new_space_helpers.rs"]
 mod new_space_helpers;
 use new_space_helpers::{
-    agent_role_str, agent_type_str, apply_slot_value, generate_id, init_agent_rows, parse_agent_role,
-    parse_agent_type, role_caps_load, role_caps_persist, role_color, slot_value, AgentRowState,
-    AgentSlot,
+    agent_role_str, apply_slot_value, generate_id, init_agent_rows, parse_agent_role, role_color,
+    slot_value, AgentRowState, AgentSlot,
 };
 
 const TAB_COLORS: &[&str] = &[
@@ -68,8 +67,6 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 custom_id: None,
                 custom_cmd: None,
                 label: None,
-                model: None,
-                capabilities: None,
             },
             AgentSlot {
                 role: AgentRole::Builder,
@@ -77,8 +74,6 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 custom_id: None,
                 custom_cmd: None,
                 label: None,
-                model: None,
-                capabilities: None,
             },
             AgentSlot {
                 role: AgentRole::Builder,
@@ -86,56 +81,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                 custom_id: None,
                 custom_cmd: None,
                 label: None,
-                model: None,
-                capabilities: None,
             },
         ]
     });
-
-    // Hydrate per-role capability profiles once (persisted by the in-row
-    // toggles under `swarm_role_caps`).
-    let mut role_caps_loaded = use_signal(|| false);
-    use_effect(move || {
-        if role_caps_loaded() { return; }
-        role_caps_loaded.set(true);
-        wasm_bindgen_futures::spawn_local(async move {
-            let profiles = role_caps_load().await;
-            if profiles.is_empty() { return; }
-            let mut s = slots.write();
-            for slot in s.iter_mut() {
-                if let Some(caps) = profiles.get(agent_role_str(&slot.role)) {
-                    slot.capabilities = Some(caps.clone());
-                }
-            }
-        });
-    });
-
-    // Plan gate: default ON for swarm missions — before any execution, the
-    // orchestrator drafts a plan the user can edit and must approve.
-    let mut plan_gate = use_signal(|| true);
-
-    // Mission presets (built-ins + user presets from kv), and the active one.
-    let mut presets = use_signal(Vec::<crate::utils::swarm_presets::SwarmPreset>::new);
-    let mut presets_loaded = use_signal(|| false);
-    let mut preset_name_input = use_signal(String::new);
-    use_effect(move || {
-        if presets_loaded() { return; }
-        presets_loaded.set(true);
-        wasm_bindgen_futures::spawn_local(async move {
-            let raw = crate::tauri_bridge::store_get(crate::utils::swarm_presets::SWARM_PRESETS_KEY)
-                .await
-                .unwrap_or_default();
-            let custom: Vec<crate::utils::swarm_presets::SwarmPreset> =
-                if raw.trim().is_empty() { Vec::new() } else {
-                    serde_json::from_str(&raw).unwrap_or_default()
-                };
-            presets.set(crate::utils::swarm_presets::merge_with_builtin(custom));
-        });
-    });
-    let mut plan_phase = use_signal(|| PlanPhase::Idle);
-    let mut plan_draft: Signal<Option<PlanDraft>> = use_signal(|| None);
-    let mut plan_error = use_signal(String::new);
-    let mut plan_skipped = use_signal(|| false);
 
     // E2E helper: allow skipping validation by setting window.__athenaE2E = true
     let is_e2e: bool = web_sys::window()
@@ -236,7 +184,6 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     id: generate_id(),
                                                     agent_type: row.agent_type.clone(),
                                                     cwd: None,
-                                                    capabilities: None,
                                                     custom_cmd: row.custom_cmd.clone(),
                                                     custom_agent_id: row.custom_id.clone(),
                                                     // Default to None so the pane pill's
@@ -307,65 +254,14 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     if step() == 2 && mode() == "swarm" {
                         {
         let swarm_disabled = !can_launch_swarm;
-        // Shared by the Launch button (gated path) and the plan review's
-        // Approve action (direct path with the plan text baked in).
-        let run_launch = move |approved_plan_text: Option<String>| {
-            if approved_plan_text.is_none() && plan_gate() && plan_phase() == PlanPhase::Idle && !plan_skipped() {
-                let dir = space_dir.read().trim().to_string();
-                let goal = space_goal.read().trim().to_string();
-                if dir.is_empty() || goal.is_empty() { return; }
-                plan_phase.set(PlanPhase::Generating);
-                plan_error.set(String::new());
-                spawn(async move {
-                    match generate_plan_draft(&goal, &dir).await {
-                        Ok(draft) => {
-                            plan_draft.set(Some(draft));
-                            plan_phase.set(PlanPhase::Ready);
-                        }
-                        Err(e) => {
-                            plan_error.set(e);
-                            plan_phase.set(PlanPhase::Idle);
-                        }
-                    }
-                });
-                return;
-            }
-            let dir = space_dir.read().trim().to_string();
-            let mut goal = space_goal.read().trim().to_string();
-            if dir.is_empty() || goal.is_empty() { return; }
-            if let Some(ref text) = approved_plan_text {
-                goal = format!("{goal}
-
-Plan (approved):
-{text}");
-                plan_phase.set(PlanPhase::Idle);
-                plan_draft.set(None);
-                plan_skipped.set(false);
-            } else if plan_gate()
-                && plan_phase() == PlanPhase::Ready
-                && plan_draft.read().as_ref().is_some_and(|d| d.approved)
-            {
-                let draft = plan_draft.read().clone().unwrap();
-                goal = format!(
-                    "{goal}
-
-Plan (approved):
-{}
-{}",
-                    draft.goal,
-                    draft
-                        .steps
-                        .iter()
-                        .enumerate()
-                        .map(|(i, s)| format!("{}. {}", i + 1, s))
-                        .collect::<Vec<_>>()
-                        .join("
-"),
-                );
-                plan_phase.set(PlanPhase::Idle);
-                plan_draft.set(None);
-                plan_skipped.set(false);
-            }
+                            rsx! {
+                                button {
+                                    class: "btn-primary",
+                                    disabled: swarm_disabled,
+                                    onclick: move |_| {
+                                        let dir = space_dir.read().trim().to_string();
+                                        let goal = space_goal.read().trim().to_string();
+                                        if dir.is_empty() || goal.is_empty() { return; }
 
                                         let now_ts = js_sys::Date::now() as i64;
                                         let space_count = workspace_state.read().spaces.len();
@@ -384,13 +280,12 @@ Plan (approved):
                                                 id: pane_id.clone(),
                                                 agent_type: slot.agent_type.clone(),
                                                 cwd: None,
-                                                capabilities: slot.capabilities.clone(),
                                                 custom_cmd: slot.custom_cmd.clone(),
                                                 custom_agent_id: slot.custom_id.clone(),
                                                 label: slot.label.clone(),
                                                 bypass_mode: None,
                                                 project_name: None,
-                                                model_name: slot.model.clone(),
+                                                model_name: None,
                                                 resume_id: None,
                                                 resume_cmd: None,
                                                 resume_dismissed: None,
@@ -406,7 +301,6 @@ Plan (approved):
                                                 last_action_at: now_ts,
                                                 worktree_path: None,
                                                 worktree_name: None,
-                                                capabilities: slot.capabilities.clone(),
                                             });
                                         }
 
@@ -513,9 +407,6 @@ Plan (approved):
                                                     return;
                                                 }
                                             }
-                                            // Copy opted-in project-convention files into each
-                                            // worktree so agent CLIs pick them up natively.
-                                            let _ = crate::tauri_bridge::project_context_apply(&swarm_dir).await;
 
                                             let space = Space {
                                                 id: generate_id(),
@@ -568,26 +459,8 @@ Plan (approved):
                                                 }
                                             }
                                         });
-
-        };
-
-        let mut run_launch = run_launch;
-                            rsx! {
-                                button {
-                                    class: "btn-primary",
-                                    disabled: swarm_disabled || plan_phase() == PlanPhase::Generating,
-                                    onclick: move |_| { run_launch(None); },
-                                    if plan_phase() == PlanPhase::Ready
-                                        && plan_draft.read().as_ref().is_some_and(|d| d.approved)
-                                    {
-                                        "Run approved plan"
-                                    } else if plan_gate() && plan_phase() == PlanPhase::Idle && !plan_skipped() {
-                                        "Draft plan & review"
-                                    } else if plan_phase() == PlanPhase::Generating {
-                                        "Drafting plan…"
-                                    } else {
-                                        "Launch Swarm"
-                                    }
+                                    },
+                                    "Launch Swarm"
                                 }
                             }
                         }
@@ -930,117 +803,6 @@ Plan (approved):
                         div {
                             style: "display: flex; flex-direction: column; gap: 10px;",
 
-                            // Mission presets (O2) — apply a team template or
-                            // save the current one.
-                            {
-                                let preset_list = presets.read().clone();
-                                rsx! {
-                                    div {
-                                        style: "display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
-                                        span { style: "font-family: var(--font-display); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; color: var(--textDim);", "PRESET" }
-                                        select {
-                                            style: "flex: 1; min-width: 0; font-size: var(--text-xs); padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bgTertiary); color: var(--text);",
-                                            onchange: move |e| {
-                                                let id = e.value();
-                                                if id.is_empty() { return; }
-                                                let Some(preset) = presets.read().iter().find(|p| p.id == id).cloned() else { return };
-                                                slots.set(preset.slots.iter().map(|slot| {
-                                                    AgentSlot {
-                                                        role: parse_agent_role(&slot.role),
-                                                        agent_type: parse_agent_type(&slot.agent_type),
-                                                        custom_id: None,
-                                                        custom_cmd: None,
-                                                        label: None,
-                                                        model: slot.model.clone(),
-                                                        capabilities: slot.capabilities.clone(),
-                                                    }
-                                                }).collect());
-                                            },
-                                            option { value: "", "Apply a preset…" }
-                                            for p in preset_list.iter() {
-                                                option { key: "{p.id}", value: "{p.id}", "{p.name}" }
-                                            }
-                                        }
-                                        input {
-                                            style: "width: 8rem; font-size: var(--text-xs); padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bgTertiary); color: var(--text);",
-                                            placeholder: "Name…",
-                                            value: "{preset_name_input}",
-                                            oninput: move |e| preset_name_input.set(e.value()),
-                                        }
-                                        button {
-                                            class: "btn-ghost",
-                                            style: "font-size: 10px; padding: 3px 8px;",
-                                            disabled: preset_name_input.read().trim().is_empty(),
-                                            onclick: move |_| {
-                                                let name = preset_name_input.read().trim().to_string();
-                                                if name.is_empty() { return; }
-                                                preset_name_input.set(String::new());
-                                                let slots_snapshot = slots.read().clone();
-                                                spawn(async move {
-                                                    let preset = crate::utils::swarm_presets::SwarmPreset {
-                                                        id: format!("user-{}", crate::utils::time::now_ms()),
-                                                        name,
-                                                        slots: slots_snapshot
-                                                            .iter()
-                                                            .map(|slot| crate::utils::swarm_presets::PresetSlot {
-                                                                role: agent_role_str(&slot.role).to_string(),
-                                                                agent_type: agent_type_str(&slot.agent_type).to_string(),
-                                                                model: slot.model.clone(),
-                                                                capabilities: slot.capabilities.clone(),
-                                                            })
-                                                            .collect(),
-                                                    };
-                                                    let raw = crate::tauri_bridge::store_get(crate::utils::swarm_presets::SWARM_PRESETS_KEY)
-                                                        .await
-                                                        .unwrap_or_default();
-                                                    let mut custom: Vec<crate::utils::swarm_presets::SwarmPreset> =
-                                                        if raw.trim().is_empty() { Vec::new() } else {
-                                                            serde_json::from_str(&raw).unwrap_or_default()
-                                                        };
-                                                    custom.push(preset.clone());
-                                                    custom.truncate(crate::utils::swarm_presets::MAX_USER_PRESETS);
-                                                    let _ = crate::tauri_bridge::store_set(
-                                                        crate::utils::swarm_presets::SWARM_PRESETS_KEY,
-                                                        &serde_json::to_string(&custom).unwrap_or_default(),
-                                                    )
-                                                    .await;
-                                                    presets.set(crate::utils::swarm_presets::merge_with_builtin(custom));
-                                                });
-                                            },
-                                            "Save preset"
-                                        }
-                                        button {
-                                            class: "btn-ghost",
-                                            style: "font-size: 10px; padding: 3px 8px; color: var(--error);",
-                                            title: "Delete the selected custom preset",
-                                            onclick: move |_| {
-                                                // Match by name — the field holds the preset name.
-                                                let name = preset_name_input.read().trim().to_string();
-                                                if name.is_empty() { return; }
-                                                preset_name_input.set(String::new());
-                                                spawn(async move {
-                                                    let raw = crate::tauri_bridge::store_get(crate::utils::swarm_presets::SWARM_PRESETS_KEY)
-                                                        .await
-                                                        .unwrap_or_default();
-                                                    let mut custom: Vec<crate::utils::swarm_presets::SwarmPreset> =
-                                                        if raw.trim().is_empty() { Vec::new() } else {
-                                                            serde_json::from_str(&raw).unwrap_or_default()
-                                                        };
-                                                    custom.retain(|p| p.name != name && p.id != name);
-                                                    let _ = crate::tauri_bridge::store_set(
-                                                        crate::utils::swarm_presets::SWARM_PRESETS_KEY,
-                                                        &serde_json::to_string(&custom).unwrap_or_default(),
-                                                    )
-                                                    .await;
-                                                    presets.set(crate::utils::swarm_presets::merge_with_builtin(custom));
-                                                });
-                                            },
-                                            "Delete"
-                                        }
-                                    }
-                                }
-                            }
-
                             div {
                                 style: "display: flex; align-items: center; justify-content: space-between;",
                                 label {
@@ -1051,7 +813,7 @@ Plan (approved):
                                     class: "btn-secondary btn-sm {add_disabled_class}",
                                     onclick: move |_| {
                                         if slots.read().len() < 10 {
-                                            slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude, custom_id: None, custom_cmd: None, label: None, model: None, capabilities: None });
+                                            slots.write().push(AgentSlot { role: AgentRole::Builder, agent_type: AgentType::Claude, custom_id: None, custom_cmd: None, label: None });
                                         }
                                     },
                                     "+ Add"
@@ -1111,106 +873,6 @@ Plan (approved):
                                                 }
                                             }
 
-                                            // Capability toggles (persisted per role profile).
-                                            {
-                                                let caps = slots.read().get(idx).map(|s| s.capabilities.clone()).flatten();
-                                                let shell = caps.as_ref().map(|c| c.shell_str()).unwrap_or("full");
-                                let net = caps.as_ref().map(|c| c.network).unwrap_or(true);
-                                let mcp = caps.as_ref().map(|c| c.mcp_tools).unwrap_or(true);
-                                                rsx! {
-                                                    div { style: "display: flex; gap: 4px; align-items: center; flex-shrink: 0;",
-                                                        button {
-                                                            class: if shell == "full" { "icon-btn" } else { "icon-btn accent" },
-                                                            title: "Shell writes: full / read-only cwd / no exec",
-                                                            onclick: move |_| {
-                                                                let mut slots = slots;
-                                                                {
-                                                                    let updated = {
-                                                                        let mut guard = slots.write();
-                                                                        guard.get_mut(idx).map(|s| {
-                                                                            let caps = s.capabilities.get_or_insert_with(Default::default);
-                                                                            caps.shell = match caps.shell_str() {
-                                                                                "full" => crate::types::workspace::ShellPolicy::ReadOnly,
-                                                                                "readonly" => crate::types::workspace::ShellPolicy::None,
-                                                                                _ => crate::types::workspace::ShellPolicy::Full,
-                                                                            };
-                                                                            (s.role.clone(), caps.clone())
-                                                                        })
-                                                                    };
-                                                                    if let Some((role, caps)) = updated {
-                                                                        role_caps_persist(role, caps);
-                                                                    }
-                                                                }
-                                                            },
-                                                            match shell {
-                                                                "full" => "sh✓",
-                                                                "readonly" => "sh-",
-                                                                _ => "sh⌀",
-                                                            }
-                                                        }
-                                                        button {
-                                                            class: if net { "icon-btn" } else { "icon-btn active" },
-                                                            title: "Network access (proxy env + sandbox deny when off)",
-                                                            onclick: move |_| {
-                                                                let mut slots = slots;
-                                                                {
-                                                                    let updated = {
-                                                                        let mut guard = slots.write();
-                                                                        guard.get_mut(idx).map(|s| {
-                                                                            let caps = s.capabilities.get_or_insert_with(Default::default);
-                                                                            caps.network = !caps.network;
-                                                                            (s.role.clone(), caps.clone())
-                                                                        })
-                                                                    };
-                                                                    if let Some((role, caps)) = updated {
-                                                                        role_caps_persist(role, caps);
-                                                                    }
-                                                                }
-                                                            },
-                                                            match net {
-                                                                true => "net✓",
-                                                                false => "net⌀",
-                                                            }
-                                                        }
-                                                        button {
-                                                            class: if mcp { "icon-btn" } else { "icon-btn active" },
-                                                            title: "Allow MCP tools declaration to this agent's CLI",
-                                                            onclick: move |_| {
-                                                                let mut slots = slots;
-                                                                {
-                                                                    let updated = {
-                                                                        let mut guard = slots.write();
-                                                                        guard.get_mut(idx).map(|s| {
-                                                                            let caps = s.capabilities.get_or_insert_with(Default::default);
-                                                                            caps.mcp_tools = !caps.mcp_tools;
-                                                                            (s.role.clone(), caps.clone())
-                                                                        })
-                                                                    };
-                                                                    if let Some((role, caps)) = updated {
-                                                                        role_caps_persist(role, caps);
-                                                                    }
-                                                                }
-                                                            },
-                                                            if mcp { "mcp✓" } else { "mcp⌀" }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // Per-slot CLI model (blank = CLI default).
-                                            input {
-                                                style: "width: 72px; font-size: 10px; padding: 2px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bgTertiary); color: var(--text); font-family: var(--font-mono);",
-                                                placeholder: "model",
-                                                title: "CLI --model flag passed at spawn",
-                                                value: slot.model.clone().unwrap_or_default(),
-                                                oninput: move |e| {
-                                                    if let Some(s) = slots.write().get_mut(idx) {
-                                                        let v = e.value();
-                                                        s.model = if v.trim().is_empty() { None } else { Some(v.trim().to_string()) };
-                                                    }
-                                                },
-                                            }
-
                                             div { style: "flex: 1;" }
 
                                             button {
@@ -1232,114 +894,6 @@ Plan (approved):
                                 p { style: "font-size: var(--text-xs); color: var(--error); margin: 2px 0 0 0;", "{error}" }
                             }
 
-                            // Plan gate: review/approve a drafted plan before execution.
-                            label { style: "display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); color: var(--textMuted); cursor: pointer;",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: plan_gate(),
-                                    onchange: move |e| {
-                                        let on = e.checked();
-                                        plan_gate.set(on);
-                                        if !on {
-                                            plan_skipped.set(true);
-                                            plan_draft.set(None);
-                                            plan_phase.set(PlanPhase::Idle);
-                                        }
-                                    },
-                                }
-                                "Review plan before launching"
-                            }
-                            if plan_phase() == PlanPhase::Generating {
-                                div { style: "display: flex; align-items: center; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); margin-top: 8px; background: var(--bgSecondary);",
-                                    span { class: "animate-pulse", "Drafting plan for: " }
-                                    span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--textMuted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", "{space_goal.read().clone()}" }
-                                    button {
-                                        class: "btn-ghost",
-                                        style: "font-size: 10px; padding: 3px 10px;",
-                                        onclick: move |_| {
-                                            let _ = spawn(async move {
-                                                let _ = crate::tauri_bridge::athena_cancel_stream("plan-gate").await;
-                                            });
-                                            plan_phase.set(PlanPhase::Idle);
-                                        },
-                                        "Cancel"
-                                    }
-                                }
-                            }
-                            if let Some(draft) = plan_draft.read().clone() {
-                                div { style: "margin-top: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary);",
-                                    div { style: "font-size: var(--text-2xs); color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;", "Plan (edit before approving)" }
-                                    div { style: "font-size: 11px; color: var(--textMuted); margin-bottom: 8px;", "Goal: {draft.goal}" }
-                                    if !draft.reasoning.is_empty() {
-                                        p { style: "font-size: 11px; color: var(--textDim); margin: 0 0 8px 0;", "{draft.reasoning}" }
-                                    }
-                                    for (i, step) in draft.steps.iter().enumerate() {
-                                        {
-                                            let step_for_input = step.clone();
-                                            rsx! {
-                                                div { key: "{i}", style: "display: flex; gap: 6px; align-items: flex-start; margin-bottom: 4px;",
-                                                    span { style: "font-family: var(--font-mono); font-size: 10px; color: var(--textDim); min-width: 2ch; padding-top: 5px;", "{i + 1}." }
-                                                    input {
-                                                        style: "flex: 1; min-width: 0; font-size: 11px; padding: 4px 6px; background: var(--bgTertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text);",
-                                                        value: "{step_for_input}",
-                                                        oninput: move |e| {
-                                                            let v = e.value();
-                                                            plan_draft.write().as_mut().map(|d| {
-                                                                if let Some(s) = d.steps.get_mut(i) {
-                                                                    *s = v;
-                                                                }
-                                                            });
-                                                        },
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    {
-                                        let _approved_plan_text = format!(
-                                            "{}
-{}",
-                                            draft.goal,
-                                            draft.steps.iter().enumerate().map(|(i, s)| format!("{}. {}", i + 1, s)).collect::<Vec<_>>().join("
-"),
-                                        );
-                                        rsx! {
-                                            div { style: "display: flex; gap: 8px; margin-top: 6px;",
-                                                button {
-                                                    class: "btn-primary",
-                                                    onclick: move |_| {
-                                                        let draft_opt = plan_draft.read().clone();
-                                                        if let Some(d) = draft_opt.clone() {
-                                                            spawn(async move {
-                                                                let _ = persist_plan(&d).await;
-                                                            });
-                                                        }
-                                                        // Mark the draft approved: the Launch button
-                                                        // now runs the mission with this plan.
-                                                        if let Some(d) = plan_draft.write().as_mut() {
-                                                            d.approved = true;
-                                                        }
-                                                    },
-                                                    "Approve & run"
-                                                }
-                                                button {
-                                                    class: "btn-ghost",
-                                                    onclick: move |_| {
-                                                        plan_phase.set(PlanPhase::Idle);
-                                                        plan_draft.set(None);
-                                                        plan_skipped.set(false);
-                                                    },
-                                                    "Back"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if !plan_error.read().is_empty() {
-                                p { style: "font-size: var(--text-xs); color: var(--error); margin: 6px 0 0 0;", "Plan error: {plan_error.read().clone()}" }
-                            }
-
                             // Validation messages
                             if coordinator_count != 1 {
                                 p { style: "font-size: var(--text-xs); color: var(--error); margin: 2px 0 0 0;", "Exactly 1 Coordinator required" }
@@ -1353,103 +907,4 @@ Plan (approved):
             }
         }
     }
-}
-
-
-// ---------------------------------------------------------------------------
-// Plan gate (O1)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Copy, PartialEq)]
-enum PlanPhase {
-    Idle,
-    Generating,
-    Ready,
-}
-
-/// Draft plan shown for review before swarm launch.
-#[derive(Clone, PartialEq)]
-pub(super) struct PlanDraft {
-    goal: String,
-    reasoning: String,
-    steps: Vec<String>,
-    /// Set by the Approve button — the very next Launch click passes the
-    /// gate and embeds the plan text into the goal.
-    approved: bool,
-}
-
-/// Ask Athena (in a scratch session so the chat is not polluted) to draft a
-/// plan for `goal`, then read it out of the plan manager.
-async fn generate_plan_draft(goal: &str, workspace_dir: &str) -> Result<PlanDraft, String> {
-    let plan_session = format!("plan-gate-{}", crate::utils::time::now_ms());
-    let prompt = format!(
-        "You are in PLAN-GATE mode inside a swarm mission. Write a short, concrete execution plan for the goal below.\n\
-         \n\
-         Rules:\n\
-         - Use the create_execution_plan tool ONCE with goal, reasoning, and 3-7 self-contained steps (each a clear instruction an agent will execute as-is).\n\
-         - Mention files/areas to touch in each step's text when possible.\n\
-         - After the tool call, reply with a one-line status only.\n\
-         - Do NOT run any other tool. Do NOT dispatch agents or make changes.\n\
-         \n\
-         Goal: {goal}\n\nWorkspace: {workspace_dir}"
-    );
-    let request_id = format!("plangate-{}", crate::utils::time::now_ms());
-    crate::tauri_bridge::athena_chat_stream(&prompt, &plan_session, &request_id)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let raw = crate::tauri_bridge::plan_get()
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let plan: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("plan parse: {e}"))?;
-    let steps = plan
-        .get("steps")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|s| s.get("description").and_then(|v| v.as_str()).map(String::from))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if steps.is_empty() {
-        return Err("The model did not produce a plan — try again or skip the gate.".into());
-    }
-    Ok(PlanDraft {
-        goal: plan
-            .get("goal")
-            .and_then(|v| v.as_str())
-            .unwrap_or(goal)
-            .to_string(),
-        reasoning: plan
-            .get("reasoning")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        steps,
-        approved: false,
-    })
-}
-
-/// Persist the approved plan (PlanManager active plan) so kanban/reporting
-/// paths can link back to it.
-async fn persist_plan(draft: &PlanDraft) -> Result<String, String> {
-    let steps: Vec<serde_json::Value> = draft
-        .steps
-        .iter()
-        .enumerate()
-        .map(|(i, text)| serde_json::json!({"id": format!("step-{}", i + 1), "description": text}))
-        .collect();
-    crate::tauri_bridge::plan_create(
-        &draft.goal,
-        &draft.reasoning,
-        &serde_json::to_string(&steps).map_err(|e| e.to_string())?,
-    )
-    .await
-    .map_err(|e| format!("{e:?}"))
-    .map(|raw| {
-        serde_json::from_str::<serde_json::Value>(&raw)
-            .ok()
-            .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(String::from))
-            .unwrap_or_default()
-    })
 }

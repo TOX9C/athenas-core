@@ -12,7 +12,7 @@ use crate::stores::workspace::use_workspace_store;
 pub fn inbox_badge_count() -> usize {
     let store = use_agent_status_store();
     let mut out = 0usize;
-    for (_, s) in store.read().statuses.iter() {
+    for (_, s) in store.snapshot() {
         if matches!(s.status, crate::stores::agent_status::AgentRunStatus::WaitingForInput)
             && !s.dismissed
         {
@@ -24,7 +24,7 @@ pub fn inbox_badge_count() -> usize {
 
 #[component]
 pub fn InboxPanel() -> Element {
-    let mut agent_status = use_agent_status_store();
+    let agent_status = use_agent_status_store();
     let workspace = use_workspace_store();
 
     // Waiting panes, deduped by current workspace when possible.
@@ -35,8 +35,7 @@ pub fn InboxPanel() -> Element {
             ws.spaces.iter().find(|s| &s.id == id).map(|s| s.dir.clone())
         });
         agent_status
-            .read()
-            .statuses
+            .snapshot()
             .iter()
             .filter(|(_, s)| matches!(s.status, crate::stores::agent_status::AgentRunStatus::WaitingForInput) && !s.dismissed)
             .map(|(pane, s)| {
@@ -46,12 +45,9 @@ pub fn InboxPanel() -> Element {
             .collect()
     };
 
-    let mut dismiss_one = move |pane_id: String| {
-        agent_status.write().dismiss_waiting(&pane_id);
-    };
-
-    let mut dismiss_all = move |_| {
-        agent_status.write().dismiss_all_waiting();
+    let agent_status_dismiss_one = agent_status.clone();
+    let dismiss_all = move |_| {
+        agent_status.dismiss_all_waiting();
     };
 
     rsx! {
@@ -89,7 +85,11 @@ pub fn InboxPanel() -> Element {
                                 button {
                                     class: "btn-ghost",
                                     style: "font-size: 9px; padding: 2px 6px; color: var(--error);",
-                                    onclick: { let id2 = id.clone(); move |_| dismiss_one(id2.clone()) },
+                                    onclick: {
+                                        let id2 = id.clone();
+                                        let reg = agent_status_dismiss_one.clone();
+                                        move |_| reg.dismiss_waiting(&id2)
+                                    },
                                     "Dismiss"
                                 }
                             }

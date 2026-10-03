@@ -1,5 +1,3 @@
-pub mod badge;
-pub mod button;
 pub mod confirm_dialog;
 pub mod context_menu;
 pub mod error_boundary;

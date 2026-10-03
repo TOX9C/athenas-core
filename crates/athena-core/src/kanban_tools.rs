@@ -65,10 +65,44 @@ impl ToolExecutor {
             .title
             .as_deref()
             .ok_or_else(|| ToolExecutorError::MissingParam("title".to_string()))?;
-        let space_id = args
-            .space_id
-            .as_deref()
-            .ok_or_else(|| ToolExecutorError::MissingParam("space_id".to_string()))?;
+
+        // All kanban tool ops key on the ACTIVE workspace id (see
+        // kanban_list_tasks/update/delete). Using the caller-supplied
+        // `space_id` here would write to an invisible key when the
+        // requested space is not the active one — the task would be
+        // undeletable through the tool surface. So: space_id, when given,
+        // must MATCH the active workspace; the store key is always the
+        // active workspace id.
+        let workspace_id = match self.kanban_backend.get_active_workspace_id() {
+            Ok(id) => id,
+            Err(_) => {
+                // External (MCP) callers have no UI workspace context; an
+                // explicitly requested space is the only key available, and
+                // using it introduces no divergence when no workspace is
+                // active (list/update take no space argument and report the
+                // same "no active workspace" error).
+                match args.space_id.as_deref() {
+                    Some(requested) => requested.to_string(),
+                    None => {
+                        return Ok(ToolCallResult {
+                            text: "No active workspace found.".to_string(),
+                            is_error: None,
+                        })
+                    }
+                }
+            }
+        };
+        if let Some(requested) = args.space_id.as_deref() {
+            if requested != workspace_id {
+                return Ok(ToolCallResult {
+                    text: format!(
+                        "Workspace '{}' is not the active workspace ('{}'). Switch to it first, or omit space_id.",
+                        requested, workspace_id
+                    ),
+                    is_error: Some(true),
+                });
+            }
+        }
 
         let status = match args.status.as_deref() {
             Some(s) => KanbanBackendStatus::parse(s).unwrap_or(KanbanBackendStatus::Todo),
@@ -77,7 +111,7 @@ impl ToolExecutor {
 
         let task = KanbanBackendTask {
             id: format!("task-{}", Uuid::new_v4()),
-            space_id: space_id.to_string(),
+            space_id: workspace_id.clone(),
             title: title.to_string(),
             description: args.description.clone(),
             assigned_agent: None,
@@ -86,10 +120,9 @@ impl ToolExecutor {
             created_at: self.get_current_time_ms(),
             // Tool-created cards have no plan-step back-link.
             plan_step_id: None,
-            evidence: None,
         };
 
-        match self.kanban_backend.create_task(space_id, task) {
+        match self.kanban_backend.create_task(&workspace_id, task) {
             Ok(created) => Ok(ToolCallResult {
                 text: format!("Task created: {} (ID: {})", created.title, created.id),
                 is_error: None,
@@ -125,17 +158,12 @@ impl ToolExecutor {
             .as_ref()
             .and_then(|s| KanbanBackendStatus::parse(s).ok());
 
-        let evidence: Option<crate::kanban::TaskEvidence> = args
-            .evidence
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
         match self.kanban_backend.update_task(
             &workspace_id,
             task_id,
             args.title.clone(),
             args.description.clone(),
             status,
-            evidence,
         ) {
             Ok(updated) => Ok(ToolCallResult {
                 text: format!("Task updated: {} (ID: {})", updated.title, updated.id),

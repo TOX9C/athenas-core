@@ -21,9 +21,15 @@ pub use terminal_colors::{
 // ---------------------------------------------------------------------------
 
 /// A single terminal cell with text, color, and style info.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+///
+/// `text` is an `Rc<str>` so cloning a cell (fresh grid snapshot per render
+/// in the DOM fallback renderer) is a refcount bump instead of a heap copy.
+/// Serde derives are required by `terminal_events::TerminalUpdateDelta`,
+/// which embeds `Vec<Vec<TerminalCell>>` snapshot rows from the backend.
+/// `text: Rc<str>` relies on serde's `rc` feature (enabled in Cargo.toml).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TerminalCell {
-    pub text: String,
+    pub text: Rc<str>,
     pub fg: TerminalColor,
     pub bg: TerminalColor,
     pub bold: bool,
@@ -38,7 +44,7 @@ impl TerminalCell {
     /// Convert a backend CellDelta (parsed from JSON) into a TerminalCell.
     pub fn from_delta(delta: &CellDeltaEvent) -> Self {
         Self {
-            text: delta.c.clone(),
+            text: Rc::from(delta.c.as_str()),
             fg: backend_color_raw_to_terminal(&delta.fg),
             bg: backend_color_raw_to_terminal(&delta.bg),
             bold: (delta.flags & FLAGS_BOLD) != 0,
@@ -83,6 +89,12 @@ pub struct TerminalSession {
     pub cwd: String,
     /// Which of the top rows are dirty (needs redraw).
     pub dirty_rows: std::collections::HashSet<usize>,
+    /// Per-row version stamp, bumped on every write to that row. Renderers
+    /// clone only rows whose stamp moved (F4) — `dirty_rows` is never
+    /// cleared, so it alone cannot serve as an "unchanged" signal.
+    pub row_version: Vec<u64>,
+    /// Monotonic counter backing `row_version` stamps.
+    version_seq: u64,
     /// Incremented on every change; triggers use_memo/use_effect in components.
     pub generation: u64,
     /// Timestamp of last data received (for dirty streak debouncing).
@@ -130,6 +142,8 @@ impl TerminalSession {
             is_ready: false,
             cwd: String::new(),
             dirty_rows: std::collections::HashSet::new(),
+            row_version: vec![0; rows as usize],
+            version_seq: 0,
             generation: 0,
             last_update_ms: 0.0,
             exited: false,
@@ -164,15 +178,29 @@ impl TerminalSession {
         self.grid = new_grid;
         self.cols = new_cols;
         self.rows = new_rows;
+        self.row_version.resize(new_rows as usize, 0);
         self.mark_grid_dirty();
     }
 
     /// Mark all rows dirty.
     pub fn mark_grid_dirty(&mut self) {
         self.dirty_rows.clear();
+        self.version_seq = self.version_seq.wrapping_add(1);
         for y in 0..self.rows as usize {
             self.dirty_rows.insert(y);
+            if let Some(v) = self.row_version.get_mut(y) {
+                *v = self.version_seq;
+            }
         }
+    }
+
+    /// Mark a single row dirty with a fresh version stamp.
+    pub fn mark_row_dirty(&mut self, y: usize) {
+        self.version_seq = self.version_seq.wrapping_add(1);
+        if let Some(v) = self.row_version.get_mut(y) {
+            *v = self.version_seq;
+        }
+        self.dirty_rows.insert(y);
     }
 
     /// Clear dirty flags after a render cycle.
@@ -193,7 +221,7 @@ impl TerminalSession {
                 }
                 self.grid[grid_y][x] = cell;
             }
-            self.dirty_rows.insert(grid_y);
+            self.mark_row_dirty(grid_y);
         }
         if let Some((cx, cy)) = delta.cursor_pos {
             self.cursor_x = cx;
@@ -301,19 +329,30 @@ impl TerminalStore {
         registry.remove(id);
         self.known_pane_ids.remove(id);
         if self.active_session_id.as_deref() == Some(id) {
-            self.active_session_id = self.known_pane_ids.iter().next().cloned();
+            // Deterministic fallback: `HashSet` iteration order is arbitrary,
+            // so pick the lexicographically smallest id instead of `.next()`.
+            self.active_session_id = self.known_pane_ids.iter().min().cloned();
         }
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Resize a PTY session.
+    /// Resize a PTY session. `owner` identifies the current xterm mount so a
+    /// stale remounted instance cannot resize the replacement PTY (see
+    /// `tauri_bridge::pty_resize`); pass `None` only for non-mount resizes.
     /// Phase 4: per-pane grid resize lives on the inner signal only;
     /// the backend `pty_resize` IPC call is unchanged.
-    pub async fn resize(&mut self, registry: &TerminalRegistry, id: &str, cols: u16, rows: u16) {
+    pub async fn resize(
+        &mut self,
+        registry: &TerminalRegistry,
+        id: &str,
+        cols: u16,
+        rows: u16,
+        owner: Option<&str>,
+    ) {
         if let Some(mut inner) = registry.write_session(id) {
             inner.resize(cols, rows);
         }
-        if let Err(e) = tauri_bridge::pty_resize(id, cols, rows, None).await {
+        if let Err(e) = tauri_bridge::pty_resize(id, cols, rows, owner).await {
             web_sys::console::error_1(&format!("pty_resize failed: {:?}", e).into());
         }
     }
@@ -326,17 +365,7 @@ impl TerminalStore {
     /// re-renders only pane A's subscribers (the hot path, up to ~125/sec/pane).
     /// The legacy `self.sessions` map is no longer touched here. (Phase 4 will
     /// remove `self.sessions` entirely.)
-    pub fn on_data(&mut self, registry: &TerminalRegistry, id: &str, payload: &str) {
-        let event: TerminalDataEvent = match serde_json::from_str(payload) {
-            Ok(e) => e,
-            Err(err) => {
-                web_sys::console::error_1(
-                    &format!("terminal:data parse error for session {}: {}", id, err).into(),
-                );
-                return;
-            }
-        };
-
+    pub fn on_data(&mut self, registry: &TerminalRegistry, id: &str, event: &TerminalDataEvent) {
         let Some(mut inner) = registry.write_session(id) else {
             // Pane not registered (e.g. closed between the PTY event and this
             // write). Nothing to update — no fallback store read either, since
@@ -367,7 +396,7 @@ impl TerminalStore {
             let col = delta.col;
             if row < inner.grid.len() && col < inner.grid[row].len() {
                 inner.grid[row][col] = TerminalCell::from_delta(delta);
-                inner.dirty_rows.insert(row);
+                inner.mark_row_dirty(row);
             }
         }
 
@@ -416,19 +445,24 @@ impl TerminalStore {
         session_id: Option<String>,
         raw_prompt: Option<String>,
     ) {
-        // Non-subscribing snapshot to decide whether a write is needed at all.
-        let Some(current) = registry.peek_session(id) else {
+        // Non-subscribing peek to decide whether a write is needed at all.
+        let Some((fg_changed, title_changed, sid_changed, prompt_changed)) =
+            registry.peek_field(id, |current| {
+                (
+                    current.foreground_process != fg_process,
+                    current.task_title != task_title,
+                    session_id
+                        .as_ref()
+                        .is_some_and(|sid| current.session_id.as_deref() != Some(sid.as_str())),
+                    raw_prompt
+                        .as_ref()
+                        .is_some_and(|p| current.raw_prompt.as_deref() != Some(p.as_str())),
+                )
+            })
+        else {
             // Pane not registered (closed between poll and write): drop the info.
             return;
         };
-        let fg_changed = current.foreground_process != fg_process;
-        let title_changed = current.task_title != task_title;
-        let sid_changed = session_id
-            .as_ref()
-            .is_some_and(|sid| current.session_id.as_deref() != Some(sid.as_str()));
-        let prompt_changed = raw_prompt
-            .as_ref()
-            .is_some_and(|p| current.raw_prompt.as_deref() != Some(p.as_str()));
         if !(fg_changed || title_changed || sid_changed || prompt_changed) {
             return;
         }
@@ -559,11 +593,13 @@ impl TerminalRegistry {
         Some(signal.write_unchecked())
     }
 
-    /// Read the session without subscribing (one-shot snapshots).
-    pub fn peek_session(&self, id: &str) -> Option<TerminalSession> {
+    /// Read one or a few fields without cloning the whole session: the
+    /// closure runs under a `peek()` guard (no subscription) and only its
+    /// return value escapes. Returns `None` if the session is not registered.
+    pub fn peek_field<T>(&self, id: &str, f: impl FnOnce(&TerminalSession) -> T) -> Option<T> {
         let signal = self.sessions.borrow().get(id).cloned()?;
         let guard = signal.peek();
-        Some((*guard).clone())
+        Some(f(&guard))
     }
     /// Mark a pane for permanent close. The xterm component consumes this
     /// marker from its drop hook after native resources are disposed.
@@ -676,10 +712,8 @@ mod tests {
             r.ensure_session("pane-x", 80, 24);
             let sig = r.session_signal("pane-x").expect("present after ensure");
             // Non-subscribing peek returns the seeded dimensions.
-            let snap = r.peek_session("pane-x").unwrap();
-            assert_eq!(snap.id, "pane-x");
-            assert_eq!(snap.cols, 80);
-            assert_eq!(snap.rows, 24);
+            let snap = r.peek_field("pane-x", |s| (s.id.clone(), s.cols, s.rows)).unwrap();
+            assert_eq!(snap, ("pane-x".to_string(), 80, 24));
             // The signal reads back the same id.
             assert_eq!(sig.read().id, "pane-x");
         });
@@ -694,17 +728,16 @@ mod tests {
                 a.is_xterm = true;
                 a.foreground_process = Some("claude".to_string());
             }
-            assert!(r.peek_session("pane-a").unwrap().is_xterm);
+            assert!(r.peek_field("pane-a", |s| s.is_xterm).unwrap());
             assert_eq!(
-                r.peek_session("pane-a")
+                r.peek_field("pane-a", |s| s.foreground_process.clone())
                     .unwrap()
-                    .foreground_process
                     .as_deref(),
                 Some("claude"),
             );
             // pane-b untouched
-            assert!(!r.peek_session("pane-b").unwrap().is_xterm);
-            assert_eq!(r.peek_session("pane-b").unwrap().foreground_process, None,);
+            assert!(!r.peek_field("pane-b", |s| s.is_xterm).unwrap());
+            assert_eq!(r.peek_field("pane-b", |s| s.foreground_process.clone()).unwrap(), None,);
         });
     }
 
@@ -741,7 +774,7 @@ mod tests {
     fn write_session_for_missing_pane_is_none() {
         run_in_dom(|r| {
             assert!(r.write_session("ghost").is_none());
-            assert!(r.peek_session("ghost").is_none());
+            assert!(r.peek_field("ghost", |s| s.exited).is_none());
         });
     }
 }

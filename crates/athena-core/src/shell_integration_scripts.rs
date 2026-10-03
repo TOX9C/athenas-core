@@ -38,100 +38,20 @@ pub fn get_shell_integration_script(shell: &str) -> Result<String, ShellIntegrat
 }
 
 fn get_zsh_integration() -> String {
-    [
-        "__athena_si_enabled=1",
-        "",
-        "__athena_osc633() { printf \"\\e]633;%s\\a\" \"$1\"; }",
-        "",
-        "__athena_precmd() {",
-        "  local __athena_exit=$?",
-        "  if [[ -n $__athena_si_last_cmd ]]; then",
-        "    __athena_osc633 \"D;$__athena_exit\"",
-        "    __athena_si_last_cmd=\"\"",
-        "  fi",
-        "  __athena_osc633 A",
-        "  __athena_osc633 \"P;$PWD\"",
-        "}",
-        "",
-        "__athena_preexec() {",
-        "  __athena_si_last_cmd=\"$3\"",
-        "  __athena_osc633 \"B;$3\"",
-        "  __athena_osc633 C",
-        "  __athena_osc633 E",
-        "}",
-        "",
-        "autoload -Uz add-zsh-hook 2>/dev/null",
-        "add-zsh-hook precmd __athena_precmd 2>/dev/null",
-        "add-zsh-hook preexec __athena_preexec 2>/dev/null",
-        "",
-        "__athena_osc633 \"Set=shellIntegration=zsh\"",
-    ]
-    .join("\n")
+    // Single source of truth: the checked-in scripts under `shell/`. These
+    // files are dual-purpose — injected into Athena PTY sessions via the
+    // spawn-time startup mechanism AND sourceable manually from a user's own
+    // rc file. The scripts' `__ATHENA_SOURCED` guards make double-sourcing a
+    // no-op, which covers both paths.
+    include_str!("../../../shell/athena-zsh.sh").to_string()
 }
 
 fn get_bash_integration() -> String {
-    [
-        "__athena_si_enabled=1",
-        "",
-        "__athena_osc633() { printf \"\\e]633;%s\\a\" \"$1\"; }",
-        "",
-        "__athena_prompt_command() {",
-        "  local __athena_exit=\"$?\"",
-        "  if [[ -n $__athena_si_last_cmd ]]; then",
-        "    __athena_osc633 \"D;$__athena_exit\"",
-        "    __athena_si_last_cmd=\"\"",
-        "  fi",
-        "  __athena_osc633 A",
-        "  __athena_osc633 \"P;$PWD\"",
-        "}",
-        "",
-        "__athena_debug_trap() {",
-        "  if [[ -n $__athena_si_last_cmd ]]; then",
-        "    return",
-        "  fi",
-        "  local __athena_cmd=\"$BASH_COMMAND\"",
-        "  if [[ \"$__athena_cmd\" != \"__athena_prompt_command\" && \"$__athena_cmd\" != *\"__athena_osc633\"* ]]; then",
-        "    __athena_si_last_cmd=\"$__athena_cmd\"",
-        "    __athena_osc633 \"B;$__athena_cmd\"",
-        "    __athena_osc633 C",
-        "    __athena_osc633 E",
-        "  fi",
-        "}",
-        "",
-        "trap \"__athena_debug_trap\" DEBUG",
-        "PROMPT_COMMAND=\"__athena_prompt_command; $PROMPT_COMMAND\"",
-        "",
-        "__athena_osc633 \"Set=shellIntegration=bash\"",
-    ]
-    .join("\n")
+    include_str!("../../../shell/athena-bash.bash").to_string()
 }
 
 fn get_fish_integration() -> String {
-    [
-        "set -g __athena_si_enabled 1",
-        "",
-        "function __athena_osc633 -d \"Emit OSC 633 sequence\"",
-        "  printf \"\\e]633;%s\\a\" $argv",
-        "end",
-        "",
-        "function __athena_prompt_start --on-event fish_prompt",
-        "  __athena_osc633 A",
-        "  __athena_osc633 \"P;(pwd)\"",
-        "end",
-        "",
-        "function __athena_preexec --on-event fish_preexec",
-        "  __athena_osc633 \"B;$argv\"",
-        "  __athena_osc633 C",
-        "  __athena_osc633 E",
-        "end",
-        "",
-        "function __athena_postexec --on-event fish_postexec -a __athena_exit",
-        "  __athena_osc633 \"D;$__athena_exit\"",
-        "end",
-        "",
-        "__athena_osc633 \"Set=shellIntegration=fish\"",
-    ]
-    .join("\n")
+    include_str!("../../../shell/athena-fish.fish").to_string()
 }
 
 /// Check whether the given shell is compatible with shell integration.

@@ -1,168 +1,199 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { AthenaMcpServer } from '../packages/mcp-server/src/index.js'
 
-const MCP_TOOLS = [
-  'notify',
-  'request_input',
-  'update_status',
-  'report_error',
-  'report_completion',
-  'create_tasks',
-  'get_next_task',
-  'update_task_status',
-] as const
+// Drives the real AthenaMcpServer end-to-end over an in-memory transport:
+// tool/resource registries, dispatch, and bridge-backed behavior as an MCP
+// client actually observes them.
 
-const MCP_RESOURCES = ['athena://state', 'athena://agents', 'athena://tasks'] as const
+let athena: AthenaMcpServer
+let client: Client
+
+beforeAll(async () => {
+  athena = new AthenaMcpServer({ transport: 'stdio' })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  await athena.getServer().connect(serverTransport)
+  client = new Client({ name: 'mcp-tools-test', version: '0.0.0' })
+  await client.connect(clientTransport)
+})
+
+afterAll(async () => {
+  await client.close()
+  await athena.stop()
+})
 
 describe('MCP Tools Integration', () => {
   describe('Tool Registry', () => {
-    it('should define all 8 required MCP tools', () => {
-      expect(MCP_TOOLS).toHaveLength(8)
-    })
+    it('registers the full Athena tool surface', async () => {
+      const { tools } = await client.listTools()
+      const names = tools.map((t) => t.name)
 
-    it('each tool should be a non-empty string', () => {
-      for (const tool of MCP_TOOLS) {
-        expect(typeof tool).toBe('string')
-        expect(tool.length).toBeGreaterThan(0)
+      for (const expected of [
+        'notify',
+        'status_update',
+        'request_input',
+        'athena_notify',
+        'athena_request_input',
+        'athena_update_status',
+        'athena_report_error',
+        'athena_report_completion',
+        'athena_read_output',
+        'athena_stream_output',
+        'athena_list_agents',
+        'athena_get_output_since',
+        'search_files',
+      ]) {
+        expect(names).toContain(expected)
       }
     })
 
-    it('should use snake_case naming convention', () => {
-      for (const tool of MCP_TOOLS) {
-        expect(tool).toMatch(/^[a-z]+(_[a-z]+)*$/)
+    it('exposes input schemas for registered tools', async () => {
+      const { tools } = await client.listTools()
+      for (const tool of tools) {
+        expect(tool.inputSchema).toBeDefined()
+        expect(tool.inputSchema.type).toBe('object')
       }
     })
   })
 
   describe('Resource Registry', () => {
-    it('should define all 3 required MCP resources', () => {
-      expect(MCP_RESOURCES).toHaveLength(3)
+    it('lists the static athena:// resources', async () => {
+      const { resources } = await client.listResources()
+      const uris = resources.map((r) => r.uri)
+      expect(uris).toContain('athena://agents')
+      expect(uris).toContain('athena://app-state')
     })
 
-    it('resources should use athena:// URI scheme', () => {
-      for (const resource of MCP_RESOURCES) {
-        expect(resource).toMatch(/^athena:\/\//)
-      }
+    it('exposes the athena://agent/{id} resource template', async () => {
+      const { resourceTemplates } = await client.listResourceTemplates()
+      const templates = resourceTemplates.map((t) => t.uriTemplate)
+      expect(templates).toContain('athena://agent/{id}')
     })
   })
 
   describe('notify tool', () => {
-    it('should accept AthenaNotification parameters', async () => {
-      const params = {
-        type: 'info' as const,
-        title: 'Test',
-        message: 'Test notification',
-        priority: 'normal' as const,
+    it('delivers a notification including metadata and actions', async () => {
+      const received: unknown[] = []
+      const unsubscribe = athena.getBridge().onEvent((event, data) => {
+        if (event === 'notification') received.push(data)
+      })
+      try {
+        const result = await client.callTool({
+          name: 'notify',
+          arguments: {
+            level: 'info',
+            message: 'Task finished',
+            metadata: { duration: 12 },
+            actions: [{ id: 'open', label: 'Open' }],
+          },
+        })
+        expect(result.isError).toBeFalsy()
+        expect((result.content as Array<{ text: string }>)[0]!.text).toContain('delivered')
+
+        expect(received).toHaveLength(1)
+        const notification = received[0] as {
+          message: string
+          metadata?: Record<string, unknown>
+          actions?: Array<{ id: string; label: string }>
+        }
+        expect(notification.message).toBe('Task finished')
+        expect(notification.metadata).toEqual({ duration: 12 })
+        expect(notification.actions).toEqual([{ id: 'open', label: 'Open' }])
+      } finally {
+        unsubscribe()
       }
-      expect(params.type).toBe('info')
-      expect(params.priority).toBe('normal')
+    })
+  })
+
+  describe('status_update tool', () => {
+    it('updates agent state with computed progress', async () => {
+      await client.callTool({
+        name: 'status_update',
+        arguments: {
+          status: 'working',
+          agentId: 'agent-1',
+          progress: { current: 1, total: 4 },
+        },
+      })
+      const state = athena.getBridge().getAgentState('agent-1')
+      expect(state?.status).toBe('running')
+      expect(state?.progress).toBe(25)
+    })
+
+    it('rejects a zero total instead of dividing by it', async () => {
+      const result = await client.callTool({
+        name: 'status_update',
+        arguments: {
+          status: 'working',
+          agentId: 'agent-1',
+          progress: { current: 1, total: 0 },
+        },
+      })
+      expect(result.isError).toBe(true)
     })
   })
 
   describe('request_input tool', () => {
-    it('should accept InputRequest parameters', async () => {
-      const params = {
-        prompt: 'What is your name?',
-        defaultResponse: 'World',
-        timeout: 30000,
-      }
-      expect(params.prompt).toBeDefined()
-      expect(typeof params.timeout).toBe('number')
+    it('fails fast when the bridge is not connected', async () => {
+      const result = await client.callTool({
+        name: 'request_input',
+        arguments: { prompt: 'Proceed?', timeoutMs: 1000 },
+      })
+      // Not connected: the bridge resolves immediately with
+      // cancelled+timedOut, and the tool surfaces the timed-out error.
+      expect(result.isError).toBe(true)
+      const text = (result.content as Array<{ text: string }>)[0]!.text
+      const parsed = JSON.parse(text)
+      expect(parsed.error).toMatch(/timed out/)
+    })
+
+    it('rejects timeoutMs above the cap', async () => {
+      const result = await client.callTool({
+        name: 'request_input',
+        arguments: { prompt: 'Proceed?', timeoutMs: 600_001 },
+      })
+      expect(result.isError).toBe(true)
     })
   })
 
-  describe('update_status tool', () => {
-    it('should accept StatusUpdate parameters', async () => {
-      const params = {
-        agentId: 'agent-1',
-        status: 'running' as const,
-        message: 'Processing...',
-        progress: 0.75,
-      }
-      expect(params.agentId).toBeDefined()
-      expect(params.progress).toBeGreaterThanOrEqual(0)
-      expect(params.progress).toBeLessThanOrEqual(1)
-    })
-  })
-
-  describe('report_error tool', () => {
-    it('should accept ErrorReport parameters', async () => {
-      const params = {
-        agentId: 'agent-1',
-        error: 'Unexpected failure',
-        recoverable: true,
-        code: 'E_TIMEOUT',
-      }
-      expect(params.recoverable).toBe(true)
-    })
-  })
-
-  describe('report_completion tool', () => {
-    it('should accept CompletionReport parameters', async () => {
-      const params = {
-        agentId: 'agent-1',
-        summary: 'All tasks completed',
-        artifacts: ['output.md'],
-        duration: 5000,
-      }
-      expect(Array.isArray(params.artifacts)).toBe(true)
-    })
-  })
-
-  describe('create_tasks tool', () => {
-    it('should define task creation schema', () => {
-      const taskSpec = {
-        tasks: [
-          { title: 'Task 1', description: 'Do thing 1' },
-          { title: 'Task 2', description: 'Do thing 2' },
-        ],
-      }
-      expect(taskSpec.tasks).toHaveLength(2)
-    })
-  })
-
-  describe('get_next_task tool', () => {
-    it('should accept optional agentId filter', () => {
-      const params = { agentId: 'agent-1' }
-      expect(params.agentId).toBe('agent-1')
-    })
-  })
-
-  describe('update_task_status tool', () => {
-    it('should accept task ID and new status', () => {
-      const params = { taskId: 't1', status: 'in_progress' }
-      expect(params.taskId).toBeDefined()
-      expect(params.status).toBeDefined()
-    })
-  })
-
-  describe('athena://state resource', () => {
-    it('should return AthenaAppState shape', () => {
-      const expectedShape = {
-        activeSpaceId: null,
-        spaces: [],
-        theme: 'dark',
-        activePanel: 'terminal',
-        agents: [],
-        tasks: [],
-      }
-      expect(Object.keys(expectedShape)).toContain('agents')
-      expect(Object.keys(expectedShape)).toContain('spaces')
+  describe('athena_list_agents tool', () => {
+    it('lists agents reported through status updates', async () => {
+      const result = await client.callTool({ name: 'athena_list_agents', arguments: {} })
+      const text = (result.content as Array<{ text: string }>)[0]!.text
+      expect(text).toContain('agent-1')
     })
   })
 
   describe('athena://agents resource', () => {
-    it('should return AgentState[] shape', () => {
-      const agents = [{ id: 'a1', type: 'claude', status: 'idle' }]
-      expect(agents[0]).toHaveProperty('id')
-      expect(agents[0]).toHaveProperty('status')
+    it('reads agent states forwarded through the bridge', async () => {
+      const result = await client.readResource({ uri: 'athena://agents' })
+      const text = result.contents[0]!.text
+      const agents = JSON.parse(text) as Array<{ id: string }>
+      expect(agents.some((a) => a.id === 'agent-1')).toBe(true)
     })
   })
 
-  describe('athena://tasks resource', () => {
-    it('should return TaskState[] shape', () => {
-      const tasks = [{ id: 't1', title: 'Build', status: 'pending' }]
-      expect(tasks[0]).toHaveProperty('id')
-      expect(tasks[0]).toHaveProperty('status')
+  describe('athena://agent/{id} resource', () => {
+    it('resolves a specific agent without a leading slash in the id', async () => {
+      const result = await client.readResource({ uri: 'athena://agent/agent-1' })
+      const state = JSON.parse(result.contents[0]!.text as string) as { id: string; error?: string }
+      expect(state.id).toBe('agent-1')
+      expect(state.error).toBeUndefined()
+    })
+
+    it('reports unknown agents', async () => {
+      const result = await client.readResource({ uri: 'athena://agent/nope' })
+      const body = JSON.parse(result.contents[0]!.text as string) as { error: string }
+      expect(body.error).toMatch(/nope not found/)
+    })
+  })
+
+  describe('athena://app-state resource', () => {
+    it('returns the app-state snapshot shape', async () => {
+      const result = await client.readResource({ uri: 'athena://app-state' })
+      const state = JSON.parse(result.contents[0]!.text as string) as { agents: unknown[] }
+      expect(Array.isArray(state.agents)).toBe(true)
     })
   })
 })

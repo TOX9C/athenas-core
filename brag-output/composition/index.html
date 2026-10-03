@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Athena's Core — Brag</title>
+    <style>
+      @font-face {
+        font-family: 'Hanken Grotesk';
+        src: url('fonts/HankenGrotesk-400.woff2') format('woff2');
+        font-weight: 400; font-style: normal;
+      }
+      @font-face {
+        font-family: 'Hanken Grotesk';
+        src: url('fonts/HankenGrotesk-600.woff2') format('woff2');
+        font-weight: 600; font-style: normal;
+      }
+      @font-face {
+        font-family: 'Hanken Grotesk';
+        src: url('fonts/HankenGrotesk-700.woff2') format('woff2');
+        font-weight: 700; font-style: normal;
+      }
+      @font-face {
+        font-family: 'Monaspace Neon';
+        src: url('fonts/MonaspaceNeon-400.woff2') format('woff2');
+        font-weight: 400; font-style: normal;
+      }
+      @font-face {
+        font-family: 'Monaspace Neon';
+        src: url('fonts/MonaspaceNeon-500.woff2') format('woff2');
+        font-weight: 500; font-style: normal;
+      }
+
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { background: #070708; }
+      body {
+        font-family: 'Hanken Grotesk', sans-serif;
+        color: #e6e6e6;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      [data-composition-id='root'] {
+        width: 1920px; height: 1080px;
+        position: relative; overflow: hidden;
+        background: #070708;
+      }
+
+      /* ── Global audio-reactive gold glow ────────────────── */
+      .glow {
+        position: absolute; left: 50%; top: 62%;
+        width: 1400px; height: 1400px;
+        margin: -700px 0 0 -700px;
+        background: radial-gradient(circle, rgba(201,162,75,0.18) 0%, rgba(201,162,75,0) 62%);
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      /* ── Scene shell ────────────────────────────────────── */
+      .scene {
+        position: absolute; inset: 0;
+        background-color: #070708;
+        overflow: hidden;
+      }
+      .frame-rule {
+        position: absolute; top: 56px; right: 56px; bottom: 56px; left: 56px;
+        border: 1px solid #1f2024;
+        pointer-events: none;
+      }
+      .kicker-issue {
+        position: absolute; top: 72px; left: 0; right: 0; text-align: center;
+        font-family: 'Monaspace Neon', monospace;
+        font-size: 20px;
+        letter-spacing: 0.22em;
+        color: #8a8a90;
+        text-transform: uppercase;
+      }
+
+      /* ── Scene 1: Boot ──────────────────────────────────── */
+      #s1 { display: grid; place-items: center; }
+      #s1 .s1-inner {
+        display: flex; flex-direction: column; align-items: center; gap: 64px;
+        width: 100%; height: 100%; justify-content: center;
+      }
+      #s1 .ring-wrap { width: 220px; height: 220px; position: relative; }
+      #s1 .ring-glow {
+        position: absolute; inset: -60px;
+        background: radial-gradient(circle, rgba(226,194,108,0.35) 0%, rgba(226,194,108,0) 60%);
+        border-radius: 50%;
+      }
+      #s1 svg { display: block; }
+      #s1 .wordmark {
+        display: flex; flex-direction: column; align-items: center;
+        color: #f5f2ea; font-weight: 600; font-size: 108px; line-height: 1.06;
+        letter-spacing: 0.01em; text-align: center;
+      }
+      #s1 .wordmark .light { font-weight: 400; color: #8a8a90; font-size: 96px; }
+
+      /* ── Scene 2: The window ────────────────────────────── */
+      #s2 .s2-stage {
+        display: flex; width: 100%; height: 100%;
+        align-items: center; justify-content: center;
+        flex-direction: column; gap: 40px;
+        padding: 80px 140px;
+      }
+      #s2 .win {
+        width: 1380px;
+        background: #0b0b0c;
+        border: 1px solid #1f2024;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 40px 120px rgba(0,0,0,0.7), 0 0 0 1px rgba(201,162,75,0.06);
+      }
+      #s2 .chrome {
+        display: flex; align-items: center; gap: 8px;
+        padding: 12px 16px;
+        background: #16171a;
+        border-bottom: 1px solid #1f2024;
+      }
+      #s2 .dot { width: 11px; height: 11px; border-radius: 50%; background: #2a2b30; }
+      #s2 .win-title {
+        margin-left: 14px; font-family: 'Monaspace Neon', monospace;
+        font-size: 16px; color: #8a8a90;
+      }
+      #s2 img { display: block; width: 100%; }
+      #s2 .win-tilt { will-change: transform; }
+      #s2 .s2-caption {
+        display: flex; flex-direction: column; align-items: center; gap: 10px;
+        align-self: flex-start; margin-left: 40px;
+      }
+      #s2 .cap-real {
+        font-family: 'Monaspace Neon', monospace; font-size: 17px;
+        letter-spacing: 0.18em; color: #c9a24b; text-transform: uppercase;
+      }
+      #s2 .brand-line {
+        font-size: 44px; font-weight: 600; color: #f5f2ea;
+      }
+
+      /* ── Scene 3: Four surfaces ─────────────────────────── */
+      #s3 .s3-layout {
+        display: flex; width: 100%; height: 100%;
+        padding: 96px 96px 80px;
+        gap: 64px;
+      }
+      #s3 .s3-left {
+        display: flex; flex-direction: column; justify-content: center;
+        gap: 26px; width: 560px; flex: none;
+      }
+      #s3 .s3-head { font-size: 54px; font-weight: 600; color: #f5f2ea; line-height: 1.1; }
+      #s3 .s3-sub {
+        font-size: 22px; font-weight: 400; color: #8a8a90; line-height: 1.55;
+        max-width: 480px;
+      }
+      #s3 .s3-rule {
+        width: 48px; height: 3px; background: #c9a24b; /* codex-rule accent */
+      }
+      #s3 .s3-grid {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 26px;
+        flex: 1; align-content: center;
+      }
+      #s3 .card { display: flex; flex-direction: column; gap: 12px; }
+      #s3 .card-frame {
+        border: 1px solid #1f2024; border-radius: 10px; overflow: hidden;
+        background: #0b0b0c;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+      }
+      #s3 .card-frame img { display: block; width: 100%; }
+      #s3 .card-label { font-size: 22px; font-weight: 600; color: #f5f2ea; display: flex; align-items: center; gap: 12px; }
+      #s3 .pulse-dot {
+        width: 12px; height: 12px; border-radius: 50%;
+        background: #c9a24b; box-shadow: 0 0 12px rgba(226,194,108,0.9);
+      }
+
+      /* ── Scene 4: Doctrine ──────────────────────────────── */
+      #s4 .s4-layout {
+        display: flex; width: 100%; height: 100%; align-items: center;
+        padding: 0 140px; gap: 120px; position: relative;
+      }
+      #s4 .ghost {
+        position: absolute; right: -60px; bottom: -70px;
+        font-family: 'Monaspace Neon', monospace;
+        font-size: 520px; font-weight: 400; color: rgba(201,162,75,0.08);
+        line-height: 1; pointer-events: none; user-select: none;
+      }
+      #s4 .s4-vrule { width: 1px; height: 560px; background: #1f2024; flex: none; }
+      #s4 .specs { display: flex; flex-direction: column; gap: 56px; }
+      #s4 .spec { display: flex; flex-direction: column; gap: 8px; }
+      #s4 .spec-k {
+        font-size: 19px; font-weight: 600; letter-spacing: 0.3em;
+        color: #c9a24b; text-transform: uppercase;
+      }
+      #s4 .spec-v { font-family: 'Monaspace Neon', monospace; font-size: 46px; color: #f5f2ea; }
+      #s4 .s4-head {
+        position: absolute; top: 84px; left: 140px;
+        font-size: 30px; font-weight: 600; color: #8a8a90; letter-spacing: 0.06em;
+      }
+
+      /* ── Scene 5: Punchline ─────────────────────────────── */
+      #s5 .s5-inner {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 44px; width: 100%; height: 100%;
+      }
+      #s5 .mark-wrap { position: relative; width: 200px; height: 200px; }
+      #s5 .mark-glow {
+        position: absolute; inset: -70px; border-radius: 50%;
+        background: radial-gradient(circle, rgba(226,194,108,0.4) 0%, rgba(226,194,108,0) 62%);
+      }
+      #s5 .mark { position: relative; width: 200px; height: 200px; }
+      #s5 .punchline { font-size: 92px; font-weight: 700; color: #f5f2ea; letter-spacing: 0.01em; }
+      #s5 .strap {
+        font-family: 'Monaspace Neon', monospace; font-size: 21px;
+        letter-spacing: 0.2em; color: #8a8a90; text-transform: uppercase;
+      }
+      #s5 .foot {
+        position: absolute; bottom: 76px; left: 0; right: 0; text-align: center;
+        font-family: 'Monaspace Neon', monospace; font-size: 16px;
+        letter-spacing: 0.24em; color: #8a8a90; text-transform: uppercase;
+      }
+    </style>
+  </head>
+  <body>
+    <div data-composition-id="root" data-width="1920" data-height="1080">
+      <!-- Audio-reactive ambience (track 0, full duration) -->
+      <div id="glow" class="glow clip" data-start="0" data-duration="20" data-track-index="0" data-layout-ignore></div>
+
+      <!-- SCENE 1 — Boot — 0–3.4 -->
+      <div id="s1" class="scene clip" data-start="0" data-duration="3.4" data-track-index="1">
+        <div class="frame-rule"></div>
+        <div class="kicker-issue">The Athena Papers · N°1 · September 2026</div>
+        <div class="s1-inner">
+          <div class="ring-wrap">
+            <div class="ring-glow" id="ring-glow"></div>
+            <svg width="220" height="220" viewBox="0 0 220 220">
+              <circle id="ring-circle" cx="110" cy="110" r="96" fill="none"
+                stroke="#c9a24b" stroke-width="2"
+                stroke-dasharray="603.2" stroke-dashoffset="603.2"
+                stroke-linecap="round"
+                transform="rotate(-90 110 110)" />
+            </svg>
+          </div>
+          <h1 class="wordmark" id="wordmark">
+            <span class="line light">The</span>
+            <span class="line">strategist’s</span>
+            <span class="line">workbench.</span>
+          </h1>
+        </div>
+      </div>
+
+      <!-- SCENE 2 — The window — 2.8–7.6 -->
+      <div id="s2" class="scene clip" data-start="2.8" data-duration="4.8" data-track-index="2">
+        <div class="frame-rule"></div>
+        <div class="s2-stage">
+          <div class="win-tilt" id="win-tilt">
+            <div class="win" id="win">
+              <div class="chrome">
+                <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+                <span class="win-title">Athena’s Core — athenas-core</span>
+              </div>
+              <img id="win-img" src="assets/screens/workspace-climax.png" alt="" />
+            </div>
+          </div>
+          <div class="s2-caption">
+            <span class="cap-real">Real capture — the window as shipped</span>
+            <span class="brand-line">One window. Every tool. No noise.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- SCENE 3 — Four surfaces — 7.0–14.1 -->
+      <div id="s3" class="scene clip" data-start="7.0" data-duration="7.1" data-track-index="3">
+        <div class="frame-rule"></div>
+        <div class="kicker-issue">N°02 — The workspace</div>
+        <div class="s3-layout">
+          <div class="s3-left">
+            <div class="s3-rule"></div>
+            <h2 class="s3-head">Everything in view. Nothing in the way.</h2>
+            <p class="s3-sub">Four views, shown exactly as they ship. Every image is a capture from the current build.</p>
+          </div>
+          <div class="s3-grid">
+            <div class="card" id="card1">
+              <div class="card-frame"><img src="assets/screens/04-workspace.png" alt="" /></div>
+              <span class="card-label">A project home</span>
+            </div>
+            <div class="card" id="card2">
+              <div class="card-frame"><img src="assets/screens/05-athena.png" alt="" /></div>
+              <span class="card-label">Chat with context</span>
+            </div>
+            <div class="card" id="card3">
+              <div class="card-frame"><img src="assets/screens/07-kanban.png" alt="" /></div>
+              <span class="card-label">A visible next step</span>
+            </div>
+            <div class="card" id="card4">
+              <div class="card-frame"><img src="assets/screens/06-swarm.png" alt="" /></div>
+              <span class="card-label">More hands on the work <span class="pulse-dot" id="pulse-dot"></span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SCENE 4 — Doctrine — 13.5–17.6 -->
+      <div id="s4" class="scene clip" data-start="13.5" data-duration="4.1" data-track-index="4">
+        <div class="frame-rule"></div>
+        <div class="ghost" data-layout-ignore>MB</div>
+        <h2 class="s4-head">Small. Native. Deliberate.</h2>
+        <div class="s4-layout">
+          <div class="s4-vrule"></div>
+          <div class="specs">
+            <div class="spec" id="spec1">
+              <span class="spec-k">Footprint</span>
+              <span class="spec-v">~15 MB</span>
+            </div>
+            <div class="spec" id="spec2">
+              <span class="spec-k">Runtime</span>
+              <span class="spec-v">Rust / Tauri 2</span>
+            </div>
+            <div class="spec" id="spec3">
+              <span class="spec-k">Privacy</span>
+              <span class="spec-v">No telemetry</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SCENE 5 — Punchline — 17.0–20.0 -->
+      <div id="s5" class="scene clip" data-start="17.0" data-duration="3.0" data-track-index="5">
+        <div class="frame-rule"></div>
+        <div class="s5-inner">
+          <div class="mark-wrap" id="mark-wrap">
+            <div class="mark-glow"></div>
+            <img class="mark" src="assets/screens/icon-512.png" alt="" />
+          </div>
+          <h2 class="punchline" id="punchline">Take the build. Break it.</h2>
+          <p class="strap">macOS 13+ · Apple silicon · Public beta</p>
+        </div>
+        <p class="foot">Athena’s Core — the strategist’s workbench</p>
+      </div>
+
+      <!-- Audio -->
+      <audio id="music" data-start="0" data-duration="20" data-track-index="10" data-volume="0.3" src="assets/music/happy-beats-business-moves-vol-12-by-ende-dot-app.mp3"></audio>
+      <audio id="sfx-ring" data-start="1.55" data-duration="0.8" data-track-index="11" data-volume="0.35" src="assets/sfx/interface/drop_002.ogg"></audio>
+      <audio id="sfx-win" data-start="2.95" data-duration="0.8" data-track-index="12" data-volume="0.5" src="assets/sfx/interface/drop_001.ogg"></audio>
+      <audio id="sfx-spec" data-start="13.64" data-duration="0.8" data-track-index="13" data-volume="0.4" src="assets/sfx/interface/drop_002.ogg"></audio>
+      <audio id="sfx-outro" data-start="17.47" data-duration="1.6" data-track-index="14" data-volume="0.7" src="assets/sfx/impact/impactBell_heavy_000.ogg"></audio>
+      <!-- beat-grid card ticks: 7.64 / 8.74 / 9.83 / 10.93 -->
+      <audio id="sfx-c1" data-start="7.64" data-duration="0.8" data-track-index="15" data-volume="0.5" src="assets/sfx/interface/drop_001.ogg"></audio>
+      <audio id="sfx-c2" data-start="8.74" data-duration="0.8" data-track-index="16" data-volume="0.5" src="assets/sfx/interface/drop_002.ogg"></audio>
+      <audio id="sfx-c3" data-start="9.83" data-duration="0.8" data-track-index="17" data-volume="0.5" src="assets/sfx/interface/drop_001.ogg"></audio>
+      <audio id="sfx-c4" data-start="10.93" data-duration="0.8" data-track-index="18" data-volume="0.5" src="assets/sfx/interface/drop_002.ogg"></audio>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <script src="assets/audio-data.js"></script>
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      /* ── Audio-reactive gold glow (pre-extracted RMS, subtle) ── */
+      const glowEl = document.getElementById('glow');
+      if (window.AUDIO_DATA && window.AUDIO_DATA.frames) {
+        const F = AUDIO_DATA.frames;
+        for (let i = 0; i < F.length; i++) {
+          const rms = F[i].rms;
+          const t = F[i].time;
+          tl.call(
+            (function (v) {
+              return function () {
+                gsap.set(glowEl, {
+                  opacity: 0.08 + v * 0.14,
+                  scale: 1 + v * 0.16,
+                });
+              };
+            })(rms),
+            [],
+            t,
+          );
+        }
+      }
+
+      /* ── Scene transitions: gentle blur crossfades (calm/premium primary) ── */
+      const crossfade = (id, start) => {
+        tl.fromTo(
+          id,
+          { opacity: 0, filter: 'blur(12px)' },
+          { opacity: 1, filter: 'blur(0px)', duration: 0.65, ease: 'sine.inOut' },
+          start,
+        );
+      };
+      crossfade('#s2', 2.8);
+      crossfade('#s3', 7.0);
+      crossfade('#s4', 13.5);
+      crossfade('#s5', 17.0);
+
+      /* ── Scene 1 — Boot ── */
+      tl.fromTo('#s1 .kicker-issue', { opacity: 0 }, { opacity: 1, duration: 1.4, ease: 'power1.out' }, 0.3);
+      tl.fromTo(
+        '#ring-circle',
+        { strokeDashoffset: 603.2 },
+        { strokeDashoffset: 0, duration: 1.3, ease: 'power2.inOut' },
+        0.35,
+      );
+      tl.fromTo(
+        '#ring-glow',
+        { opacity: 0, scale: 0.6 },
+        { opacity: 1, scale: 1, duration: 1.1, ease: 'sine.out' },
+        0.5,
+      );
+      // SFX: ring completes ~1.55s
+      tl.fromTo(
+        '#wordmark',
+        { opacity: 0, y: 40 },
+        { opacity: 1, y: 0, duration: 0.9, ease: 'expo.out' },
+        1.5,
+      );
+      // hold through 3.4 — transition carries the exit
+
+      /* ── Scene 2 — The window ── */
+      tl.fromTo(
+        '#win-tilt',
+        { y: 70, opacity: 0, scale: 0.94, rotationY: -7, transformPerspective: 1400 },
+        { y: 0, opacity: 1, scale: 1, rotationY: -2, duration: 1.0, ease: 'power3.out' },
+        2.95,
+      );
+      tl.fromTo(
+        '#win-img',
+        { scale: 1.02 },
+        { scale: 1.065, duration: 4.4, ease: 'none' },
+        3.2,
+      ); // slow Ken Burns on child only
+      tl.fromTo(
+        '#s2 .cap-real',
+        { opacity: 0, x: -24 },
+        { opacity: 1, x: 0, duration: 0.5, ease: 'power2.out' },
+        3.9,
+      );
+      tl.fromTo(
+        '#s2 .brand-line',
+        { opacity: 0, y: 22 },
+        { opacity: 1, y: 0, duration: 0.6, ease: 'power4.out' },
+        4.05,
+      );
+
+      /* ── Scene 3 — Four surfaces (beat-grid arrivals) ── */
+      tl.fromTo(
+        '#s3 .s3-left',
+        { opacity: 0, x: -40 },
+        { opacity: 1, x: 0, duration: 0.7, ease: 'power3.out' },
+        7.1,
+      );
+      // beat-grid: card 1 at 7.64s, card 2 at 8.74s, card 3 at 9.83s, card 4 at 10.93s
+      tl.fromTo('#card1', { opacity: 0, y: 44 }, { opacity: 1, y: 0, duration: 0.6, ease: 'power3.out' }, 7.64);
+      tl.fromTo('#card2', { opacity: 0, y: 44 }, { opacity: 1, y: 0, duration: 0.6, ease: 'expo.out' }, 8.74);
+      tl.fromTo('#card3', { opacity: 0, y: 44 }, { opacity: 1, y: 0, duration: 0.6, ease: 'power2.out' }, 9.83);
+      tl.fromTo('#card4', { opacity: 0, y: 44 }, { opacity: 1, y: 0, duration: 0.6, ease: 'back.out(1.3)' }, 10.93);
+      // gold activity dot: finite ambient pulse
+      tl.fromTo(
+        '#pulse-dot',
+        { scale: 1, opacity: 1 },
+        { scale: 1.55, opacity: 0.65, duration: 1.1, ease: 'sine.inOut', yoyo: true, repeat: 2 },
+        11.4,
+      );
+
+      /* ── Scene 4 — Doctrine ── */
+      tl.fromTo('#s4 .s4-vrule', { scaleY: 0 }, { scaleY: 1, duration: 0.9, ease: 'power2.inOut' }, 13.6);
+      tl.fromTo('#s4 .s4-head', { opacity: 0 }, { opacity: 1, duration: 0.8, ease: 'sine.out' }, 13.7);
+      tl.fromTo('#s4 .ghost', { opacity: 0 }, { opacity: 1, duration: 1.6, ease: 'sine.inOut' }, 13.6);
+      // beat-grid: spec 1 at 13.64s, spec 2 at 14.73s, spec 3 at 15.84s
+      tl.fromTo('#spec1', { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.55, ease: 'power3.out' }, 13.64);
+      tl.fromTo('#spec2', { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.55, ease: 'expo.out' }, 14.73);
+      tl.fromTo('#spec3', { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.55, ease: 'power2.out' }, 15.84);
+
+      /* ── Scene 5 — Punchline ── */
+      // beat-locked: 17.47s (strong cue)
+      tl.fromTo(
+        '#mark-wrap',
+        { opacity: 0, scale: 0.7 },
+        { opacity: 1, scale: 1, duration: 0.7, ease: 'back.out(1.4)' },
+        17.47,
+      );
+      tl.fromTo(
+        '#punchline',
+        { opacity: 0, y: 34 },
+        { opacity: 1, y: 0, duration: 0.75, ease: 'power3.out' },
+        17.72,
+      );
+      tl.fromTo(
+        '#s5 .strap',
+        { opacity: 0, y: 14 },
+        { opacity: 1, y: 0, duration: 0.8, ease: 'power1.out' },
+        18.05,
+      );
+      tl.fromTo('#s5 .foot', { opacity: 0 }, { opacity: 1, duration: 0.8, ease: 'sine.out' }, 18.4);
+
+      window.__timelines['root'] = tl;
+    </script>
+  </body>
+</html>

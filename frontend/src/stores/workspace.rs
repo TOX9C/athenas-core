@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -60,6 +60,11 @@ impl WorkspaceSaveQueue {
 thread_local! {
     static SAVE_QUEUE: RefCell<WorkspaceSaveQueue> =
         RefCell::new(WorkspaceSaveQueue::default());
+    /// True once `load()` has authoritatively answered (stored state read, or
+    /// key definitively absent — first run). A transient IPC failure or an
+    /// unparseable payload leaves this false so a defaulted in-memory state
+    /// can never overwrite previously-good data on disk.
+    static LOAD_CONFIRMED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn enqueue_workspace_save(json: String) {
@@ -182,6 +187,14 @@ impl WorkspaceState {
     /// Saves are coalesced and drained serially so overlapping async writes
     /// never result in a stale state overwriting a newer one.
     pub fn save(&self) {
+        if !LOAD_CONFIRMED.with(|c| c.get()) {
+            // Persisting now could clobber good on-disk state with a
+            // defaulted state produced by a failed load.
+            web_sys::console::warn_1(
+                &"[WorkspaceState] save skipped: workspace store load not confirmed".into(),
+            );
+            return;
+        }
         let json = match serde_json::to_string(self) {
             Ok(j) => j,
             Err(e) => {
@@ -200,31 +213,35 @@ impl WorkspaceState {
     pub async fn load() -> Self {
         match kv_get(WORKSPACES_KEY).await {
             Ok(json) => {
-                web_sys::console::log_1(
-                    &format!(
-                        "[resume-debug] workspace store_get succeeded bytes={}",
-                        json.len()
-                    )
-                    .into(),
-                );
                 if json.trim().is_empty() {
-                    web_sys::console::warn_1(&"[resume-debug] workspace store is empty".into());
+                    web_sys::console::warn_1(&"workspace store is empty".into());
+                    LOAD_CONFIRMED.with(|c| c.set(true));
                     return Self::new();
                 }
                 match serde_json::from_str(&json) {
-                    Ok(state) => state,
+                    Ok(state) => {
+                        LOAD_CONFIRMED.with(|c| c.set(true));
+                        state
+                    }
                     Err(e) => {
+                        // Unparseable payload: do NOT confirm — the defaulted
+                        // return must never be saved back over it.
                         web_sys::console::error_1(
-                            &format!("[resume-debug] workspace deserialize failed: {e}").into(),
+                            &format!("workspace deserialize failed: {e}").into(),
                         );
                         Self::new()
                     }
                 }
             }
             Err(e) => {
-                // Key absent on first run — not an error.
+                // "Not found" is an authoritative absent key (first run);
+                // any other error is transient and must not confirm the load.
+                let msg = format!("{e:?}");
+                if msg.contains("Not found") {
+                    LOAD_CONFIRMED.with(|c| c.set(true));
+                }
                 web_sys::console::warn_1(
-                    &format!("[resume-debug] workspace store_get failed/absent: {e:?}").into(),
+                    &format!("workspace store_get failed/absent: {e:?}").into(),
                 );
                 Self::new()
             }

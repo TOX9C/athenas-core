@@ -2,6 +2,11 @@
 
 use chrono::Utc;
 
+/// Monotonic suffix so two records created in the same millisecond still get
+/// unique ids — the id addresses `mark_notification_read`/`dismissed`, and a
+/// collision would act on the wrong record.
+static NEXT_NOTIF_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Maximum number of notifications kept in memory.
 pub(super) const MAX_NOTIFICATIONS: usize = 50;
 
@@ -54,7 +59,11 @@ pub struct NotificationRecord {
 impl NotificationRecord {
     pub fn new(title: &str, message: &str, r#type: NotificationType) -> Self {
         Self {
-            id: format!("notif-{}", Utc::now().timestamp_millis()),
+            id: format!(
+                "notif-{}-{}",
+                Utc::now().timestamp_millis(),
+                NEXT_NOTIF_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
             r#type,
             title: title.to_string(),
             message: message.to_string(),

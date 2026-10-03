@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import type { WebSocket } from 'ws'
 import { AthenaBridge } from '../src/bridge.js'
 
 function createBridge(): AthenaBridge {
@@ -233,13 +234,29 @@ describe('AthenaBridge notification buffer (F4)', () => {
     expect(JSON.parse(sent[1]!).data.title).toBe('T2')
   })
 
-  it('reconnect backoff grows exponentially and resets on connect (F15)', () => {
-    const bridge = createBridge() as unknown as {
+  it('reconnect backoff grows exponentially and resets on connect (F15)', async () => {
+    // Minimal fake 'ws' socket: event registry + no-op send/close.
+    const handlers = new Map<string, Array<(...args: never[]) => void>>()
+    const fakeSocket = {
+      on(event: string, cb: (...args: never[]) => void) {
+        const list = handlers.get(event) ?? []
+        list.push(cb)
+        handlers.set(event, list)
+      },
+      send: () => {},
+      close: () => {},
+    } as unknown as WebSocket
+
+    const bridge = new AthenaBridge(
+      { athenaHost: '127.0.0.1', athenaPort: 4545, authToken: 'test-token' },
+      { createSocket: () => fakeSocket },
+    )
+    const internals = bridge as unknown as {
       scheduleReconnect(): void
-      simulateOpenForTest(): void
       reconnectDelayMs: number
       reconnectTimer: unknown
     }
+
     const waits: number[] = []
     // Return null so the `reconnectTimer` in-flight guard never trips;
     // only the delay argument is under test.
@@ -248,17 +265,21 @@ describe('AthenaBridge notification buffer (F4)', () => {
       return null
     }) as unknown as typeof setTimeout)
     try {
-      bridge.scheduleReconnect()
-      bridge.scheduleReconnect()
-      bridge.scheduleReconnect()
+      internals.scheduleReconnect()
+      internals.scheduleReconnect()
+      internals.scheduleReconnect()
       // 5s → 10s → 20s, capped at 30s on the fourth.
       expect(waits).toEqual([5_000, 10_000, 20_000])
-      bridge.reconnectDelayMs = 30_000
-      bridge.scheduleReconnect()
+      internals.reconnectDelayMs = 30_000
+      internals.scheduleReconnect()
       expect(waits[3]).toBe(30_000)
       // A successful open resets the delay to the base (bridge.ts 'open').
-      bridge.simulateOpenForTest()
-      expect(bridge.reconnectDelayMs).toBe(5_000)
+      const connecting = bridge.connect()
+      for (const cb of handlers.get('open') ?? []) cb()
+      await connecting
+      expect(internals.reconnectDelayMs).toBe(5_000)
+      expect(bridge.isConnected()).toBe(true)
+      await bridge.disconnect()
     } finally {
       vi.unstubAllGlobals()
     }

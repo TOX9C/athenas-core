@@ -211,7 +211,10 @@ async fn test_cleanup_orphaned_images() {
         .unwrap();
     let loaded_before = store.load_image(&image_ref.image_id).await.unwrap();
     assert!(loaded_before.is_some());
-    let removed = store.cleanup_orphaned_images().await.unwrap();
+    let removed = store
+        .cleanup_orphaned_images_older_than(std::time::Duration::ZERO)
+        .await
+        .unwrap();
     assert!(removed >= 1);
     let loaded_after = store.load_image(&image_ref.image_id).await.unwrap();
     assert!(loaded_after.is_none());
@@ -231,4 +234,82 @@ async fn test_session_id_uniqueness() {
     let s1 = store.create_session(Some("Unique 1")).await.unwrap();
     let s2 = store.create_session(Some("Unique 2")).await.unwrap();
     assert_ne!(s1.id, s2.id);
+}
+
+fn make_plain_message(id: &str) -> SessionMessage {
+    SessionMessage {
+        id: id.to_string(),
+        role: MessageRole::User,
+        content: format!("content-{id}"),
+        timestamp: 0,
+        is_error: None,
+        image_refs: None,
+    }
+}
+
+#[tokio::test]
+async fn test_update_session_enforces_max_session_messages() {
+    let (store, _dir) = temp_store();
+    let session = store.create_session(Some("Big Session")).await.unwrap();
+
+    // Push past the cap by a small margin.
+    let total = crate::types::MAX_SESSION_MESSAGES + 25;
+    let messages: Vec<SessionMessage> = (0..total)
+        .map(|i| make_plain_message(&format!("m-{i:05}")))
+        .collect();
+
+    let updated = store
+        .update_session(&session.id, None, Some(messages))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        updated.messages.len(),
+        crate::types::MAX_SESSION_MESSAGES,
+        "update_session must truncate to the documented cap"
+    );
+    // Most recent messages are kept.
+    assert_eq!(
+        updated.messages.last().unwrap().id,
+        format!("m-{:05}", total - 1)
+    );
+
+    // The truncation is what gets persisted, not the oversized list.
+    let reloaded = store.get_session(&session.id).await.unwrap().unwrap();
+    assert_eq!(reloaded.messages.len(), crate::types::MAX_SESSION_MESSAGES);
+    assert!(reloaded.messages.iter().all(|m| m.id != "m-00000"));
+}
+
+#[tokio::test]
+async fn test_append_message_atomically_appends_and_caps() {
+    let (store, _dir) = temp_store();
+    let session = store.create_session(Some("Append")).await.unwrap();
+
+    // Missing sessions return Ok(None), not NotFound — the atomic read
+    // already proved absence inside the lock.
+    let missing = store
+        .append_message("no-such-session", make_plain_message("x"))
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+
+    let first = store
+        .append_message(&session.id, make_plain_message("a-1"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.messages.len(), 1);
+    let second = store
+        .append_message(&session.id, make_plain_message("a-2"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.messages.len(), 2);
+    assert_eq!(second.messages[0].id, "a-1");
+    assert_eq!(second.messages[1].id, "a-2");
+
+    // Append observes messages added through a previous atomic append,
+    // not a stale snapshot.
+    let reloaded = store.get_session(&session.id).await.unwrap().unwrap();
+    assert_eq!(reloaded.messages.len(), 2);
 }

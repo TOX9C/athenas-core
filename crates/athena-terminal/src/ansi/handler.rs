@@ -107,16 +107,13 @@ pub fn apply_ops_with_responses(grid: &mut Grid, ops: Vec<AnsiOp>) -> Vec<Vec<u8
             }
             AnsiOp::Execute(byte) => {
                 match byte {
-                    0x07 => {} // BEL
-                    0x08 => {
-                        grid.move_cursor_left(1);
-                        grid.delete_char();
-                    } // BS: move left and erase
-                    0x09 => grid.tab(), // HT
-                    0x0A => grid.newline(), // LF
-                    0x0B => grid.newline(), // VT
-                    0x0C => grid.newline(), // FF
-                    0x0D => grid.carriage_return(), // CR
+                    0x07 => {}                        // BEL
+                    0x08 => grid.move_cursor_left(1), // BS: non-destructive (ECMA-48)
+                    0x09 => grid.tab(),               // HT
+                    0x0A => grid.newline(),           // LF
+                    0x0B => grid.newline(),           // VT
+                    0x0C => grid.newline(),           // FF
+                    0x0D => grid.carriage_return(),   // CR
                     0x85 => {
                         // NEL
                         grid.carriage_return();
@@ -284,28 +281,58 @@ fn apply_csi(
             grid.move_cursor_to(row.saturating_sub(1), col.saturating_sub(1));
         }
         'L' => {
-            // IL - Insert Line
-            let n = param_or(0, 1) as usize;
-            let default = grid.default_cell.clone();
-            for _ in 0..n {
-                if let Some(row) = grid.rows.get_mut(grid.cursor.row) {
-                    row.reset(&default);
-                }
-            }
+            // IL - Insert Line: shift lines down within the scroll region.
+            grid.insert_lines(param_or(0, 1) as usize);
         }
         'M' => {
-            // DL - Delete Line
-            let n = param_or(0, 1) as usize;
-            let default = grid.default_cell.clone();
-            for _ in 0..n {
-                if let Some(row) = grid.rows.get_mut(grid.cursor.row) {
-                    row.reset(&default);
-                }
-            }
+            // DL - Delete Line: shift lines up within the scroll region.
+            grid.delete_lines(param_or(0, 1) as usize);
         }
+        'r' if intermediates.is_empty() => {
+            // DECSTB: set top/bottom margins (1-based). Defaults: full screen.
+            let top = param_or(0, 1) as usize;
+            let bottom = param_or(1, grid.rows_count as u16) as usize;
+            grid.set_scroll_region(top.saturating_sub(1), bottom.saturating_sub(1));
+            // DECSTB homes the cursor.
+            grid.move_cursor_to(0, 0);
+        }
+        'h' if intermediates == b"?" => apply_private_mode(grid, params, true),
+        'l' if intermediates == b"?" => apply_private_mode(grid, params, false),
         _ => {}
     }
     response
+}
+
+/// Apply DEC private mode set/reset (`CSI ? Pm h` / `CSI ? Pm l`).
+fn apply_private_mode(grid: &mut Grid, params: &[u16], enable: bool) {
+    for &mode in params {
+        match mode {
+            25 => grid.cursor_visible = enable,
+            // Alternate screen family (xterm): 47 = alt screen, 1047 = alt
+            // screen (clear on exit), 1049 = save cursor + alt screen. The
+            // grid implements a single alt-screen pair that saves the cursor
+            // and swaps buffers, which covers all three — the discarded alt
+            // buffer makes 47-vs-1047 clear-on-exit differences moot.
+            47 | 1047 | 1049 => {
+                if enable {
+                    grid.enter_alt_screen();
+                } else {
+                    grid.exit_alt_screen();
+                }
+            }
+            // DECSC/DECRC-equivalent cursor save/restore.
+            1048 => {
+                if enable {
+                    grid.save_cursor();
+                } else {
+                    grid.restore_cursor();
+                }
+            }
+            2004 => grid.bracketed_paste = enable,
+            // ponytail: single log of unhandled modes; add SGR-mouse etc. only when a real TUI needs it
+            mode => log::debug!("ignoring unsupported DEC private mode {mode} (enable={enable})"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -341,5 +368,71 @@ mod tests {
         grid.move_cursor_to_col(0);
         grid.tab();
         assert_eq!(grid.cursor.col, 1);
+    }
+
+    #[test]
+    fn bs_is_non_destructive() {
+        let (grid, _) = parse(b"abc\x08X");
+        assert_eq!(grid.get_cell(0, 0).map(|c| c.c), Some('a'));
+        assert_eq!(grid.get_cell(0, 1).map(|c| c.c), Some('b'));
+        assert_eq!(grid.get_cell(0, 2).map(|c| c.c), Some('X'));
+    }
+
+    #[test]
+    fn decstb_sets_scroll_region_and_scrolls_it() {
+        let (mut grid, _) = parse(b"\x1b[2;3r");
+        assert_eq!(grid.scroll_region.top, 1);
+        assert_eq!(grid.scroll_region.bottom, 2);
+        // Cursor homed by DECSTB.
+        grid.newline();
+        assert_eq!(grid.cursor.row, 1);
+        // LF at the bottom margin scrolls the region instead of advancing.
+        grid.newline();
+        grid.newline();
+        assert_eq!(grid.cursor.row, 2);
+    }
+
+    #[test]
+    fn private_modes_toggle_cursor_paste_and_alt_screen() {
+        let (grid, _) = parse(b"\x1b[?25l\x1b[?2004h");
+        assert!(!grid.cursor_visible);
+        assert!(grid.bracketed_paste);
+
+        let (mut grid, _) = parse(b"ab\x1b[?1049h");
+        assert_eq!(grid.get_cell(0, 0).map(|c| c.c), Some('\0'));
+        let (grid, _) = {
+            let _ = apply_ops_with_responses(&mut grid, {
+                let mut parser = vte::Parser::new();
+                let mut handler = AnsiHandler::new();
+                parser.advance(&mut handler, b"\x1b[?1049l");
+                handler.ops()
+            });
+            (grid, ())
+        };
+        assert_eq!(grid.get_cell(0, 0).map(|c| c.c), Some('a'));
+    }
+
+    #[test]
+    fn alt_screen_family_47_and_1047_switch_buffers() {
+        for mode in [b"\x1b[?47h".as_slice(), b"\x1b[?1047h".as_slice()] {
+            let (mut grid, _) = parse(b"ab");
+            let mut parser = vte::Parser::new();
+            let mut handler = AnsiHandler::new();
+            parser.advance(&mut handler, mode);
+            let _ = apply_ops_with_responses(&mut grid, handler.ops());
+            assert_eq!(grid.get_cell(0, 0).map(|c| c.c), Some('\0'));
+        }
+    }
+
+    #[test]
+    fn mode_1048_saves_and_restores_cursor() {
+        let (mut grid, _) = parse(b"ab\x1b[?1048h");
+        assert_eq!(grid.cursor.col, 2);
+        grid.move_cursor_to_col(0);
+        let mut parser = vte::Parser::new();
+        let mut handler = AnsiHandler::new();
+        parser.advance(&mut handler, b"\x1b[?1048l");
+        let _ = apply_ops_with_responses(&mut grid, handler.ops());
+        assert_eq!(grid.cursor.col, 2);
     }
 }

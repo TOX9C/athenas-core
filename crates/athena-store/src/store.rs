@@ -50,6 +50,61 @@ pub struct KeyValueStore {
     persist_lock: Arc<parking_lot::Mutex<()>>,
 }
 
+/// Outcome of `flush_with_outcome` — distinguishes "already clean" from an
+/// actual durable write without callers having to poll `is_dirty()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlushOutcome {
+    /// In-memory fallback store: nothing was written and nothing can be.
+    /// The dirty flag remains set.
+    InMemory,
+    /// Store was not dirty; no write performed.
+    NotDirty,
+    /// Snapshot was durably written to disk.
+    Flushed,
+}
+
+type StoreMap = std::collections::HashMap<String, serde_json::Value>;
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Load the store map from `path`. A missing file yields an empty map.
+///
+/// A syntactically corrupt file is NEVER silently discarded: it is renamed
+/// to `<name>.corrupt-<millis>` next to the original (preserving the data
+/// for inspection/recovery), a loud warning is emitted, and the store starts
+/// empty — the first subsequent write recreates a clean `path`. Prevents the
+/// old behavior where a corrupt `store.json` was silently overwritten,
+/// destroying any recoverable data.
+fn load_data_or_quarantine(path: &Path) -> Result<StoreMap, StoreError> {
+    if !path.exists() {
+        return Ok(StoreMap::new());
+    }
+    let content = std::fs::read_to_string(path)?;
+    match serde_json::from_str(&content) {
+        Ok(data) => Ok(data),
+        Err(err) => {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy())
+                .unwrap_or_else(|| std::borrow::Cow::Borrowed("store.json"));
+            let quarantined = path.with_file_name(format!("{name}.corrupt-{}", now_millis()));
+            std::fs::rename(path, &quarantined)?;
+            eprintln!(
+                "KeyValueStore: CORRUPT store file {} quarantined to {} (parse error: {err}). \
+                 Starting with an empty store; inspect the quarantined file to recover data.",
+                path.display(),
+                quarantined.display()
+            );
+            Ok(StoreMap::new())
+        }
+    }
+}
+
 impl KeyValueStore {
     /// Create or load a store at `~/.config/athena-core`.
     /// (Use full app path derived from `dirs::data_dir()` in production.)
@@ -84,12 +139,12 @@ impl KeyValueStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let data: std::collections::HashMap<String, serde_json::Value> = if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
-            serde_json::from_str(&content)?
-        } else {
-            std::collections::HashMap::new()
-        };
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+            if let Some(parent) = path.parent() {
+                crate::sweep_orphaned_temp_files(parent, Some(file_name));
+            }
+        }
+        let data = load_data_or_quarantine(&path)?;
         Ok(Self {
             path: Some(path),
             data: Arc::new(parking_lot::Mutex::new(data)),
@@ -106,12 +161,8 @@ impl KeyValueStore {
             .join("athena-core");
         std::fs::create_dir_all(&data_dir)?;
         let path = data_dir.join(format!("{name}.json"));
-        let data: std::collections::HashMap<String, serde_json::Value> = if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
-            serde_json::from_str(&content)?
-        } else {
-            std::collections::HashMap::new()
-        };
+        crate::sweep_orphaned_temp_files(&data_dir, Some(&format!("{name}.json")));
+        let data = load_data_or_quarantine(&path)?;
         Ok(Self {
             path: Some(path),
             data: Arc::new(parking_lot::Mutex::new(data)),
@@ -126,20 +177,17 @@ impl KeyValueStore {
         let data_dir = dirs::data_dir()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
             .join("athena-core");
-        let data_dir_clone = data_dir.clone();
-        tokio::task::spawn_blocking(move || std::fs::create_dir_all(&data_dir_clone))
+        let path = data_dir.join(format!("{name}.json"));
+        let file_name = format!("{name}.json");
+        let (data, path) =
+            tokio::task::spawn_blocking(move || -> Result<(_, std::path::PathBuf), StoreError> {
+                std::fs::create_dir_all(&data_dir)?;
+                crate::sweep_orphaned_temp_files(&data_dir, Some(&file_name));
+                let data = load_data_or_quarantine(&path)?;
+                Ok((data, path))
+            })
             .await
             .map_err(|e| StoreError::Generic(e.to_string()))??;
-        let path = data_dir.join(format!("{name}.json"));
-        let data: std::collections::HashMap<String, serde_json::Value> = if path.exists() {
-            let path_clone = path.clone();
-            let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path_clone))
-                .await
-                .map_err(|e| StoreError::Generic(e.to_string()))??;
-            serde_json::from_str(&content)?
-        } else {
-            std::collections::HashMap::new()
-        };
         Ok(Self {
             path: Some(path),
             data: Arc::new(parking_lot::Mutex::new(data)),
@@ -169,6 +217,15 @@ impl KeyValueStore {
     /// For an in-memory fallback store, this updates the in-memory map but
     /// `flush_if_dirty` will not write to disk.
     pub async fn set<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
+        self.set_deferred(key, value)
+    }
+
+    /// Synchronous counterpart of [`Self::set`]: apply the mutation and mark
+    /// the store dirty without touching disk. Use from non-async contexts
+    /// (kanban saves, notification persistence); the deferred write lands on
+    /// the next `flush_if_dirty`/`Drop`. For an in-memory fallback store the
+    /// dirty flag stays set since nothing is durable.
+    pub fn set_deferred<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
         {
             let mut map = self.data.lock();
@@ -197,26 +254,9 @@ impl KeyValueStore {
     /// updates the in-memory map and returns `Ok(())` without touching disk.
     pub fn set_sync<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StoreError> {
         let json_value = serde_json::to_value(value)?;
-        let _persist_guard = self.persist_lock.lock();
-        {
-            let mut map = self.data.lock();
+        self.mutate_sync(|map| {
             map.insert(key.to_string(), json_value);
-        }
-        self.revision.fetch_add(1, Ordering::SeqCst);
-        self.dirty.store(true, Ordering::SeqCst);
-        if self.path.is_none() {
-            self.dirty.store(false, Ordering::SeqCst);
-            return Ok(());
-        }
-        self.dirty.store(true, Ordering::SeqCst);
-        let persisted_revision = self.revision.load(Ordering::SeqCst);
-        self.persist_snapshot_locked()?;
-        if self.revision.load(Ordering::SeqCst) == persisted_revision {
-            self.dirty.store(false, Ordering::SeqCst);
-        } else {
-            self.dirty.store(true, Ordering::SeqCst);
-        }
-        Ok(())
+        })
     }
 
     /// Delete a key synchronously, persist to disk immediately (blocking I/O).
@@ -225,26 +265,38 @@ impl KeyValueStore {
     /// For an in-memory fallback store, this removes the key from the in-memory
     /// map and returns `Ok(())` without touching disk.
     pub fn delete_sync(&self, key: &str) -> Result<(), StoreError> {
+        self.mutate_sync(|map| {
+            map.remove(key);
+        })
+    }
+
+    /// Shared body for `set_sync`/`delete_sync`: under the persist lock,
+    /// apply `mutate` to the map, bump the revision/dirty flag, and
+    /// immediately persist the full snapshot. On persist failure the dirty
+    /// flag stays set so the write remains retryable.
+    ///
+    /// For an in-memory fallback store the mutation is applied to the
+    /// in-memory map and `Ok(())` is returned without touching disk; the
+    /// dirty flag intentionally stays set since nothing is durable.
+    fn mutate_sync(
+        &self,
+        mutate: impl FnOnce(&mut std::collections::HashMap<String, serde_json::Value>),
+    ) -> Result<(), StoreError> {
         let _persist_guard = self.persist_lock.lock();
         {
             let mut map = self.data.lock();
-            map.remove(key);
+            mutate(&mut map);
         }
         self.revision.fetch_add(1, Ordering::SeqCst);
         self.dirty.store(true, Ordering::SeqCst);
         if self.path.is_none() {
-            self.dirty.store(false, Ordering::SeqCst);
+            // In-memory fallback: nothing can be persisted; dirty STAYS set
+            // because the data is not durable anywhere.
             return Ok(());
         }
-        self.dirty.store(true, Ordering::SeqCst);
-        let persisted_revision = self.revision.load(Ordering::SeqCst);
-        self.persist_snapshot_locked()?;
-        if self.revision.load(Ordering::SeqCst) == persisted_revision {
-            self.dirty.store(false, Ordering::SeqCst);
-        } else {
-            self.dirty.store(true, Ordering::SeqCst);
-        }
-        Ok(())
+        // persist_snapshot_locked clears dirty iff no further mutation raced
+        // with the write; on error dirty stays set for retry.
+        self.persist_snapshot_locked()
     }
 
     /// Check if a key exists.
@@ -281,25 +333,36 @@ impl KeyValueStore {
     /// If the store is dirty, write the in-memory state to disk and clear the
     /// flag. Returns `Ok(())` whether or not a write was required.
     ///
-    /// For an in-memory fallback store, this is a no-op (the dirty bit is
-    /// cleared but no file is touched).
+    /// For an in-memory fallback store, this writes nothing: it returns
+    /// `Ok(())` as `FlushOutcome::InMemory` does, and — unlike earlier
+    /// versions — leaves `is_dirty()` set, because the data is not durable
+    /// anywhere. Use `flush_with_outcome` when the distinction matters.
     ///
     /// Call this after a batch of `set`/`delete` calls to persist them.
     pub async fn flush_if_dirty(&self) -> Result<(), StoreError> {
+        self.flush_with_outcome().await.map(|_| ())
+    }
+
+    /// Flush pending writes, reporting exactly what happened:
+    /// - `FlushOutcome::InMemory` — fallback store: nothing was written and
+    ///   the dirty flag stays set (the data is not durable anywhere),
+    /// - `FlushOutcome::NotDirty` — nothing pending, no write performed,
+    /// - `FlushOutcome::Flushed` — the snapshot was written durably and the
+    ///   dirty flag was cleared (unless a concurrent mutation re-raised it).
+    pub async fn flush_with_outcome(&self) -> Result<FlushOutcome, StoreError> {
         if self.path.is_none() {
-            // In-memory fallback: no file to flush. Clear the dirty bit so
-            // is_dirty() accurately reflects that there is nothing to write.
-            self.dirty.store(false, Ordering::SeqCst);
-            return Ok(());
+            // In-memory fallback: there is no file to write. Do NOT claim
+            // success by clearing dirty — the data is genuinely unpersisted.
+            return Ok(FlushOutcome::InMemory);
         }
         if !self.dirty.load(Ordering::SeqCst) {
-            return Ok(());
+            return Ok(FlushOutcome::NotDirty);
         }
         let store = self.clone_for_persistence();
         tokio::task::spawn_blocking(move || store.persist_snapshot())
             .await
             .map_err(|e| StoreError::Generic(e.to_string()))??;
-        Ok(())
+        Ok(FlushOutcome::Flushed)
     }
 
     fn clone_for_persistence(&self) -> PersistenceHandle {
@@ -316,7 +379,9 @@ impl KeyValueStore {
         let path = match &self.path {
             Some(path) => path.clone(),
             None => {
-                self.dirty.store(false, Ordering::SeqCst);
+                // In-memory fallback: nothing to persist; leave dirty set so
+                // unsaved state stays visible (unreachable from mutate_sync /
+                // flush_with_outcome, which early-return for in-memory stores).
                 return Ok(());
             }
         };
@@ -352,7 +417,8 @@ impl PersistenceHandle {
         let path = match self.path {
             Some(path) => path,
             None => {
-                self.dirty.store(false, Ordering::SeqCst);
+                // In-memory fallback: nothing to persist; leave dirty set so
+                // unsaved state stays visible.
                 return Ok(());
             }
         };

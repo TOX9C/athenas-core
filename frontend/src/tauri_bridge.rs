@@ -1,4 +1,5 @@
 use std::sync::OnceLock;
+use base64::Engine;
 use wasm_bindgen::prelude::*;
 
 /// Result type for Tauri command invocations.
@@ -12,11 +13,9 @@ where
 {
     // Perf accounting happens once in `invoke_js_value`; recording here too
     // would double-count every JSON invoke.
-    let args_value: JsValue = serde_json::from_str(args)
-        .map(|v: serde_json::Value| {
-            js_sys::JSON::parse(&v.to_string()).unwrap_or(JsValue::UNDEFINED)
-        })
-        .unwrap_or(JsValue::UNDEFINED);
+    // Callers hold a ready-made JSON string — parse it straight to a JsValue
+    // instead of round-tripping through serde_json::Value.
+    let args_value = js_sys::JSON::parse(args).unwrap_or(JsValue::UNDEFINED);
 
     invoke_js_value(command, args_value).await
 }
@@ -222,22 +221,6 @@ pub async fn git_worktree_remove(path: &str, name: &str) -> TauriResult<()> {
     .await
 }
 
-pub async fn project_context_list(path: &str) -> TauriResult<JsValue> {
-    invoke(
-        "project_context_list",
-        &serde_json::json!({ "path": path }).to_string(),
-    )
-    .await
-}
-
-pub async fn project_context_apply(path: &str) -> TauriResult<JsValue> {
-    invoke(
-        "project_context_apply",
-        &serde_json::json!({ "path": path }).to_string(),
-    )
-    .await
-}
-
 pub async fn git_diff_file(
     path: &str,
     staged: bool,
@@ -319,45 +302,18 @@ pub async fn git_diff(path: &str, staged: bool) -> TauriResult<crate::stores::gi
         .map_err(|e| JsValue::from_str(&format!("git_diff decode: {e}")))
 }
 
-pub async fn routines_list() -> TauriResult<JsValue> {
-    invoke("routines_list", "{}").await
-}
-
-pub async fn routines_upsert(rule_json: &str) -> TauriResult<()> {
-    invoke(
-        "routines_upsert",
-        &serde_json::json!({ "ruleJson": rule_json.to_string() }).to_string(),
-    )
-    .await
-}
-
-pub async fn routines_delete(rule_id: &str) -> TauriResult<()> {
-    invoke(
-        "routines_delete",
-        &serde_json::json!({ "ruleId": rule_id }).to_string(),
-    )
-    .await
-}
-
-pub async fn routines_set_enabled(rule_id: &str, enabled: bool) -> TauriResult<()> {
-    invoke(
-        "routines_set_enabled",
-        &serde_json::json!({ "ruleId": rule_id, "enabled": enabled }).to_string(),
-    )
-    .await
-}
-
-pub async fn routines_run_now(rule_id: &str) -> TauriResult<()> {
-    invoke(
-        "routines_run_now",
-        &serde_json::json!({ "ruleId": rule_id }).to_string(),
-    )
-    .await
-}
-
 /// Store operations
 pub async fn store_get(key: &str) -> TauriResult<String> {
     invoke("store_get", &serde_json::json!({ "key": key }).to_string()).await
+}
+
+/// List discovered project-context files for a workspace directory.
+pub async fn project_context_list(path: &str) -> TauriResult<JsValue> {
+    invoke(
+        "project_context_list",
+        &serde_json::json!({ "path": path }).to_string(),
+    )
+    .await
 }
 
 pub async fn store_set(key: &str, value: &str) -> TauriResult<()> {
@@ -571,48 +527,6 @@ pub async fn agent_notify_install(agent: &str) -> TauriResult<String> {
     .await
 }
 
-/// Plan operations
-pub async fn plan_create(goal: &str, reasoning: &str, steps: &str) -> TauriResult<String> {
-    invoke(
-        "plan_create",
-        &serde_json::json!({ "goal": goal, "reasoning": reasoning, "steps": steps }).to_string(),
-    )
-    .await
-}
-
-pub async fn plan_get() -> TauriResult<String> {
-    invoke("plan_get", "{}").await
-}
-
-pub async fn plan_update_step(
-    step_id: &str,
-    status: &str,
-    pane_id: Option<&str>,
-) -> TauriResult<String> {
-    invoke(
-        "plan_update_step",
-        &serde_json::json!({ "stepId": step_id, "status": status, "paneId": pane_id }).to_string(),
-    )
-    .await
-}
-
-/// Agent comms operations
-pub async fn agent_comms_token() -> TauriResult<String> {
-    invoke("agent_comms_token", "{}").await
-}
-
-pub async fn agent_comms_sessions() -> TauriResult<String> {
-    invoke("agent_comms_sessions", "{}").await
-}
-
-pub async fn agent_comms_send(agent_id: &str, method: &str, params: &str) -> TauriResult<String> {
-    invoke(
-        "agent_comms_send",
-        &serde_json::json!({ "agentId": agent_id, "method": method, "params": params }).to_string(),
-    )
-    .await
-}
-
 /// Respond to an agent comms input request.
 pub async fn agent_respond_input(request_id: &str, response: &str) -> TauriResult<JsValue> {
     invoke(
@@ -629,35 +543,6 @@ pub async fn search_code(pattern: &str, path: &str) -> TauriResult<String> {
         &serde_json::json!({ "pattern": pattern, "path": path }).to_string(),
     )
     .await
-}
-
-/// MCP server operations
-pub async fn mcp_init(port: u16) -> TauriResult<String> {
-    invoke("mcp_init", &serde_json::json!({ "port": port }).to_string()).await
-}
-
-pub async fn mcp_shutdown() -> TauriResult<String> {
-    invoke("mcp_shutdown", "{}").await
-}
-
-pub async fn mcp_handle_request(request: &str) -> TauriResult<String> {
-    invoke(
-        "mcp_handle_request",
-        &serde_json::json!({ "request": request }).to_string(),
-    )
-    .await
-}
-
-pub async fn mcp_broadcast(method: &str, params: &str) -> TauriResult<String> {
-    invoke(
-        "mcp_broadcast",
-        &serde_json::json!({ "method": method, "params": params }).to_string(),
-    )
-    .await
-}
-
-pub async fn mcp_tools() -> TauriResult<String> {
-    invoke("mcp_tools", "{}").await
 }
 
 /// Swarm operations
@@ -780,39 +665,6 @@ pub async fn swarm_read_mailbox(dir: &str, agent_id: &str) -> TauriResult<String
     .await
 }
 
-/// Shell integration operations
-pub async fn shell_integration_parse(data: &str) -> TauriResult<String> {
-    invoke(
-        "shell_integration_parse",
-        &serde_json::json!({ "data": data }).to_string(),
-    )
-    .await
-}
-
-pub async fn shell_integration_script(shell: &str) -> TauriResult<String> {
-    invoke(
-        "shell_integration_script",
-        &serde_json::json!({ "shell": shell }).to_string(),
-    )
-    .await
-}
-
-pub async fn shell_integration_compatible(shell: &str) -> TauriResult<String> {
-    invoke(
-        "shell_integration_compatible",
-        &serde_json::json!({ "shell": shell }).to_string(),
-    )
-    .await
-}
-
-pub async fn shell_integration_strip(data: &str) -> TauriResult<String> {
-    invoke(
-        "shell_integration_strip",
-        &serde_json::json!({ "data": data }).to_string(),
-    )
-    .await
-}
-
 // ---------------------------------------------------------------------------
 // Kanban operations
 // ---------------------------------------------------------------------------
@@ -850,7 +702,6 @@ pub async fn kanban_update_task(
     title: Option<&str>,
     description: Option<&str>,
     status: Option<&str>,
-    evidence: Option<&str>,
 ) -> TauriResult<String> {
     // camelCase wire key (`taskId`) — Tauri v2 expects camelCase args; the
     // old snake_case key made the required `task_id` param fail, so cards
@@ -861,8 +712,7 @@ pub async fn kanban_update_task(
             "taskId": task_id,
             "title": title,
             "description": description,
-            "status": status,
-            "evidence": evidence
+            "status": status
         })
         .to_string(),
     )
@@ -890,17 +740,20 @@ pub async fn pty_default_shell() -> TauriResult<String> {
 
 static DEFAULT_SHELL_CACHE: OnceLock<String> = OnceLock::new();
 
-/// Get the default shell, cached after the first call. Falls back to
-/// `/bin/zsh` on any error so terminal spawns never block waiting for IPC.
+/// Get the default shell, cached after the first successful call. Falls back
+/// to `/bin/zsh` on error without caching, so a transient IPC failure (e.g.
+/// backend not ready yet) doesn't pin the wrong shell for the app lifetime.
 pub async fn pty_default_shell_cached() -> String {
     if let Some(s) = DEFAULT_SHELL_CACHE.get() {
         return s.clone();
     }
-    let s = pty_default_shell()
-        .await
-        .unwrap_or_else(|_| "/bin/zsh".to_string());
-    let _ = DEFAULT_SHELL_CACHE.set(s.clone());
-    s
+    match pty_default_shell().await {
+        Ok(s) => {
+            let _ = DEFAULT_SHELL_CACHE.set(s.clone());
+            s
+        }
+        Err(_) => "/bin/zsh".to_string(),
+    }
 }
 
 /// Response from `pty_agent_info`.
@@ -926,6 +779,18 @@ pub async fn pty_agent_info(id: &str) -> TauriResult<AgentInfo> {
     .await?;
     serde_json::from_str(&raw)
         .map_err(|e| js_sys::Error::new(&format!("failed to parse AgentInfo: {}", e)).into())
+}
+
+/// Acknowledge a pane's attention state in the backend tracker (pairs with
+/// `AgentStatusRegistry::dismiss_waiting` in the frontend store). Fire-and-forget:
+/// the backend re-emits the cleared `agent:status`, so a late duplicate is a
+/// no-op.
+pub async fn agent_activity_acknowledge(pane_id: &str) -> TauriResult<()> {
+    invoke(
+        "agent_activity_acknowledge",
+        &serde_json::json!({ "paneId": pane_id }).to_string(),
+    )
+    .await
 }
 
 /// Spawn a new PTY session with the given shell and dimensions.
@@ -1098,20 +963,45 @@ pub async fn pty_set_xterm(id: &str, is_xterm: bool) -> TauriResult<()> {
 /// subscribes. Makes a session that was paused (e.g. pane dropped without
 /// remount) self-heal on the next re-show, closing the stuck-paused gap.
 /// No-op (and Ok) if the session does not exist yet on a brand-new spawn.
-pub async fn pty_attach_listener(id: &str, owner: &str, replace_current: bool) -> TauriResult<u64> {
+pub async fn pty_attach_listener(
+    id: &str,
+    owner: &str,
+    replace_current: bool,
+    channel: Option<&JsValue>,
+) -> TauriResult<u64> {
     // Keep the generation as a string across IPC: JavaScript numbers cannot
     // represent every u64 exactly, while generations are part of a race-safety
     // lease and must never be rounded.
-    let generation: String = invoke(
-        "pty_attach_listener",
-        &serde_json::json!({
-            "id": id,
-            "owner": owner,
-            "replaceCurrent": replace_current,
-        })
-        .to_string(),
-    )
-    .await?;
+    let generation: String = match channel {
+        // A `Channel` object cannot cross JSON.stringify — its `toJSON`
+        // produces the `__CHANNEL__:<id>` marker the backend deserializes
+        // into `JavaScriptChannelId` — so the args object is built live.
+        Some(channel) => {
+            let args = js_sys::JSON::parse(
+                &serde_json::json!({
+                    "id": id,
+                    "owner": owner,
+                    "replaceCurrent": replace_current,
+                })
+                .to_string(),
+            )
+            .map_err(|e| JsValue::from(format!("pty_attach_listener args error: {e:?}")))?;
+            js_sys::Reflect::set(&args, &JsValue::from_str("channel"), channel)?;
+            invoke_js_value("pty_attach_listener", args).await?
+        }
+        None => {
+            invoke(
+                "pty_attach_listener",
+                &serde_json::json!({
+                    "id": id,
+                    "owner": owner,
+                    "replaceCurrent": replace_current,
+                })
+                .to_string(),
+            )
+            .await?
+        }
+    };
     generation
         .parse::<u64>()
         .map_err(|_| JsValue::from_str("invalid listener generation"))
@@ -1180,16 +1070,19 @@ pub struct OutputLine {
     pub text: String,
 }
 
-/// Get the accumulated output history for a pane.
-pub async fn get_pane_history(pane_id: &str) -> TauriResult<Vec<OutputLine>> {
+/// Get the tail of a pane's output history (`limit` rows from the end; the
+/// backend removed the unbounded `get_pane_history` command — always bound
+/// the request so a 5,000-line buffer is not cloned per call).
+pub async fn get_pane_history(pane_id: &str, limit: usize) -> TauriResult<Vec<OutputLine>> {
     let raw: String = invoke(
-        "get_pane_history",
-        &serde_json::json!({ "paneId": pane_id }).to_string(),
+        "output_buffer_get",
+        &serde_json::json!({ "paneId": pane_id, "limit": limit, "offset": null }).to_string(),
     )
     .await?;
     serde_json::from_str(&raw)
         .map_err(|e| js_sys::Error::new(&format!("failed to parse output history: {}", e)).into())
 }
+
 /// A raw PTY listener: subscribes to the base64 `pty:raw:<id>` event stream.
 /// On unmount invoke the returned `unlisten` and call `pty_detach_listener`
 /// so the backend pauses the raw flushes for this session.
@@ -1199,6 +1092,13 @@ pub struct PtyRawListener {
     /// Relay binary-mode unlisten closure (shim `relayRaw.listen`). Present
     /// only when running over the mobile-mirror relay.
     pub unlisten_raw: Option<Box<dyn FnOnce()>>,
+    /// Desktop binary-mode IPC channel (`__TAURI__.core.Channel`) already
+    /// wired to deliver raw PTY bytes to the listener callback. Hand to
+    /// `pty_attach_listener` so the backend routes output through it and
+    /// skips the base64 `pty:raw:<id>` event for this pane. Present on the
+    /// desktop webview; absent under the relay or when the Channel
+    /// constructor is unavailable.
+    pub channel: Option<JsValue>,
 }
 
 /// Register a relay binary-frame sink for `pane` when the shim exposes
@@ -1239,21 +1139,118 @@ fn relay_raw_listen(
     }))
 }
 
+/// Create a desktop raw-IPC channel (`__TAURI__.core.Channel`) whose
+/// onmessage delivers raw PTY bytes to `callback`. Returns the Channel
+/// object (to pass to `pty_attach_listener`) and an unlisten closure.
+/// `None` when the Channel constructor is unavailable (relay shim webview,
+/// plain browser preview).
+///
+/// Payloads arrive as an `ArrayBuffer` on both backend paths: payloads
+/// below 1 KiB cross as `new Uint8Array(...).buffer` via webview eval,
+/// larger ones via the binary fetch command.
+///
+/// The onmessage closure is leaked (`forget`) for the mount lifetime; the
+/// unlisten closure nulls the callback. (No handler ever fires after
+/// unmount — the backend detaches the channel first.)
+fn raw_channel_listen(
+    mut callback: impl FnMut(Vec<u8>) + 'static,
+) -> Option<(JsValue, Box<dyn FnOnce()>)> {
+    let window = web_sys::window()?;
+    let tauri = js_sys::Reflect::get(&window, &JsValue::from_str("__TAURI__")).ok()?;
+    let core = js_sys::Reflect::get(&tauri, &JsValue::from_str("core")).ok()?;
+    let ctor = js_sys::Reflect::get(&core, &JsValue::from_str("Channel"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let channel = js_sys::Reflect::construct(&ctor, &js_sys::Array::new()).ok()?;
+    let cb = Closure::wrap(Box::new(move |message: JsValue| {
+        if !message.is_instance_of::<js_sys::ArrayBuffer>() {
+            return;
+        }
+        let bytes = js_sys::Uint8Array::new(&message);
+        callback(bytes.to_vec());
+    }) as Box<dyn FnMut(JsValue)>);
+    js_sys::Reflect::set(
+        &channel,
+        &JsValue::from_str("onmessage"),
+        cb.as_ref().unchecked_ref(),
+    )
+    .ok()?;
+    cb.forget();
+    let channel_for_unlisten = channel.clone();
+    Some((
+        channel,
+        Box::new(move || {
+            let _ = js_sys::Reflect::set(
+                &channel_for_unlisten,
+                &JsValue::from_str("onmessage"),
+                &JsValue::NULL,
+            );
+        }),
+    ))
+}
+
+/// Payload of a `pty:raw:<id>` event (base64-encoded byte chunk, coalesced
+/// by the backend to one emit per 8 ms tick).
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyRawPayload {
+    data: String,
+}
+
+/// Install the base64 `pty:raw:<id>` event listener feeding `callback`.
+/// Used directly when the backend delivers the legacy event stream, and
+/// registered on demand as the channel-lost fallback in channel mode.
+fn pty_raw_event_listener(
+    id: &str,
+    callback: std::rc::Rc<std::cell::RefCell<impl FnMut(Vec<u8>) + 'static>>,
+) -> Result<Box<dyn FnOnce()>, TauriBridgeError> {
+    listen(&format!("pty:raw:{id}"), move |payload: JsValue| {
+        // Occasionally the backend emits this event with a String payload,
+        // which the IPC layer JSON-quotes — parse the inner JSON when we
+        // land on a string instead of the object.
+        let parsed: PtyRawPayload = if payload.is_string() {
+            let Some(inner) = payload.as_string() else {
+                return;
+            };
+            match serde_json::from_str(&inner) {
+                Ok(p) => p,
+                Err(_) => return,
+            }
+        } else {
+            match serde_wasm_bindgen::from_value(payload) {
+                Ok(p) => p,
+                Err(_) => return,
+            }
+        };
+
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&parsed.data)
+        else {
+            return;
+        };
+
+        (callback.borrow_mut())(bytes);
+    })
+}
+
 /// Subscribe to raw PTY byte chunks for a session.
 ///
-/// Bytes cross IPC as base64 inside the `pty:raw:<id>` event payload; the
-/// backend coalesces to one emit per 8 ms tick, so decode cost is amortized
-/// per flush rather than per read.
+/// Desktop delivery is a binary `Channel` handed to `pty_attach_listener`
+/// (returned as `PtyRawListener::channel`): raw PTY bytes cross IPC as
+/// bytes, and the backend skips the base64 `pty:raw:<id>` event for the
+/// pane, so no event listener is registered in that mode. When no channel
+/// can be created (relay shim, plain browser), bytes cross as base64 inside
+/// the `pty:raw:<id>` event payload; the backend coalesces to one emit per
+/// 8 ms tick, so decode cost is amortized per flush rather than per read.
 pub fn pty_listen_raw(
     id: &str,
     callback: impl FnMut(Vec<u8>) + 'static,
 ) -> Result<PtyRawListener, TauriBridgeError> {
-    let event_name = format!("pty:raw:{id}");
-
     // Shared cell so the relay binary sink and the legacy text listener can
     // both invoke the caller's callback (only one path actually fires: under
     // the relay the payload crosses as binary frames; on the desktop webview
-    // the text event carries base64).
+    // the Channel delivers bytes — or, without it, the text event carries
+    // base64).
     let callback = std::rc::Rc::new(std::cell::RefCell::new(callback));
 
     // Relay (mobile mirror) fast path: the relay converts `pty:raw:<id>`
@@ -1267,60 +1264,86 @@ pub fn pty_listen_raw(
         move |bytes| (callback.borrow_mut())(bytes)
     });
 
-    let unlisten = listen(&event_name, {
-        let callback = callback.clone();
-        move |payload_str: String| {
-        // The backend emits this event with a String payload, which the IPC
-        // layer JSON-quotes — parse again when we land on a quoted string
-        // instead of the object.
-        let mut parsed: serde_json::Value = match serde_json::from_str(&payload_str) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        if let serde_json::Value::String(inner) = &parsed {
-            parsed = match serde_json::from_str(inner) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
+    // Desktop binary fast path: only when NOT running over the relay shim.
+    if unlisten_raw.is_none() {
+        if let Some((channel, unlisten_channel)) = raw_channel_listen({
+            let callback = callback.clone();
+            move |bytes| (callback.borrow_mut())(bytes)
+        }) {
+            // Channel-lost fallback: the backend emits `pty:channel-lost:<id>`
+            // when a send on this mount's channel fails and it drops the
+            // channel entry. From then on the flush gate falls back to base64
+            // `pty:raw:<id>` emission, so install the legacy listener ONLY
+            // then — installing it eagerly would double-deliver every chunk
+            // (channel + event) as soon as a relay phone subscribes. The
+            // `fallback_active` flag prevents a duplicate install if the
+            // event arrives twice; a backend-side identity guard ensures the
+            // event is never emitted for a send on a superseded channel, so
+            // a remount cannot falsely activate this mount's fallback.
+            let fallback_cell = std::rc::Rc::new(std::cell::RefCell::new(None::<
+                Box<dyn FnOnce()>,
+            >));
+            let id_fallback = id.to_string();
+            let callback_fallback = callback.clone();
+            let fallback_cell_for_listener = fallback_cell.clone();
+            let unlisten_lost = listen(&format!("pty:channel-lost:{id}"), move |_payload| {
+                if fallback_cell_for_listener.borrow().is_some() {
+                    return;
+                }
+                match pty_raw_event_listener(&id_fallback, callback_fallback.clone()) {
+                    Ok(unlisten) => {
+                        *fallback_cell_for_listener.borrow_mut() = Some(unlisten);
+                        web_sys::console::warn_1(
+                            &format!(
+                                "pty_listen_raw[{id_fallback}]: channel lost; base64 fallback listener installed"
+                            )
+                            .into(),
+                        );
+                    }
+                    Err(err) => {
+                        web_sys::console::error_1(
+                            &format!(
+                                "pty_listen_raw[{id_fallback}]: failed to install base64 fallback: {err:?}"
+                            )
+                            .into(),
+                        );
+                    }
+                }
+            })
+            .ok();
+            return Ok(PtyRawListener {
+                unlisten: Some(Box::new(move || {
+                    unlisten_channel();
+                    if let Some(unlisten_lost) = unlisten_lost {
+                        unlisten_lost();
+                    }
+                    // Tear down an activated base64 fallback listener too.
+                    if let Some(unlisten_fallback) = fallback_cell.borrow_mut().take() {
+                        unlisten_fallback();
+                    }
+                })),
+                unlisten_raw: None,
+                channel: Some(channel),
+            });
         }
-        let data_b64 = match parsed.get("data").and_then(|v| v.as_str()) {
-            Some(s) => s,
-            None => return,
-        };
+    }
 
-        let window = match web_sys::window() {
-            Some(w) => w,
-            None => return,
-        };
-        let atob_val = match js_sys::Reflect::get(&window, &JsValue::from_str("atob")) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        let Ok(atob_fn) = atob_val.dyn_into::<js_sys::Function>() else {
-            return;
-        };
-        let s_val = match atob_fn.call1(&JsValue::NULL, &JsValue::from_str(data_b64)) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        let Some(s) = s_val.as_string() else {
-            return;
-        };
-
-        // atob returns a "binary string" where each char's code point
-        // equals the byte value (0-255). Iterate to build Vec<u8>.
-        let mut bytes = Vec::with_capacity(s.len());
-        for c in s.chars() {
-            bytes.push(c as u8);
+    let unlisten = match pty_raw_event_listener(id, callback) {
+        Ok(unlisten) => unlisten,
+        Err(err) => {
+            // Registration failed: drop the relay sink we already installed
+            // so it doesn't stay subscribed forever.
+            if let Some(unlisten_raw) = unlisten_raw {
+                unlisten_raw();
+            }
+            return Err(err);
         }
-
-        (callback.borrow_mut())(bytes);
-        }
-    })?;
+    };
 
     Ok(PtyRawListener {
         unlisten: Some(unlisten),
         unlisten_raw,
+        channel: None,
     })
 }
 
@@ -1340,22 +1363,9 @@ pub async fn pty_raw_replay(pane_id: &str) -> TauriResult<Option<Vec<u8>>> {
     if b64.is_empty() {
         return Ok(None);
     }
-    let window = web_sys::window().ok_or_else(|| JsValue::from_str("No window"))?;
-    let atob_val = js_sys::Reflect::get(&window, &JsValue::from_str("atob"))
-        .map_err(|e| JsValue::from(format!("Reflect atob error: {e:?}")))?;
-    let atob_fn = atob_val
-        .dyn_into::<js_sys::Function>()
-        .map_err(|_| JsValue::from_str("atob not a function"))?;
-    let s_val = atob_fn
-        .call1(&JsValue::NULL, &JsValue::from_str(&b64))
-        .map_err(|e| JsValue::from(format!("atob error: {e:?}")))?;
-    let s = s_val
-        .as_string()
-        .ok_or_else(|| JsValue::from_str("atob returned a non-string"))?;
-    let mut bytes = Vec::with_capacity(s.len());
-    for c in s.chars() {
-        bytes.push(c as u8);
-    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&b64)
+        .map_err(|e| JsValue::from(format!("pty_raw_replay base64 decode error: {e}")))?;
     Ok(Some(bytes))
 }
 
@@ -1372,23 +1382,6 @@ pub async fn voice_record_start() -> TauriResult<()> {
 /// silent, or recognition failed).
 pub async fn voice_record_stop() -> TauriResult<String> {
     invoke("voice_record_stop", "{}").await
-}
-
-/// Tool executor operations
-pub async fn tool_execute(tool_name: &str, arguments: &str) -> TauriResult<String> {
-    invoke(
-        "tool_execute",
-        &serde_json::json!({ "tool_name": tool_name, "arguments": arguments }).to_string(),
-    )
-    .await
-}
-
-pub async fn tool_list() -> TauriResult<String> {
-    invoke("tool_list", "{}").await
-}
-
-pub async fn tool_openai_schema() -> TauriResult<String> {
-    invoke("tool_openai_schema", "{}").await
 }
 
 // ---------------------------------------------------------------------------
@@ -1769,7 +1762,9 @@ impl std::fmt::Display for TauriBridgeError {
 impl std::error::Error for TauriBridgeError {}
 
 /// Listen for Tauri push events from the backend.
-/// The callback receives the event payload as a String.
+/// The callback receives the raw event payload `JsValue` (already a JS object
+/// or string) — deserialize it via `serde_wasm_bindgen::from_value`, which
+/// avoids the former JSON.stringify → serde_json::from_str round trip.
 /// Returns a boxed unlisten function that, when called, removes the listener
 /// and allows the closure to be garbage-collected. Callers that want
 /// cleanup should store and invoke the returned function on component unmount.
@@ -1777,7 +1772,7 @@ impl std::error::Error for TauriBridgeError {}
 /// live for the app lifetime (no behavioral change from before).
 pub fn listen(
     event: &str,
-    callback: impl FnMut(String) + 'static,
+    callback: impl FnMut(JsValue) + 'static,
 ) -> Result<Box<dyn FnOnce()>, TauriBridgeError> {
     // Performance instrumentation: every delivered push event is counted here
     // (the single chokepoint for backend→frontend traffic).
@@ -1830,15 +1825,12 @@ pub fn listen(
         if let Ok(obj) = event_obj.dyn_into::<js_sys::Object>() {
             let payload = js_sys::Reflect::get(&obj, &JsValue::from_str("payload"))
                 .unwrap_or(JsValue::UNDEFINED);
-            let payload_str = if payload.is_string() {
-                payload.as_string().unwrap_or_default()
-            } else {
-                js_sys::JSON::stringify(&payload)
-                    .map(|s| s.as_string().unwrap_or_default())
-                    .unwrap_or_default()
-            };
-            crate::utils::perf_metrics::record_event(&event_for_metrics, payload_str.len() as u64);
-            callback(payload_str);
+            // Cheap size estimate for the metrics ring: exact for string
+            // payloads, 0 for objects (stringifying them per-event dominated
+            // the IPC cost this metric was meant to observe).
+            let size = payload.as_string().map(|s| s.len() as u64).unwrap_or(0);
+            crate::utils::perf_metrics::record_event(&event_for_metrics, size);
+            callback(payload);
         }
     }) as Box<dyn FnMut(JsValue)>);
 
@@ -1875,16 +1867,28 @@ pub fn listen(
             return;
         };
 
-        let cleanup = wasm_bindgen::closure::Closure::once_into_js(Box::new(
+        // Attach both fulfillment and rejection branches: if the Tauri
+        // `event.listen` promise rejects (registration failed), the cleanup
+        // must still run or the callback closure leaks on the JS heap.
+        let closure_js = std::rc::Rc::new(closure_js);
+        let cleanup = wasm_bindgen::closure::Closure::once_into_js(Box::new({
+            let closure_js = closure_js.clone();
             move |resolved_unlisten: JsValue| {
                 if let Ok(unlisten) = resolved_unlisten.dyn_into::<js_sys::Function>() {
                     let _ = unlisten.call0(&JsValue::NULL);
                 }
                 drop(closure_js);
-            },
-        )
+            }
+        })
             as Box<dyn FnOnce(JsValue)>);
-        let _ = then_fn.call1(&registration, cleanup.as_ref());
+        let cleanup_reject = wasm_bindgen::closure::Closure::once_into_js(Box::new({
+            let closure_js = closure_js.clone();
+            move |_err: JsValue| {
+                drop(closure_js);
+            }
+        })
+            as Box<dyn FnOnce(JsValue)>);
+        let _ = then_fn.call2(&registration, cleanup.as_ref(), cleanup_reject.as_ref());
     });
 
     Ok(unlisten_fn)

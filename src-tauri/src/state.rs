@@ -37,8 +37,10 @@ pub struct TauriEventSender {
     runtime_handle: Arc<parking_lot::Mutex<Option<tokio::runtime::Handle>>>,
     output_buffer: Arc<athena_core::output_buffer::OutputBuffer>,
     agent_activity: Arc<athena_core::agent_activity::AgentActivityTracker>,
-    /// Current streamed assistant request used to scope tool-generated UI events.
-    request_context: Arc<parking_lot::Mutex<Option<(String, String)>>>,
+    /// Streamed assistant request id -> chat session id. Concurrent desktop
+    /// and relay streams may each have in-flight tools; UI attribution must
+    /// therefore never share one global slot.
+    request_context: Arc<parking_lot::Mutex<HashMap<String, String>>>,
     /// Tool question IDs currently blocked on a response, grouped by stream request.
     request_questions: Arc<parking_lot::Mutex<HashMap<String, Vec<String>>>>,
     /// Requests cancelled before a blocking tool could register its question.
@@ -63,7 +65,7 @@ impl TauriEventSender {
             runtime_handle: Arc::new(parking_lot::Mutex::new(None)),
             output_buffer,
             agent_activity,
-            request_context: Arc::new(parking_lot::Mutex::new(None)),
+            request_context: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             request_questions: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             cancelled_requests: Arc::new(parking_lot::Mutex::new(HashSet::new())),
         }
@@ -82,6 +84,23 @@ impl TauriEventSender {
             }
         }
         self.pending_questions.lock().remove(question_id);
+    }
+
+    /// Resolve the chat session for an explicit stream request context.
+    fn request_session(&self, stream_request_id: Option<&str>) -> Option<String> {
+        stream_request_id
+            .and_then(|request_id| self.request_context.lock().get(request_id).cloned())
+    }
+
+    /// Snapshot `(stream request id, session id)` for event payloads.
+    fn request_context_snapshot(
+        &self,
+        stream_request_id: Option<&str>,
+    ) -> (Option<String>, Option<String>) {
+        (
+            stream_request_id.map(str::to_string),
+            self.request_session(stream_request_id),
+        )
     }
 
     /// Return a clone of the cached tokio runtime handle if available,
@@ -112,6 +131,16 @@ impl ToolEventSender for TauriEventSender {
         // Surface tool-launched agents immediately rather than waiting for the
         // heartbeat's foreground-process classifier. The tracker deduplicates
         // this against any later lifecycle signal for the same pane.
+        // The heartbeat starts lazily on first pane/agent registration (it
+        // is NOT started at setup); tool-launched agents never pass through
+        // the pty_spawn command, so trigger it here too. One-shot no-op
+        // once the poll is running (agent_heartbeat_started guard).
+        if let Some(handle) = self.app_handle.lock().clone() {
+            if let Some(state) = handle.try_state::<AppState>() {
+                state.ensure_agent_activity_heartbeat();
+            }
+        }
+
         let agent_key = athena_core::agent_detection::canonical_agent_key(agent_type)
             .or_else(|| {
                 athena_core::agent_detection::AGENT_FG_NAMES
@@ -169,7 +198,7 @@ impl ToolEventSender for TauriEventSender {
                         }
                     }
 
-                    if let Some(ref handle) = app_handle {
+                    if let Some(handle) = app_handle.as_ref() {
                         let session_id_for_loop = id.clone();
                         let handle = handle.clone();
                         let tracker = Arc::clone(&agent_activity);
@@ -282,41 +311,48 @@ impl ToolEventSender for TauriEventSender {
     }
 
     fn ask_user(&self, request_id: &str, question: &str, options: &[serde_json::Value]) -> String {
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        self.ask_user_with_context(None, request_id, question, options)
+    }
 
-        // Register the sender and its stream ownership while holding the same
-        // lock order used by cancel_request. This closes the cancellation
-        // window between inserting pending_questions and linking the question
-        // ID to its stream request.
-        let context = {
-            let context_guard = self.request_context.lock();
-            let context = context_guard.clone();
+    fn ask_user_with_context(
+        &self,
+        stream_request_id: Option<&str>,
+        request_id: &str,
+        question: &str,
+        options: &[serde_json::Value],
+    ) -> String {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let stream_request_id = stream_request_id.map(str::to_string);
+
+        // Register cancellation state, stream ownership, and the pending
+        // sender under one lock order so cancellation cannot slip between
+        // the tombstone check and registration.
+        {
             let cancelled_requests = self.cancelled_requests.lock();
-            if context.as_ref().is_some_and(|(stream_request_id, _)| {
-                cancelled_requests.contains(stream_request_id)
-            }) {
+            if stream_request_id
+                .as_ref()
+                .is_some_and(|id| cancelled_requests.contains(id))
+            {
                 return "error: request cancelled".to_string();
             }
-            drop(cancelled_requests);
             let mut request_questions = self.request_questions.lock();
             let mut pending_questions = self.pending_questions.lock();
             pending_questions.insert(request_id.to_string(), tx);
-            if let Some((stream_request_id, _)) = context.as_ref() {
+            if let Some(stream_id) = stream_request_id.as_ref() {
                 request_questions
-                    .entry(stream_request_id.clone())
+                    .entry(stream_id.clone())
                     .or_default()
                     .push(request_id.to_string());
             }
-            context
-        };
+        }
 
+        let session_id = self.request_session(stream_request_id.as_deref());
         let handle_guard = self.app_handle.lock();
-        if let Some(ref handle) = *handle_guard {
-            let context = self.request_context.lock().clone();
+        if let Some(handle) = handle_guard.as_ref() {
             let payload = serde_json::json!({
                 "requestId": request_id,
-                "request_id": context.as_ref().map(|(id, _)| id),
-                "sessionId": context.as_ref().map(|(_, session)| session),
+                "request_id": stream_request_id,
+                "sessionId": session_id,
                 "question": question,
                 "options": options,
             });
@@ -328,28 +364,28 @@ impl ToolEventSender for TauriEventSender {
             };
             if let Err(e) = emit_result {
                 log::warn!("failed to emit athena:askUser event: {}", e);
-                self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
+                self.remove_pending_question(request_id, stream_request_id.as_ref());
                 return "error: unable to show user question".to_string();
             }
         } else {
             log::error!("ask_user called but app_handle is not set");
-            self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
+            self.remove_pending_question(request_id, stream_request_id.as_ref());
             return "error: app_handle not available".to_string();
         }
         drop(handle_guard);
 
         match rx.recv_timeout(std::time::Duration::from_secs(300)) {
             Ok(answer) => {
-                self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
+                self.remove_pending_question(request_id, stream_request_id.as_ref());
                 answer
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
+                self.remove_pending_question(request_id, stream_request_id.as_ref());
                 log::warn!("ask_user timed out for request_id: {}", request_id);
                 "error: user response timed out".to_string()
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                self.remove_pending_question(request_id, context.as_ref().map(|(id, _)| id));
+                self.remove_pending_question(request_id, stream_request_id.as_ref());
                 log::warn!(
                     "receiver channel closed for request_id: {} -- question was: {}",
                     request_id,
@@ -361,17 +397,27 @@ impl ToolEventSender for TauriEventSender {
     }
 
     fn set_request_context(&self, request_id: &str, session_id: &str) {
-        *self.request_context.lock() = Some((request_id.to_string(), session_id.to_string()));
+        self.request_context
+            .lock()
+            .insert(request_id.to_string(), session_id.to_string());
     }
 
     fn clear_request_context(&self) {
-        let Some((request_id, _)) = self.request_context.lock().take() else {
-            return;
-        };
+        // Legacy callers that do not know a stream id clear all contexts.
+        // Streamed tool batches use `clear_request_context_for` so a finished
+        // desktop request cannot evict a live relay request's attribution.
+        let request_ids: Vec<String> = self.request_context.lock().keys().cloned().collect();
+        for request_id in request_ids {
+            self.clear_request_context_for(&request_id);
+        }
+    }
+
+    fn clear_request_context_for(&self, request_id: &str) {
+        self.request_context.lock().remove(request_id);
         let question_ids = self
             .request_questions
             .lock()
-            .remove(&request_id)
+            .remove(request_id)
             .unwrap_or_default();
         for question_id in question_ids {
             if let Some(tx) = self.pending_questions.lock().remove(&question_id) {
@@ -389,53 +435,38 @@ impl ToolEventSender for TauriEventSender {
     }
 
     fn cancel_request(&self, request_id: &str) -> bool {
-        // Hold the context guard through question cleanup. ask_user uses this
-        // same lock order, so cancellation cannot miss a just-registered
-        // blocking question.
-        let context_guard = self.request_context.lock();
-        if context_guard
-            .as_ref()
-            .is_none_or(|(active, _)| active != request_id)
-        {
-            // The stream may be cancelled while it is loading its session or
-            // provider configuration, before the executor context is set.
-            // Remember that cancellation so a later ask_user cannot block.
-            self.cancelled_requests
-                .lock()
-                .insert(request_id.to_string());
-            return false;
-        }
-
+        // Tombstone first so an ask_user that starts concurrently observes
+        // cancellation before it registers its blocking receiver.
         self.cancelled_requests
             .lock()
             .insert(request_id.to_string());
+        let had_context = self.request_context.lock().contains_key(request_id);
         let question_ids = self
             .request_questions
             .lock()
             .remove(request_id)
             .unwrap_or_default();
-        // Wake every synchronous ask_user receiver belonging to this stream.
-        // Removing the sender from the shared map also makes late UI answers
-        // harmless: athena_user_answer will return false.
+        let had_questions = !question_ids.is_empty();
         for question_id in question_ids {
             if let Some(tx) = self.pending_questions.lock().remove(&question_id) {
                 let _ = tx.send("error: request cancelled".to_string());
             }
         }
-        // Keep the context until the stream's final cleanup. A tool may begin
-        // after cancellation has been signalled; retaining the context lets
-        // ask_user observe the cancellation tombstone instead of blocking.
-        drop(context_guard);
-        true
+        had_context || had_questions
     }
 
     fn plan_update(&self, plan: &ExecutionPlan) {
+        self.plan_update_with_context(None, plan);
+    }
+
+    fn plan_update_with_context(&self, stream_request_id: Option<&str>, plan: &ExecutionPlan) {
+        let (request_id, session_id) = self.request_context_snapshot(stream_request_id);
         let handle_guard = self.app_handle.lock();
-        if let Some(ref handle) = *handle_guard {
+        if let Some(handle) = handle_guard.as_ref() {
             let payload = serde_json::json!({
                 "planId": plan.id,
-                "requestId": self.request_context.lock().as_ref().map(|(id, _)| id),
-                "sessionId": self.request_context.lock().as_ref().map(|(_, session)| session),
+                "requestId": request_id,
+                "sessionId": session_id,
                 "goal": plan.goal,
                 "steps": plan.steps.iter().map(|s| serde_json::json!({
                     "id": s.id,
@@ -473,13 +504,32 @@ impl ToolEventSender for TauriEventSender {
         next_action: &str,
         reasoning: &str,
     ) {
+        self.plan_evaluated_with_context(
+            None,
+            plan_id,
+            overall_status,
+            step_evaluations,
+            next_action,
+            reasoning,
+        );
+    }
+
+    fn plan_evaluated_with_context(
+        &self,
+        stream_request_id: Option<&str>,
+        plan_id: &str,
+        overall_status: &str,
+        step_evaluations: &[serde_json::Value],
+        next_action: &str,
+        reasoning: &str,
+    ) {
+        let (request_id, session_id) = self.request_context_snapshot(stream_request_id);
         let handle_guard = self.app_handle.lock();
-        if let Some(ref handle) = *handle_guard {
-            let context = self.request_context.lock().clone();
+        if let Some(handle) = handle_guard.as_ref() {
             let payload = serde_json::json!({
                 "planId": plan_id,
-                "requestId": context.as_ref().map(|(id, _)| id),
-                "sessionId": context.as_ref().map(|(_, session)| session),
+                "requestId": request_id,
+                "sessionId": session_id,
                 "overallStatus": overall_status,
                 "stepEvaluations": step_evaluations,
                 "nextAction": next_action,
@@ -572,6 +622,13 @@ pub struct AppState {
     pub mcp_runtime_started: Arc<AtomicBool>,
     /// Signals the dedicated MCP runtime thread to stop during app shutdown.
     pub mcp_runtime_stop: Arc<AtomicBool>,
+    /// One-shot guard: the agent-activity heartbeat is started lazily (first
+    /// pane/agent registration, not at setup) — this flag makes the first
+    /// `ensure_agent_activity_heartbeat` call win and later ones no-ops.
+    pub agent_heartbeat_started: Arc<AtomicBool>,
+    /// Signals the agent-activity heartbeat loop to stop during app shutdown,
+    /// so it does not contend with PTY teardown for the session-manager lock.
+    pub agent_heartbeat_stop: Arc<AtomicBool>,
     /// Kanban backend — same `Arc<KanbanBackend>` is shared with the
     /// ToolExecutor's internally-held instance (the store clone keeps storage
     /// consistent via the same backing KeyValueStore).
@@ -610,21 +667,36 @@ pub struct AppState {
     /// unconditional emission wasted work on every 8 ms flush once the
     /// desktop frontend moved to raw channel delivery.
     pub relay_raw_subscribers: Arc<parking_lot::Mutex<HashMap<String, usize>>>,
+    /// Desktop xterm raw-output IPC channels keyed by pane id, installed by
+    /// `pty_attach_listener` when the xterm.js mount passes a
+    /// `tauri::ipc::Channel`. Raw PTY bytes cross as
+    /// `InvokeResponseBody::Raw` (binary fetch above 1 KiB, `Uint8Array`
+    /// eval below) — no base64, no JSON event payload. Removed by a
+    /// generation-matching `pty_detach_listener` and by `pty_kill`.
+    pub raw_output_channels: Arc<
+        parking_lot::Mutex<
+            HashMap<String, tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>>,
+        >,
+    >,
 
     /// Active microphone capture for Athena voice input (desktop). `Some`
     /// while recording; `voice_record_stop` takes it (dropping the cpal stream
     /// ends capture) and transcribes the clip on-device. Empty by default.
+    #[cfg(feature = "voice")]
     pub voice_recording: parking_lot::Mutex<Option<crate::commands::voice::VoiceRecording>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new()
+        // Test path: fresh token per state is identical to production semantics.
+        Self::new(uuid::Uuid::new_v4().to_string())
     }
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    /// `mcp_token` is the per-launch MCP auth token, minted in `main()` before
+    /// any thread exists (so it can be published via `set_var` race-free).
+    pub fn new(mcp_token: String) -> Self {
         let store = Arc::new(
             athena_store::KeyValueStore::with_name_sync("store").unwrap_or_else(|e| {
                 log::error!("KeyValueStore init failed, using empty fallback: {e}");
@@ -636,7 +708,6 @@ impl AppState {
             athena_store::SessionStore::new_empty()
         }));
         let browser_manager = athena_browser::BrowserManager::new();
-        let plugin_manager = athena_plugins::PluginManager::new();
 
         // -- Create the shared service instances first (bare Arc<T>) -------
 
@@ -655,8 +726,13 @@ impl AppState {
         ));
 
         let mcp_runtime_stop = Arc::new(AtomicBool::new(false));
+        let agent_heartbeat_started = Arc::new(AtomicBool::new(false));
+        let agent_heartbeat_stop = Arc::new(AtomicBool::new(false));
         let mcp_server = Arc::new(tokio::sync::Mutex::new(
-            athena_core::mcp::McpServer::new_with_shutdown(Arc::clone(&mcp_runtime_stop)),
+            athena_core::mcp::McpServer::new_with_shutdown_and_token(
+                mcp_token,
+                Arc::clone(&mcp_runtime_stop),
+            ),
         ));
         // Tool executor reference for MCP server — wire it up after both are created
         let swarm_coordinator = Arc::new(tokio::sync::Mutex::new(
@@ -670,6 +746,9 @@ impl AppState {
         // -- Build the event sender ----------------------------------------
 
         let app_handle = Arc::new(parking_lot::Mutex::new(None::<AppHandle>));
+        let plugin_manager = athena_plugins::PluginManager::with_callbacks(Arc::new(
+            crate::commands::plugin_callbacks::TauriPluginCallbacks::new(Arc::clone(&app_handle)),
+        ));
         let pending_questions: Arc<
             parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
         > = Arc::new(parking_lot::Mutex::new(HashMap::new()));
@@ -700,6 +779,66 @@ impl AppState {
         {
             let mut mcp = mcp_server.blocking_lock();
             mcp.tool_executor = Some(Arc::clone(&tool_executor));
+            // Route the MCP `request_input` tool through the real blocking
+            // user prompt. `send_message_to_agent`/`read_agent_messages` are
+            // already served by the tool-executor path (`is_executor_mcp_tool`).
+            // The handler runs on a tokio runtime worker, and the prompt can
+            // block for up to INPUT_REQUEST_TIMEOUT, so delegate to a std
+            // thread + join instead of parking the worker.
+            mcp.agent_comms_handler = Some(Arc::new({
+                let agent_comms = Arc::clone(&agent_comms);
+                move |name: &str, args: &serde_json::Value| {
+                    if name != "request_input" {
+                        return serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": format!("unsupported agent comms tool '{name}'") }] });
+                    }
+                    let prompt = args
+                        .get("prompt")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let title = args
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    let request_id = args
+                        .get("requestId")
+                        .or_else(|| args.get("request_id"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    let agent_id = args
+                        .get("agentId")
+                        .or_else(|| args.get("agent_id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if agent_id.is_empty() {
+                        return serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "request_input requires a non-empty agentId" }] });
+                    }
+                    if prompt.is_empty() {
+                        return serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "request_input requires a non-empty prompt" }] });
+                    }
+                    let comms = Arc::clone(&agent_comms);
+                    let worker = std::thread::spawn(move || {
+                        comms.request_user_input_blocking(
+                            &agent_id,
+                            request_id.as_deref(),
+                            &prompt,
+                            title.as_deref(),
+                        )
+                    });
+                    match worker.join() {
+                        Ok(Ok(reply)) => {
+                            serde_json::json!({ "content": [{ "type": "text", "text": reply }] })
+                        }
+                        Ok(Err(error)) => {
+                            serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": error.to_string() }] })
+                        }
+                        Err(_) => {
+                            serde_json::json!({ "isError": true, "content": [{ "type": "text", "text": "input request worker panicked" }] })
+                        }
+                    }
+                }
+            }));
         }
 
         // -- Build the orchestrator, wired to the tool executor ------------
@@ -766,12 +905,16 @@ impl AppState {
                 crate::commands::RelayReplayStore::default(),
             )),
             relay_raw_subscribers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            raw_output_channels: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            #[cfg(feature = "voice")]
             voice_recording: parking_lot::Mutex::new(None),
             rate_limiter: crate::commands::caps::global_rate_limiter(),
             // Kept for command/API compatibility; desktop startup now owns
             // only the TCP transport and never consumes stdin/stdout.
             mcp_runtime_started: Arc::new(AtomicBool::new(false)),
             mcp_runtime_stop,
+            agent_heartbeat_started,
+            agent_heartbeat_stop,
         }
     }
 
@@ -783,20 +926,13 @@ impl AppState {
             *guard = Some(handle.clone());
         } // Drop the lock before calling wire methods that also acquire it
 
-        // Background routines tick ("fixed schedule" presets run hands-off).
-        crate::commands::routines::start(crate::commands::routines::RoutineTimerDeps {
-            store: Arc::clone(&self.store),
-            orchestrator: Arc::clone(&self.orchestrator),
-            notification: Arc::clone(&self.notification_service),
-        });
-
         // Stream events are request-scoped and use one stable channel. The
         // payload is already typed in athena-core; serialize exactly once at
         // the IPC boundary so the frontend can ignore stale request IDs.
         let stream_handle = handle.clone();
         let stream_store = Arc::clone(&self.store);
-        self.orchestrator.set_stream_emitter(Some(Arc::new(
-            move |event| {
+        self.orchestrator
+            .set_stream_emitter(Some(Arc::new(move |event| {
                 // Stale-flag recovery: if the provider rejected the request
                 // (401 / model unavailable), drop the persisted "set" flag so
                 // the next store_get re-checks the keyring instead of trusting
@@ -822,8 +958,7 @@ impl AppState {
                     }
                     Err(error) => log::warn!("failed to serialize athena stream event: {error}"),
                 }
-            },
-        )));
+            })));
 
         // Wire event emitters for all services
         self.wire_notification_events();
@@ -835,8 +970,10 @@ impl AppState {
         self.wire_plugin_events();
         self.wire_agent_activity_events();
 
-        // Start the agent-activity heartbeat poll on its own runtime.
-        self.spawn_agent_activity_heartbeat();
+        // The agent-activity heartbeat is NOT started here: it polls every
+        // 1.5 s for the process lifetime, so it starts lazily on the first
+        // pane/agent registration (`ensure_agent_activity_heartbeat`).
+        // An app launched into the settings/kb-only state never pays for it.
 
         // One-time dock badge sync so an unread count persisted across
         // restarts shows immediately (event-driven updates only fire on
@@ -1014,6 +1151,11 @@ impl AppState {
                 return;
             }
         };
+        // F22: permission is requested lazily — the first time an agent
+        // notification actually needs the OS — instead of at app setup, so
+        // first launch never blocks on (or pre-empts the UI with) the
+        // macOS notification permission dialog.
+        let permission_requested = Arc::new(AtomicBool::new(false));
         service.set_event_emitter(Box::new(move |channel: &str, data: &serde_json::Value| {
             // 1) Forward to the frontend exactly as before.
             if let Ok(data_str) = serde_json::to_string(data) {
@@ -1034,6 +1176,19 @@ impl AppState {
                     .map(|s| s == "agent")
                     .unwrap_or(false);
                 if is_agent {
+                    // First agent notification: request permission now (once).
+                    // Resolves immediately when already granted/denied, so
+                    // repeated calls after the first are one atomic swap.
+                    if !permission_requested.swap(true, Ordering::SeqCst) {
+                        #[cfg(target_os = "macos")]
+                        {
+                            use tauri_plugin_notification::NotificationExt;
+                            if let Err(e) = handle.notification().request_permission() {
+                                log::warn!("failed to request notification permission: {e}");
+                            }
+                        }
+                    }
+
                     let title = data
                         .get("title")
                         .and_then(|v| v.as_str())
@@ -1191,9 +1346,6 @@ impl AppState {
                     "waiting_for_input" | "waiting_input" if request_id.is_none() => {
                         Some(athena_core::notification::NotificationType::NeedsInput)
                     }
-                    "completed" | "done" | "complete" => {
-                        Some(athena_core::notification::NotificationType::TaskComplete)
-                    }
                     "error" | "failed" => {
                         Some(athena_core::notification::NotificationType::TaskError)
                     }
@@ -1233,9 +1385,6 @@ impl AppState {
                     let title = match notification_type {
                         athena_core::notification::NotificationType::NeedsInput => {
                             "Agent needs input"
-                        }
-                        athena_core::notification::NotificationType::TaskComplete => {
-                            "Agent finished"
                         }
                         athena_core::notification::NotificationType::TaskError => "Agent error",
                         _ => "Agent update",
@@ -1411,12 +1560,39 @@ impl AppState {
     /// Slow heartbeat poll: for every live PTY session, classify the
     /// foreground process (spawn_blocking `ps`), scrape the agent's session
     /// file when an agent is present, and feed the activity tracker.
+    ///
+    /// The poll also owns **per-session resume capture**: when a pane's
+    /// foreground transitions off an agent (manual `/exit`, Ctrl+C×2, agent
+    /// crash) or the pane itself vanishes, that pane's output buffer is
+    /// scanned for the agent's `<cli> --resume <id>` line and merged into the
+    /// persisted workspaces store. This is backend-only — it works for hidden,
+    /// swapped, and unmounted panes whose `pty:raw` stream is suppressed, a
+    /// gap the frontend live scanner cannot cover. The frontend scanner
+    /// remains as the instant-UI fast path; both paths converge on the same
+    /// merge (skip-unchanged keeps re-detection idempotent).
+    /// Start the agent-activity heartbeat once, on first use. Called from the
+    /// pane/agent registration paths (pty_spawn / pty_spawn_agent / tool
+    /// executor `agent_spawned`) instead of app setup, so the 1.5 s poll and
+    /// its `ps` classification run only when at least one pane exists.
+    pub fn ensure_agent_activity_heartbeat(&self) {
+        if self
+            .agent_heartbeat_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            != Ok(false)
+        {
+            return;
+        }
+        self.spawn_agent_activity_heartbeat();
+    }
+
     fn spawn_agent_activity_heartbeat(&self) {
         let session_manager = Arc::clone(&self.session_manager);
         let agent_activity = Arc::clone(&self.agent_activity);
         let output_buffer = Arc::clone(&self.output_buffer);
         let plugin_manager = self.plugin_manager.clone();
         let store = Arc::clone(&self.store);
+        let heartbeat_stop = Arc::clone(&self.agent_heartbeat_stop);
+        let app_handle = Arc::clone(&self.app_handle);
         std::thread::spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1435,8 +1611,22 @@ impl AppState {
                 // single relaxed atomic load instead of a Value clone plus
                 // JSON parse.
                 let mut cached_rev: Option<u64> = None;
+                // pane_id -> last observed foreground label, for detecting
+                // agent→(shell|other) transitions and pane removal.
+                let mut last_agent: HashMap<String, String> = HashMap::new();
                 loop {
-                    interval.tick().await;
+                    tokio::select! {
+                        _ = interval.tick() => {}
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                            if heartbeat_stop.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                    if heartbeat_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
 
                     // Apply the persisted per-type notification config (the
                     // frontend writes it via the existing `store_set` IPC —
@@ -1465,8 +1655,37 @@ impl AppState {
                         let sm = session_manager.lock().await;
                         sm.list_sessions().await
                     };
+
+                    // Pane vanished (closed/killed) while an agent ran in it:
+                    // one last buffer scan before dropping the tracking entry.
+                    {
+                        let live: HashSet<&str> = sessions.iter().map(String::as_str).collect();
+                        let vanished: Vec<String> = last_agent
+                            .keys()
+                            .filter(|k| !live.contains(k.as_str()))
+                            .cloned()
+                            .collect();
+                        for sid in vanished {
+                            capture_resume_on_agent_exit(&store, &output_buffer, &app_handle, &sid)
+                                .await;
+                            last_agent.remove(&sid);
+                        }
+                    }
+
                     if sessions.is_empty() {
                         continue;
+                    }
+                    // Plugin session health check, piggybacked on this
+                    // heartbeat at a 30 s cadence (no separate scheduler):
+                    // marks sessions stalled past the 90 s stall timeout and
+                    // fires on_session_status_update callbacks.
+                    if plugin_manager
+                        .last_health_check()
+                        .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(30))
+                    {
+                        if let Err(e) = plugin_manager.health_check() {
+                            log::warn!("plugin health_check failed: {e}");
+                        }
                     }
                     let plugin_panes: HashSet<String> = plugin_manager
                         .list_sessions()
@@ -1483,6 +1702,31 @@ impl AppState {
                         let Some(session) = session else { continue };
                         let fg = crate::commands::session_foreground_label(&session).await;
                         let fg_opt = if fg == "shell" { None } else { Some(fg) };
+
+                        // Agent left the foreground (exited or swapped out):
+                        // scan this pane's buffer for its resume hint and
+                        // persist it. Works regardless of xterm mount state —
+                        // the `pty:raw` suppression gap the frontend scanner
+                        // cannot see through.
+                        if let Some(prev) = last_agent.get(sid) {
+                            if fg_opt.as_deref() != Some(prev.as_str()) {
+                                capture_resume_on_agent_exit(
+                                    &store,
+                                    &output_buffer,
+                                    &app_handle,
+                                    sid,
+                                )
+                                .await;
+                            }
+                        }
+                        match &fg_opt {
+                            Some(fg_label) => {
+                                last_agent.insert(sid.clone(), fg_label.clone());
+                            }
+                            None => {
+                                last_agent.remove(sid);
+                            }
+                        }
                         // Only scrape history / tail when an agent is present
                         // (never for plain shell panes).
                         let history = fg_opt.as_deref().and_then(|agent_key| {
@@ -1539,5 +1783,49 @@ impl AppState {
         self.wire_emitter("plugin", move |emitter| {
             service.set_event_emitter(emitter);
         });
+    }
+}
+
+/// Backend resume capture for a single pane whose agent just left the
+/// foreground (or whose PTY vanished). Scans the pane's accumulated output
+/// buffer for the newest `<cli> --resume <id>` hint, merges it into the
+/// persisted `workspaces` store (skipping panes that already hold the same id,
+/// so a previously dismissed banner stays dismissed), and broadcasts
+/// `workspace:changed` so every surface reloads. All failures are logged and
+/// swallowed: this runs on every heartbeat transition and must never stall
+/// the activity poll.
+async fn capture_resume_on_agent_exit(
+    store: &Arc<athena_store::KeyValueStore>,
+    output_buffer: &Arc<athena_core::output_buffer::OutputBuffer>,
+    app_handle: &Arc<parking_lot::Mutex<Option<AppHandle>>>,
+    pane_id: &str,
+) {
+    let Some((prefix, rid)) = crate::commands::scan_pane_for_resume_id(output_buffer, pane_id)
+    else {
+        return;
+    };
+    log::info!(
+        "heartbeat exit capture pane={} prefix={} resume_id_len={}",
+        pane_id,
+        prefix,
+        rid.len()
+    );
+    let mut ids = HashMap::new();
+    ids.insert(pane_id.to_string(), rid.clone());
+    let mut cmds = HashMap::new();
+    cmds.insert(pane_id.to_string(), format!("{prefix} {rid}"));
+    match crate::commands::merge_resume_ids_into_workspaces(store, &ids, &cmds, true) {
+        Ok(Some(json)) => {
+            if let Err(e) = store.flush_if_dirty().await {
+                log::error!("heartbeat KV flush failed: {e}");
+            }
+            if let Some(handle) = app_handle.lock().clone() {
+                if let Err(e) = handle.emit(crate::commands::WORKSPACE_CHANGED_EVENT, json) {
+                    log::warn!("heartbeat workspace:changed emit failed: {e}");
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => log::error!("heartbeat merge failed pane={pane_id}: {e}"),
     }
 }

@@ -16,27 +16,40 @@ pub fn SkillsPanel() -> Element {
     let mut input_text = use_signal(String::new);
     let mut loaded = use_signal(|| false);
 
-    // Restore persisted skills once on mount.
+    // Restore persisted skills once on mount. `loaded` flips true only after
+    // the restore attempt completes, so the persistence effect below can never
+    // write the empty pre-restore snapshot over saved skills.
     use_effect(move || {
         if loaded() {
             return;
         }
-        loaded.set(true);
         let mut skills_store = skills;
         wasm_bindgen_futures::spawn_local(async move {
             match crate::tauri_bridge::store_get("skills").await {
                 Ok(raw) if !raw.trim().is_empty() => {
                     if let Ok(list) = serde_json::from_str::<Vec<String>>(&raw) {
+                        // Names are the list keys; drop any duplicates in
+                        // restored data.
+                        let mut seen = std::collections::HashSet::new();
+                        let list = list
+                            .into_iter()
+                            .filter(|name: &String| seen.insert(name.clone()))
+                            .collect::<Vec<_>>();
                         skills_store.set(list);
                     }
                 }
                 _ => {}
             }
+            loaded.set(true);
         });
     });
 
-    // Write-through persistence on every change (add/remove/restore).
+    // Write-through persistence on every change, gated on the restore having
+    // completed so an empty mount snapshot never clobbers stored skills.
     use_effect(move || {
+        if !loaded() {
+            return;
+        }
         let snapshot = skills.read().clone();
         wasm_bindgen_futures::spawn_local(async move {
             let json = serde_json::to_string(&snapshot).unwrap_or_else(|_| "[]".to_string());
@@ -46,10 +59,16 @@ pub fn SkillsPanel() -> Element {
 
     let mut add_skill = move |name: String| {
         let name = name.trim().to_string();
-        if !name.is_empty() {
-            skills.write().push(name);
-            input_text.set(String::new());
+        if name.is_empty() {
+            return;
         }
+        // Guard against duplicates: names double as list keys.
+        if skills.read().contains(&name) {
+            input_text.set(String::new());
+            return;
+        }
+        skills.write().push(name);
+        input_text.set(String::new());
     };
 
     rsx! {
@@ -108,7 +127,7 @@ pub fn SkillsPanel() -> Element {
                 } else {
                     for (i, skill) in skills().iter().enumerate() {
                         div {
-                            key: "{i}",
+                            key: "{skill}",
                             class: "lit-sweep",
                             style: "display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--radius-sm);",
 

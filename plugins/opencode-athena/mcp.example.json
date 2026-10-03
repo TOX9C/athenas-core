@@ -5,7 +5,7 @@
       "args": ["../../bin/mcp-proxy.js"],
       "env": {
         "ATHENA_MCP_TOKEN": "<TOKEN_FROM_ATHENA>",
-        "ATHENA_MCP_PORT": "4545",
+        "ATHENA_MCP_TCP_PORT": "4545",
         "ATHENA_MCP_HOST": "127.0.0.1"
       }
     }

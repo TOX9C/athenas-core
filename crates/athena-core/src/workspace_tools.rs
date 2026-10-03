@@ -2,6 +2,12 @@
 
 use super::{ToolCallResult, ToolExecutor, ToolExecutorError, ToolInput};
 
+/// Serializes read-modify-write cycles on the shared `workspaces` store
+/// blob (`workspace_switch`). Multiple `ToolExecutor` instances share the
+/// same `KeyValueStore`, so the lock must live at module scope, not on the
+/// executor.
+static WORKSPACE_BLOB_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl ToolExecutor {
     pub(super) fn workspace_list(&self) -> Result<ToolCallResult, ToolExecutorError> {
         match self.store.get::<String>("workspaces") {
@@ -95,6 +101,14 @@ impl ToolExecutor {
             .space_id
             .as_deref()
             .ok_or_else(|| ToolExecutorError::MissingParam("space_id".to_string()))?;
+
+        // Hold the blob lock across the whole read-modify-write below so a
+        // concurrent workspace_switch (from another executor sharing this
+        // store) cannot interleave between our read of `workspaces` and our
+        // `set_sync` and clobber its `active_space_id` update.
+        let _blob_guard = WORKSPACE_BLOB_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
 
         // Readers (orchestrator, kanban, frontend) pull `active_space_id`
         // from INSIDE the `workspaces` JSON blob — not from the orphan

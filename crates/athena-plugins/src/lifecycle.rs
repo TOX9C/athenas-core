@@ -2,7 +2,7 @@
 
 use super::{
     build_registry_info, now_millis, validate_plugin_config, validate_plugin_manifest, PluginEntry,
-    PluginError, PluginInfo, PluginManager, PluginManifest, PluginStatus,
+    PluginError, PluginInfo, PluginManager, PluginManifest, PluginStatus, MAX_PLUGINS,
 };
 use std::collections::HashMap;
 
@@ -15,11 +15,24 @@ impl PluginManager {
 
         let mut inner = self.inner.lock()?;
 
-        if let Some(existing) = inner.plugins.get(&id) {
-            if existing.status != PluginStatus::Disabled {
-                return Err(PluginError::AlreadyRegistered(id));
+        // Re-registering a disabled plugin replaces the entry but keeps the
+        // stored user configuration; first-time registration is capped.
+        let preserved_config = match inner.plugins.get(&id) {
+            Some(existing) => {
+                if existing.status != PluginStatus::Disabled {
+                    return Err(PluginError::AlreadyRegistered(id));
+                }
+                existing.config.clone()
             }
-        }
+            None => {
+                if inner.plugins.len() >= MAX_PLUGINS {
+                    return Err(PluginError::LimitExceeded(
+                        "maximum registered plugin count reached".to_string(),
+                    ));
+                }
+                serde_json::Value::Object(serde_json::Map::new())
+            }
+        };
 
         let now = now_millis();
         let name = manifest.name.clone();
@@ -28,7 +41,7 @@ impl PluginManager {
             status: PluginStatus::Installed,
             installed_at: now,
             last_enabled_at: None,
-            config: serde_json::Value::Object(serde_json::Map::new()),
+            config: preserved_config,
             error: None,
         };
 
@@ -39,7 +52,7 @@ impl PluginManager {
         drop(inner);
 
         self.callbacks.on_plugin_registered(&id, &name);
-        self.emit_registry_update(registry_info);
+        self.emit_registry_update(&registry_info);
 
         self.emit_event(
             "plugin:registered",
@@ -88,7 +101,7 @@ impl PluginManager {
         if was_enabled {
             self.callbacks.on_plugin_disabled(plugin_id);
         }
-        self.emit_registry_update(registry_info);
+        self.emit_registry_update(&registry_info);
 
         Ok(())
     }
@@ -115,7 +128,7 @@ impl PluginManager {
         drop(inner);
 
         self.callbacks.on_plugin_enabled(plugin_id, &name);
-        self.emit_registry_update(registry_info);
+        self.emit_registry_update(&registry_info);
 
         self.emit_event(
             "plugin:enabled",
@@ -174,7 +187,7 @@ impl PluginManager {
                 }),
             );
         }
-        self.emit_registry_update(registry_info);
+        self.emit_registry_update(&registry_info);
 
         Ok(())
     }
@@ -195,7 +208,7 @@ impl PluginManager {
         drop(inner);
 
         self.callbacks.on_plugin_error(plugin_id, error);
-        self.emit_registry_update(registry_info);
+        self.emit_registry_update(&registry_info);
 
         self.emit_event(
             "plugin:error",
@@ -318,13 +331,24 @@ impl PluginManager {
 
         self.callbacks
             .on_plugin_configured(plugin_id, &merged_config);
-        self.emit_registry_update(registry_info);
+        self.emit_registry_update(&registry_info);
 
         Ok(())
     }
 
-    fn emit_registry_update(&self, registry_info: HashMap<String, PluginInfo>) {
-        self.callbacks.on_registry_updated(&registry_info);
+    fn emit_registry_update(&self, registry_info: &HashMap<String, PluginInfo>) {
+        self.callbacks.on_registry_updated(registry_info);
+
+        // Building the registry array serializes every plugin's info; skip
+        // that work when no event emitter is installed (headless/test runs).
+        let has_emitter = self
+            .event_emitter
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false);
+        if !has_emitter {
+            return;
+        }
 
         let registry_array: Vec<serde_json::Value> = registry_info
             .values()

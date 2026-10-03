@@ -181,6 +181,7 @@ mod tests {
             shortcut: None,
             handler_key: id.to_string(),
             when_key: None,
+            icon: None,
         }
     }
 

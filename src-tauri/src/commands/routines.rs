@@ -377,7 +377,8 @@ pub(crate) async fn tick_at(deps: &RoutineTimerDeps, now_secs: i64) -> usize {
 /// Call in setup; the loop ends when the runtime stops.
 pub(crate) fn start(dep: RoutineTimerDeps) {
     const TICK_SECS: u64 = 30;
-    tokio::spawn(async move {
+    // setup() runs outside a tokio context, so spawn on Tauri's runtime.
+    tauri::async_runtime::spawn(async move {
         loop {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

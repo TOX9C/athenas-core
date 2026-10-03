@@ -387,6 +387,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the agent_activity_acknowledge command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-activity-acknowledge",
+          "markdownDescription": "Enables the agent_activity_acknowledge command without any pre-configured scope."
+        },
+        {
           "description": "Enables the agent_cancel_input command without any pre-configured scope.",
           "type": "string",
           "const": "allow-agent-cancel-input",
@@ -603,12 +609,6 @@
           "markdownDescription": "Enables the fs_write_file command without any pre-configured scope."
         },
         {
-          "description": "Enables the get_pane_history command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-get-pane-history",
-          "markdownDescription": "Enables the get_pane_history command without any pre-configured scope."
-        },
-        {
           "description": "Enables the git_apply_file command without any pre-configured scope.",
           "type": "string",
           "const": "allow-git-apply-file",
@@ -813,22 +813,10 @@
           "markdownDescription": "Enables the output_buffer_list command without any pre-configured scope."
         },
         {
-          "description": "Enables the plan_create command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-plan-create",
-          "markdownDescription": "Enables the plan_create command without any pre-configured scope."
-        },
-        {
           "description": "Enables the plan_get command without any pre-configured scope.",
           "type": "string",
           "const": "allow-plan-get",
           "markdownDescription": "Enables the plan_get command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the plan_update_step command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-plan-update-step",
-          "markdownDescription": "Enables the plan_update_step command without any pre-configured scope."
         },
         {
           "description": "Enables the plugin_disable command without any pre-configured scope.",
@@ -1119,6 +1107,12 @@
           "markdownDescription": "Enables the routines_set_enabled command without any pre-configured scope."
         },
         {
+          "description": "Enables the routines_tick command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-routines-tick",
+          "markdownDescription": "Enables the routines_tick command without any pre-configured scope."
+        },
+        {
           "description": "Enables the routines_upsert command without any pre-configured scope.",
           "type": "string",
           "const": "allow-routines-upsert",
@@ -1359,6 +1353,12 @@
           "markdownDescription": "Enables the workspace_remove_trusted_root command without any pre-configured scope."
         },
         {
+          "description": "Denies the agent_activity_acknowledge command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-activity-acknowledge",
+          "markdownDescription": "Denies the agent_activity_acknowledge command without any pre-configured scope."
+        },
+        {
           "description": "Denies the agent_cancel_input command without any pre-configured scope.",
           "type": "string",
           "const": "deny-agent-cancel-input",
@@ -1575,12 +1575,6 @@
           "markdownDescription": "Denies the fs_write_file command without any pre-configured scope."
         },
         {
-          "description": "Denies the get_pane_history command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-get-pane-history",
-          "markdownDescription": "Denies the get_pane_history command without any pre-configured scope."
-        },
-        {
           "description": "Denies the git_apply_file command without any pre-configured scope.",
           "type": "string",
           "const": "deny-git-apply-file",
@@ -1785,22 +1779,10 @@
           "markdownDescription": "Denies the output_buffer_list command without any pre-configured scope."
         },
         {
-          "description": "Denies the plan_create command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-plan-create",
-          "markdownDescription": "Denies the plan_create command without any pre-configured scope."
-        },
-        {
           "description": "Denies the plan_get command without any pre-configured scope.",
           "type": "string",
           "const": "deny-plan-get",
           "markdownDescription": "Denies the plan_get command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the plan_update_step command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-plan-update-step",
-          "markdownDescription": "Denies the plan_update_step command without any pre-configured scope."
         },
         {
           "description": "Denies the plugin_disable command without any pre-configured scope.",
@@ -2089,6 +2071,12 @@
           "type": "string",
           "const": "deny-routines-set-enabled",
           "markdownDescription": "Denies the routines_set_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the routines_tick command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-routines-tick",
+          "markdownDescription": "Denies the routines_tick command without any pre-configured scope."
         },
         {
           "description": "Denies the routines_upsert command without any pre-configured scope.",
@@ -4771,24 +4759,6 @@
           "type": "string",
           "const": "shell:deny-stdin-write",
           "markdownDescription": "Denies the stdin_write command without any pre-configured scope."
-        },
-        {
-          "description": "Default permissions for the WebDriver plugin\n#### This default permission set includes:\n\n- `allow-resolve`",
-          "type": "string",
-          "const": "webdriver-automation:default",
-          "markdownDescription": "Default permissions for the WebDriver plugin\n#### This default permission set includes:\n\n- `allow-resolve`"
-        },
-        {
-          "description": "Enables the resolve command without any pre-configured scope.",
-          "type": "string",
-          "const": "webdriver-automation:allow-resolve",
-          "markdownDescription": "Enables the resolve command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the resolve command without any pre-configured scope.",
-          "type": "string",
-          "const": "webdriver-automation:deny-resolve",
-          "markdownDescription": "Denies the resolve command without any pre-configured scope."
         },
         {
           "description": "This permission set configures what kind of\noperations are available from the window state plugin.\n\n#### Granted Permissions\n\nAll operations are enabled by default.\n\n\n#### This default permission set includes:\n\n- `allow-filename`\n- `allow-restore-state`\n- `allow-save-window-state`",

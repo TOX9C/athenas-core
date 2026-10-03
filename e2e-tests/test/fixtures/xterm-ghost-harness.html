@@ -1,0 +1,220 @@
+<!doctype html>
+<!--
+  Headless harness for the "stale glyphs after a screen clear" class.
+
+  Loads the SAME vendored xterm.js + addon-webgl.js the app ships and mounts two
+  terminals that differ ONLY in the WebGL `preserveDrawingBuffer` flag. For each
+  it verifies two things a regression could silently break:
+
+    1. the flag actually reaches the created WebGL context, and
+    2. after writing a full screen, clearing it, and forcing the full-range
+       repaint the app performs (`_renderRows(0, rows-1)` in the same task),
+       the band whose buffer rows are blank holds NO residual glyph pixels.
+
+  What this harness deliberately does NOT do: read the canvas WITHOUT forcing a
+  repaint to "see" the ghost. Under `--virtual-time-budget` the page's
+  requestAnimationFrame callbacks are starved, so xterm's debounced render never
+  runs and a bare readback returns the previously presented frame in BOTH
+  configurations — a harness artifact, not a difference between them. The
+  preserveDrawingBuffer distinction is asserted against the context attribute
+  and by the code contract (the vendored addon only issues a GL clear on atlas
+  page churn, so with the buffer preserved any partial repaint leaves erased
+  pixels behind); the app-level guard is
+  `e2e-tests/test/specs/xterm-glyph-coherence.e2e.mjs`.
+
+  Usage (from the repo root):
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+      --headless=new --enable-unsafe-swiftshader --allow-file-access-from-files \
+      --virtual-time-budget=20000 --dump-dom \
+      e2e-tests/test/fixtures/xterm-ghost-harness.html
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>pending</title>
+    <link rel="stylesheet" href="../../../frontend/vendor/xterm/xterm.css" />
+    <style>
+      body {
+        background: #08090b;
+        margin: 0;
+        font-family: monospace;
+        color: #e7e4dc;
+      }
+      .wrap {
+        display: flex;
+      }
+      .pane {
+        width: 640px;
+        height: 380px;
+      }
+      #out {
+        color: #e7e4dc;
+        font-size: 12px;
+      }
+    </style>
+    <script src="../../../frontend/vendor/xterm/xterm.js"></script>
+    <script src="../../../frontend/vendor/xterm/addon-webgl.js"></script>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="pane" id="pane-preserved"></div>
+      <div class="pane" id="pane-default"></div>
+    </div>
+    <pre id="out"></pre>
+    <script>
+      const results = {}
+      const FILL = Array.from({ length: 60 }, (_, i) => `line ${i + 1} alpha bravo charlie`).join('\r\n')
+      const CLEAR_AND_PUSH = '\x1b[2J\x1b[H' + '\r\n'.repeat(8)
+
+      function writeSync(term, data) {
+        return new Promise((resolve) => term.write(data, resolve))
+      }
+
+      // A bare capture of a WebGL canvas can read transparency: with
+      // preserveDrawingBuffer the compositor may have already handed the frame
+      // off. Paint the visible range synchronously in the SAME task as the copy
+      // (exactly what the app does before its remount-cover capture) so the
+      // numbers measure GLYPH STATE, not compositor timing.
+      function forcePaint(term) {
+        try {
+          term._core._renderService._renderRows(0, term.rows - 1)
+        } catch {}
+      }
+
+      // No rAF wait here on purpose: the page is driven under Chrome's
+      // --virtual-time-budget, which fast-forwards timers but does not
+      // guarantee compositor frames, so awaiting a frame can hang. Painting and
+      // reading the buffer must therefore happen in ONE task — the same
+      // invariant the app relies on.
+      function capture(term, canvas, topFrac, bottomFrac) {
+        forcePaint(term)
+        return ink(canvas, topFrac, bottomFrac)
+      }
+
+      // The vendored UMD bundle assigns the module NAMESPACE to the global
+      // (`self.WebglAddon = { WebglAddon }`), unlike xterm.js core which
+      // assigns each export directly. Resolve it the same way the app's
+      // `try_activate_webgl_addon` does.
+      function webglCtor() {
+        const ns = window.WebglAddon
+        const ctor = typeof ns === 'function' ? ns : ns && ns.WebglAddon
+        if (typeof ctor !== 'function') throw new Error('WebglAddon constructor not found')
+        return ctor
+      }
+
+      function mount(id, preserveDrawingBuffer) {
+        const term = new window.Terminal({
+          fontFamily: 'monospace',
+          fontSize: 14,
+          scrollback: 1000,
+          convertEol: false,
+          theme: { background: '#08090b', foreground: '#e7e4dc' },
+        })
+        term.open(document.getElementById(id))
+        const addon = new (webglCtor())(preserveDrawingBuffer)
+        addon.activate(term)
+        return { term, addon }
+      }
+
+      // Ink (pixels differing from the corner background) inside a vertical
+      // band of the renderer's GL canvas, plus the whole-canvas total.
+      function ink(canvas, topFrac, bottomFrac) {
+        const work = document.createElement('canvas')
+        work.width = canvas.width
+        work.height = canvas.height
+        const ctx = work.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(canvas, 0, 0)
+        const data = ctx.getImageData(0, 0, work.width, work.height).data
+        const W = work.width
+        const H = work.height
+        let bg = [0, 0, 0]
+        let n = 0
+        for (let y = 0; y < Math.min(8, H); y++) {
+          for (let x = 0; x < Math.min(8, W); x++) {
+            const i = (y * W + x) * 4
+            bg[0] += data[i]
+            bg[1] += data[i + 1]
+            bg[2] += data[i + 2]
+            n++
+          }
+        }
+        bg = bg.map((v) => v / n)
+        const count = (fromY, toY) => {
+          let c = 0
+          for (let y = Math.max(0, fromY); y < Math.min(H, toY); y++) {
+            for (let x = 0; x < W; x += 2) {
+              const i = (y * W + x) * 4
+              const d =
+                Math.abs(data[i] - bg[0]) + Math.abs(data[i + 1] - bg[1]) + Math.abs(data[i + 2] - bg[2])
+              if (d > 30) c++
+            }
+          }
+          return c
+        }
+        return { band: count(Math.round(topFrac * H), Math.round(bottomFrac * H)), total: count(0, H) }
+      }
+
+      function glCanvas(term) {
+        return term.element.querySelectorAll('canvas').length
+          ? Array.from(term.element.querySelectorAll('canvas')).find((c) => {
+              try {
+                return c.getContext('2d') === null
+              } catch {
+                return true
+              }
+            })
+          : null
+      }
+
+      async function scenario(label, preserveDrawingBuffer) {
+        const { term } = mount(`pane-${label}`, preserveDrawingBuffer)
+        await new Promise((r) => setTimeout(r, 250))
+        const canvas = glCanvas(term)
+        const attrs = canvas && canvas.getContext('webgl2') ? canvas.getContext('webgl2').getContextAttributes() : null
+        await writeSync(term, FILL)
+        await new Promise((r) => setTimeout(r, 400))
+        const filled = capture(term, canvas, 0.02, 0.3)
+        await writeSync(term, CLEAR_AND_PUSH)
+        await new Promise((r) => setTimeout(r, 400))
+        // Forced full-range repaint in the same task as the copy — the app's
+        // invariant. Without it the readback is meaningless (see the header).
+        const cleared = capture(term, canvas, 0.02, 0.15)
+        // What the buffer says: rows above the prompt must be blank.
+        // Visible rows, not absolute buffer lines: after 60 written lines the
+        // first buffer lines are scrollback, so measure from the viewport.
+        const bufferBlankRows = (() => {
+          const b = term.buffer.active
+          let blank = 0
+          for (let i = 0; i < 6; i++) {
+            const t = (b.getLine(b.viewportY + i)?.translateToString() || '').trim()
+            if (!t) blank++
+          }
+          return blank
+        })()
+        return {
+          preserveDrawingBuffer,
+          contextPreserves: attrs ? attrs.preserveDrawingBuffer : null,
+          canvas: canvas ? `${canvas.width}x${canvas.height}` : null,
+          rows: term.rows,
+          filledInkBand: filled.band,
+          filledInkTotal: filled.total,
+          clearedInkBand: cleared.band,
+          clearedInkTotal: cleared.total,
+          blankTopRows: bufferBlankRows,
+        }
+      }
+
+      ;(async () => {
+        try {
+          results.preserved = await scenario('preserved', true)
+          results.default = await scenario('default', false)
+        } catch (e) {
+          results.error = String(e && e.stack ? e.stack : e)
+        }
+        const payload = JSON.stringify(results)
+        document.getElementById('out').textContent = 'HARNESS_RESULT ' + payload
+        document.title = 'HARNESS_DONE'
+      })()
+    </script>
+  </body>
+</html>

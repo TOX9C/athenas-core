@@ -46,7 +46,7 @@ pub fn AthenaThinkingIndicator(props: ThinkingProps) -> Element {
     });
 
     // Rolling status trace from the store (newest last).
-    let trace: Vec<String> = use_athena_store().read().streaming_trace.clone();
+    let trace: std::rc::Rc<Vec<String>> = use_athena_store().read().streaming_trace.clone().into();
 
     rsx! {
         div {

@@ -27,15 +27,26 @@ pub(super) fn api_key_target(key: &str) -> Option<(String, String)> {
 }
 
 /// Get a value from the persistent key-value store.
+///
+/// Async: the API-key branch probes the OS keyring, which is blocking I/O
+/// (and can stall behind a keychain prompt) — sync commands run on the main
+/// thread in Tauri 2, so the probe is dispatched via `spawn_blocking`.
 #[tauri::command]
-pub fn store_get(state: State<'_, AppState>, key: String) -> Result<String, CommandError> {
+pub async fn store_get(
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<String, CommandError> {
     caps::validate_key(&key).map_err(CommandError::InvalidInput)?;
     if let Some((account, status_key)) = api_key_target(&key) {
         // The keyring is the source of truth for key presence; the
         // `llm.api_key_status` flag is only a cache and is invalidated when
-        // it contradicts the keyring (whole block extracted so tests can
-        // inject a fake keyring result).
-        let probe = probe_keyring(&account);
+        // it contradicts the keyring.
+        let probe = tokio::task::spawn_blocking({
+            let account = account.clone();
+            move || probe_keyring(&account)
+        })
+        .await
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
         return Ok(api_key_status(
             &state.store,
             &key,
@@ -133,6 +144,9 @@ fn api_key_status(
             // Found a raw key in the store — migrate to keyring
             if let Ok(entry) = keyring::Entry::new("athena", account) {
                 let _ = entry.set_password(&value);
+                // The provider-config cache keys on the store revision, so
+                // this keyring-only write needs an explicit generation bump.
+                super::provider_config::invalidate_provider_config_cache();
             }
             // Delete the plaintext key from the store so it never leaks again
             let _ = store.delete_sync(key);
@@ -176,33 +190,51 @@ pub async fn store_set(
         }
     }
     if let Some((account, status_key)) = api_key_target(&key) {
-        if !value.is_empty() && value != "set" && value != "not_set" {
-            // Store the API key securely in the OS keyring, never in plaintext
-            let entry = keyring::Entry::new("athena", &account)
-                .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
-            entry
-                .set_password(&value)
-                .map_err(|e| format!("Failed to store API key in keyring: {}", e))?;
-            log::info!(
-                "[store_set] API key saved to OS keyring (service='athena', account='{account}')"
-            );
-            // Remove any legacy plaintext key from the store
-            let _ = state.store.delete_sync(&key);
-            // Write a lightweight confirmation flag so the frontend can
-            // check key status without hitting the keyring (avoids keychain
-            // lockout / permission-denied races on mount).
-            let _ = state.store.set_sync(&status_key, &"set");
-        } else if value.is_empty() || value == "not_set" {
-            // Clear the API key from the keyring
-            let entry = keyring::Entry::new("athena", &account)
-                .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
-            let _ = entry.delete_credential();
-            log::info!(
-                "[store_set] API key removed from OS keyring (service='athena', account='{account}')"
-            );
-            let _ = state.store.delete_sync(&key);
-            let _ = state.store.delete_sync(&status_key);
-        }
+        let store = std::sync::Arc::clone(&state.store);
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if !value.is_empty() && value != "set" && value != "not_set" {
+                // Store the API key securely in the OS keyring, never in plaintext
+                let entry = keyring::Entry::new("athena", &account)
+                    .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+                entry
+                    .set_password(&value)
+                    .map_err(|e| format!("Failed to store API key in keyring: {}", e))?;
+                log::info!(
+                    "[store_set] API key saved to OS keyring (service='athena', account='{account}')"
+                );
+                // Remove any legacy plaintext key from the store
+                let _ = store.delete_sync(&key);
+                // Write a lightweight confirmation flag so the frontend can
+                // check key status without hitting the keyring (avoids keychain
+                // lockout / permission-denied races on mount).
+                let _ = store.set_sync(&status_key, &"set");
+            } else if value.is_empty() || value == "not_set" {
+                // Clear the API key from the keyring
+                let entry = keyring::Entry::new("athena", &account)
+                    .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+                let _ = entry.delete_credential();
+                log::info!(
+                    "[store_set] API key removed from OS keyring (service='athena', account='{account}')"
+                );
+                let _ = store.delete_sync(&key);
+                let _ = store.delete_sync(&status_key);
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        return Ok(());
+    }
+
+    // Shutdown fence: once graceful shutdown has begun, the quit worker owns
+    // the `workspaces` key (resume-id merge writes it via `set_sync`). A late
+    // frontend write here — serialized before the merge — would clobber the
+    // captured resume ids when the end-of-shutdown flush lands. The webview is
+    // dying anyway; dropping the write is the safe behavior.
+    if key == "workspaces"
+        && crate::EXIT_SHUTDOWN_SCHEDULED.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        log::info!("store_set: workspaces write fenced off during shutdown");
         return Ok(());
     }
 
@@ -235,27 +267,59 @@ pub async fn store_set(
 }
 
 /// Check whether a key exists in the persistent key-value store.
+///
+/// Async: the API-key branch reads the OS keyring (blocking I/O; sync
+/// commands run on the main thread in Tauri 2).
 #[tauri::command]
-pub fn store_has(state: State<'_, AppState>, key: String) -> bool {
-    if let Some((account, _)) = api_key_target(&key) {
-        if let Ok(entry) = keyring::Entry::new("athena", &account) {
-            if entry.get_password().is_ok() {
-                return true;
-            }
-        }
+pub async fn store_has(state: State<'_, AppState>, key: String) -> Result<bool, String> {
+    // An invalid key can only ever be present in neither keyring nor store;
+    // rejected callers get a plain `false`.
+    if caps::validate_key(&key).is_err() {
+        return Ok(false);
     }
-    state.store.has(&key)
+    if let Some((account, _)) = api_key_target(&key) {
+        let store = std::sync::Arc::clone(&state.store);
+        let owned_key = key.clone();
+        return Ok(tokio::task::spawn_blocking(move || {
+            if let Ok(entry) = keyring::Entry::new("athena", &account) {
+                if entry.get_password().is_ok() {
+                    return true;
+                }
+            }
+            store.has(&owned_key)
+        })
+        .await
+        .unwrap_or(false));
+    }
+    Ok(state.store.has(&key))
 }
 
 /// Delete a key from the persistent key-value store.
+///
+/// Async: the API-key branch deletes from the OS keyring (blocking I/O).
 #[tauri::command]
-pub fn store_delete(state: State<'_, AppState>, key: String) -> Result<(), String> {
+pub async fn store_delete(
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<(), String> {
     caps::validate_key(&key)?;
     if let Some((account, status_key)) = api_key_target(&key) {
-        let entry = keyring::Entry::new("athena", &account)
-            .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
-        let _ = entry.delete_credential();
-        let _ = state.store.delete_sync(&status_key);
+        let store = std::sync::Arc::clone(&state.store);
+        let owned_key = key.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let entry = keyring::Entry::new("athena", &account)
+                .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+            let _ = entry.delete_credential();
+            // The provider-config cache keys on the store revision, but the
+            // keyring delete itself is not a store mutation — bump the
+            // generation so chat rebuilds against the emptied keyring.
+            super::provider_config::invalidate_provider_config_cache();
+            let _ = store.delete_sync(&status_key);
+            store.delete_sync(&owned_key).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        return Ok(());
     }
     state.store.delete_sync(&key).map_err(|e| e.to_string())
 }
@@ -336,25 +400,33 @@ pub(crate) fn clear_api_key_flag_on_provider_error(
 
 /// Test whether the LLM API key can be read from the keyring and return a
 /// structured result for the Settings UI to display.
+///
+/// Async: reads the OS keyring (blocking I/O; sync commands run on the main
+/// thread in Tauri 2).
 #[tauri::command]
-pub fn test_llm_api_key(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn test_llm_api_key(state: State<'_, AppState>) -> Result<String, String> {
     // Returns a serialized JSON string ({ ok, message }) — the frontend bridge
     // casts the IPC result to a String and parses it with serde_json::from_str,
     // so this command must emit a JSON *string*, not a bare JSON object.
     let (account, status_key) = resolve_key_slot(&state.store);
-    let result = test_llm_api_key_value(state, &account, &status_key);
+    let store = std::sync::Arc::clone(&state.store);
+    let result = tokio::task::spawn_blocking(move || {
+        test_llm_api_key_value(&store, &account, &status_key)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     serde_json::to_string(&result).map_err(|e| e.to_string())
 }
 
 /// Inner implementation returning the structured JSON value. Kept separate so the
 /// logic is unit-testable without going through string serialization.
 fn test_llm_api_key_value(
-    state: State<'_, AppState>,
+    store: &athena_store::KeyValueStore,
     account: &str,
     status_key: &str,
 ) -> serde_json::Value {
     // 1. Fast path: if the confirmation flag is missing, the key was never saved
-    match state.store.get::<String>(status_key) {
+    match store.get::<String>(status_key) {
         Ok(Some(ref s)) if s == "set" => { /* fall through to keyring test */ }
         _ => {
             return serde_json::json!({

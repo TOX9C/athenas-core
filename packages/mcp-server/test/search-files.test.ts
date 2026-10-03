@@ -101,11 +101,15 @@ describe('searchFiles traversal guard', () => {
     mkdirSync(outside, { recursive: true })
     writeFileSync(path.join(outside, 'secret.txt'), 'const needle = "outside"\n')
 
-    // assertInsideWorkspace throws synchronously inside the executor before
-    // spawn; searchFiles must surface that rejection, never search results.
-    await expect(
-      searchFiles(undefined, { pattern: 'needle', path: outside, context_lines: 0 }),
-    ).rejects.toThrow(/outside the workspace/)
+    // Out-of-workspace paths are an invalid tool invocation: surfaced as an
+    // isError tool result, never a rejection, and never search output.
+    const result = await searchFiles(undefined, {
+      pattern: 'needle',
+      path: outside,
+      context_lines: 0,
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toMatch(/outside the workspace/)
 
     rmSync(outside, { recursive: true, force: true })
   })

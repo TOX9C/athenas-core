@@ -3,7 +3,6 @@ pub mod agent_output_line;
 pub mod agent_output_panel;
 pub mod agent_selector;
 pub mod agent_status_bar;
-mod agent_status_bar_helpers;
 pub mod output_event_bus;
 
 // Re-export component functions

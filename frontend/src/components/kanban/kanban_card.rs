@@ -52,7 +52,7 @@ pub fn KanbanCard(props: KanbanCardProps) -> Element {
                                 is_editing.set(false);
                                 spawn(async move {
                                     let _ = tauri_bridge::kanban_update_task(
-                                        &tid, Some(&new_title), None, None, None,
+                                        &tid, Some(&new_title), None, None,
                                     ).await;
                                     if let Ok(json) = tauri_bridge::kanban_get_tasks().await {
                                         if let Ok(tasks) = crate::stores::task::tasks_from_backend_json(&json) {
@@ -75,7 +75,7 @@ pub fn KanbanCard(props: KanbanCardProps) -> Element {
                             is_editing.set(false);
                             spawn(async move {
                                 let _ = tauri_bridge::kanban_update_task(
-                                    &tid, Some(&new_title), None, None, None,
+                                    &tid, Some(&new_title), None, None,
                                 ).await;
                                 if let Ok(json) = tauri_bridge::kanban_get_tasks().await {
                                     if let Ok(tasks) = crate::stores::task::tasks_from_backend_json(&json) {
@@ -240,120 +240,12 @@ fn move_task_to_column(
     mut task_store: Signal<crate::stores::task::TaskState>,
 ) {
     let status_str = status_to_backend(&target).to_string();
-    // Read the actual card from the store at move time; the incoming props
-    // clone is stale by one render.
-    let task = task_store
-        .read()
-        .tasks
-        .iter()
-        .find(|t| t.id == task_id)
-        .cloned();
-    let proof_required = matches!(target, KanbanStatus::InReview)
-        && task.as_ref().is_some_and(|t| {
-            t.assigned_agent.is_some() || t.plan_step_id.is_some()
-        })
-        && task
-            .as_ref()
-            .and_then(|t| t.evidence.clone())
-            .is_none();
     spawn(async move {
-        let evidence = if proof_required {
-            match gather_evidence_for(&task_id).await {
-                Ok(ev) => Some(ev),
-                Err(e) => {
-                    web_sys::console::warn_1(
-                        &format!("[MoveCard] fallback: proceed without evidence ({e})").into(),
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let _ = tauri_bridge::kanban_update_task(
-            &task_id, None, None, Some(&status_str), evidence.as_deref(),
-        ).await;
+        let _ = tauri_bridge::kanban_update_task(&task_id, None, None, Some(&status_str)).await;
         if let Ok(json) = tauri_bridge::kanban_get_tasks().await {
             if let Ok(tasks) = crate::stores::task::tasks_from_backend_json(&json) {
                 task_store.write().set_tasks(tasks);
             }
         }
     });
-}
-
-/// Build TaskEvidence JSON from the current workspace: `git diff --stat`
-/// plus the tail of the latest swarmpane's output buffer.
-pub(crate) async fn gather_evidence_for(_task_id: &str) -> Result<String, String> {
-    let workspace = crate::stores::workspace::use_workspace_store();
-    let swarm = crate::stores::swarm::use_swarm_store();
-
-    // Active workspace dir
-    let dir = workspace
-        .read()
-        .active_space_id
-        .clone()
-        .and_then(|id| {
-            workspace.read().spaces.iter().find(|s| s.id == id).map(|s| s.dir.clone())
-        })
-        .unwrap_or_default();
-    // Workspace diff (whichever of staged/unstaged has changes)
-    let mut diff = String::new();
-    if !dir.is_empty() {
-        for staged in [true, false] {
-            if let Ok(set) = tauri_bridge::git_diff(&dir, staged).await {
-                for f in &set.files {
-                    diff.push_str(&format!("--- {} (+{}/-{} hunks)
-", f.path, f.hunks.len(), f.hunks.len()));
-                }
-            }
-        }
-    }
-    if diff.is_empty() {
-        return Err("no git diff available (workspace needs a git repo)".into());
-    }
-
-    // Last pane output: the swarm pane serving the card's agent, else the
-    // first non-shell pane of the active space.
-    let mut test_log = String::new();
-    let mut pane_id: Option<String> = None;
-    let pane_candidates: Vec<String> = {
-        let ws = workspace.read();
-        let mut out = Vec::new();
-        if let Some(id) = ws.active_space_id.as_ref() {
-            if let Some(space) = ws.spaces.iter().find(|s| &s.id == id) {
-                for pane in &space.panes {
-                    if !matches!(pane.agent_type, crate::types::workspace::AgentType::Shell) {
-                        out.push(pane.id.clone());
-                    }
-                }
-            }
-        }
-        if let Some(sw) = swarm.read().active_swarm.as_ref() {
-            for a in &sw.agents {
-                if !a.pane_id.is_empty() {
-                    out.push(a.pane_id.clone());
-                }
-            }
-        }
-        out
-    };
-    for pane in pane_candidates {
-        if let Ok(tail) = tauri_bridge::output_buffer_get(&pane, Some(200), None).await {
-            if !tail.trim().is_empty() {
-                test_log = tail;
-                pane_id = Some(pane);
-                break;
-            }
-        }
-    }
-    if test_log.is_empty() {
-        return Err("no agent output buffer yet (run the agent once)".into());
-    }
-
-    let evidence = serde_json::json!({
-        "diff": diff,
-        "test_log": test_log,
-        "pane_id": pane_id,
-    });
-    serde_json::to_string(&evidence).map_err(|e| e.to_string())
 }

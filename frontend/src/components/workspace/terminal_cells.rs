@@ -2,6 +2,8 @@
 
 use crate::stores::terminal::{use_terminal_registry, TerminalCell, TerminalColor};
 use dioxus::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
 // TerminalPaneBody
@@ -10,8 +12,8 @@ use dioxus::prelude::*;
 #[component]
 pub(crate) fn TerminalPaneBody(pane_id: String) -> Element {
     // Subscribe to THIS pane's inner signal for grid snapshots (Item 3). A
-    // cell delta in pane A re-clones only pane A's grid here; pane B's memo
-    // doesn't re-evaluate. `use_memo` caches the clone until the signal moves.
+    // cell delta in pane A re-renders only pane A here; pane B's memo doesn't
+    // re-evaluate.
     //
     // `use_terminal_registry()` is a hook — captured once, synchronously, at
     // render top; `registry.session_signal(...)` is a plain method safe to
@@ -19,11 +21,38 @@ pub(crate) fn TerminalPaneBody(pane_id: String) -> Element {
     // here would re-enter the hook list (it warps `use_context`) and panic
     // Dioxus at mount with "hook list already borrowed".
     let terminal_registry = use_terminal_registry();
-    let Bud = use_memo(move || {
-        terminal_registry
-            .session_signal(&pane_id)
-            .and_then(|s| s.try_read().ok().map(|r| r.grid.clone()))
-            .unwrap_or_default()
+    // F4: never clone the whole grid. The memo clones ONLY rows whose
+    // `row_version` stamp moved since the last snapshot into a row-Rc cache;
+    // unchanged rows keep their Rc, so their row/cell components skip
+    // re-rendering via ptr_eq.
+    let row_cache = use_hook(|| {
+        Rc::new(RefCell::new(
+            (Vec::<Rc<Vec<TerminalCell>>>::new(), Vec::<u64>::new()),
+        ))
+    });
+    let rows = use_memo(move || {
+        let Some(signal) = terminal_registry.session_signal(&pane_id) else {
+            return Vec::new();
+        };
+        let Some(read) = signal.try_read().ok() else {
+            return Vec::new();
+        };
+        // Subscribe to generation so every delta/resize re-runs this memo.
+        let _generation = read.generation;
+        let grid_len = read.grid.len();
+        let (cache, seen) = &mut *row_cache.borrow_mut();
+        if cache.len() != grid_len {
+            cache.resize_with(grid_len, || Rc::new(Vec::new()));
+            // u64::MAX: a stamp no real version_seq reaches without wrapping.
+            seen.resize(grid_len, u64::MAX);
+        }
+        for y in 0..grid_len {
+            if seen[y] != read.row_version[y] {
+                cache[y] = Rc::new(read.grid[y].clone());
+                seen[y] = read.row_version[y];
+            }
+        }
+        cache.clone()
     })();
 
     rsx! {
@@ -31,15 +60,15 @@ pub(crate) fn TerminalPaneBody(pane_id: String) -> Element {
             style: "flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); overflow: hidden; padding: 0;",
             div {
                 style: "font-family: 'JetBrains Mono', 'JetBrainsMono Nerd Font', 'Fira Code', 'Cascadia Code', monospace; font-size: 11px; line-height: 1.4; color: var(--text); white-space: pre-wrap; overflow-wrap: break-word;",
-                if Bud.is_empty() {
+                if rows.is_empty() {
                     "Waiting for output..."
                 } else {
-                    for (row_idx, row) in Bud.iter().enumerate() {
+                    for (row_idx, row) in rows.iter().enumerate() {
                         div {
                             key: "row-{row_idx}",
                             style: "display: flex;",
-                            for cell in row.iter() {
-                                TerminalCellItem { cell: cell.clone() }
+                            for col in 0..row.len() {
+                                TerminalCellItem { row: row.clone(), col }
                             }
                         }
                     }
@@ -53,14 +82,26 @@ pub(crate) fn TerminalPaneBody(pane_id: String) -> Element {
 // TerminalCellItem
 // ---------------------------------------------------------------------------
 
-#[derive(Props, Clone, PartialEq)]
+// Cheap handle: shared row + column index, no per-cell TerminalCell clone.
+// ptr_eq fast path lets untouched rows skip comparison entirely.
+#[derive(Props, Clone)]
 struct TerminalCellItemProps {
-    cell: TerminalCell,
+    row: Rc<Vec<TerminalCell>>,
+    col: usize,
+}
+
+impl PartialEq for TerminalCellItemProps {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.row, &other.row)
+            || (self.col == other.col && self.row.get(self.col) == other.row.get(other.col))
+    }
 }
 
 #[component]
 fn TerminalCellItem(props: TerminalCellItemProps) -> Element {
-    let cell = &props.cell;
+    let Some(cell) = props.row.get(props.col) else {
+        return rsx! {};
+    };
     let fg = color_to_css(&cell.fg);
     let bg = color_to_css(&cell.bg);
     let bold = if cell.bold { "font-weight: bold;" } else { "" };

@@ -120,7 +120,16 @@ fn enqueue_channel(
                     return;
                 }
                 match state.queue.pop_front() {
-                    Some(data) => data,
+                    // Batch: keystrokes queued while the previous invoke was
+                    // in flight all travel down one `pty_write` instead of one
+                    // awaited IPC round-trip each. Ordering is preserved by
+                    // queue order.
+                    Some(mut data) => {
+                        while let Some(more) = state.queue.pop_front() {
+                            data.push_str(&more);
+                        }
+                        data
+                    }
                     None => {
                         state.draining = false;
                         return;

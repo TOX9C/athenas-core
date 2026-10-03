@@ -4,6 +4,10 @@ import type { PluginEvent, PluginEventPayload, PluginEventType } from './types'
 const RECONNECT_INTERVAL_MS = 2000
 const MAX_RECONNECT_ATTEMPTS = 10
 const REQUEST_TIMEOUT_MS = 30000
+// Maximum buffered inbound bytes waiting for a newline. A peer that streams
+// data indefinitely without completing a line would otherwise grow memory
+// without bound.
+const MAX_INBOUND_BUFFER_BYTES = 256 * 1024
 
 interface PendingRequest {
   resolve: (result: any) => void
@@ -42,6 +46,11 @@ export class McpConnection {
 
       socket.on('data', (chunk) => {
         this.buffer += chunk.toString()
+        if (this.buffer.length > MAX_INBOUND_BUFFER_BYTES) {
+          this.buffer = ''
+          socket.destroy(new Error(`MCP inbound buffer exceeded ${MAX_INBOUND_BUFFER_BYTES} bytes`))
+          return
+        }
         const lines = this.buffer.split('\n')
         this.buffer = lines.pop() || ''
         for (const line of lines) {
@@ -63,6 +72,10 @@ export class McpConnection {
       socket.on('error', (err) => {
         this.connected = false
         reject(err)
+        // Destroy so 'close' reliably fires and scheduleReconnect() runs —
+        // a half-open error without close would otherwise leave the plugin
+        // permanently disconnected.
+        socket.destroy()
       })
     })
   }
@@ -103,10 +116,13 @@ export class McpConnection {
   }
 
   private handleMessage(msg: any): void {
-    if (msg.id && this.pending.has(msg.id)) {
-      const pending = this.pending.get(msg.id)!
+    // JSON-RPC ids may come back as numbers even though we sent strings.
+    const responseId =
+      typeof msg.id === 'string' || typeof msg.id === 'number' ? String(msg.id) : null
+    if (responseId !== null && this.pending.has(responseId)) {
+      const pending = this.pending.get(responseId)!
       clearTimeout(pending.timer)
-      this.pending.delete(msg.id)
+      this.pending.delete(responseId)
       if (msg.error) {
         pending.reject(new Error(msg.error.message || 'MCP error'))
       } else {
@@ -138,7 +154,9 @@ export class McpConnection {
 
   private scheduleReconnect(): void {
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return
+    if (this.reconnectTimer) return // a reconnect chain is already in flight
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
       this.reconnectAttempts++
       this.connect().catch(() => {})
     }, RECONNECT_INTERVAL_MS)
