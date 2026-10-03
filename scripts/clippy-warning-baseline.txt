@@ -1,4 +1,6 @@
 # Reviewed baseline as of 2026-08-08. Format: clippy-code|primary-file.
+# Each line permits exactly ONE warning instance; a second occurrence of the
+# same lint in the same file needs its own duplicated line after review.
 clippy::await_holding_lock|src-tauri/src/commands/relay.rs
 clippy::let_unit_value|src-tauri/src/relay/mod.rs
 

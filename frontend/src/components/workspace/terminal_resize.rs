@@ -1,6 +1,8 @@
 //! Resizable workspace-grid dividers and pointer tracking.
 
 use dioxus::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen::JsCast;
 
 // ---------------------------------------------------------------------------
@@ -186,8 +188,12 @@ pub(super) fn DragOverlay(props: DragOverlayProps) -> Element {
                                 delta,
                                 dimension,
                             ) {
-                                row[drag_info.index] = left;
-                                row[drag_info.index + 1] = right;
+                                // A pane can be closed mid-drag (Cmd+W), shrinking
+                                // the row — re-check bounds before writing.
+                                if drag_info.index + 1 < row.len() {
+                                    row[drag_info.index] = left;
+                                    row[drag_info.index + 1] = right;
+                                }
                             }
                         }
                     }
@@ -212,6 +218,49 @@ pub(super) fn DragOverlay(props: DragOverlayProps) -> Element {
     let onmouseup = move |_e: MouseEvent| {
         drag.set(None);
     };
+
+    // Window-level cancellation, same pattern as `PillDragOverlay`: if the
+    // pointer is released outside the webview, the window blurs, or the page
+    // hides mid-drag, `onmouseup` never fires and the overlay would pin the
+    // cursor at z-9999 forever. Keep the closure alive until unmount and
+    // remove both listeners in the same lifetime.
+    let cancel_handler: Rc<
+        RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>>>,
+    > = use_hook(|| Rc::new(RefCell::new(None)));
+    let cancel_handler_for_effect = cancel_handler.clone();
+    use_effect(move || {
+        if cancel_handler_for_effect.borrow().is_some() {
+            return;
+        }
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Some(document) = window.document() else {
+            return;
+        };
+        let mut drag_for_window = drag;
+        let handler =
+            wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                drag_for_window.set(None);
+            }) as Box<dyn FnMut(web_sys::Event)>);
+        let callback = handler.as_ref().unchecked_ref();
+        let _ = window.add_event_listener_with_callback("blur", callback);
+        let _ = document.add_event_listener_with_callback("visibilitychange", callback);
+        *cancel_handler_for_effect.borrow_mut() = Some(handler);
+    });
+    let cancel_handler_for_drop = cancel_handler.clone();
+    use_drop(move || {
+        if let (Some(window), Some(handler)) = (
+            web_sys::window(),
+            cancel_handler_for_drop.borrow_mut().take(),
+        ) {
+            let callback = handler.as_ref().unchecked_ref();
+            let _ = window.remove_event_listener_with_callback("blur", callback);
+            if let Some(document) = window.document() {
+                let _ = document.remove_event_listener_with_callback("visibilitychange", callback);
+            }
+        }
+    });
 
     let cursor = match *drag.read() {
         Some(DragInfo {

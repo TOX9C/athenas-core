@@ -111,13 +111,6 @@ pub async fn session_add_message(
     is_error: Option<bool>,
     image_refs: Option<String>,
 ) -> Result<String, String> {
-    let mut session = state
-        .session_store
-        .get_session(&session_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or("Session not found".to_string())?;
-
     let parsed_refs: Option<Vec<athena_store::ImageRef>> = match image_refs {
         Some(json) => Some(serde_json::from_str(&json).map_err(|e| e.to_string())?),
         None => None,
@@ -140,14 +133,16 @@ pub async fn session_add_message(
         image_refs: parsed_refs,
     };
 
-    session.messages.push(msg);
+    // Append atomically under the session store's update lock. The previous
+    // get→push→update dance raced: two concurrent callers each pushed onto
+    // their own snapshot and the later write dropped the other's message.
     let updated = state
         .session_store
-        .update_session(&session_id, None, Some(session.messages))
+        .append_message(&session_id, msg)
         .await
         .map_err(|e| e.to_string())?;
     match updated {
         Some(s) => serde_json::to_string(&s).map_err(|e| e.to_string()),
-        None => Err("Failed to update session".to_string()),
+        None => Err("Session not found".to_string()),
     }
 }

@@ -61,7 +61,7 @@ describe('mcp-proxy TCP bridge', () => {
         env: {
           ...process.env,
           ATHENA_MCP_HOST: '127.0.0.1',
-          ATHENA_MCP_PORT: String(address.port),
+          ATHENA_MCP_TCP_PORT: String(address.port),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       })
@@ -103,7 +103,7 @@ describe('mcp-proxy TCP bridge', () => {
       env: {
         ...process.env,
         ATHENA_MCP_HOST: '127.0.0.1',
-        ATHENA_MCP_PORT: String(address.port),
+        ATHENA_MCP_TCP_PORT: String(address.port),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     })

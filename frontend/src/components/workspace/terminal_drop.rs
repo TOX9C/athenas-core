@@ -37,6 +37,16 @@ struct NativeDropPayload {
     position: Option<DropPosition>,
 }
 
+/// Decode a native drag event payload into `NativeDropPayload`. Tauri emits
+/// these as JSON-encoded strings; the relay may forward the object form.
+fn decode_native_drop_payload(payload: &JsValue) -> Result<NativeDropPayload, String> {
+    if let Some(inner) = payload.as_string() {
+        serde_json::from_str(&inner).map_err(|err| err.to_string())
+    } else {
+        serde_wasm_bindgen::from_value(payload.clone()).map_err(|err| err.to_string())
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DropMarker {
     x: f64,
@@ -306,7 +316,8 @@ pub fn TerminalDropController() -> Element {
             return;
         }
 
-        let register_native = |event_name: &'static str, handler: Box<dyn FnMut(String)>| {
+        let register_native = |event_name: &'static str,
+                               handler: Box<dyn FnMut(JsValue)>| {
             if let Ok(unlisten) = tauri_bridge::listen(event_name, handler) {
                 unlisteners_for_effect.borrow_mut().push(unlisten);
             }
@@ -317,7 +328,7 @@ pub fn TerminalDropController() -> Element {
         register_native(
             NATIVE_DROP_EVENT,
             Box::new(move |payload| {
-                let Ok(payload) = serde_json::from_str::<NativeDropPayload>(&payload) else {
+                let Ok(payload) = decode_native_drop_payload(&payload) else {
                     set_file_drop_target(None);
                     return;
                 };
@@ -345,7 +356,7 @@ pub fn TerminalDropController() -> Element {
         register_native(
             NATIVE_DRAG_ENTER_EVENT,
             Box::new(move |payload| {
-                if let Ok(payload) = serde_json::from_str::<NativeDropPayload>(&payload) {
+                if let Ok(payload) = decode_native_drop_payload(&payload) {
                     if let Some(position) = payload.position.map(css_position) {
                         set_file_drop_target(pane_at_point(position.0, position.1).as_deref());
                     }
@@ -355,7 +366,7 @@ pub fn TerminalDropController() -> Element {
         register_native(
             NATIVE_DRAG_OVER_EVENT,
             Box::new(move |payload| {
-                if let Ok(payload) = serde_json::from_str::<NativeDropPayload>(&payload) {
+                if let Ok(payload) = decode_native_drop_payload(&payload) {
                     if let Some(position) = payload.position.map(css_position) {
                         set_file_drop_target(pane_at_point(position.0, position.1).as_deref());
                     }
@@ -364,7 +375,7 @@ pub fn TerminalDropController() -> Element {
         );
         register_native(
             NATIVE_DRAG_LEAVE_EVENT,
-            Box::new(move |_payload| set_file_drop_target(None)),
+            Box::new(move |_payload: JsValue| set_file_drop_target(None)),
         );
 
         let Some(window) = web_sys::window() else {

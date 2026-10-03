@@ -6,6 +6,7 @@ use crate::components::shared::icon::{
 use crate::stores::workspace::{GridTemplate, PaneConfig, Space, WorkspaceState};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
+use wasm_bindgen::JsValue;
 
 fn mobile_entry_enabled() -> bool {
     web_sys::window()
@@ -58,13 +59,13 @@ struct MobileChatMessage {
     text: String,
 }
 
-/// Parse a relay-forwarded event payload. On the desktop the Tauri bridge
-/// hands listeners the payload string directly; over the relay the payload
-/// arrives JSON-quoted one extra level (the backend emits String payloads,
-/// and the relay forwards the quoted wire form verbatim). Parse twice when
-/// the first pass yields a bare string.
-fn parse_event_payload(payload: &str) -> Option<serde_json::Value> {
-    match serde_json::from_str::<serde_json::Value>(payload) {
+/// Parse a bridge event payload. The backend emits the serialized event as a
+/// string payload, which crosses IPC JSON-quoted — parse the inner JSON when
+/// the payload decodes to a bare string.
+fn parse_event_payload(payload: &JsValue) -> Option<serde_json::Value> {
+    match serde_wasm_bindgen::from_value::<serde_json::Value>(payload.clone()) {
+        // The backend emits the serialized event as a string payload, which
+        // crosses IPC JSON-quoted — parse the inner JSON.
         Ok(serde_json::Value::String(inner)) => serde_json::from_str(&inner).ok(),
         Ok(v) => Some(v),
         Err(_) => None,
@@ -148,7 +149,7 @@ pub fn MobileApp() -> Element {
 
         // Live stream of Athena chat events; routed by request id so stale
         // turns never mutate the visible conversation.
-        if let Ok(_unlisten) = tauri_bridge::listen("athena:stream", move |payload: String| {
+        if let Ok(_unlisten) = tauri_bridge::listen("athena:stream", move |payload: JsValue| {
             let Some(event) = parse_event_payload(&payload) else {
                 return;
             };
@@ -201,7 +202,7 @@ pub fn MobileApp() -> Element {
 
         // Workspace sync: any writer (desktop or another phone) that passes
         // through `store_set("workspaces")` triggers a reload here.
-        if let Ok(_unlisten) = tauri_bridge::listen("workspace:changed", move |payload: String| {
+        if let Ok(_unlisten) = tauri_bridge::listen("workspace:changed", move |payload: JsValue| {
             let state = parse_event_payload(&payload)
                 .and_then(|v| serde_json::from_value::<WorkspaceState>(v).ok());
             if let Some(state) = state {
@@ -594,7 +595,9 @@ pub fn MobileApp() -> Element {
                                                             onclick: move |_| {
                                                                 let pane_id = request_pane.clone();
                                                                 spawn(async move {
-                                                                    let _ = tauri_bridge::relay_request_pane_share(&pane_id).await;
+                                                                    if let Err(error) = tauri_bridge::relay_request_pane_share(&pane_id).await {
+                                                                        status.set(format!("Access request failed: {error:?}"));
+                                                                    }
                                                                 });
                                                             },
                                                             "Request access"
@@ -645,7 +648,7 @@ pub fn MobileApp() -> Element {
                                 }
                             }
                             div { class: "mobile-chat-compose",
-                                textarea { value: "{chat_input}", placeholder: "What should Athena do?", "aria-label": "Message Athena", oninput: move |event| chat_input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { send_chat(); } }
+                                textarea { value: "{chat_input}", placeholder: "What should Athena do?", "aria-label": "Message Athena", oninput: move |event| chat_input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); send_chat(); } }
                                 if *busy.read() {
                                     button { class: "mobile-ghost-button mobile-ask-button", onclick: move |_| cancel_chat(), "Stop" }
                                 } else {

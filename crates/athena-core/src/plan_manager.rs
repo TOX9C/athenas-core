@@ -168,14 +168,11 @@ impl PlanManager {
             status: PlanStatus::Pending,
             created_at: Self::now(),
         };
+        let event_value = serde_json::to_value(&plan).unwrap_or_default();
         *lock = Some(plan.clone());
-        let plan_clone = plan.clone();
         drop(lock);
 
-        self.emit_event(
-            "athena:planUpdate",
-            &serde_json::to_value(&plan_clone).unwrap_or_default(),
-        );
+        self.emit_event("athena:planUpdate", &event_value);
 
         Ok(plan)
     }
@@ -215,13 +212,12 @@ impl PlanManager {
             plan.status = PlanStatus::InProgress;
         }
 
-        let plan_clone = plan.clone();
+        // Serialize the event payload straight from the lock-held plan;
+        // avoids a deep plan.clone() plus a second serialization pass.
+        let event_value = serde_json::to_value(&*plan).unwrap_or_default();
         drop(lock);
 
-        self.emit_event(
-            "athena:planUpdate",
-            &serde_json::to_value(&plan_clone).unwrap_or_default(),
-        );
+        self.emit_event("athena:planUpdate", &event_value);
 
         Ok(true)
     }
@@ -231,13 +227,10 @@ impl PlanManager {
         let mut lock = self.active_plan.write();
         let plan = lock.as_mut().ok_or(PlanManagerError::NoActivePlan)?;
         plan.status = status;
-        let plan_clone = plan.clone();
+        let event_value = serde_json::to_value(&*plan).unwrap_or_default();
         drop(lock);
 
-        self.emit_event(
-            "athena:planUpdate",
-            &serde_json::to_value(&plan_clone).unwrap_or_default(),
-        );
+        self.emit_event("athena:planUpdate", &event_value);
 
         Ok(true)
     }

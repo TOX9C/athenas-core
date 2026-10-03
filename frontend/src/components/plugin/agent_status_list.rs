@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 pub fn AgentStatusList() -> Element {
     let agent_status = use_agent_status_store();
 
-    let statuses = agent_status.read().statuses.clone();
+    let statuses = agent_status.snapshot();
 
     rsx! {
         div {

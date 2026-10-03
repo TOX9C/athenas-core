@@ -5,12 +5,16 @@
 // ---------------------------------------------------------------------------
 
 /// A single line of agent output.
-#[derive(Debug, Clone, PartialEq, Default)]
+///
+/// `text` is an `Rc<str>`: the output panel memo slices and clones lines per
+/// visible-window refresh, so cloning a line must be a refcount bump, not a
+/// heap copy of potentially-10K-char text.
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutputLine {
     pub pane_id: String,
     pub line_num: usize,
     pub timestamp: i64,
-    pub text: String,
+    pub text: std::rc::Rc<str>,
     /// Precomputed stderr heuristic. Set once at line arrival; never
     /// re-evaluated during render. See [`is_stderr_like`].
     pub is_stderr: bool,
@@ -75,17 +79,15 @@ mod tests {
     }
 
     #[test]
-    fn output_contract_defaults_are_empty() {
-        assert_eq!(
-            OutputLine::default(),
-            OutputLine {
-                pane_id: String::new(),
-                line_num: 0,
-                timestamp: 0,
-                text: String::new(),
-                is_stderr: false,
-            }
-        );
+    fn output_line_default_text_is_empty() {
+        let line = OutputLine {
+            pane_id: String::new(),
+            line_num: 0,
+            timestamp: 0,
+            text: std::rc::Rc::from(""),
+            is_stderr: false,
+        };
+        assert_eq!(line.text.len(), 0);
         assert_eq!(AgentOutputInfo::default().line_count, 0);
         assert!(!SubscriptionState::default().active);
     }

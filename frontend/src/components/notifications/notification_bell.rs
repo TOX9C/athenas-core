@@ -6,8 +6,6 @@ use crate::stores::notification::{
 };
 use crate::tauri_bridge;
 use dioxus::prelude::*;
-use std::cell::RefCell;
-use std::rc::Rc;
 /// Unique newtype so this overlay never collides with other `Signal<bool>`
 /// contexts — Dioxus contexts are keyed by type, and the input-request
 /// overlay also wraps `Signal<bool>`.
@@ -44,38 +42,45 @@ pub fn use_notification_overlay_store() -> Signal<bool> {
 pub fn NotificationBell() -> Element {
     let mut dropdown_open = use_notification_overlay_store();
     let notifications = use_notification_store();
-    let notification_pulse = use_signal(|| 0u64);
-    let unlisten: Rc<RefCell<Option<Box<dyn FnOnce()>>>> = use_hook(|| Rc::new(RefCell::new(None)));
+    // True only during the ~1 s pulse animation. The `NotificationToast`
+    // component owns the single `notifications:new` event listener; the bell
+    // derives arrivals from store writes instead of registering a second
+    // listener for the same backend event.
+    let pulse_active = use_signal(|| false);
+    // Watermark + mount time: hydrated history (older records merged in just
+    // after mount) never pulses the bell; only genuinely new arrivals do.
+    let last_seen: Signal<i64> = use_signal(|| 0);
+    let mount_ms = use_hook(|| js_sys::Date::now() as i64);
 
-    // Unread history is persistent state, not a live activity signal. Listen
-    // for the backend event itself so a bell restored with old unread items is
-    // steady, while a newly arriving notification gets one short pulse even
-    // when unread_count was already non-zero.
-    let unlisten_for_effect = unlisten.clone();
     use_effect(move || {
-        if unlisten_for_effect.borrow().is_some() {
+        // Converges: at most one `last_seen` write per run (skipped when
+        // unchanged), so the subscription this effect has on `notifications`
+        // can't spin.
+        let newest = notifications
+            .read()
+            .iter()
+            .map(|n| n.timestamp)
+            .max()
+            .unwrap_or(0);
+        let seen = last_seen();
+        if newest <= seen {
             return;
         }
-        let mut pulse = notification_pulse;
-        if let Ok(handle) = tauri_bridge::listen("notifications:new", move |_payload: String| {
-            // The key below changes on every event, forcing a fresh DOM node
-            // and therefore replaying the CSS animation even if another
-            // notification arrived during the previous pulse.
-            pulse.set(pulse().wrapping_add(1));
-        }) {
-            *unlisten_for_effect.borrow_mut() = Some(handle);
-        }
-    });
-
-    let unlisten_for_drop = unlisten.clone();
-    use_drop(move || {
-        if let Some(handle) = unlisten_for_drop.borrow_mut().take() {
-            handle();
+        let mut last_seen = last_seen;
+        last_seen.set(newest);
+        // Hydrated history (records older than mount) never pulses the bell.
+        if newest >= mount_ms {
+            let mut pulse_active = pulse_active;
+            pulse_active.set(true);
+            spawn(async move {
+                gloo::timers::future::TimeoutFuture::new(1_000).await;
+                pulse_active.set(false);
+            });
         }
     });
 
     let unread_count = notifications.read().iter().filter(|n| !n.read).count();
-    let bell_class = if notification_pulse() > 0 {
+    let bell_class = if pulse_active() {
         "icon-btn notification-bell-is-new"
     } else if unread_count > 0 {
         "icon-btn notification-bell-has-unread"
@@ -85,7 +90,6 @@ pub fn NotificationBell() -> Element {
 
     rsx! {
         button {
-            key: "notification-bell-{notification_pulse()}",
             class: "{bell_class}",
             style: "position: relative;",
             "aria-label": "Notifications",

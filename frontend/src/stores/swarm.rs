@@ -17,11 +17,15 @@ pub use swarm_model::{
 #[derive(Clone, PartialEq, Default)]
 pub struct SwarmState {
     pub active_swarm: Option<SwarmData>,
+    /// Set when starting the filesystem watcher failed: the board is showing
+    /// a one-time snapshot that will not update. Surfaced in the UI instead
+    /// of warn-only so the freeze is visible.
+    pub watch_failed: bool,
 }
 
 impl SwarmState {
     pub fn new() -> Self {
-        Self { active_swarm: None }
+        Self::default()
     }
 
     // -- Mutators (in-place, compatible with Signal::write()) ---------------

@@ -4,18 +4,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0a0908" />
-    <title>Athena's Core - One window for the work</title>
+    <meta name="theme-color" content="#0b0b0c" />
+    <title>Athena&rsquo;s Core — The strategist&rsquo;s workbench</title>
     <meta
       name="description"
-      content="Athena's Core is a native macOS workspace for AI-assisted development: terminals, workspace-aware chat, tasks, and agents in one window."
+      content="Athena's Core is a native macOS workspace that puts your terminal, AI chat, task board, and agent team in a single window. Public beta."
     />
     <link rel="icon" type="image/png" href="./assets/icon-256.png" />
     <link rel="apple-touch-icon" href="./assets/icon-256.png" />
-    <meta property="og:title" content="Athena's Core - One window for the work" />
+    <meta property="og:title" content="Athena's Core — The strategist's workbench" />
     <meta
       property="og:description"
-      content="A native workspace for AI-assisted development. Fluid surface, warm marble."
+      content="One window. Every tool. No noise. A native macOS workspace for people who think in terminals."
     />
     <meta property="og:image" content="./assets/icon-512.png" />
     <meta property="og:type" content="website" />
@@ -23,139 +23,191 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <a class="skip-link" href="#main-content">Skip to content</a>
+    <div class="progress" aria-hidden="true"><span id="progress-fill"></span></div>
+    <div class="boot" aria-hidden="true">
+      <div class="boot-ring"></div>
+      <div class="boot-word">Athena&rsquo;s Core</div>
+    </div>
+    <a class="skip-link" href="#main-content">Skip to contents</a>
 
     <header class="site-header">
       <a class="brand" href="#top" aria-label="Athena's Core home">
-        <img src="./assets/icon-128.png" alt="" width="24" height="24" />
-        <span>Athena&rsquo;s Core</span>
+        <img src="./assets/icon-128.png" alt="" width="22" height="22" />
+        <span class="brand-name">Athena&rsquo;s Core</span>
       </a>
-      <nav class="nav-links" aria-label="Primary navigation">
+      <nav class="nav-links" aria-label="Sections">
         <a href="#film">Film</a>
-        <a href="#workspace">Workspace</a>
-        <a href="#whats-new">What&rsquo;s new</a>
-        <a href="#early-access">Early access</a>
-        <a href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener" aria-label="Athena's Core on GitHub">
-          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-        </a>
+        <a href="#surfaces">Workspace</a>
+        <a href="#ledger">Ledger</a>
+        <a href="#distributions">Get it</a>
+        <a href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener" aria-label="Athena's Core on GitHub">Source &#8599;</a>
       </nav>
     </header>
 
     <main id="main-content">
-      <!-- ── 00 / Hero: pure type ──────────────────────────── -->
-      <section class="hero" id="top">
-        <div class="hero-copy">
-          <p class="tag">Native AI development workspace / macOS</p>
-          <h1 class="hero-title">Keep the whole<br /><em>work</em> in view.</h1>
-          <p class="hero-sub">
-            The terminal, the conversation, the task board, and your agent team in one focused desktop window.
-          </p>
-          <div class="hero-ctas">
-            <a class="btn btn-gold" href="#early-access">Join early access</a>
-            <a class="btn btn-line" href="#film">Watch the film</a>
+      <!-- HERO — the product performs itself -->
+      <section class="hero livehero" id="top">
+        <img class="livehero-bg" src="./assets/photos/nebula.jpg" alt="" aria-hidden="true" fetchpriority="high" />
+        <div class="livehero-shade" aria-hidden="true"></div>
+        <div class="livehero-inner">
+          <header class="livehero-head">
+            <p class="hero-issue">The Athena Papers &middot; N&deg;1 &middot; September 2026</p>
+            <h1 class="livehero-title">
+              <span class="line"><span>The</span></span>
+              <span class="line"><span>strategist&rsquo;s</span></span>
+              <span class="line"><span>workbench.</span></span>
+            </h1>
+            <p class="brand-line">One window. Every tool. No noise.</p>
+          </header>
+        </div>
+
+        <div class="cinema-follow">
+          <div class="cinema-follow-inner">
+
+
+            <p class="hero-sub">
+              Athena&rsquo;s Core puts your terminal, AI chat, task board, and agent
+              team in a single native window. What you just watched is what it does
+              all day — for real. ~15&nbsp;MB. Rust. No telemetry.
+            </p>
+            <div class="hero-ctas">
+              <a class="btn btn-gold" href="https://github.com/TOX9C/athenas-core/releases" target="_blank" rel="noopener">Download the build &#8599;</a>
+              <a class="btn btn-line" href="#film">Watch the film</a>
+            </div>
+            <div class="livepanes" aria-hidden="true">
+              <div class="lp lp-shell">
+              <p class="lp-head"><span class="lp-dot lp-ok"></span>shell</p>
+              <pre class="lp-body" id="lp-shell"></pre>
+              <span class="caret">&#9612;</span>
+            </div>
+              <div class="lp lp-agent">
+              <p class="lp-head"><span class="lp-dot lp-run"></span>agent &mdash; builder</p>
+              <pre class="lp-body" id="lp-agent"></pre>
+            </div>
+              <div class="lp lp-board">
+              <p class="lp-head"><span class="lp-dot lp-wait"></span>board</p>
+              <pre class="lp-body" id="lp-board"></pre>
+            </div>
+          </div>
+            <dl class="hero-specs">
+              <div><dt>Runtime</dt><dd>Rust / Tauri&nbsp;2</dd></div>
+              <div><dt>Target</dt><dd>macOS&nbsp;13+ &middot; Apple silicon</dd></div>
+              <div><dt>Status</dt><dd>Public beta</dd></div>
+            </dl>
           </div>
         </div>
-        <figure class="hero-shot">
-          <img
-            src="./assets/screens/workspace-climax.png"
-            alt="Athena's Core workspace with terminal, task board, and AI panels visible together"
-            width="1710"
-            height="1074"
-            fetchpriority="high"
-          />
-          <figcaption>Real capture / in-app &mdash; no render, no mockup</figcaption>
-        </figure>
-        <dl class="specs">
-          <div><dt>Runtime</dt><dd>Rust / Tauri 2</dd></div>
-          <div><dt>Target</dt><dd>macOS 13+ / Apple silicon</dd></div>
-          <div><dt>Status</dt><dd class="hot">Public beta</dd></div>
-        </dl>
       </section>
 
-      <!-- ── 02 / The film ─────────────────────────────────── -->
-      <section class="block" id="film">
+      <!-- CONTENTS -->
+      <nav class="contents" aria-label="In this issue">
+        <span class="contents-label">In this issue</span>
+        <a href="#film"><span>N&deg;01</span>The film</a>
+        <a href="#surfaces"><span>N&deg;02</span>The workspace</a>
+        <a href="#doctrine"><span>N&deg;03</span>Conventions</a>
+        <a href="#ledger"><span>N&deg;04</span>Change ledger</a>
+        <a href="#distributions"><span>N&deg;05</span>Get it</a>
+        <a href="#support"><span>N&deg;06</span>Goodwill</a>
+      </nav>
+
+      <hr class="meander-rule" aria-hidden="true" />
+
+      <!-- FILM -->
+      <section class="section block" id="film">
         <header class="block-head">
-          <span class="block-no">02</span>
-          <h2>Twenty-five seconds,<br /><em>zero context switches.</em></h2>
-          <p>From a blank workspace to a running team of agents. Every frame is a real capture.</p>
+          <h2>Twenty-five seconds.<br />Zero context switch.</h2>
+          <p class="lede">From a blank workspace to a running agent team. Every frame is a real capture of the current build.</p>
         </header>
         <div class="film">
-          <video
-            id="product-film"
-            controls
-            muted
-            playsinline
-            preload="metadata"
-            poster="./assets/screens/workspace-climax.png"
-            aria-label="Athena's Core product film, twenty-five seconds"
-          >
-            <source src="./assets/film/athenas-core-one-window.mp4" type="video/mp4" />
-            Your browser does not support the video tag.
-          </video>
-          <button id="film-play" class="film-play" type="button" aria-label="Play the product film">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor" /></svg>
-          </button>
-          <p class="film-strip"><span>Athena&rsquo;s Core / One window</span><span>Runtime 00:25</span></p>
+          <div class="film-frame">
+            <video
+              id="product-film"
+              controls
+              muted
+              playsinline
+              preload="metadata"
+              poster="./assets/screens/workspace-climax.png"
+              aria-label="Athena's Core product film, twenty-five seconds"
+            >
+              <source src="./assets/film/athenas-core-one-window.mp4" type="video/mp4" />
+              Your browser does not support the video tag.
+            </video>
+            <button id="film-play" class="film-play" type="button" aria-label="Play the film">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor" /></svg>
+            </button>
+          </div>
+          <p class="film-strip">
+            <span>Athena&rsquo;s Core &mdash; One window</span>
+            <span id="frame-counter" data-fps="25">Frame 0000 / 0625</span>
+            <span>Runtime 00:25</span>
+          </p>
         </div>
       </section>
 
-      <!-- ── 03 / Workspace features ───────────────────────── -->
-      <section class="block" id="workspace">
+      <!-- PHOTO INTERLUDE -- the watch -->
+      <section class="interlude" aria-label="On watch">
+        <img src="./assets/photos/owl-watch.jpg" alt="An owl in a dark winter forest, watching directly at the camera" loading="lazy" />
+        <div class="interlude-scrim" aria-hidden="true"></div>
+        <div class="interlude-copy">
+          <p class="interlude-line">Athena&rsquo;s owl watches every pane.</p>
+          <p class="interlude-sub">Agent activity detection: running, thinking, finished &mdash; you see it without switching.</p>
+        </div>
+      </section>
+
+      <!-- SURFACES -->
+      <section class="section block" id="surfaces">
         <header class="block-head">
-          <span class="block-no">03</span>
-          <h2>Built around<br /><em>the way you work.</em></h2>
-          <p>Open the pieces of a project without scattering your attention across five separate apps.</p>
+          <h2>Everything in view.<br />Nothing in the way.</h2>
+          <p class="lede">Four views, shown as they ship. Each image is a capture from the current build.</p>
         </header>
         <ol class="features">
-          <li class="feature">
+          <li class="feature plate">
             <figure class="feature-img">
               <img src="./assets/screens/04-workspace.png" alt="Athena's Core workspace view showing project navigation and active work" loading="lazy" width="1710" height="1074" />
             </figure>
             <div class="feature-text">
               <h3>A project home</h3>
-              <p>Workspaces, files, sessions, and the next action, close at hand.</p>
+              <p>Workspaces, files, sessions, and the next action live one keypress apart. You open a project and are looking at the work, not a dashboard.</p>
             </div>
           </li>
-          <li class="feature">
+          <li class="feature plate">
             <figure class="feature-img">
               <img src="./assets/screens/05-athena.png" alt="Athena AI chat panel showing a workspace-aware development conversation" loading="lazy" width="1710" height="1074" />
             </figure>
             <div class="feature-text">
               <h3>Chat with context</h3>
-              <p>Athena works from the workspace you are already looking at.</p>
+              <p>Athena reads the workspace you are already looking at. No pasting paths, no restating the task &mdash; the conversation starts where you are.</p>
             </div>
           </li>
-          <li class="feature">
+          <li class="feature plate">
             <figure class="feature-img">
               <img src="./assets/screens/07-kanban.png" alt="Athena's Core Kanban board with development tasks" loading="lazy" width="1710" height="1074" />
             </figure>
             <div class="feature-text">
               <h3>A visible next step</h3>
-              <p>Ideas become a board your agents and your team can share.</p>
+              <p>Ideas become cards on a board your agents and your team can share. The plan stays on screen instead of in someone&rsquo;s scrollback.</p>
             </div>
           </li>
-          <li class="feature">
+          <li class="feature plate">
             <figure class="feature-img">
               <img src="./assets/screens/06-swarm.png" alt="Athena's Core agent swarm launch and coordination view" loading="lazy" width="1710" height="1074" />
             </figure>
             <div class="feature-text">
               <h3>More hands on the work</h3>
-              <p>Launch a coordinated group of agents when the task outgrows one thread.</p>
+              <p>Launch a coordinated group of agents on one shared goal. A gold dot marks work in progress; a pulsing one is thinking; amber means waiting on you.</p>
             </div>
           </li>
         </ol>
       </section>
 
-      <!-- ── 04 / Doctrine ─────────────────────────────────── -->
-      <section class="block doctrine">
+      <!-- DOCTRINE -->
+      <section class="section block doctrine" id="doctrine">
         <header class="block-head">
-          <span class="block-no">04</span>
-          <h2>Small, native,<br /><em>deliberate.</em></h2>
+          <h2>Small. Native. Deliberate.</h2>
         </header>
         <ol class="tenets">
           <li>
             <h3>Native at the core</h3>
-            <p>Rust and Tauri 2 keep the desktop shell compact and close to the platform.</p>
+            <p>No Electron. Rust and Tauri&nbsp;2 keep the shell compact and close to the platform.</p>
           </li>
           <li>
             <h3>One visual language</h3>
@@ -163,22 +215,42 @@
           </li>
           <li>
             <h3>Early, not overpromised</h3>
-            <p>Athena&rsquo;s Core is in active beta. Test it, break it, and help decide what comes next.</p>
+            <p>Athena&rsquo;s Core is in active beta. Test it, break it, and help decide what comes next. Finished on purpose.</p>
           </li>
         </ol>
       </section>
 
-      <!-- ── 05 / What's new ───────────────────────────────── -->
-      <section class="block" id="whats-new">
+      <!-- MATERIALS -->
+      <section class="section block materials">
         <header class="block-head">
-          <span class="block-no">05</span>
-          <h2>What&rsquo;s new.</h2>
-          <p>Release notes from the repo. New builds appear here as they ship.</p>
+          <h2>The materials stay honest.</h2>
+          <p class="lede">The identity comes from the things themselves &mdash; black-figure pottery, the forge bench, marble at night. So does the software: Rust, native, nothing borrowed.</p>
+        </header>
+        <div class="materials-grid">
+          <figure class="material plate">
+            <img src="./assets/photos/vases-black-figure.jpg" alt="Black-figure Greek vase in a dark museum case with gold-lit inscription card" loading="lazy" />
+            <figcaption>Black-figure &mdash; the oldest high-contrast UI in the Western canon.</figcaption>
+          </figure>
+          <figure class="material plate">
+            <img src="./assets/photos/forge-tools.jpg" alt="Worn hand tools arranged on a dark bench in monochrome" loading="lazy" />
+            <figcaption>The forge &mdash; tools that outlast their announcements.</figcaption>
+          </figure>
+          <figure class="material plate">
+            <img src="./assets/photos/marble-statue.jpg" alt="A draped marble statue framed by a dark stone opening" loading="lazy" />
+            <figcaption>Marble &mdash; structure that holds for centuries.</figcaption>
+          </figure>
+        </div>
+      </section>
+      <!-- CHANGE LEDGER -->
+      <section class="section block" id="ledger">
+        <header class="block-head">
+          <h2>What ships, as it ships.</h2>
+          <p class="lede">Release notes fetched live from the repository.</p>
         </header>
         <div class="release-list" id="release-list">
           <article class="release">
             <div class="release-head">
-              <span class="release-tag">v0.3.0</span>
+              <span class="release-tag">v3.3.1</span>
               <h3>Beta, with agent activity detection</h3>
               <time datetime="2026-08">August 2026</time>
             </div>
@@ -186,79 +258,81 @@
               <p>
                 Athena&rsquo;s Core now sees which AI agents are running inside each pane. A gold dot
                 marks an agent at work, a pulsing dot means thinking, amber means finished or
-                waiting on you. Finished, errored, or questioning agents ping you with a macOS
-                notification and a dock badge, so nothing waits unseen.
+                waiting on you. Agents waiting for input or hitting errors ping you — the pane
+                border pulses so nothing waits unseen.
               </p>
               <p>Also in this build:</p>
               <ul>
                 <li><strong>Multi-pane terminal</strong>: several shell sessions side by side</li>
                 <li><strong>Workspace-aware AI chat</strong>: talk to Claude or other LLMs inline</li>
                 <li><strong>Swarm orchestration</strong>: launch multiple agents on a shared goal</li>
-                <li><strong>Kanban tasks</strong>, a plugin system, an in-app browser, and 16 themes</li>
+                <li><strong>Kanban tasks</strong>, a plugin system, an in-app browser, and 12 themes</li>
               </ul>
             </div>
-            <a class="release-link" href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">View on GitHub ↗</a>
+            <a class="release-link" href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">View on GitHub &#8599;</a>
           </article>
         </div>
       </section>
 
-      <!-- ── 06 / Early access ─────────────────────────────── -->
-      <section class="block early" id="early-access">
-        <span class="block-no">06</span>
-        <h2 class="early-title">Try the <em>build.</em></h2>
-        <p class="early-sub">Download the current macOS release, break it, and tell us what gets in your way.</p>
-        <div class="early-ctas">
-          <a class="btn btn-gold" href="https://github.com/TOX9C/athenas-core/releases" target="_blank" rel="noopener">See releases</a>
-          <a class="btn btn-line" href="https://github.com/TOX9C/athenas-core/issues" target="_blank" rel="noopener">Share feedback</a>
+      <!-- EARLY ACCESS -->
+      <section class="section early" id="distributions">
+        <div class="early-inner">
+          <p class="kicker">Get it</p>
+          <h2 class="early-title">Take the build. Break it. Measure it.</h2>
+          <p class="early-sub">Download the current macOS release and report what gets in your way.</p>
+          <div class="early-ctas">
+            <a class="btn btn-gold" href="https://github.com/TOX9C/athenas-core/releases" target="_blank" rel="noopener">See releases &#8599;</a>
+            <a class="btn btn-line" href="https://github.com/TOX9C/athenas-core/issues" target="_blank" rel="noopener">File a report</a>
+          </div>
+          <p class="early-note">macOS 13+ &middot; Apple silicon &middot; BUSL-1.1</p>
         </div>
-        <p class="early-note">macOS 13+ / Apple silicon</p>
       </section>
 
-      <!-- ── 07 / Support ──────────────────────────────────── -->
-      <section class="block" id="support">
+      <!-- SUPPORT -->
+      <section class="section block" id="support">
         <header class="block-head">
-          <span class="block-no">07</span>
-          <h2>Free software.<br /><em>Support optional.</em></h2>
-          <p>Athena&rsquo;s Core is free for everyone. If it saves you time, a donation helps keep development going.</p>
+          <h2>Free for everyone.<br />Paid for by gratitude.</h2>
+          <p class="lede">If the tool saves you time, a donation keeps development going.</p>
         </header>
         <div class="support-rows">
           <div class="support-row">
             <h3>Crypto</h3>
-            <p>BTC, ETH, USDT, USDC. Any chain. Click to copy.</p>
+            <p>BTC, ETH, USDT, USDC. Any amount. Select an entry to copy it.</p>
             <div class="crypto-list">
               <code class="crypto-code" tabindex="0" role="button" title="Copy BTC address"><span>BTC</span>bc1qn8ehwc7rxlpgvljztr5k6npqf307xq00dqatf8</code>
               <code class="crypto-code" tabindex="0" role="button" title="Copy ETH address"><span>ETH / USDT / USDC</span>0x4260456e1dbdc880d69d75949726953215a93586</code>
-              <code class="crypto-code" tabindex="0" role="button" title="Copy USDT address"><span>USDT (TRC-20)</span>TSBUpAreTjmUscbUbf4L1wkX1fvvJvSRGW</code>
+              <code class="crypto-code" tabindex="0" role="button" title="Copy USDT TRC-20 address"><span>USDT (TRC-20)</span>TSBUpAreTjmUscbUbf4L1wkX1fvvJvSRGW</code>
             </div>
           </div>
           <div class="support-row">
             <h3>Donate online</h3>
-            <p>Card or crypto via NowPayments. Any amount helps.</p>
-            <a class="btn btn-gold" href="https://nowpayments.io/donation/tox9c" target="_blank" rel="noopener">Buy me a coffee</a>
+            <p>Card or crypto via NowPayments.</p>
+            <a class="btn btn-gold" href="https://nowpayments.io/donation/tox9c" target="_blank" rel="noopener">Buy me a coffee &#8599;</a>
           </div>
           <div class="support-row">
             <h3>Other ways</h3>
-            <p>Star the repo, share with friends, report bugs.</p>
-            <a class="btn btn-line" href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">Star on GitHub</a>
+            <p>Star the repository, share it, report bugs.</p>
+            <a class="btn btn-line" href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">Star on GitHub &#8599;</a>
           </div>
         </div>
       </section>
     </main>
-
     <footer class="site-footer">
       <a class="brand" href="#top" aria-label="Athena's Core home">
-        <img src="./assets/icon-128.png" alt="" width="20" height="20" />
-        <span>Athena&rsquo;s Core</span>
+        <img src="./assets/icon-128.png" alt="" width="18" height="18" />
+        <span class="brand-name brand-name--foot">Athena&rsquo;s Core</span>
       </a>
       <nav class="footer-links" aria-label="Footer">
-        <a href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">GitHub ↗</a>
-        <a href="https://github.com/TOX9C/athenas-core/releases" target="_blank" rel="noopener">Releases ↗</a>
-        <a href="#support">Support</a>
-        <a href="https://github.com/TOX9C/athenas-core/issues" target="_blank" rel="noopener">Feedback ↗</a>
+        <a href="https://github.com/TOX9C/athenas-core" target="_blank" rel="noopener">Source &#8599;</a>
+        <a href="https://github.com/TOX9C/athenas-core/releases" target="_blank" rel="noopener">Releases &#8599;</a>
+        <a href="#support">Goodwill</a>
+        <a href="https://github.com/TOX9C/athenas-core/issues" target="_blank" rel="noopener">Reports &#8599;</a>
       </nav>
-      <p class="footer-note">BUSL-1.1 / Source-available / Built by a solo dev</p>
+      <p class="footer-note">BUSL-1.1 &middot; Source-available &middot; Built by one person. Photography via Unsplash.</p>
     </footer>
 
+    <script src="./assets/vendor/gsap.min.js" defer></script>
+    <script src="./assets/vendor/ScrollTrigger.min.js" defer></script>
     <script src="./assets/vendor/marked.min.js" defer></script>
     <script src="./site.js" defer></script>
   </body>

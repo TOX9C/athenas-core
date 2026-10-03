@@ -64,8 +64,11 @@ export class WebSocketTransport {
           try {
             const message = JSON.parse(raw.toString())
             this.messageHandler?.(message, sessionId)
-          } catch {
-            // ignore malformed messages
+          } catch (err) {
+            console.debug(
+              `[mcp-server] websocket session ${sessionId}: ignoring malformed message`,
+              err,
+            )
           }
         })
 
@@ -98,6 +101,14 @@ export class WebSocketTransport {
         session.socket.send(payload)
       }
     }
+  }
+
+  /** Terminate a single session (e.g. rejected auth handshake). */
+  close(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    session.socket.close(1008, 'Closed by server')
+    this.sessions.delete(sessionId)
   }
 
   getSessionCount(): number {

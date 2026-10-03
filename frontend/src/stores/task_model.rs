@@ -32,18 +32,6 @@ pub struct KanbanTask {
     /// Plan-step back-link (Kanban ↔ plan deep link): set when the card was
     /// created from a plan step, so the card can jump back to the plan.
     pub plan_step_id: Option<String>,
-    /// Proof-of-work (agent-owned cards in In Review).
-    pub evidence: Option<TaskEvidence>,
-}
-
-/// Diff + test-log excerpt attached to an agent-owned card. Built from the
-/// agent's pane output + `git diff --stat` at the move moment.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
-pub struct TaskEvidence {
-    pub diff: String,
-    pub test_log: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -113,9 +101,6 @@ pub fn tasks_from_backend_json(json: &str) -> Result<Vec<KanbanTask>, String> {
                 .get("plan_step_id")
                 .and_then(|x| x.as_str())
                 .map(String::from);
-            let evidence = v
-                .get("evidence")
-                .and_then(|e| serde_json::from_value(e.clone()).ok());
             KanbanTask {
                 id,
                 space_id,
@@ -126,7 +111,6 @@ pub fn tasks_from_backend_json(json: &str) -> Result<Vec<KanbanTask>, String> {
                 order,
                 created_at,
                 plan_step_id,
-                evidence,
             }
         })
         .collect())

@@ -6,13 +6,49 @@ use tauri::State;
 /// Kept here so the relay's event allowlist and the store command agree.
 pub(crate) const WORKSPACE_CHANGED_EVENT: &str = "workspace:changed";
 
+/// Reject system-sensitive roots that would neutralize the path sandbox.
+///
+/// A trusted root grants every sandboxed command (fs_*, pty_*, …) access to
+/// everything beneath it, so blessing `/`, the entire home directory, or a
+/// system directory is equivalent to disabling the sandbox — and it persists
+/// across restarts. These can only ever be requested by a compromised or
+/// buggy renderer, never by a user who needs a real project folder.
+fn is_forbidden_root(canonical: &std::path::Path) -> bool {
+    /// Directory prefixes that must never be trusted roots. `/` is handled
+    /// separately (it has no parent, and `starts_with("/")` matches all).
+    const FORBIDDEN_PREFIXES: &[&str] = &[
+        "/bin", "/sbin", "/usr", "/etc", "/private", "/System", "/var", "/dev", "/tmp",
+    ];
+    if canonical.parent().is_none() {
+        return true; // filesystem root ("/")
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        if canonical == std::path::Path::new(&home) {
+            return true; // the entire home directory
+        }
+    }
+    FORBIDDEN_PREFIXES
+        .iter()
+        .any(|p| canonical.starts_with(std::path::Path::new(p)))
+}
+
 /// Add a directory to the set of trusted workspace roots.
 ///
 /// This is the authorization gesture that lets a terminal or AI agent operate
-/// in a directory outside the app's own project root. The directory must
-/// exist and be a directory — a renderer cannot bless an arbitrary string;
-/// it can only opt in to a real folder it could browse to anyway. Idempotent:
-/// adding an already-trusted root is a no-op.
+/// in a directory outside the app's own project root. Because one IPC call
+/// with `dir="/"` would permanently disable the whole path sandbox, the
+/// gesture is two-fold and both halves are enforced here, in the backend:
+///
+/// 1. The directory must not be a system-sensitive root (`/`, `$HOME`,
+///    `/bin`, `/usr`, `/etc`, `/private`, …) — these are rejected outright.
+/// 2. The user must confirm a native desktop dialog naming the exact
+///    directory. The renderer is expected to drive this through the native
+///    folder picker (`fs_show_open_dialog` with `directory: true`) and pass
+///    the picked path here; a programmatic caller cannot bypass the backend
+///    confirmation dialog.
+///
+/// The directory must exist and be a directory. Idempotent: adding an
+/// already-trusted root is a no-op (and skips the dialog).
 ///
 /// Canonicalizes before storing so later comparisons against a canonicalized
 /// request path are exact, and so a symlinked path is stored as its target.
@@ -38,10 +74,48 @@ pub async fn workspace_add_trusted_root(
     if !is_dir {
         return Err(format!("'{}' is not a directory", dir));
     }
+    if is_forbidden_root(&canonical) {
+        log::warn!(
+            "workspace_add_trusted_root rejected system root: {}",
+            canonical.display()
+        );
+        return Err(format!(
+            "'{}' is a system or home root and cannot be trusted; pick a project folder inside it",
+            canonical.display()
+        ));
+    }
     let mut roots = load_trusted_roots(&state.store);
     if roots.iter().any(|r| r == &canonical) {
         return Ok(());
     }
+
+    // Backend-enforced user gesture: the exact canonical directory the
+    // renderer (or relay) asked to bless is shown in a native dialog, and the
+    // root is only added when the user confirms. This runs on a blocking
+    // thread because the dialog API is synchronous.
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+    let app = state
+        .get_app_handle()
+        .ok_or_else(|| "app not ready; cannot confirm trusted root".to_string())?;
+    let path_display = canonical.display().to_string();
+    let confirmed = tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .message(format!(
+                "Trust this folder as a workspace root?\n\n{path_display}\n\nAthena terminals and agents will be allowed to read and write inside it."
+            ))
+            .title("Trust Folder")
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Trust Folder".to_string(),
+                "Cancel".to_string(),
+            ))
+            .blocking_show()
+    })
+    .await
+    .map_err(|e| format!("confirmation dialog failed: {e}"))?;
+    if !confirmed {
+        return Err("user declined to trust this folder".to_string());
+    }
+
     roots.push(canonical);
     let strs: Vec<String> = roots
         .into_iter()

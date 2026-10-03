@@ -264,11 +264,11 @@ fn event_subscription_routes_only_to_subscriber_and_enforces_declaration() {
 }
 
 #[test]
-fn oversized_event_payload_is_replaced_with_error_payload() {
+fn oversized_event_payload_is_rejected_with_error() {
     let manager = PluginManager::new();
     let oversized_payload = athena_plugins::PluginEventPayload {
         level: None,
-        message: Some("y".repeat(256 * 1024 + 1)),
+        message: Some("x".repeat(512 * 1024)),
         title: None,
         metadata: None,
         task_title: None,
@@ -284,25 +284,19 @@ fn oversized_event_payload_is_replaced_with_error_payload() {
         agent_id: None,
         plugin_id: None,
     };
-    let event = manager.emit_plugin_event(
-        PluginEventType::ProgressUpdate,
-        PluginEventSource {
-            session_id: "test-session".into(),
-            pane_id: None,
-            agent_type: "claude".into(),
-            agent_id: None,
-        },
-        oversized_payload,
-    );
-    assert_eq!(
-        event.payload.message.as_deref(),
-        Some("plugin event payload exceeded size limit"),
-        "oversized payload must be replaced, not forwarded"
-    );
-    assert!(matches!(
-        event.payload.level,
-        Some(athena_plugins::PayloadLevel::Error)
-    ));
+    let err = manager
+        .emit_plugin_event(
+            PluginEventType::ProgressUpdate,
+            PluginEventSource {
+                session_id: "test-session".into(),
+                pane_id: None,
+                agent_type: "claude".into(),
+                agent_id: None,
+            },
+            oversized_payload,
+        )
+        .expect_err("oversized payload must be rejected, not forwarded");
+    assert!(matches!(err, PluginError::LimitExceeded(_)));
 }
 
 #[test]

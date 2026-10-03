@@ -54,11 +54,3 @@ pub fn output_buffer_list(state: State<'_, AppState>) -> Result<String, String> 
 pub fn output_buffer_clear(state: State<'_, AppState>, pane_id: String) -> Result<bool, String> {
     Ok(state.output_buffer.clear_pane_buffer(&pane_id))
 }
-
-/// Get the accumulated output history for a PTY session.
-/// Returns the current grid state as a JSON array of rows with cell characters.
-#[tauri::command]
-pub fn get_pane_history(state: State<'_, AppState>, pane_id: String) -> Result<String, String> {
-    let lines = state.output_buffer.get_output(&pane_id, None);
-    serde_json::to_string(&lines).map_err(|e| e.to_string())
-}

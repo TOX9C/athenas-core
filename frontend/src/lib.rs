@@ -183,9 +183,10 @@ pub fn App() -> Element {
     // against echo loops: this listener consumes, never saves.
     let mut workspace_sync = use_workspace_store();
     use_effect(move || {
-        let _unlisten = tauri_bridge::listen("workspace:changed", move |payload: String| {
-            if let Ok(state) =
-                serde_json::from_str::<stores::workspace::WorkspaceState>(&payload)
+        let _unlisten = tauri_bridge::listen("workspace:changed", move |payload: wasm_bindgen::JsValue| {
+            if let Some(state) = payload
+                .as_string()
+                .and_then(|s| serde_json::from_str::<stores::workspace::WorkspaceState>(&s).ok())
             {
                 if *workspace_sync.peek() != state {
                     workspace_sync.set(state);
@@ -202,6 +203,13 @@ pub fn App() -> Element {
     // registered here because App owns the signals they mutate.
     let mut command_state = use_command_store();
     let use_workspace_store_in_commands = use_workspace_store();
+    // Hook-shaped stores must be captured here, synchronously, at render top —
+    // calling `use_toast_store()`/`use_ui_store()` inside the `use_hook`
+    // initializer or inside a `Callback` fires the "hook list already borrowed"
+    // panic (hook inside a hook). Same idiom as `use_workspace_store_in_commands`.
+    let checkpoint_toast = components::shared::toast::use_toast_store();
+    let inbox_ui_state = use_ui_store();
+    let inbox_panel_state = use_panel_manager_store();
     let handlers = use_hook(move || {
         let mut handlers: std::collections::HashMap<String, Callback<()>> =
             std::collections::HashMap::new();
@@ -225,6 +233,7 @@ pub fn App() -> Element {
             shortcut: None,
             handler_key: "new_chat".to_string(),
             when_key: None,
+            icon: None,
         });
 
         for theme in UITheme::all() {
@@ -250,6 +259,7 @@ pub fn App() -> Element {
                 shortcut: None,
                 handler_key,
                 when_key: None,
+                icon: None,
             });
         }
 
@@ -257,7 +267,7 @@ pub fn App() -> Element {
         // swarm run or agent mistake can be reverted from the Changes panel.
         {
             let workspace = use_workspace_store_in_commands;
-            let mut toast = components::shared::toast::use_toast_store();
+            let mut toast = checkpoint_toast;
             handlers.insert(
                 "checkpoint_create".to_string(),
                 Callback::new(move |_| {
@@ -323,6 +333,7 @@ pub fn App() -> Element {
                 shortcut: Some("Cmd+Shift+C".to_string()),
                 handler_key: "checkpoint_create".to_string(),
                 when_key: None,
+                icon: None,
             });
         }
 
@@ -330,8 +341,8 @@ pub fn App() -> Element {
             handlers.insert(
                 "inbox_show".to_string(),
                 Callback::new(move |_| {
-                    let mut ui = use_ui_store();
-                    let mut panel = use_panel_manager_store();
+                    let mut ui = inbox_ui_state;
+                    let mut panel = inbox_panel_state;
                     ui.write().right_sidebar_open = true;
                     panel.write().active_right_panel = crate::stores::panel_manager::RightPanel::Inbox;
                 }),
@@ -345,6 +356,7 @@ pub fn App() -> Element {
                 shortcut: Some("Cmd+Shift+U".to_string()),
                 handler_key: "inbox_show".to_string(),
                 when_key: None,
+                icon: None,
             });
         }
 
@@ -363,6 +375,7 @@ pub fn App() -> Element {
             shortcut: Some("Cmd+,".to_string()),
             handler_key: "open_settings".to_string(),
             when_key: None,
+            icon: None,
         });
 
         command_state.write().register_commands(commands);

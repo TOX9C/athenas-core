@@ -16,7 +16,7 @@ mod output_buffer_tests {
         let lines = buf.get_output("pane-1", None);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].text, "hello world");
-        assert_eq!(lines[0].pane_id, "pane-1");
+        assert_eq!(&*lines[0].pane_id, "pane-1");
     }
 
     #[test]

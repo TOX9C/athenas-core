@@ -15,16 +15,10 @@ pub struct FileNode {
     pub truncated: bool,
 }
 
-const SKIP_ENTRIES: &[&str] = &[
-    "node_modules",
-    ".git",
-    ".next",
-    "dist",
-    "build",
-    ".ade",
-    ".DS_Store",
-];
+const SKIP_ENTRIES: &[&str] = &["node_modules", ".git", ".next", "dist", "build", ".ade", ".DS_Store"];
 const MAX_DEPTH: usize = 6;
+/// Maximum size [`read_file_content`] will load into memory.
+const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Errors that can occur during file system operations.
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
@@ -33,6 +27,14 @@ pub enum FsError {
     Io(String),
     #[error("path traversal denied: {0}")]
     PathTraversal(String),
+    /// The target path does not exist. Kept distinct from `PathTraversal` so
+    /// a missing file is never reported as a security violation.
+    #[error("not found: {0}")]
+    NotFound(String),
+    /// The file exceeds the maximum readable size; the report carries the
+    /// actual size and the cap so callers can surface a truncation hint.
+    #[error("file too large: {0} bytes (limit {1} bytes)")]
+    FileTooLarge(u64, u64),
 }
 
 impl From<std::io::Error> for FsError {
@@ -43,7 +45,13 @@ impl From<std::io::Error> for FsError {
 
 impl From<path_validator::PathValidationError> for FsError {
     fn from(e: path_validator::PathValidationError) -> Self {
-        FsError::PathTraversal(e.to_string())
+        use path_validator::PathValidationError::*;
+        match e {
+            PathTraversal(msg) => FsError::PathTraversal(msg),
+            NotFound(msg) => FsError::NotFound(msg),
+            InvalidPath(msg) => FsError::PathTraversal(msg),
+            Io(err) => FsError::Io(err.to_string()),
+        }
     }
 }
 
@@ -53,10 +61,13 @@ fn get_home() -> Result<PathBuf, FsError> {
         .ok_or_else(|| FsError::PathTraversal("cannot determine home directory".to_string()))
 }
 
-/// Returns a `PathValidator` rooted at the home directory.
+/// Returns a `PathValidator` rooted at the home directory, with the
+/// sensitive-subtree blocklist (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`)
+/// enforced. Prefer a workspace-rooted validator
+/// ([`PathValidator::new_workspace`]) when the caller knows the workspace.
 fn home_validator() -> Result<PathValidator, FsError> {
     let home = get_home()?;
-    PathValidator::new(&home)
+    PathValidator::new_home(&home)
         .map_err(|e| FsError::PathTraversal(format!("failed to create home validator: {}", e)))
 }
 
@@ -68,13 +79,20 @@ fn home_validator() -> Result<PathValidator, FsError> {
 /// - Results are sorted: directories first, then files, each sub-sorted by name.
 pub fn read_tree(dir: &Path, depth: usize) -> Result<Vec<FileNode>, FsError> {
     let validator = home_validator()?;
-    let _canonical = validator.validate(dir)?;
+    let canonical = validator.validate(dir)?;
+    read_tree_inner(&canonical, depth)
+}
 
+/// Inner recursive walker. The root has already been validated+canonicalized
+/// once by [`read_tree`]; children come from `fs::read_dir` on an
+/// already-canonical directory and symlinks are skipped, so re-running
+/// validate (one `canonicalize` syscall per recursion level) buys nothing.
+fn read_tree_inner(canonical_dir: &Path, depth: usize) -> Result<Vec<FileNode>, FsError> {
     if depth >= MAX_DEPTH {
         return Ok(Vec::new());
     }
 
-    let mut entries = fs::read_dir(dir)?
+    let mut entries = fs::read_dir(canonical_dir)?
         .filter_map(|entry| {
             let entry = match entry {
                 Ok(e) => e,
@@ -122,7 +140,16 @@ pub fn read_tree(dir: &Path, depth: usize) -> Result<Vec<FileNode>, FsError> {
             let (children, truncated) = if depth + 1 >= MAX_DEPTH {
                 (Vec::new(), true)
             } else {
-                (read_tree(&path, depth + 1)?, false)
+                // An unreadable subdirectory (permissions, races with other
+                // processes) must not abort the entire tree listing. Emit it
+                // as an empty, truncated node and continue.
+                match read_tree_inner(&path, depth + 1) {
+                    Ok(children) => (children, false),
+                    Err(e) => {
+                        log::warn!("skipping unreadable directory {:?}: {}", path, e);
+                        (Vec::new(), true)
+                    }
+                }
             };
             nodes.push(FileNode {
                 name,
@@ -146,16 +173,28 @@ pub fn read_tree(dir: &Path, depth: usize) -> Result<Vec<FileNode>, FsError> {
 }
 
 /// Reads the full text content of a file.
+///
+/// Files larger than [`MAX_READ_BYTES`] are rejected with
+/// [`FsError::FileTooLarge`] instead of being read, so one call cannot
+/// allocate unbounded memory.
 pub fn read_file_content(path: &Path) -> Result<String, FsError> {
     let validator = home_validator()?;
-    let _canonical = validator.validate(path)?;
-    fs::read_to_string(path).map_err(FsError::from)
+    let canonical = validator.validate(path)?;
+
+    let metadata = fs::metadata(&canonical)?;
+    if metadata.len() > MAX_READ_BYTES {
+        return Err(FsError::FileTooLarge(metadata.len(), MAX_READ_BYTES));
+    }
+    fs::read_to_string(&canonical).map_err(FsError::from)
 }
 
 /// Writes `content` to a file atomically by writing to a temp file then renaming.
 pub fn write_file_content(path: &Path, content: &str) -> Result<(), FsError> {
     let validator = home_validator()?;
-    let _ = validator.validate_write(path)?;
+    // The canonical path returned here is what the later rename targets, so
+    // a swapped symlink in the destination cannot redirect the write after
+    // validation.
+    let canonical = validator.validate_write(path)?;
 
     // Build a unique temp-file path in the SAME directory (atomic rename
     // requires same-filesystem source+dest). The previous
@@ -164,7 +203,7 @@ pub fn write_file_content(path: &Path, content: &str) -> Result<(), FsError> {
     // both became `foo.athena_tmp`), and would clobber a real file literally
     // named `*.athena_tmp`. Use the full file name + PID + timestamp suffix
     // so concurrent writes never race on the same temp file.
-    let temp_path = unique_temp_path(path);
+    let temp_path = unique_temp_path(&canonical);
 
     // Open the temp file with O_EXCL (create_new): if a file/symlink already
     // exists at temp_path, this fails. That closes the TOCTOU window where an
@@ -185,9 +224,57 @@ pub fn write_file_content(path: &Path, content: &str) -> Result<(), FsError> {
     // Atomic replace. On Unix, rename() over an existing path does NOT follow
     // a symlink at the destination (it replaces the directory entry itself),
     // so a symlink swapped in at `path` after validation is itself replaced
-    // rather than written-through.
-    fs::rename(&temp_path, path)?;
+    // rather than written-through. On Windows, plain `fs::rename` fails when
+    // the destination exists, so use MoveFileExW with REPLACE_EXISTING.
+    if let Err(e) = rename_replace(&temp_path, &canonical) {
+        // Never leak the temp file on a failed rename.
+        let _ = fs::remove_file(&temp_path);
+        return Err(e.into());
+    }
     Ok(())
+}
+
+/// Replace `to` with `from` atomically, overwriting an existing destination.
+#[cfg(unix)]
+fn rename_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::rename(from, to)
+}
+
+/// Windows: `std::fs::rename` fails with `ERROR_ALREADY_EXISTS` when the
+/// destination exists; `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` is the
+/// correct atomic-replace call.
+#[cfg(windows)]
+fn rename_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    extern "system" {
+        fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+    }
+
+    let ok = unsafe {
+        MoveFileExW(
+            wide(from).as_ptr(),
+            wide(to).as_ptr(),
+            MOVEFILE_REPLACE_EXISTING,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Fallback for other platforms: best-effort `std::fs::rename`.
+#[cfg(not(any(unix, windows)))]
+fn rename_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::rename(from, to)
 }
 
 /// Construct a same-directory temp path that won't collide with other writes
@@ -209,11 +296,11 @@ fn unique_temp_path(path: &Path) -> PathBuf {
 /// Returns the names of all immediate sub-directories inside `dir`.
 pub fn get_directories(dir: &Path) -> Result<Vec<String>, FsError> {
     let validator = home_validator()?;
-    let _canonical = validator.validate(dir)?;
+    let canonical = validator.validate(dir)?;
 
     let mut dirs = Vec::new();
 
-    for entry in fs::read_dir(dir)? {
+    for entry in fs::read_dir(&canonical)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
@@ -265,6 +352,17 @@ mod tests {
         let content = fs::read_to_string(&test_file).unwrap();
         assert_eq!(content, "test content");
 
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_read_file_content_missing_is_not_found_not_traversal() {
+        let temp_dir = home_temp("read_missing");
+        let missing = temp_dir.join("definitely_missing_9c41.txt");
+        match read_file_content(&missing) {
+            Err(FsError::NotFound(_)) => {}
+            other => panic!("expected FsError::NotFound, got {:?}", other),
+        }
         fs::remove_dir_all(&temp_dir).unwrap();
     }
 

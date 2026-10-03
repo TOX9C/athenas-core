@@ -22,6 +22,17 @@ const MAX_PTY_DATA_BYTES: usize = 1024 * 1024; // 1 MB
 /// Maximum length of a PTY session id. Generous; ids are caller-chosen.
 const MAX_SESSION_ID_LEN: usize = 256;
 
+/// Bounds for caller-requested PTY dimensions. The terminal grid allocates
+/// `rows * cols` cells, so an unclamped 65535×65535 request would try to
+/// allocate billions of cells and abort the process. 1000 is far beyond any
+/// real window; 2 keeps the grid usable at degenerate sizes.
+const MIN_PTY_DIMENSION: u16 = 2;
+const MAX_PTY_DIMENSION: u16 = 1000;
+
+fn clamp_pty_dimension(v: u16) -> u16 {
+    v.clamp(MIN_PTY_DIMENSION, MAX_PTY_DIMENSION)
+}
+
 /// Validate a shell binary path for PTY spawning.
 ///
 /// Allowed if the canonicalized path lives under `/bin` or `/usr/bin`, or if it
@@ -160,8 +171,8 @@ pub async fn pty_spawn(
     start_paused: Option<bool>,
     listener_owner: Option<String>,
 ) -> Result<(), String> {
-    let cols = cols.unwrap_or(80);
-    let rows = rows.unwrap_or(24);
+    let cols = clamp_pty_dimension(cols.unwrap_or(80));
+    let rows = clamp_pty_dimension(rows.unwrap_or(24));
     log::info!(
         "pty_spawn requested: session={} cols={} rows={}",
         id,
@@ -178,6 +189,10 @@ pub async fn pty_spawn(
     })?;
     let shell_str = validated_shell.to_string_lossy().to_string();
     let cwd_str = validated_cwd.to_string_lossy().to_string();
+
+    // Lazily start the 1.5 s agent-activity heartbeat on first pane
+    // registration (no-op once running; see AppState's doc).
+    state.ensure_agent_activity_heartbeat();
 
     let integration_script = shell_integration_script(&shell_str);
     let session_manager = state.session_manager.lock().await;
@@ -204,7 +219,10 @@ pub async fn pty_spawn(
             // A newly claimed reader may start paused so a mobile/xterm mount
             // can install its raw listener before the first screen is emitted.
             let claimed_reader = session.try_claim_read_loop();
-            if claimed_reader && start_paused.unwrap_or(false) {
+            // Pause only when a read loop will actually run to lift it —
+            // otherwise raw_paused stays set with nothing to expire it until
+            // a later respawn.
+            if claimed_reader && start_paused.unwrap_or(false) && app_handle.is_some() {
                 session.begin_startup_pause(listener_owner);
             }
             if let Some(handle) = app_handle {
@@ -254,12 +272,13 @@ pub async fn pty_spawn(
 /// Background task that reads PTY output and fans it out to consumers.
 ///
 /// Outputs, in coalesced batches (one delivery per 8 ms flush tick):
-/// - the session's raw sink — a `Channel<Vec<u8>>` installed by the xterm.js
-///   mount's attach handshake, carrying raw PTY bytes as binary IPC (no
-///   base64, no per-flush webview eval);
+/// - the session's raw IPC channel — a `tauri::ipc::Channel` installed by
+///   the xterm.js mount's `pty_attach_listener` handshake, carrying raw PTY
+///   bytes as `InvokeResponseBody::Raw` (binary fetch above 1 KiB,
+///   `Uint8Array` eval below; no base64, no JSON event payload);
 /// - `pty:raw:<id>` — the legacy base64-encoded event stream, emitted only
 ///   while a Mobile Mirror relay phone is subscribed
-///   (`AppState::relay_raw_subscribers`);
+///   (`AppState::relay_raw_subscribers`) or no raw channel is attached;
 /// - `terminal:data` — parsed cell deltas for the legacy cell-grid frontend,
 ///   emitted only when the grid actually changed.
 ///
@@ -298,6 +317,11 @@ pub(crate) async fn pty_read_loop(
     // into U+FFFD. We hold the incomplete tail here until the next read
     // completes the sequence.
     let mut utf8_carry: Vec<u8> = Vec::with_capacity(4);
+    // Escape-sequence carry for the output-buffer text path: string
+    // sequences (OSC/APC/DCS, e.g. Kitty graphics frames) routinely span
+    // multiple 16 KiB reads; hold the unclosed tail so the stripper sees
+    // the whole sequence instead of leaking the payload as text.
+    let mut esc_tail: Vec<u8> = Vec::new();
 
     // Coalescing buffer for `pty:raw` PTY output. Pre-allocate to 32 KB
     // to avoid reallocation churn during active output.
@@ -373,10 +397,20 @@ pub(crate) async fn pty_read_loop(
         // hostile session id cannot escape the tee directory.
         let safe_id: String = session_id
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let path = dir.join(format!("{safe_id}.bin"));
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             use std::io::Write as _;
             let _ = f.write_all(bytes);
         }
@@ -384,12 +418,13 @@ pub(crate) async fn pty_read_loop(
 
     /// Flush accumulated raw PTY bytes.
     ///
-    /// Primary delivery is the attached xterm listener's raw IPC channel
-    /// (installed by `pty_attach_listener`): bytes cross as-is — no base64,
-    /// no JSON, and no webview JS eval per flush. The base64 `pty:raw:<id>`
-    /// event path remains for the Mobile Mirror relay and only runs while a
-    /// phone actually subscribes; `Emitter::emit` evals webview JS even with
-    /// zero listeners, so unconditional emission wasted work on every flush.
+    /// Primary delivery is the attached xterm mount's raw IPC channel
+    /// (`AppState::raw_output_channels`, installed by
+    /// `pty_attach_listener`): bytes cross as `InvokeResponseBody::Raw` —
+    /// binary fetch for larger flushes, small `Uint8Array` eval below 1 KiB.
+    /// The base64 `pty:raw:<id>` event path below remains only as the
+    /// Mobile Mirror relay transport (gated on `relay_raw_subscribers`) and
+    /// as the fallback when no channel is attached.
     ///
     /// `encode_buf` and `raw_event_buf` are reusable scratch buffers so the
     /// relay path allocates zero after warmup.
@@ -417,7 +452,65 @@ pub(crate) async fn pty_read_loop(
                 .append(session_id, coalesce_buf, now_ms());
         }
 
-        {
+        // Desktop xterm delivery: the mount's `pty_attach_listener` installs
+        // a `Channel` here; bytes cross as `InvokeResponseBody::Raw` —
+        // binary IPC (fetch path above 1 KiB, `Uint8Array` eval below),
+        // skipping base64 + JSON entirely. A failed send means the webview
+        // (or the JS channel) is gone; drop the stale entry so the flush
+        // stops paying send costs for a dead listener until a remount
+        // reinstalls one.
+        let channel = state
+            .as_ref()
+            .and_then(|s| s.raw_output_channels.lock().get(session_id).cloned());
+        if let Some(channel) = &channel {
+            if let Err(e) = channel.send(tauri::ipc::InvokeResponseBody::Raw(
+                coalesce_buf.to_vec(),
+            )) {
+                log::warn!(
+                    "pty_read_loop[{}]: raw output channel send failed ({}), dropping channel",
+                    session_id,
+                    e
+                );
+                if let Some(s) = &state {
+                    // Compare-and-remove by channel id: a remount may have
+                    // inserted a NEWER channel for this pane between the
+                    // clone above and now; dropping it would strand the
+                    // remounted xterm on the silent base64 path (see the
+                    // pty:channel-lost fallback below).
+                    let mut channels = s.raw_output_channels.lock();
+                    let is_same = channels
+                        .get(session_id)
+                        .map(|current| current.id() == channel.id())
+                        .unwrap_or(false);
+                    if is_same {
+                        channels.remove(session_id);
+                        drop(channels);
+                        // Tell the frontend its channel died so it can
+                        // reinstall the base64 fallback listener — otherwise
+                        // the channel-mode mount (no `pty:raw:` listener) goes
+                        // permanently black once the gate below falls back to
+                        // base64 emission.
+                        let _ = app_handle.emit(&format!("pty:channel-lost:{session_id}"), "{}");
+                    }
+                }
+            }
+        }
+
+        // Base64 `pty:raw:<id>` event, for the Mobile Mirror relay — and as
+        // the fallback desktop transport whenever no raw channel is attached
+        // (e.g. a listener predating the channel handshake). Relay only runs
+        // while a phone actually subscribes (`relay_raw_subscribers` > 0):
+        // `Emitter::emit` evals webview JS even with zero listeners, so
+        // unconditional emission wasted work on every 8 ms flush.
+        let relay_subscribed = state.as_ref().is_some_and(|s| {
+            s.relay_raw_subscribers
+                .lock()
+                .get(session_id)
+                .copied()
+                .unwrap_or(0)
+                > 0
+        });
+        if channel.is_none() || relay_subscribed {
             // Relay phones consume base64 `pty:raw:<id>` events. base64
             // expands input by ~4/3; `encode_slice` into the reused buffer
             // keeps this zero-alloc after warmup.
@@ -513,7 +606,7 @@ pub(crate) async fn pty_read_loop(
     let mut read_rx = session.spawn_reader();
 
     loop {
-        let data: Vec<u8> = tokio::select! {
+        let mut data: Vec<u8> = tokio::select! {
             // `biased` ensures the read branch is preferred when data is
             // available, so we drain the PTY eagerly without dropping
             // completed reads because of an interval tick.
@@ -585,6 +678,29 @@ pub(crate) async fn pty_read_loop(
             }
         };
 
+        // Burst-drain: a chatty PTY can park several completed reads in the
+        // channel while one iteration runs its parse/emit cycle. Drain all
+        // immediately-available messages and concatenate them so a burst
+        // costs ONE parse + ONE output-buffer append + ONE emit cycle
+        // instead of N. Reader errors just end the drain; the main select
+        // handles them on the next iteration.
+        loop {
+            match read_rx.try_recv() {
+                Ok(Ok(bytes)) => {
+                    data.extend_from_slice(&bytes);
+                }
+                Ok(Err(e)) => {
+                    log::warn!("PTY read error for {}: {}", session_id, e);
+                    if e.kind() == std::io::ErrorKind::BrokenPipe
+                        || e.kind() == std::io::ErrorKind::InvalidData
+                    {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
         let n = data.len();
         log::trace!("pty_read_loop[{}]: read {} bytes", session_id, n);
         // Convert raw PTY bytes to text and append to the output buffer.
@@ -592,7 +708,7 @@ pub(crate) async fn pty_read_loop(
         // buffer holds the incomplete trailing sequence until its
         // continuation bytes arrive (F2 contract).
         let text = decode_pty_chunk(&mut utf8_carry, &data);
-        output_buffer.append_output(&session_id, &text, None);
+        output_buffer.append_output_carried(&session_id, &text, None, &mut esc_tail);
 
         // Feed the agent-activity tracker: an output pulse marks an active
         // agent as working; OSC 633 CommandFinished is a supplementary
@@ -808,8 +924,20 @@ pub(crate) async fn pty_read_loop(
     // pane from the backend activity tracker before notifying the frontend so
     // a closed session cannot be resurrected by the heartbeat or retain stale
     // agent state indefinitely.
-    if let Some(ref tracker) = agent_activity {
+    if let Some(tracker) = &agent_activity {
         tracker.remove_pane_if_generation(&session_id, registration_generation);
+    }
+
+    // Retained scrollback lines and the Mobile Mirror raw-replay bytes are
+    // dead weight once the PTY is gone; nothing reads them without a live
+    // session, and a respawned pane must not inherit stale replay bytes.
+    output_buffer.remove_pane(&session_id);
+    if let Some(state) = app_handle.try_state::<crate::state::AppState>() {
+        state.relay_raw_replay.lock().remove(&session_id);
+        // The session is gone; a mounted channel can never receive again.
+        // Remove it here (beside relay replay) rather than waiting for a
+        // detach or pane-id reuse to clean up a dead webview handle.
+        state.raw_output_channels.lock().remove(&session_id);
     }
 
     let exit_payload = serde_json::json!({
@@ -963,12 +1091,10 @@ pub async fn pty_kill(state: State<'_, AppState>, id: String) -> Result<(), Stri
     // the shared foreground cache must not serve the dead session's label to
     // a recycled pgid for up to one TTL window.
     let session_manager = state.session_manager.lock().await;
-    let killed_pgid = session_manager
-        .get_session(&id)
-        .await
-        .map(|s| s.pgid.as_raw());
+    let session = session_manager.get_session(&id).await;
+    let killed_pgid = session.as_ref().map(|s| s.pgid.as_raw());
     let existed = killed_pgid.is_some();
-    let result = session_manager.kill(&id).await;
+    let result = session_manager.kill_if_same(&id, session.as_ref()).await;
     drop(session_manager);
     if let Some(pgid) = killed_pgid {
         athena_core::agent_detection::invalidate_foreground_cache(pgid);
@@ -979,6 +1105,8 @@ pub async fn pty_kill(state: State<'_, AppState>, id: String) -> Result<(), Stri
     // Drop the relay raw-replay buffer for the killed pane: its content is no
     // longer live and must not be replayed to a future pane reusing the id.
     state.relay_raw_replay.lock().remove(&id);
+    state.raw_output_channels.lock().remove(&id);
+    state.output_buffer.remove_pane(&id);
     result.map_err(|e| e.to_string())
 }
 
@@ -1007,6 +1135,8 @@ pub async fn pty_resize(
     rows: u16,
     owner: Option<String>,
 ) -> Result<(), String> {
+    let cols = clamp_pty_dimension(cols);
+    let rows = clamp_pty_dimension(rows);
     log::info!(
         "pty_resize requested: id={} cols={} rows={} owner={:?}",
         id,
@@ -1026,6 +1156,10 @@ pub async fn pty_resize(
 /// Returns the current grid state as a JSON array of rows with cell characters.
 #[tauri::command]
 pub async fn pty_get_history(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    if !state.rate_limiter.check("pty_get_history") {
+        let wait = state.rate_limiter.retry_after_secs("pty_get_history");
+        return Err(format!("Rate limit exceeded. Please wait {wait}s."));
+    }
     let session_manager = state.session_manager.lock().await;
     let session = session_manager.get_session(&id).await;
     drop(session_manager);
@@ -1105,6 +1239,16 @@ struct AgentInfo {
 // `athena_core::agent_detection` (shared, unit-tested, covers claude/codex/
 // qwen/aider + the full known-agent roster).
 
+/// User acknowledged a pane's attention highlight (finished / needs input /
+/// errored). Pins the acknowledgement to the current history turn so the
+/// tracker's heartbeat cannot re-apply the same terminal status after
+/// transient redraw output (fullscreen toggles) and make a cleared highlight
+/// reappear. Fire-and-forget from the frontend.
+#[tauri::command]
+pub fn agent_activity_acknowledge(state: State<'_, AppState>, pane_id: String) {
+    state.agent_activity.acknowledge_attention(&pane_id);
+}
+
 /// Get the active foreground process and, if it's a known agent, try to
 /// extract its current task title from the agent's own state files.
 #[tauri::command]
@@ -1128,9 +1272,15 @@ pub async fn pty_agent_info(state: State<'_, AppState>, id: String) -> Result<St
     // shell pgid as fallback) and classify it through the shared TTL cache so
     // concurrent frontend bursts share one `ps` spawn per pgid.
     let master_fd = s.master_fd.load(std::sync::atomic::Ordering::Acquire);
+    let pgid = s.pgid.as_raw();
     let process = tokio::task::spawn_blocking(move || {
-        athena_core::agent_detection::resolve_foreground_label(master_fd, s.pgid.as_raw())
-            .unwrap_or_else(|| "shell".to_string())
+        // `ps` spawn + (cached) agent-history file I/O: both are synchronous
+        // filesystem/process probes that must stay off the async executor.
+        let process =
+            athena_core::agent_detection::resolve_foreground_label(master_fd, pgid)
+                .unwrap_or_else(|| "shell".to_string());
+        athena_core::agent_detection::scrape_agent_history(&process);
+        process
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1229,8 +1379,8 @@ pub async fn pty_spawn_agent(
     start_paused: Option<bool>,
     listener_owner: Option<String>,
 ) -> Result<(), String> {
-    let cols = cols.unwrap_or(80);
-    let rows = rows.unwrap_or(24);
+    let cols = clamp_pty_dimension(cols.unwrap_or(80));
+    let rows = clamp_pty_dimension(rows.unwrap_or(24));
     // Validate caller-supplied values (same gates as pty_spawn) plus bound the
     // agent command payload before it is written to the PTY.
     validate_session_id(&id)
@@ -1244,6 +1394,10 @@ pub async fn pty_spawn_agent(
     validate_data_size(agent_cmd.as_bytes(), "agent_cmd")?;
     let shell_str = validated_shell.to_string_lossy().to_string();
     let cwd_str = validated_cwd.to_string_lossy().to_string();
+
+    // Lazily start the 1.5 s agent-activity heartbeat on first agent pane
+    // registration (no-op once running; see AppState's doc).
+    state.ensure_agent_activity_heartbeat();
 
     let integration_script = shell_integration_script(&shell_str);
     let session_manager = state.session_manager.lock().await;
@@ -1286,14 +1440,21 @@ pub async fn pty_spawn_agent(
                 log::debug!("pty_spawn_agent: session {} already initialized", id);
             }
 
-            let agent_key = athena_core::agent_detection::AGENT_FG_NAMES
-                .iter()
-                .copied()
-                .find(|key| athena_core::agent_detection::command_contains_agent(&agent_cmd, key))
-                .unwrap_or("agent");
-            state
-                .agent_activity
-                .notify_agent_started(&id, agent_key, now_ms());
+            // Only the caller that claimed the session lifecycle actually
+            // launched an agent; a duplicate spawn request must not record a
+            // Started for a run that never happened (nor reset pane state).
+            if claimed_reader {
+                let agent_key = athena_core::agent_detection::AGENT_FG_NAMES
+                    .iter()
+                    .copied()
+                    .find(|key| {
+                        athena_core::agent_detection::command_contains_agent(&agent_cmd, key)
+                    })
+                    .unwrap_or("agent");
+                state
+                    .agent_activity
+                    .notify_agent_started(&id, agent_key, now_ms());
+            }
 
             if let Some(handle) = app_handle {
                 if claimed_reader {
@@ -1383,14 +1544,32 @@ pub(crate) async fn pty_attach_listener_impl(
 }
 
 /// Desktop attach from the xterm.js mount.
+///
+/// `channel` is the mount's raw-output IPC channel: the read loop delivers
+/// raw PTY bytes into it as `InvokeResponseBody::Raw` instead of the base64
+/// `pty:raw:<id>` event. Installed into `AppState::raw_output_channels`
+/// only when the attach handshake claims a real session (non-zero
+/// generation); a later attach for the same pane (remount,
+/// `replace_current`) overwrites the entry.
 #[tauri::command]
 pub async fn pty_attach_listener(
     state: State<'_, AppState>,
+    webview: tauri::Webview,
     id: String,
     owner: String,
     replace_current: Option<bool>,
+    channel: Option<tauri::ipc::JavaScriptChannelId>,
 ) -> Result<String, String> {
-    pty_attach_listener_impl(&state, id, owner, replace_current).await
+    let generation = pty_attach_listener_impl(&state, id.clone(), owner, replace_current).await?;
+    if let Some(channel) = channel {
+        if generation != "0" {
+            state
+                .raw_output_channels
+                .lock()
+                .insert(id, channel.channel_on(webview.clone()));
+        }
+    }
+    Ok(generation)
 }
 
 /// Relay attach: identical handshake, callable from the relay dispatch path.
@@ -1426,6 +1605,13 @@ pub async fn pty_detach_listener(
         } else {
             session.detach_listener(&owner, generation)
         };
+        if paused {
+            // The live generation detached — retire its raw channel so a
+            // kill-free session holds no stale webview handle. A stale
+            // detach (`paused == false`) must NOT remove the newer mount's
+            // channel.
+            state.raw_output_channels.lock().remove(&id);
+        }
         log::debug!(
             "pty_detach_listener: {} generation {} {}",
             id,
@@ -1448,31 +1634,35 @@ pub async fn pty_detach_listener(
 pub(crate) fn decode_pty_chunk(carry: &mut Vec<u8>, chunk: &[u8]) -> String {
     let mut bytes = std::mem::take(carry);
     bytes.extend_from_slice(chunk);
-    let mut text = String::new();
-    loop {
-        match std::str::from_utf8(&bytes) {
+    // Cursor, not drain: `Vec::drain(..n)` shifts the whole remaining
+    // buffer on every invalid byte — O(n²) on binary garbage. Scan forward
+    // instead and index into the proven-valid parts.
+    let mut text = String::with_capacity(bytes.len());
+    let mut idx = 0;
+    while idx < bytes.len() {
+        match std::str::from_utf8(&bytes[idx..]) {
             Ok(valid) => {
                 text.push_str(valid);
-                break;
+                idx = bytes.len();
             }
             Err(e) => {
-                let valid_end = e.valid_up_to();
-                if valid_end > 0 {
+                let valid_end = idx + e.valid_up_to();
+                if valid_end > idx {
                     // Proven-valid prefix; this unwrap cannot fire.
-                    text.push_str(std::str::from_utf8(&bytes[..valid_end]).unwrap());
+                    text.push_str(std::str::from_utf8(&bytes[idx..valid_end]).unwrap());
                 }
                 match e.error_len() {
                     None => {
                         // Incomplete sequence at the buffer end: carry
                         // it into the next read.
-                        *carry = bytes.split_off(valid_end);
-                        break;
+                        carry.extend_from_slice(&bytes[valid_end..]);
+                        idx = bytes.len();
                     }
                     Some(skip) => {
                         // Invalid bytes: one replacement char, resume
                         // decoding after them.
                         text.push('\u{FFFD}');
-                        bytes.drain(..valid_end + skip);
+                        idx = valid_end + skip;
                     }
                 }
             }
@@ -1597,5 +1787,42 @@ mod tests {
         let _ = decode_pty_chunk(&mut carry, &bytes[2..3]);
         assert_eq!(carry.len(), 3);
         assert_eq!(carry, &bytes[..3]);
+    }
+
+    /// O(n²) regression: a chunk of many invalid bytes must decode in one
+    /// linear pass and preserve valid bytes interleaved with replacements.
+    #[test]
+    fn f28_many_invalid_bytes_decode_linearly() {
+        let mut carry = Vec::new();
+        let chunk: Vec<u8> = (0..8192)
+            .flat_map(|i| {
+                if i % 2 == 0 {
+                    vec![b'x', 0xFF]
+                } else {
+                    b"ok".to_vec()
+                }
+            })
+            .collect();
+        let out = decode_pty_chunk(&mut carry, &chunk);
+        assert!(out.starts_with("x\u{FFFD}ok"));
+        assert!(out.ends_with("ok"));
+        assert_eq!(out.matches('\u{FFFD}').count(), 4096);
+        assert!(carry.is_empty());
+    }
+
+    /// Invalid bytes followed by a split multi-byte sequence: the invalid
+    /// prefix is consumed with replacements and the incomplete trailing
+    /// sequence still carries (cursor math must not skip it).
+    #[test]
+    fn f28_invalid_prefix_then_incomplete_tail_carries() {
+        let emoji = "👍".as_bytes();
+        let mut carry = Vec::new();
+        let mut chunk = vec![0xFF, 0xFE];
+        chunk.extend_from_slice(&emoji[..3]);
+        let out = decode_pty_chunk(&mut carry, &chunk);
+        assert_eq!(out, "\u{FFFD}\u{FFFD}");
+        assert_eq!(carry, &emoji[..3]);
+        let tail = decode_pty_chunk(&mut carry, &emoji[3..]);
+        assert_eq!(tail, "👍");
     }
 }

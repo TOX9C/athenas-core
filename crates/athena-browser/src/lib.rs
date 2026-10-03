@@ -50,12 +50,6 @@ pub enum PageLoadPhase {
     Finished,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NavigationKind {
-    Command,
-    Native,
-}
-
 /// A navigation tracked by the backend. Native callbacks are accepted only
 /// after `on_navigation` has observed their URL for this generation; this
 /// prevents a delayed callback from an older navigation from mutating history.
@@ -63,9 +57,12 @@ enum NavigationKind {
 struct PendingNavigation {
     target_url: String,
     generation: u64,
-    kind: NavigationKind,
     observed_urls: Vec<String>,
     started: bool,
+    /// The URL the panel was on when this navigation was requested. History
+    /// is recorded on commit (Started/Finished), not on request, so failed
+    /// navigations never pollute the back stack.
+    previous_url: String,
     /// Whether this generation has already recorded its pre-navigation URL.
     /// Redirects stay in the same generation and must not create duplicate
     /// history entries.
@@ -111,6 +108,12 @@ impl NavigationHistory {
         self.back_stack.push(url);
         self.forward_stack.clear();
         self.trim_back();
+    }
+
+    /// Discard the forward stack. A new user-initiated navigation request
+    /// invalidates forward history immediately, even before its load commits.
+    fn clear_forward(&mut self) {
+        self.forward_stack.clear();
     }
 
     /// Navigate back: pop the back stack, push the current URL onto the
@@ -202,9 +205,9 @@ impl BrowserPanel {
             pending_navigation: Some(PendingNavigation {
                 target_url: url.clone(),
                 generation: 1,
-                kind: NavigationKind::Command,
                 observed_urls: vec![url],
                 started: false,
+                previous_url: String::new(),
                 history_recorded: false,
             }),
             navigation_generation: 1,
@@ -349,11 +352,10 @@ fn parse_bare_host(value: &str) -> Option<url::Url> {
 }
 
 fn urls_equivalent(left: &str, right: &str) -> bool {
-    let Ok(left) = url::Url::parse(left) else {
+    // Symmetric fallback: if either side fails to parse, compare both as raw
+    // strings. Parsing success must never depend on which argument came first.
+    let (Ok(left), Ok(right)) = (url::Url::parse(left), url::Url::parse(right)) else {
         return left == right;
-    };
-    let Ok(right) = url::Url::parse(right) else {
-        return false;
     };
     left.scheme().eq_ignore_ascii_case(right.scheme())
         && left.host() == right.host()
@@ -517,15 +519,15 @@ impl BrowserManager {
         Ok(self.read_lock()?.keys().cloned().collect())
     }
 
-    fn begin_navigation(panel: &mut BrowserPanel, target_url: String, kind: NavigationKind) -> u64 {
+    fn begin_navigation(panel: &mut BrowserPanel, target_url: String) -> u64 {
         panel.navigation_generation = panel.navigation_generation.wrapping_add(1);
         let generation = panel.navigation_generation;
         panel.pending_navigation = Some(PendingNavigation {
             target_url: target_url.clone(),
             generation,
-            kind,
             observed_urls: vec![target_url],
             started: false,
+            previous_url: panel.current_url.clone(),
             history_recorded: false,
         });
         generation
@@ -533,8 +535,10 @@ impl BrowserManager {
 
     // -- Navigation ---------------------------------------------------------
 
-    /// Navigate an existing panel to a new URL, recording the previous URL in
-    /// the back history.
+    /// Navigate an existing panel to a new URL. The previous URL is recorded
+    /// in the back history only once the navigation actually commits (see
+    /// [`BrowserManager::apply_page_load`]), so a failed load never corrupts
+    /// back/forward state.
     pub fn navigate(&self, id: &str, url: &str) -> Result<(), BrowserError> {
         let normalized = normalize_url(url)?;
 
@@ -543,13 +547,14 @@ impl BrowserManager {
             .get_mut(id)
             .ok_or_else(|| BrowserError::PanelNotFound(id.to_string()))?;
 
-        if !urls_equivalent(&panel.current_url, &normalized) && !panel.current_url.is_empty() {
-            panel.history.push_back(panel.current_url.clone());
-        }
+        // A new command navigation discards forward history immediately.
+        panel.history.clear_forward();
+        // Capture the pre-navigation URL for commit-time history recording
+        // BEFORE overwriting `current_url`.
+        Self::begin_navigation(panel, normalized.clone());
         panel.current_url = normalized.clone();
         panel.loading_state = LoadingState::Loading;
         panel.title.clear();
-        Self::begin_navigation(panel, normalized, NavigationKind::Command);
         let panel_id = id.to_string();
         drop(panels);
         self.emit_status(&panel_id, "loading");
@@ -578,7 +583,12 @@ impl BrowserManager {
         panel.current_url = target.clone();
         panel.loading_state = LoadingState::Loading;
         panel.title.clear();
-        Self::begin_navigation(panel, target.clone(), NavigationKind::Command);
+        Self::begin_navigation(panel, target.clone());
+        // History stacks were already rebalanced by `history.go_back`;
+        // this generation must not record an additional entry at commit.
+        if let Some(pending) = panel.pending_navigation.as_mut() {
+            pending.history_recorded = true;
+        }
         let panel_id = id.to_string();
         drop(panels);
         self.emit_status(&panel_id, "loading");
@@ -607,7 +617,12 @@ impl BrowserManager {
         panel.current_url = target.clone();
         panel.loading_state = LoadingState::Loading;
         panel.title.clear();
-        Self::begin_navigation(panel, target.clone(), NavigationKind::Command);
+        Self::begin_navigation(panel, target.clone());
+        // History stacks were already rebalanced by `history.go_forward`;
+        // this generation must not record an additional entry at commit.
+        if let Some(pending) = panel.pending_navigation.as_mut() {
+            pending.history_recorded = true;
+        }
         let panel_id = id.to_string();
         drop(panels);
         self.emit_status(&panel_id, "loading");
@@ -624,7 +639,7 @@ impl BrowserManager {
 
         panel.loading_state = LoadingState::Loading;
         panel.title.clear();
-        Self::begin_navigation(panel, panel.current_url.clone(), NavigationKind::Command);
+        Self::begin_navigation(panel, panel.current_url.clone());
         let panel_id = id.to_string();
         drop(panels);
         self.emit_status(&panel_id, "loading");
@@ -744,11 +759,18 @@ impl BrowserManager {
     // -- State updates (called by Tauri command layer / event handlers) ------
 
     /// Mark that a page has finished loading successfully.
-    pub fn set_loaded(&self, id: &str) -> Result<(), BrowserError> {
+    ///
+    /// The callback must carry the generation it belongs to; mismatches are
+    /// delayed callbacks from an older navigation and are dropped so they
+    /// cannot clobber the state of a newer in-flight navigation.
+    pub fn set_loaded(&self, id: &str, generation: u64) -> Result<(), BrowserError> {
         let mut panels = self.write_lock()?;
         let panel = panels
             .get_mut(id)
             .ok_or_else(|| BrowserError::PanelNotFound(id.to_string()))?;
+        if generation != panel.navigation_generation {
+            return Ok(());
+        }
         panel.loading_state = LoadingState::Idle;
         panel.pending_navigation = None;
         let panel_id = id.to_string();
@@ -759,11 +781,18 @@ impl BrowserManager {
     }
 
     /// Mark that a page load has failed.
-    pub fn set_load_failed(&self, id: &str) -> Result<(), BrowserError> {
+    ///
+    /// Generation-guarded like [`BrowserManager::set_loaded`]: a stale
+    /// failure callback must not mark a panel whose newer navigation already
+    /// started (or finished) as failed.
+    pub fn set_load_failed(&self, id: &str, generation: u64) -> Result<(), BrowserError> {
         let mut panels = self.write_lock()?;
         let panel = panels
             .get_mut(id)
             .ok_or_else(|| BrowserError::PanelNotFound(id.to_string()))?;
+        if generation != panel.navigation_generation {
+            return Ok(());
+        }
         panel.loading_state = LoadingState::Failed;
         panel.pending_navigation = None;
         let panel_id = id.to_string();
@@ -777,7 +806,14 @@ impl BrowserManager {
     /// Tauri does not provide a stable native navigation ID, so the URL observed
     /// here is the correlation key for the current backend generation.
     pub fn observe_navigation(&self, id: &str, url: &str) -> Result<Option<u64>, BrowserError> {
-        let normalized = normalize_url(url)?;
+        // Native webview callbacks can legitimately carry non-http(s) URLs
+        // (`about:blank`, `data:`, internal error pages). Those convey no
+        // page identity we can correlate, so treat them as ignorable native
+        // noise rather than a hard error.
+        let normalized = match normalize_url(url) {
+            Ok(normalized) => normalized,
+            Err(_) => return Ok(None),
+        };
         let mut panels = self.write_lock()?;
         let panel = panels
             .get_mut(id)
@@ -802,11 +838,7 @@ impl BrowserManager {
             pending.observed_urls.push(normalized);
             return Ok(Some(pending.generation));
         }
-        Ok(Some(Self::begin_navigation(
-            panel,
-            normalized,
-            NavigationKind::Native,
-        )))
+        Ok(Some(Self::begin_navigation(panel, normalized)))
     }
 
     /// Apply a native page-load callback only when its URL was observed for the
@@ -817,7 +849,12 @@ impl BrowserManager {
         url: &str,
         phase: PageLoadPhase,
     ) -> Result<Option<u64>, BrowserError> {
-        let normalized = normalize_url(url)?;
+        // Non-http(s) native callbacks (about:blank, data:, error pages)
+        // carry no correlatable identity: ignore instead of erroring.
+        let normalized = match normalize_url(url) {
+            Ok(normalized) => normalized,
+            Err(_) => return Ok(None),
+        };
         let mut panels = self.write_lock()?;
         let panel = panels
             .get_mut(id)
@@ -834,7 +871,6 @@ impl BrowserManager {
         }
 
         let generation = pending.generation;
-        let kind = pending.kind;
         let was_started = pending.started;
         let target_matches = urls_equivalent(&pending.target_url, &normalized);
         let url_changed = !urls_equivalent(&panel.current_url, &normalized);
@@ -847,12 +883,14 @@ impl BrowserManager {
                 return Ok(Some(generation));
             }
             pending.started = true;
-            if kind == NavigationKind::Native
-                && url_changed
-                && !pending.history_recorded
-                && !panel.current_url.is_empty()
+            // History is recorded at commit, from the URL captured when this
+            // generation was requested — never at request time, so a failed
+            // navigation cannot pollute the back stack.
+            if !pending.history_recorded
+                && !pending.previous_url.is_empty()
+                && !urls_equivalent(&pending.previous_url, &normalized)
             {
-                panel.history.push_back(panel.current_url.clone());
+                panel.history.push_back(pending.previous_url.clone());
                 pending.history_recorded = true;
             }
             panel.current_url = normalized.clone();
@@ -872,13 +910,12 @@ impl BrowserManager {
         // A Finished callback can arrive without Started on some WebKit paths;
         // accept it if its URL was observed, while preserving the same history
         // rules and generation.
-        if kind == NavigationKind::Native
-            && !was_started
-            && url_changed
+        if !was_started
             && !pending.history_recorded
-            && !panel.current_url.is_empty()
+            && !pending.previous_url.is_empty()
+            && !urls_equivalent(&pending.previous_url, &normalized)
         {
-            panel.history.push_back(panel.current_url.clone());
+            panel.history.push_back(pending.previous_url.clone());
             pending.history_recorded = true;
         }
         panel.current_url = normalized.clone();
@@ -922,7 +959,17 @@ impl BrowserManager {
             let panel = panels
                 .get_mut(id)
                 .ok_or_else(|| BrowserError::PanelNotFound(id.to_string()))?;
-            panel.pending_navigation = None;
+            // If a command navigation to this URL is already pending, keep
+            // it: the set_url callback is that navigation's own commit and
+            // must record its history entry. Otherwise reset and start a
+            // fresh generation via observe_navigation below.
+            let acked = panel
+                .pending_navigation
+                .as_ref()
+                .is_some_and(|pending| urls_equivalent(&pending.target_url, url));
+            if !acked {
+                panel.pending_navigation = None;
+            }
         }
         let _ = self.observe_navigation(id, url)?;
         self.apply_page_load(id, url, PageLoadPhase::Finished)?;
@@ -1205,7 +1252,24 @@ mod tests {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
+        // History is recorded on commit, not on request.
+        assert!(!mgr.can_go_back("p1").unwrap());
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Started)
+            .unwrap();
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Finished)
+            .unwrap();
         assert!(mgr.can_go_back("p1").unwrap());
+    }
+
+    #[test]
+    fn failed_command_navigation_records_no_history() {
+        let mgr = new_manager();
+        mgr.open_browser("p1", "https://a.com").unwrap();
+        mgr.navigate("p1", "https://b.com").unwrap();
+        let generation = mgr.get_panel("p1").unwrap().navigation_generation;
+        mgr.set_load_failed("p1", generation).unwrap();
+        assert!(!mgr.can_go_back("p1").unwrap());
+        assert_eq!(mgr.get_panel("p1").unwrap().history.back_count(), 0);
     }
 
     #[test]
@@ -1231,6 +1295,10 @@ mod tests {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Started)
+            .unwrap();
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Finished)
+            .unwrap();
         mgr.go_back("p1").unwrap();
         mgr.set_url("p1", "https://a.com/").unwrap();
         assert!(mgr.can_go_forward("p1").unwrap());
@@ -1268,7 +1336,7 @@ mod tests {
     fn delayed_navigation_observation_does_not_replace_started_generation() {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
-        mgr.set_loaded("p1").unwrap();
+        mgr.set_loaded("p1", 1).unwrap();
 
         let first = mgr
             .observe_navigation("p1", "https://b.com")
@@ -1291,7 +1359,7 @@ mod tests {
     fn stale_post_start_started_callback_cannot_overwrite_newer_command() {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
-        mgr.set_loaded("p1").unwrap();
+        mgr.set_loaded("p1", 1).unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
         mgr.observe_navigation("p1", "https://b.com").unwrap();
         mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Started)
@@ -1314,7 +1382,7 @@ mod tests {
     fn committed_url_check_rejects_delayed_finished_callback() {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
-        mgr.set_loaded("p1").unwrap();
+        mgr.set_loaded("p1", 1).unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
         mgr.observe_navigation("p1", "https://b.com").unwrap();
         mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Started)
@@ -1366,6 +1434,10 @@ mod tests {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Started)
+            .unwrap();
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Finished)
+            .unwrap();
         mgr.go_back("p1").unwrap();
         // forward should now be available
         assert!(mgr.can_go_forward("p1").unwrap());
@@ -1390,6 +1462,11 @@ mod tests {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
+        // Commit the navigation so its history entry exists.
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Started)
+            .unwrap();
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Finished)
+            .unwrap();
         let target = mgr.go_back("p1").unwrap();
         assert_eq!(target, "https://a.com");
         assert_eq!(mgr.get_active_url("p1").unwrap(), "https://a.com");
@@ -1400,6 +1477,10 @@ mod tests {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Started)
+            .unwrap();
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Finished)
+            .unwrap();
         mgr.go_back("p1").unwrap();
         let target = mgr.go_forward("p1").unwrap();
         assert_eq!(target, "https://b.com");
@@ -1432,7 +1513,7 @@ mod tests {
     fn reload_sets_loading_state() {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
-        mgr.set_loaded("p1").unwrap();
+        mgr.set_loaded("p1", 1).unwrap();
         assert!(!mgr.is_loading("p1").unwrap());
         mgr.reload("p1").unwrap();
         assert!(mgr.is_loading("p1").unwrap());
@@ -1446,6 +1527,20 @@ mod tests {
         assert_eq!(mgr.get_active_url("p1").unwrap(), "https://a.com");
     }
 
+    #[test]
+    fn native_callbacks_with_non_http_urls_are_ignored() {
+        let mgr = new_manager();
+        mgr.open_browser("p1", "https://a.com").unwrap();
+        // about:blank / data: error pages must not bubble out as errors.
+        assert_eq!(mgr.observe_navigation("p1", "about:blank").unwrap(), None);
+        assert_eq!(
+            mgr.apply_page_load("p1", "about:blank", PageLoadPhase::Started)
+                .unwrap(),
+            None
+        );
+        assert_eq!(mgr.get_active_url("p1").unwrap(), "https://a.com");
+    }
+
     // -- Loading state ------------------------------------------------------
 
     #[test]
@@ -1453,9 +1548,16 @@ mod tests {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
+        let generation = mgr.get_panel("p1").unwrap().navigation_generation;
         assert_eq!(mgr.loading_state("p1").unwrap(), LoadingState::Loading);
-        mgr.set_loaded("p1").unwrap();
+        mgr.set_loaded("p1", generation).unwrap();
         assert_eq!(mgr.loading_state("p1").unwrap(), LoadingState::Idle);
+        // A stale callback from an older generation must not clobber a newer
+        // in-flight navigation.
+        mgr.navigate("p1", "https://c.com").unwrap();
+        assert!(mgr.is_loading("p1").unwrap());
+        mgr.set_loaded("p1", generation).unwrap();
+        assert_eq!(mgr.loading_state("p1").unwrap(), LoadingState::Loading);
     }
 
     #[test]
@@ -1463,8 +1565,14 @@ mod tests {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
-        mgr.set_load_failed("p1").unwrap();
+        let generation = mgr.get_panel("p1").unwrap().navigation_generation;
+        mgr.set_load_failed("p1", generation).unwrap();
         assert_eq!(mgr.loading_state("p1").unwrap(), LoadingState::Failed);
+        // A stale failure from an older navigation must not clobber a newer
+        // in-flight load.
+        mgr.navigate("p1", "https://c.com").unwrap();
+        mgr.set_load_failed("p1", generation).unwrap();
+        assert_eq!(mgr.loading_state("p1").unwrap(), LoadingState::Loading);
     }
 
     // -- Title updates ------------------------------------------------------
@@ -1513,6 +1621,12 @@ mod tests {
         let mgr = new_manager();
         mgr.open_browser("p1", "https://a.com").unwrap();
         mgr.navigate("p1", "https://b.com").unwrap();
+        // History lands on commit, so the back capability only appears once
+        // the navigation actually finishes loading.
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Started)
+            .unwrap();
+        mgr.apply_page_load("p1", "https://b.com", PageLoadPhase::Finished)
+            .unwrap();
         let snapshot = mgr.get_snapshot("p1").unwrap();
         assert_eq!(snapshot.current_url, "https://b.com");
         assert!(snapshot.can_go_back);

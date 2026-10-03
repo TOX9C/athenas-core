@@ -5,21 +5,22 @@
 # This emits VS Code-style OSC 633 sequences that Athena's Core
 # terminal parses to track commands, CWD, and exit codes.
 #
-# Alternatively, if ATHENA_SHELL_INTEGRATION=1 is set in your environment
-# (Athena sets this automatically for its own PTY sessions), the hooks
-# are installed automatically by the terminal itself.
+# Athena also injects this exact file into its own PTY sessions on spawn.
+# The guard below makes double-sourcing (injected + manual) a no-op.
 
 if [[ -n "$__ATHENA_SOURCED" ]]; then
   return 0
 fi
 __ATHENA_SOURCED=1
 
-if [[ "$ATHENA_SHELL_INTEGRATION" == "1" ]]; then
-  # Already in an Athena PTY — hooks were injected on spawn
-  return 0
-fi
-
-__athena_osc633() { printf "\e]633;%s\a" "$1"; }
+# OSC payloads are delimited by ESC ] ... BEL; $PWD and command lines can
+# contain BEL/ESC/other C0 controls, which would break the framing (or
+# inject hostile sequences). Strip them before emission.
+__athena_osc633() {
+  local __athena_payload
+  __athena_payload="$(printf %s "$1" | LC_ALL=C tr -d '\000-\037\177')"
+  printf "\e]633;%s\a" "$__athena_payload"
+}
 
 __athena_prompt_command() {
   local __athena_exit="$?"

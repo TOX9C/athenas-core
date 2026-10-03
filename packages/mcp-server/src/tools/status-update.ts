@@ -10,7 +10,7 @@ export const statusUpdateSchema = z.object({
   progress: z
     .object({
       current: z.number().describe('Current step'),
-      total: z.number().describe('Total steps'),
+      total: z.number().positive().describe('Total steps (must be > 0)'),
       label: z.string().optional().describe('Step description'),
     })
     .optional()
@@ -42,9 +42,10 @@ const STATUS_MAP: Record<string, AgentStatus> = {
 export async function statusUpdate(bridge: AthenaBridge, input: StatusUpdateInput) {
   const mappedStatus = STATUS_MAP[input.status] ?? 'idle'
   const agentId = input.agentId ?? 'unknown'
-  const progressPct = input.progress
-    ? Math.round((input.progress.current / input.progress.total) * 100)
-    : undefined
+  const progressPct =
+    input.progress && input.progress.total > 0
+      ? Math.round((input.progress.current / input.progress.total) * 100)
+      : undefined
 
   await bridge.updateStatus({
     agentId,

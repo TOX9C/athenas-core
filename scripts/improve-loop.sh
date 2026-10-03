@@ -23,6 +23,16 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 # Isolation: everything lands on a dedicated branch.
+# Remember where the user was and restore that branch on exit (including
+# Ctrl-C / crashes), so a morning-after session doesn't silently continue
+# committing onto the agent branch.
+ORIG_BRANCH="$(git branch --show-current)"
+restore_branch() {
+  if [ -n "$ORIG_BRANCH" ] && [ "$(git branch --show-current)" = "agent/overnight-improve" ]; then
+    git checkout "$ORIG_BRANCH" >/dev/null 2>&1 && echo "[loop] back on $ORIG_BRANCH"
+  fi
+}
+trap restore_branch EXIT
 if ! git rev-parse --verify agent/overnight-improve >/dev/null 2>&1; then
   git branch agent/overnight-improve
   echo "[loop] created branch agent/overnight-improve"
@@ -52,10 +62,13 @@ while true; do
   echo "[loop] iteration $i exited rc=$rc $(date)"
 
   # Safety: if the iteration left the tree broken AND uncommitted, stash it.
-  if ! git diff --quiet || ! git diff --cached --quiet; then
+  # `git status --porcelain` (not `git diff`) also catches untracked files a
+  # failed run created; `stash -u` sweeps them away so they can't leak into
+  # the next iteration's commit.
+  if [ -n "$(git status --porcelain)" ]; then
     if [ "$rc" -ne 0 ]; then
-      git stash push -m "loop-iter-$i-uncommitted" >/dev/null 2>&1 || true
-      echo "[loop] iteration $i failed with uncommitted changes; stashed"
+      git stash push -u -m "loop-iter-$i-uncommitted" >/dev/null 2>&1 || true
+      echo "[loop] iteration $i failed with uncommitted changes; stashed (incl. untracked)"
     fi
   fi
 

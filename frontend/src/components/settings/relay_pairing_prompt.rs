@@ -1,8 +1,7 @@
+use super::relay_prompt::{apply_response, use_request_listener};
 use crate::components::shared::modal::Modal;
 use crate::tauri_bridge;
 use dioxus::prelude::*;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// A pending Mobile Mirror pairing request surfaced by the backend's
 /// `relay:pairingRequest` event. The desktop operator must approve it before
@@ -11,27 +10,6 @@ use std::rc::Rc;
 struct PendingPairing {
     request_id: String,
     peer: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PromptResponse {
-    Dismiss,
-    Keep(String),
-    Ignore,
-}
-
-fn response_action(
-    pending: Option<&PendingPairing>,
-    request_id: &str,
-    result: Result<(), &str>,
-) -> PromptResponse {
-    if pending.is_none_or(|current| current.request_id != request_id) {
-        return PromptResponse::Ignore;
-    }
-    match result {
-        Ok(()) => PromptResponse::Dismiss,
-        Err(error) => PromptResponse::Keep(error.to_string()),
-    }
 }
 
 /// Approve/deny the pending pairing. Keep the prompt visible until the native
@@ -51,16 +29,14 @@ fn respond_to_pairing(
         let result = tauri_bridge::relay_pairing_respond(&id, approved)
             .await
             .map_err(|error| format!("{error:?}"));
-        let action = response_action(
-            pending.read().as_ref(),
+        let current_id = pending.read().as_ref().map(|p| p.request_id.clone());
+        apply_response(
+            current_id.as_deref(),
             &id,
-            result.as_ref().map(|_| ()).map_err(|error| error.as_str()),
+            result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+            response_error,
+            move || pending.set(None),
         );
-        match action {
-            PromptResponse::Dismiss => pending.set(None),
-            PromptResponse::Keep(message) => response_error.set(Some(message)),
-            PromptResponse::Ignore => {}
-        }
     });
 }
 
@@ -72,46 +48,20 @@ fn respond_to_pairing(
 pub fn RelayPairingPrompt() -> Element {
     let pending: Signal<Option<PendingPairing>> = use_signal(|| None);
     let response_error: Signal<Option<String>> = use_signal(|| None);
-    let unlisten: Rc<RefCell<Option<Box<dyn FnOnce()>>>> = use_hook(|| Rc::new(RefCell::new(None)));
 
-    let unlisten_for_effect = unlisten.clone();
-    let mut pending_for_listener = pending;
-    let mut response_error_for_listener = response_error;
-    use_effect(move || {
-        if unlisten_for_effect.borrow().is_some() {
-            return;
+    use_request_listener("relay:pairingRequest", pending, response_error, |val| {
+        let request_id = val.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
+        if request_id.is_empty() {
+            return None;
         }
-
-        if let Ok(unlisten) =
-            tauri_bridge::listen("relay:pairingRequest", move |payload: String| {
-                let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) else {
-                    return;
-                };
-                let request_id = val
-                    .get("requestId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let peer = val
-                    .get("peer")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown device")
-                    .to_string();
-                if !request_id.is_empty() {
-                    response_error_for_listener.set(None);
-                    pending_for_listener.set(Some(PendingPairing { request_id, peer }));
-                }
-            })
-        {
-            *unlisten_for_effect.borrow_mut() = Some(unlisten);
-        }
-    });
-
-    let unlisten_for_drop = unlisten.clone();
-    use_drop(move || {
-        if let Some(unlisten) = unlisten_for_drop.borrow_mut().take() {
-            unlisten();
-        }
+        Some(PendingPairing {
+            request_id: request_id.to_string(),
+            peer: val
+                .get("peer")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown device")
+                .to_string(),
+        })
     });
 
     let Some(current) = pending.read().as_ref().cloned() else {
@@ -151,49 +101,5 @@ pub fn RelayPairingPrompt() -> Element {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{response_action, PendingPairing, PromptResponse};
-
-    #[test]
-    fn successful_current_response_dismisses_the_prompt() {
-        let pending = PendingPairing {
-            request_id: "request-1".to_string(),
-            peer: "phone".to_string(),
-        };
-
-        assert_eq!(
-            response_action(Some(&pending), "request-1", Ok(())),
-            PromptResponse::Dismiss
-        );
-    }
-
-    #[test]
-    fn failed_current_response_keeps_the_prompt_visible() {
-        let pending = PendingPairing {
-            request_id: "request-1".to_string(),
-            peer: "phone".to_string(),
-        };
-
-        assert_eq!(
-            response_action(Some(&pending), "request-1", Err("relay unavailable")),
-            PromptResponse::Keep("relay unavailable".to_string())
-        );
-    }
-
-    #[test]
-    fn stale_response_cannot_dismiss_a_newer_prompt() {
-        let pending = PendingPairing {
-            request_id: "request-2".to_string(),
-            peer: "new phone".to_string(),
-        };
-
-        assert_eq!(
-            response_action(Some(&pending), "request-1", Ok(())),
-            PromptResponse::Ignore
-        );
     }
 }

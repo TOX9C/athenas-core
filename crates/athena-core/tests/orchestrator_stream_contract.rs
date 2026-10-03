@@ -201,9 +201,10 @@ async fn model_gone_yields_model_unavailable_error_event() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(CHAT_PATH))
-        .respond_with(ResponseTemplate::new(410).set_body_string(
-            r#"{"error":{"message":"model glm-5.2 has been retired"}}"#,
-        ))
+        .respond_with(
+            ResponseTemplate::new(410)
+                .set_body_string(r#"{"error":{"message":"model glm-5.2 has been retired"}}"#),
+        )
         .mount(&server)
         .await;
 

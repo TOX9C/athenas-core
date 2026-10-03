@@ -1,7 +1,7 @@
 use super::{validate_path_exists, CommandError};
 use crate::state::AppState;
 use athena_plugins::{MAX_PLUGIN_CONFIG_BYTES, MAX_PLUGIN_EVENT_BYTES};
-use tauri::State;
+use tauri::{Manager, State};
 
 // ── Plugin commands ──────────────────────────────────────────────────────────
 
@@ -171,7 +171,8 @@ pub fn plugin_host_emit_event(
     };
     let event = state
         .plugin_manager
-        .emit_plugin_event(parsed_type, source, payload);
+        .emit_plugin_event(parsed_type, source, payload)
+        .map_err(|e| e.to_string())?;
     serde_json::to_string(&event).map_err(|e| e.to_string())
 }
 
@@ -222,17 +223,36 @@ pub fn plugin_host_unregister_session(
 }
 
 /// Discover plugins in the given directory by scanning for manifest files.
+///
+/// Async: directory scans + manifest reads are blocking I/O (sync commands
+/// run on the main thread in Tauri 2). The store Arc and the shared
+/// `PluginManager` handle (its state lives behind an internal `Arc`) both
+/// move into the blocking task.
 #[tauri::command]
-pub fn plugin_host_discover_plugins(
-    state: State<'_, AppState>,
+pub async fn plugin_host_discover_plugins(
+    app: tauri::AppHandle,
     dir: String,
 ) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    let store = std::sync::Arc::clone(&state.store);
+    let manager = state.plugin_manager.clone();
+
+    tokio::task::spawn_blocking(move || plugin_host_discover_plugins_impl(&store, &manager, &dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Blocking implementation of [`plugin_host_discover_plugins`]; runs on the
+/// blocking pool.
+fn plugin_host_discover_plugins_impl(
+    store: &athena_store::KeyValueStore,
+    manager: &athena_plugins::PluginManager,
+    dir: &str,
+) -> Result<String, String> {
     // Validate the plugin directory is within the workspace before scanning.
-    let _ = validate_path_exists(&state.store, std::path::Path::new(&dir))
-        .map_err(|e| e.to_string())?;
-    let results = state
-        .plugin_manager
-        .discover_plugins(std::path::Path::new(&dir))
+    let _ = validate_path_exists(store, std::path::Path::new(dir)).map_err(|e| e.to_string())?;
+    let results = manager
+        .discover_plugins(std::path::Path::new(dir))
         .map_err(|e| e.to_string())?;
     // Convert inner errors to strings since PluginError doesn't implement Serialize
     let serializable: Vec<serde_json::Value> = results
@@ -247,6 +267,10 @@ pub fn plugin_host_discover_plugins(
 }
 
 /// Register and set up a plugin with the given manifest information.
+///
+/// Alias of [`plugin_register`]; kept as a separate command name only for
+/// the existing IPC surface, routed through the single implementation so the
+/// two entry points cannot drift apart.
 #[tauri::command]
 pub fn plugin_host_setup_plugin(
     state: State<'_, AppState>,
@@ -254,36 +278,14 @@ pub fn plugin_host_setup_plugin(
     name: String,
     version: String,
 ) -> Result<String, String> {
-    let manifest = athena_plugins::PluginManifest {
-        id: plugin_id,
-        name,
-        version,
-        description: String::new(),
-        author: String::new(),
-        permissions: vec![],
-        mcp_config: None,
-        min_athena_version: None,
-        capabilities: vec![],
-        tools: vec![],
-        subscribes_to: None,
-        config: None,
-        install: None,
-    };
-    let id = state
-        .plugin_manager
-        .register_plugin(manifest)
-        .map_err(|e| e.to_string())?;
-    Ok(id)
+    plugin_register(state, plugin_id, name, version)
 }
 
-/// Remove a plugin by its ID (alias for plugin_unregister).
+/// Remove a plugin by its ID (alias for [`plugin_unregister`]).
 #[tauri::command]
 pub fn plugin_host_remove_plugin(
     state: State<'_, AppState>,
     plugin_id: String,
 ) -> Result<(), String> {
-    state
-        .plugin_manager
-        .unregister_plugin(&plugin_id)
-        .map_err(|e| e.to_string())
+    plugin_unregister(state, plugin_id)
 }

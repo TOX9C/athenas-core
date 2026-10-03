@@ -92,7 +92,6 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         class: "btn-secondary btn-sm",
                         style: "width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;",
                         onclick: move |_| {
-                            web_sys::console::log_1(&"[Sidebar] Bottom New Workspace clicked".into());
                             props.on_new_space.call(());
                         },
                         IconPlus { size: Some(14), color: Some("currentColor".to_string()) }

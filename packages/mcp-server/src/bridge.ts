@@ -20,6 +20,11 @@ export interface BridgeConfig {
   authToken?: string
 }
 
+/** Injectable seams for tests. Production code passes no deps. */
+export interface BridgeDeps {
+  createSocket?: (url: string, options?: { headers?: Record<string, string> }) => WebSocket
+}
+
 type PendingInput = {
   resolve: (response: InputResponse) => void
   reject: (error: Error) => void
@@ -28,8 +33,12 @@ type PendingInput = {
 
 export class AthenaBridge {
   private config: BridgeConfig
+  private deps: BridgeDeps
   private connected = false
+  private connecting: Promise<void> | null = null
   private socket: WebSocket | null = null
+  /** Set by disconnect(): suppresses reconnect scheduling so shutdown sticks. */
+  private closedByUser = false
   private pendingInputs = new Map<string, PendingInput>()
   private eventHandlers = new Set<EventHandler>()
   private agentState = new Map<string, AgentState>()
@@ -38,25 +47,31 @@ export class AthenaBridge {
   private static readonly MAX_BUFFERED_NOTIFICATIONS = 500
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(config: BridgeConfig) {
+  constructor(config: BridgeConfig, deps: BridgeDeps = {}) {
     this.config = config
+    this.deps = deps
   }
 
   async connect(): Promise<void> {
     if (this.connected) return
+    // Reentrancy guard: two concurrent connect() calls would create two
+    // live sockets; the second 'open' would orphan the first.
+    if (this.connecting) return this.connecting
+    this.closedByUser = false
 
-    return new Promise((resolve, reject) => {
+    const attempt = new Promise<void>((resolve, reject) => {
       const url = `ws://${this.config.athenaHost}:${this.config.athenaPort}`
-      const ws = new WebSocket(
-        url,
-        this.config.authToken
-          ? { headers: { Authorization: `Bearer ${this.config.authToken}` } }
-          : undefined,
-      )
+      const options = this.config.authToken
+        ? { headers: { Authorization: `Bearer ${this.config.authToken}` } }
+        : undefined
+      const ws = this.deps.createSocket
+        ? this.deps.createSocket(url, options)
+        : new WebSocket(url, options)
 
       ws.on('open', () => {
         this.socket = ws
-        this.simulateOpenForTest()
+        this.connected = true
+        this.reconnectDelayMs = AthenaBridge.RECONNECT_BASE_MS
         this.flushNotificationBuffer()
         resolve()
       })
@@ -65,26 +80,41 @@ export class AthenaBridge {
         try {
           const msg = JSON.parse(raw.toString())
           this.handleMessage(msg)
-        } catch {
-          // ignore malformed messages
+        } catch (err) {
+          console.debug('[mcp-server] bridge: ignoring malformed message from Athena', err)
         }
       })
 
       ws.on('close', () => {
         this.connected = false
         this.socket = null
-        this.scheduleReconnect()
+        if (!this.closedByUser) {
+          this.scheduleReconnect()
+        }
       })
 
       ws.on('error', (err: Error) => {
         if (!this.connected) {
           reject(new Error(`Failed to connect to Athena at ${url}: ${err.message}`))
+          // The app may simply not be up yet — keep retrying in the
+          // background so athena_* tools come alive without a restart.
+          if (!this.closedByUser) {
+            this.scheduleReconnect()
+          }
         }
       })
     })
+
+    this.connecting = attempt
+    try {
+      await attempt
+    } finally {
+      if (this.connecting === attempt) this.connecting = null
+    }
   }
 
   async disconnect(): Promise<void> {
+    this.closedByUser = true
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -96,6 +126,7 @@ export class AthenaBridge {
     this.connected = false
 
     for (const [id, pending] of this.pendingInputs) {
+      clearTimeout(pending.timer ?? undefined)
       pending.resolve({ value: '', cancelled: true, timedOut: false })
       this.pendingInputs.delete(id)
     }
@@ -135,10 +166,14 @@ export class AthenaBridge {
     return new Promise<InputResponse>((resolve, reject) => {
       const timeout = request.timeout ?? 120_000
 
-      const timer = setTimeout(() => {
-        this.pendingInputs.delete(requestId)
-        resolve({ value: '', cancelled: false, timedOut: true })
-      }, timeout)
+      // timeout === 0 means "no timeout" (see request_input schema).
+      const timer =
+        timeout > 0
+          ? setTimeout(() => {
+              this.pendingInputs.delete(requestId)
+              resolve({ value: '', cancelled: false, timedOut: true })
+            }, timeout)
+          : null
 
       this.pendingInputs.set(requestId, { resolve, reject, timer })
 
@@ -153,9 +188,19 @@ export class AthenaBridge {
       }
 
       if (this.connected && this.socket) {
-        this.socket.send(JSON.stringify(payload))
+        try {
+          this.socket.send(JSON.stringify(payload))
+        } catch (error) {
+          // Socket died between the connected check and the send: drop the
+          // pending entry so timeout=0 requests don't leak for the process
+          // lifetime.
+          clearTimeout(timer ?? undefined)
+          this.pendingInputs.delete(requestId)
+          resolve({ value: request.defaultResponse ?? '', cancelled: true, timedOut: true })
+          return
+        }
       } else {
-        clearTimeout(timer)
+        clearTimeout(timer ?? undefined)
         this.pendingInputs.delete(requestId)
         resolve({ value: request.defaultResponse ?? '', cancelled: true, timedOut: true })
       }
@@ -255,6 +300,9 @@ export class AthenaBridge {
   }
 
   private handleMessage(msg: { type?: string; data?: unknown }): void {
+    if (msg.type !== 'athena:inputResponse' && msg.type !== 'athena:appState') {
+      console.debug(`[mcp-server] bridge: ignoring unknown message type: ${String(msg.type)}`)
+    }
     if (msg.type === 'athena:inputResponse' && msg.data) {
       const data = msg.data as { requestId: string; value: string; cancelled: boolean }
       const pending = this.pendingInputs.get(data.requestId)
@@ -313,13 +361,6 @@ export class AthenaBridge {
   private static readonly RECONNECT_MAX_MS = 30_000
   private reconnectDelayMs = AthenaBridge.RECONNECT_BASE_MS
 
-  /** @internal Runs the socket-open handler body. Tests drive this instead
-   * of a live WebSocketServer to verify the backoff reset. */
-  simulateOpenForTest(): void {
-    this.connected = true
-    this.reconnectDelayMs = AthenaBridge.RECONNECT_BASE_MS
-  }
-
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return
     const delay = this.reconnectDelayMs
@@ -330,5 +371,7 @@ export class AthenaBridge {
         this.scheduleReconnect()
       })
     }, delay)
+    // A pending reconnect alone must not keep the process alive.
+    this.reconnectTimer?.unref?.()
   }
 }

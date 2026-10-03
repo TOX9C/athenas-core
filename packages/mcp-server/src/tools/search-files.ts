@@ -27,21 +27,9 @@ export const searchFilesSchema = z.object({
 })
 
 import path from 'path'
+import { realpath } from 'fs/promises'
 
 const WORKSPACE_ROOT = process.cwd()
-
-function assertInsideWorkspace(targetPath: string): string {
-  const resolved = path.resolve(targetPath)
-  const workspaceRoot = path.resolve(WORKSPACE_ROOT)
-  const relative = path.relative(workspaceRoot, resolved)
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Path traversal detected: ${targetPath} is outside the workspace`)
-  }
-  if (resolved.length > 4096) {
-    throw new Error('Path too long')
-  }
-  return resolved
-}
 
 export type SearchFilesInput = z.infer<typeof searchFilesSchema>
 
@@ -54,8 +42,6 @@ interface MatchEntry {
   contextBefore: string[]
   contextAfter: string[]
 }
-
-const HARD_LIMIT = 500
 
 async function findRgBinary(): Promise<string | null> {
   try {
@@ -82,22 +68,50 @@ async function findRgBinary(): Promise<string | null> {
   return null
 }
 
+/** Hard cap on a single search run — belt-and-braces on top of the schema's
+ * `.max()`, plus a per-file cap passed to ripgrep (`--max-count`). */
+const MAX_SEARCH_RESULTS = 500
+/** Kill ripgrep after this long; prior (unbounded) runs could hang the tool
+ * forever and buffer unbounded output in memory. */
+const SEARCH_TIMEOUT_MS = 30_000
+
 async function executeSearch(input: SearchFilesInput) {
-  const rgBin = await findRgBinary()
-  if (!rgBin) {
-    return {
-      isError: true as const,
-      content: [
-        {
-          type: 'text' as const,
-          text: 'ripgrep binary not found. Install rg via your package manager (e.g. brew install ripgrep, apt install ripgrep, choco install ripgrep) or ensure @vscode/ripgrep is installed.',
-        },
-      ],
+  const errorResult = (text: string) => ({
+    isError: true as const,
+    content: [{ type: 'text' as const, text }],
+  })
+
+  // Pre-validate BEFORE spawning: resolve symlinks on both sides so a
+  // workspace symlink pointing outside cannot be searched (F11).
+  let realTarget: string
+  try {
+    const realRoot = await realpath(path.resolve(WORKSPACE_ROOT))
+    const resolved = path.resolve(WORKSPACE_ROOT, input.path)
+    if (resolved.length > 4096) {
+      return errorResult('Path too long')
     }
+    realTarget = await realpath(resolved)
+    const relative = path.relative(realRoot, realTarget)
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return errorResult(`Path traversal detected: ${input.path} is outside the workspace`)
+    }
+  } catch (err) {
+    return errorResult(
+      `Cannot access path ${input.path}: ${err instanceof Error ? err.message : String(err)}`,
+    )
   }
 
-  const maxResults = Math.min(input.max_results, HARD_LIMIT)
-  const contextLines = input.context_lines
+  const rgBin = await findRgBinary()
+  if (!rgBin) {
+    return errorResult(
+      'ripgrep binary not found. Install rg via your package manager (e.g. brew install ripgrep, apt install ripgrep, choco install ripgrep) or ensure @vscode/ripgrep is installed.',
+    )
+  }
+
+  // Note: direct callers (outside the SDK schema parse) may omit optional
+  // fields; fall back to the schema defaults here.
+  const maxResults = Math.min(input.max_results ?? 100, MAX_SEARCH_RESULTS)
+  const contextLines = input.context_lines ?? 2
 
   const args: string[] = [
     '--json',
@@ -108,6 +122,8 @@ async function executeSearch(input: SearchFilesInput) {
     '--binary',
     '--max-columns=500',
     '--max-columns-preview',
+    // Per-file match cap so a hot file cannot dominate the whole budget.
+    `--max-count=${maxResults}`,
   ]
 
   if (input.case_sensitive) {
@@ -128,29 +144,49 @@ async function executeSearch(input: SearchFilesInput) {
     args.push('--type', input.type)
   }
 
-  args.push('--', input.pattern, input.path)
+  // Search the resolved absolute path; do NOT also chdir into it (relative
+  // `path` values previously searched `<path>/<path>` and matched nothing).
+  args.push('--', input.pattern, realTarget)
 
   return new Promise<{ isError?: boolean; content: Array<{ type: 'text'; text: string }> }>(
     (resolve) => {
-      const resolvedPath = assertInsideWorkspace(input.path)
       const proc = spawn(rgBin, args, {
-        cwd: resolvedPath,
         env: { ...process.env, LC_ALL: 'en_US.UTF-8' },
       })
 
-      let stdout = ''
+      const matches: MatchEntry[] = []
+      const filesMatched = new Set<string>()
+      let truncated = false
+      let timedOut = false
+      let finished = false
       let stderr = ''
 
-      proc.stdout.on('data', (data: Buffer) => {
-        stdout += data.toString()
-      })
+      // Streaming parse state. rg emits begin/match/context/end per file; we
+      // consume line-by-line so memory stays bounded regardless of tree size.
+      let lineBuf = ''
+      let currentFile = ''
+      // Context lines awaiting a following match (candidates for contextBefore).
+      let pendingBefore: Array<{ lineNum: number; text: string }> = []
+      // Recent matches still eligible to receive contextAfter lines.
+      const openMatches: MatchEntry[] = []
+      let lastMatchLine = 0
 
-      proc.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString()
-      })
+      const killProc = () => {
+        if (!proc.killed) proc.kill('SIGKILL')
+      }
 
-      proc.on('close', (code) => {
-        if (code !== 0 && code !== 1) {
+      const timeout = setTimeout(() => {
+        timedOut = true
+        truncated = truncated || matches.length > 0
+        killProc()
+      }, SEARCH_TIMEOUT_MS)
+
+      const finish = (code: number | null) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timeout)
+
+        if (!timedOut && code !== 0 && code !== 1) {
           resolve({
             isError: true,
             content: [{ type: 'text', text: `ripgrep exited with code ${code}: ${stderr.trim()}` }],
@@ -158,82 +194,15 @@ async function executeSearch(input: SearchFilesInput) {
           return
         }
 
-        const matches: MatchEntry[] = []
-        const filesMatched = new Set<string>()
-        let truncated = false
-
-        const lines = stdout.split('\n').filter((l) => l.trim())
-        const pendingContext: Array<{ lineNum: number; filePath: string; text: string }> = []
-
-        for (const line of lines) {
-          if (truncated) break
-          try {
-            const parsed = JSON.parse(line)
-
-            if (parsed.type === 'context') {
-              const data = parsed.data
-              pendingContext.push({
-                lineNum: data.line_number,
-                filePath: data.path?.text ?? '',
-                text: (data.lines?.text ?? '').trimEnd(),
-              })
-              continue
-            }
-
-            if (parsed.type !== 'match') continue
-
-            const data = parsed.data
-            const filePath = data.path?.text ?? ''
-            const lineNum = data.line_number
-            const col = data.submatches?.[0]?.start ?? 1
-            const lineText = (data.lines?.text ?? '').trimEnd()
-            const matchText = data.submatches?.[0]?.match?.text ?? ''
-
-            filesMatched.add(filePath)
-
-            const contextBefore = pendingContext
-              .filter(
-                (c) =>
-                  c.filePath === filePath &&
-                  c.lineNum < lineNum &&
-                  c.lineNum >= lineNum - contextLines,
-              )
-              .map((c) => c.text)
-            const contextAfter = pendingContext
-              .filter(
-                (c) =>
-                  c.filePath === filePath &&
-                  c.lineNum > lineNum &&
-                  c.lineNum <= lineNum + contextLines,
-              )
-              .map((c) => c.text)
-
-            pendingContext.length = 0
-
-            matches.push({
-              filePath,
-              lineNumber: lineNum,
-              column: col,
-              lineText,
-              matchText,
-              contextBefore,
-              contextAfter,
-            })
-
-            if (matches.length >= maxResults) {
-              truncated = true
-            }
-          } catch {
-            // skip malformed JSON lines
-          }
-        }
-
         if (matches.length === 0) {
           resolve({
+            isError: timedOut || undefined,
             content: [
               {
                 type: 'text',
-                text: `No matches found for pattern "${input.pattern}" in ${input.path}.`,
+                text: timedOut
+                  ? `Search timed out after ${SEARCH_TIMEOUT_MS}ms with no results: ${stderr.trim() || 'ripgrep produced no output'}`
+                  : `No matches found for pattern "${input.pattern}" in ${input.path}.`,
               },
             ],
           })
@@ -257,12 +226,129 @@ async function executeSearch(input: SearchFilesInput) {
           })
           .join('\n\n')
 
-        const header = `Found ${matches.length} matches in ${filesMatched.size} files${truncated ? ' (truncated — increase max_results for more)' : ''}:\n\n`
+        const reasons = [
+          truncated ? 'hit max_results' : '',
+          timedOut ? `timed out after ${SEARCH_TIMEOUT_MS}ms` : '',
+        ]
+          .filter(Boolean)
+          .join(', ')
+        const header = `Found ${matches.length} matches in ${filesMatched.size} files${reasons ? ` (truncated: ${reasons} — refine the pattern for more)` : ''}:\n\n`
 
         resolve({ content: [{ type: 'text', text: header + formatted }] })
+      }
+
+      proc.stdout.on('data', (data: Buffer) => {
+        lineBuf += data.toString()
+        const lines = lineBuf.split('\n')
+        lineBuf = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.trim()) continue
+          let parsed: {
+            type: string
+            data?: {
+              path?: { text?: string }
+              line_number?: number
+              lines?: { text?: string }
+              submatches?: Array<{ start: number; match?: { text?: string } }>
+            }
+          }
+          try {
+            parsed = JSON.parse(line)
+          } catch {
+            continue
+          }
+
+          if (parsed.type === 'begin') {
+            currentFile = parsed.data?.path?.text ?? ''
+            pendingBefore = []
+            continue
+          }
+
+          if (parsed.type === 'end') {
+            // No more context can follow for this file; stop once capped.
+            if (truncated) killProc()
+            continue
+          }
+
+          if (parsed.type === 'context') {
+            const data = parsed.data
+            if (!data) continue
+            const lineNum = data.line_number ?? 0
+            const filePath = data.path?.text ?? currentFile
+            const text = (data.lines?.text ?? '').trimEnd()
+            if (filePath !== currentFile) continue
+
+            // Attach as contextAfter to any matching open match…
+            for (const m of openMatches) {
+              if (lineNum > m.lineNumber && lineNum <= m.lineNumber + contextLines) {
+                m.contextAfter.push(text)
+              }
+            }
+            // …and keep it as a contextBefore candidate for the next match.
+            if (pendingBefore.length === contextLines) pendingBefore.shift()
+            pendingBefore.push({ lineNum, text })
+
+            // Once capped, only in-range trailing context is worth reading.
+            if (truncated && lineNum > lastMatchLine + contextLines) killProc()
+            continue
+          }
+
+          if (parsed.type !== 'match') continue
+
+          if (truncated) {
+            killProc()
+            continue
+          }
+
+          const data = parsed.data
+          if (!data) continue
+          const filePath = data.path?.text ?? currentFile
+          const lineNum = data.line_number ?? 0
+          const col = data.submatches?.[0]?.start ?? 1
+          const lineText = (data.lines?.text ?? '').trimEnd()
+          const matchText = data.submatches?.[0]?.match?.text ?? ''
+
+          filesMatched.add(filePath)
+
+          const match: MatchEntry = {
+            filePath,
+            lineNumber: lineNum,
+            column: col,
+            lineText,
+            matchText,
+            // Context queued before this match within range is contextBefore.
+            contextBefore: pendingBefore
+              .filter((c) => c.lineNum < lineNum && c.lineNum >= lineNum - contextLines)
+              .map((c) => c.text),
+            contextAfter: [],
+          }
+          matches.push(match)
+          // Only the latest match per file can still receive contextAfter
+          // (lines arrive in order), so drop fully-closed predecessors.
+          for (let i = openMatches.length - 1; i >= 0; i--) {
+            if (lineNum > openMatches[i]!.lineNumber + contextLines) openMatches.splice(i, 1)
+          }
+          openMatches.push(match)
+          lastMatchLine = lineNum
+
+          if (matches.length >= maxResults) {
+            truncated = true
+            // Keep reading briefly to collect this match's contextAfter.
+            if (contextLines === 0) killProc()
+          }
+        }
       })
 
+      proc.stderr.on('data', (data: Buffer) => {
+        if (stderr.length < 64 * 1024) stderr += data.toString()
+      })
+
+      proc.on('close', finish)
       proc.on('error', (err) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timeout)
         resolve({
           isError: true,
           content: [{ type: 'text', text: `Failed to spawn ripgrep: ${err.message}` }],

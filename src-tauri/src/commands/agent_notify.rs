@@ -378,8 +378,19 @@ fn install_omp(home: &Path) -> Result<PathBuf, String> {
 
 /// Install the agent-notification emitter for one agent (or `"all"`).
 /// Returns a human-readable summary of the files written.
+///
+/// Async: writes several config files under `$HOME` (blocking I/O; sync
+/// commands run on the main thread in Tauri 2).
 #[tauri::command]
-pub fn agent_notify_install(agent: String) -> Result<String, String> {
+pub async fn agent_notify_install(agent: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || agent_notify_install_impl(agent))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Blocking implementation of [`agent_notify_install`]; runs on the
+/// blocking pool.
+fn agent_notify_install_impl(agent: String) -> Result<String, String> {
     let agent = agent.trim().to_lowercase();
     let home = home_dir().ok_or_else(|| "HOME is not set".to_string())?;
     let script = install_emitter(&home)?;

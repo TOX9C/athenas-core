@@ -1,29 +1,7 @@
+use super::relay_prompt::{apply_response, use_request_listener};
 use crate::components::shared::modal::Modal;
 use crate::tauri_bridge;
 use dioxus::prelude::*;
-use std::cell::RefCell;
-use std::rc::Rc;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PromptResponse {
-    Dismiss,
-    Keep(String),
-    Ignore,
-}
-
-fn response_action(
-    pending: Option<&str>,
-    pane_id: &str,
-    result: Result<(), &str>,
-) -> PromptResponse {
-    if pending != Some(pane_id) {
-        return PromptResponse::Ignore;
-    }
-    match result {
-        Ok(()) => PromptResponse::Dismiss,
-        Err(error) => PromptResponse::Keep(error.to_string()),
-    }
-}
 
 /// Handle a pane-share request: approve (share the pane) or ignore (no-op).
 /// Keep the prompt visible until an approval command succeeds so a transient
@@ -49,16 +27,14 @@ fn respond_to_share_request(
         let result = tauri_bridge::relay_set_pane_shared(&pane_id, true)
             .await
             .map_err(|error| format!("{error:?}"));
-        let action = response_action(
-            pending.read().as_deref(),
+        let current_id = pending.read().clone();
+        apply_response(
+            current_id.as_deref(),
             &pane_id,
-            result.as_ref().map(|_| ()).map_err(|error| error.as_str()),
+            result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+            response_error,
+            move || pending.set(None),
         );
-        match action {
-            PromptResponse::Dismiss => pending.set(None),
-            PromptResponse::Keep(message) => response_error.set(Some(message)),
-            PromptResponse::Ignore => {}
-        }
     });
 }
 
@@ -70,41 +46,13 @@ fn respond_to_share_request(
 pub fn RelayPaneSharePrompt() -> Element {
     let pending: Signal<Option<String>> = use_signal(|| None);
     let response_error: Signal<Option<String>> = use_signal(|| None);
-    let unlisten: Rc<RefCell<Option<Box<dyn FnOnce()>>>> = use_hook(|| Rc::new(RefCell::new(None)));
 
-    let unlisten_for_effect = unlisten.clone();
-    let mut pending_for_listener = pending;
-    let mut response_error_for_listener = response_error;
-    use_effect(move || {
-        if unlisten_for_effect.borrow().is_some() {
-            return;
+    use_request_listener("relay:paneShareRequest", pending, response_error, |val| {
+        let pane_id = val.get("paneId").and_then(|v| v.as_str()).unwrap_or("");
+        if pane_id.is_empty() {
+            return None;
         }
-
-        if let Ok(unlisten) =
-            tauri_bridge::listen("relay:paneShareRequest", move |payload: String| {
-                let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) else {
-                    return;
-                };
-                let pane_id = val
-                    .get("paneId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !pane_id.is_empty() {
-                    response_error_for_listener.set(None);
-                    pending_for_listener.set(Some(pane_id));
-                }
-            })
-        {
-            *unlisten_for_effect.borrow_mut() = Some(unlisten);
-        }
-    });
-
-    let unlisten_for_drop = unlisten.clone();
-    use_drop(move || {
-        if let Some(unlisten) = unlisten_for_drop.borrow_mut().take() {
-            unlisten();
-        }
+        Some(pane_id.to_string())
     });
 
     let Some(pane_id) = pending.read().clone() else {
@@ -144,34 +92,5 @@ pub fn RelayPaneSharePrompt() -> Element {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{response_action, PromptResponse};
-
-    #[test]
-    fn successful_current_share_response_dismisses_the_prompt() {
-        assert_eq!(
-            response_action(Some("pane-1"), "pane-1", Ok(())),
-            PromptResponse::Dismiss
-        );
-    }
-
-    #[test]
-    fn failed_share_response_keeps_the_prompt_visible() {
-        assert_eq!(
-            response_action(Some("pane-1"), "pane-1", Err("relay unavailable")),
-            PromptResponse::Keep("relay unavailable".to_string())
-        );
-    }
-
-    #[test]
-    fn stale_share_response_cannot_dismiss_a_newer_prompt() {
-        assert_eq!(
-            response_action(Some("pane-2"), "pane-1", Ok(())),
-            PromptResponse::Ignore
-        );
     }
 }

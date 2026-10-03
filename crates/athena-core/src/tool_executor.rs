@@ -10,6 +10,15 @@ use crate::output_buffer::OutputBuffer;
 use crate::plan_manager::{ExecutionPlan, PlanManager};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+thread_local! {
+    /// Request id of the streamed tool call running on this blocking thread.
+    /// Installed by `execute_tool_call_with_request` so `plan_tools` events
+    /// can attribute themselves without threading the id through every
+    /// signature.
+    static CURRENT_STREAM_REQUEST_ID: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
@@ -99,11 +108,58 @@ pub trait ToolEventSender: Send + Sync {
     /// Ask the user a question (returns the answer).
     fn ask_user(&self, request_id: &str, question: &str, options: &[serde_json::Value]) -> String;
 
+    /// Ask the user a question tagged with the originating stream request
+    /// (when any). Defaults to plain `ask_user` for senders without
+    /// per-stream attribution.
+    fn ask_user_with_context(
+        &self,
+        _stream_request_id: Option<&str>,
+        request_id: &str,
+        question: &str,
+        options: &[serde_json::Value],
+    ) -> String {
+        self.ask_user(request_id, question, options)
+    }
+
     /// Associate tool-generated UI events with the current assistant request.
     fn set_request_context(&self, _request_id: &str, _session_id: &str) {}
 
     /// Clear the current assistant request context.
     fn clear_request_context(&self) {}
+
+    /// Clear only one request's context — used at the end of a streamed tool
+    /// batch so a concurrent stream keeps its own attribution. Defaults to the
+    /// wholesale clear for senders without per-request maps.
+    fn clear_request_context_for(&self, request_id: &str) {
+        let _ = request_id;
+        self.clear_request_context();
+    }
+
+    /// Plan update tagged with the originating stream request (when any).
+    fn plan_update_with_context(&self, stream_request_id: Option<&str>, plan: &ExecutionPlan) {
+        let _ = stream_request_id;
+        self.plan_update(plan);
+    }
+
+    /// Plan evaluation tagged with the originating stream request.
+    fn plan_evaluated_with_context(
+        &self,
+        stream_request_id: Option<&str>,
+        plan_id: &str,
+        overall_status: &str,
+        step_evaluations: &[serde_json::Value],
+        next_action: &str,
+        reasoning: &str,
+    ) {
+        let _ = stream_request_id;
+        self.plan_evaluated(
+            plan_id,
+            overall_status,
+            step_evaluations,
+            next_action,
+            reasoning,
+        );
+    }
 
     /// Return whether a request was cancelled before a tool began.
     fn request_cancelled(&self, _request_id: &str) -> bool {
@@ -207,6 +263,12 @@ impl ToolExecutor {
         self.event_sender.clear_request_context();
     }
 
+    /// Clear only one request's context after its tool batch ends, leaving a
+    /// concurrent stream's attribution intact.
+    pub fn clear_request_context_for(&self, request_id: &str) {
+        self.event_sender.clear_request_context_for(request_id);
+    }
+
     pub fn cancel_request(&self, request_id: &str) -> bool {
         self.event_sender.cancel_request(request_id)
     }
@@ -239,6 +301,8 @@ impl ToolExecutor {
             "read_agent_output" => self.read_agent_output(args),
             "list_agents" => self.list_agents(),
             "check_agent_status" => self.check_agent_status(args),
+            "send_message_to_agent" => self.send_message_to_agent(args),
+            "read_agent_messages" => self.read_agent_messages(args),
             "create_execution_plan" => self.create_execution_plan(args),
             "dispatch_plan_step" => self.dispatch_plan_step(args),
             "prompt_agent" => self.prompt_agent(args),
@@ -277,6 +341,37 @@ impl ToolExecutor {
         let result = self.execute_tool_call(name, args);
         self.clear_request_context();
         result
+    }
+
+    /// Execute one streamed tool call inside a pre-installed batch context.
+    /// The shared `(request_id, session_id)` map entry is set once around the
+    /// batch (see `orchestrator_tool_loop`), so this only carries the per-call
+    /// request id in a blocking-thread local — enough for plan events and
+    /// `ask_user` to attribute to this stream without serializing the batch.
+    pub fn execute_tool_call_with_request(
+        &self,
+        name: &str,
+        args: &ToolInput,
+        request_id: &str,
+    ) -> Result<ToolCallResult, ToolExecutorError> {
+        if self.request_cancelled(request_id) {
+            return Err(ToolExecutorError::Cancelled);
+        }
+        struct ResetCurrentRequest;
+        impl Drop for ResetCurrentRequest {
+            fn drop(&mut self) {
+                CURRENT_STREAM_REQUEST_ID.with(|c| *c.borrow_mut() = None);
+            }
+        }
+        let _reset = ResetCurrentRequest;
+        CURRENT_STREAM_REQUEST_ID.with(|c| *c.borrow_mut() = Some(request_id.to_string()));
+        self.execute_tool_call(name, args)
+    }
+
+    /// Request id of the streamed tool call on the current thread, installed
+    /// by `execute_tool_call_with_request`. `None` for legacy/MCP dispatches.
+    pub fn current_stream_request_id() -> Option<String> {
+        CURRENT_STREAM_REQUEST_ID.with(|c| c.borrow().clone())
     }
 
     // -- Individual tool implementations ------------------------------------

@@ -3,12 +3,14 @@ use super::agent_card::AgentCard;
 use crate::components::shared::confirm_dialog::ConfirmDialog;
 use crate::components::shared::icon::IconSwarm;
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
+use crate::components::shared::toast::{use_toast_store, Toast, ToastState, ToastType};
 use crate::stores::swarm::{parse_swarm_data, use_swarm_store, SwarmOverallStatus};
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
 use crate::utils::agent_display::get_agent_display_name;
 use dioxus::prelude::*;
-use std::cell::RefCell;
+use wasm_bindgen::JsValue;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Activity feed entry derived from swarm mailbox messages.
@@ -30,8 +32,19 @@ fn status_label(status: &SwarmOverallStatus) -> &'static str {
     }
 }
 
+fn push_swarm_error(mut store: Signal<ToastState>, title: &str, error: impl std::fmt::Debug) {
+    store.write().push(Toast {
+        id: format!("toast-swarm-{}", chrono::Utc::now().timestamp_millis()),
+        toast_type: ToastType::Error,
+        title: title.to_string(),
+        message: format!("{error:?}"),
+        duration_ms: 6000,
+    });
+}
+
 #[component]
 pub fn SwarmBoard() -> Element {
+    let toast_store = use_toast_store();
     let swarm_state = use_swarm_store();
     let workspace = use_workspace_store();
     let ui_state = crate::stores::ui::use_ui_store();
@@ -41,13 +54,19 @@ pub fn SwarmBoard() -> Element {
     let mut confirm_complete = use_signal(|| false);
     let unlisten: Rc<RefCell<Option<Box<dyn FnOnce()>>>> = use_hook(|| Rc::new(RefCell::new(None)));
     let watched_dir: Rc<RefCell<Option<String>>> = use_hook(|| Rc::new(RefCell::new(None)));
+    // Monotonic generation for the load effect: a stale async read from a
+    // previous workspace must not touch the store or the watcher.
+    let watch_generation: Rc<Cell<u64>> = use_hook(|| Rc::new(Cell::new(0)));
 
     // Load persisted state whenever the active workspace changes. This also
     // recovers a mission after an app restart, before the first watcher tick.
     use_effect({
         let watched_dir = watched_dir.clone();
+        let watch_generation = watch_generation.clone();
         let mut store = swarm_state;
         move || {
+            let generation = watch_generation.get().wrapping_add(1);
+            watch_generation.set(generation);
             let state = workspace.read();
             let dir = state
                 .active_space_id
@@ -64,13 +83,20 @@ pub fn SwarmBoard() -> Element {
                 return;
             };
             let previous_dir = watched_dir.borrow_mut().replace(dir.clone());
-            if let Some(previous_dir) = previous_dir.filter(|previous| previous != &dir) {
-                spawn(async move {
-                    let _ = tauri_bridge::swarm_stop_watch(&previous_dir).await;
-                });
-            }
+            let watch_generation = watch_generation.clone();
             spawn(async move {
-                match tauri_bridge::swarm_read_state(&dir).await {
+                // Sequence the watcher swap: stop the previous directory's
+                // watcher before starting the new one so both never run at
+                // once.
+                if let Some(previous_dir) = previous_dir.filter(|previous| previous != &dir) {
+                    let _ = tauri_bridge::swarm_stop_watch(&previous_dir).await;
+                }
+                let raw = tauri_bridge::swarm_read_state(&dir).await;
+                // A newer workspace switch supersedes everything below.
+                if watch_generation.get() != generation {
+                    return;
+                }
+                match raw {
                     Ok(raw) if raw.trim() != "null" => {
                         match parse_swarm_data(&raw) {
                             Ok(data) if data.workspace_dir == dir => {
@@ -87,16 +113,27 @@ pub fn SwarmBoard() -> Element {
                                 &format!("[SwarmBoard] state parse failed: {error}").into(),
                             ),
                         }
-                        if let Err(error) = tauri_bridge::swarm_start_watch(&dir).await {
-                            web_sys::console::warn_1(
-                                &format!("[SwarmBoard] watcher start failed: {:?}", error).into(),
-                            );
-                        }
+                        store.write().watch_failed =
+                            if let Err(error) = tauri_bridge::swarm_start_watch(&dir).await {
+                                web_sys::console::warn_1(
+                                    &format!("[SwarmBoard] watcher start failed: {:?}", error)
+                                        .into(),
+                                );
+                                true
+                            } else {
+                                false
+                            };
                     }
                     Ok(_) => store.write().set_swarm(None),
-                    Err(error) => web_sys::console::warn_1(
-                        &format!("[SwarmBoard] state load failed: {:?}", error).into(),
-                    ),
+                    Err(error) => {
+                        web_sys::console::warn_1(
+                            &format!("[SwarmBoard] state load failed: {:?}", error).into(),
+                        );
+                        // Clear the stale swarm — otherwise the previous
+                        // workspace's board keeps rendering under the newly
+                        // selected workspace.
+                        store.write().set_swarm(None);
+                    }
                 }
             });
         }
@@ -113,8 +150,13 @@ pub fn SwarmBoard() -> Element {
         let mut store = swarm_state;
         let current_workspace = workspace;
         if let Ok(unlisten_fn) =
-            tauri_bridge::listen("swarm:stateChange", move |payload: String| {
-                if let Ok(data) = parse_swarm_data(&payload) {
+            tauri_bridge::listen("swarm:stateChange", move |payload: JsValue| {
+                // The Tauri shell emits this event as a JSON-encoded string
+                // (`wire_emitter` stringifies before `emit`).
+                let Some(raw) = payload.as_string() else {
+                    return;
+                };
+                if let Ok(data) = parse_swarm_data(&raw) {
                     let active_dir = {
                         let state = current_workspace.read();
                         state
@@ -163,6 +205,7 @@ pub fn SwarmBoard() -> Element {
             .map(|space| space.dir.clone())
     };
     let active_swarm = swarm_state.read().active_swarm.clone();
+    let watch_failed = swarm_state.read().watch_failed;
     let (agents, tasks, activities, status, goal) = match active_swarm {
         Some(swarm) => {
             let activities = swarm
@@ -220,8 +263,15 @@ pub fn SwarmBoard() -> Element {
             style: "display: flex; height: 100%; background: var(--bg); color: var(--text);",
             div {
                 class: "swarm-main",
-                style: "flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 12px;",                    div { style: "display: flex; align-items: center; gap: 8px; margin-bottom: 2px;",
+                style: "flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 12px;",
+                if watch_failed {
+                    div {
+                        style: "padding: 8px 10px; border: 1px solid var(--warning, #d97706); border-radius: var(--radius-sm, 6px); color: var(--warning, #d97706); font-size: var(--text-xs, 12px);",
+                        "Live updates unavailable — the file watcher failed to start. The board below is a snapshot and may be stale."
+                    }
+                }
 
+                div { style: "display: flex; align-items: center; gap: 8px; margin-bottom: 2px;",
                     IconSwarm { size: Some(18), color: Some("var(--accent)".to_string()) }
                     span {
                         style: "font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; color: var(--text);",
@@ -303,7 +353,11 @@ pub fn SwarmBoard() -> Element {
                                     let agent = first_for_task.clone().unwrap_or_default();
                                     let title = task_title();
                                     let description = task_description();
-                                    spawn(async move { let _ = tauri_bridge::swarm_create_task(&dir, &title, &description, &agent).await; });
+                                    spawn(async move {
+                                        if let Err(error) = tauri_bridge::swarm_create_task(&dir, &title, &description, &agent).await {
+                                            push_swarm_error(toast_store, "Could not add task", error);
+                                        }
+                                    });
                                     task_title.set(String::new());
                                     task_description.set(String::new());
                                 },
@@ -321,7 +375,11 @@ pub fn SwarmBoard() -> Element {
                                     let from = first_for_message.clone().unwrap_or_default();
                                     let to = second_for_message.clone().unwrap_or_default();
                                     let content = message_text();
-                                    spawn(async move { let _ = tauri_bridge::swarm_send_message(&dir, &from, &to, &content).await; });
+                                    spawn(async move {
+                                        if let Err(error) = tauri_bridge::swarm_send_message(&dir, &from, &to, &content).await {
+                                            push_swarm_error(toast_store, "Could not send message", error);
+                                        }
+                                    });
                                     message_text.set(String::new());
                                 },
                                 "Send"

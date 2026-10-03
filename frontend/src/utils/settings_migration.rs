@@ -3,7 +3,12 @@
 /// Migrate old separate pane-title settings into the unified `smart_pane_titles` key.
 pub async fn migrate_smart_pane_titles() -> bool {
     if let Ok(v) = crate::tauri_bridge::store_get("smart_pane_titles").await {
-        return v == "true";
+        // An empty/whitespace value means the key exists but was never really
+        // set — treat it as absent and fall through to the legacy merge.
+        let v = v.trim();
+        if !v.is_empty() {
+            return v == "true";
+        }
     }
     let auto_gen = crate::tauri_bridge::store_get("auto_generate_titles")
         .await

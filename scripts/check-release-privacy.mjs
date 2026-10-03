@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -44,6 +44,24 @@ function extractLogCalls(source) {
         }
         continue
       }
+      if (ch === "'") {
+        // Rust char literal: '\\', '\'', or a single character.
+        if (source[j + 1] === '\\') j += 4 // e.g. '\n', '\\'
+        else j += 3
+        continue
+      }
+      if (ch === 'r') {
+        // Rust raw string: r"..." / r#"..."# etc. Parens inside must not
+        // perturb the depth accounting.
+        let hashes = 0
+        while (source[j + 1 + hashes] === '#') hashes += 1
+        if (source[j + 1 + hashes] === '"') {
+          const terminator = '"' + '#'.repeat(hashes)
+          const end = source.indexOf(terminator, j + 2 + hashes)
+          j = end === -1 ? source.length : end + terminator.length
+          continue
+        }
+      }
       if (ch === '(') depth += 1
       else if (ch === ')') depth -= 1
       j += 1
@@ -76,6 +94,24 @@ function stripStringLiterals(text) {
       out += ' '
       continue
     }
+    if (text[i] === "'") {
+      // Rust char literal ('\\', '\'', or one character).
+      if (text[i + 1] === '\\') i += 4
+      else i += 3
+      out += ' '
+      continue
+    }
+    if (text[i] === 'r') {
+      let hashes = 0
+      while (text[i + 1 + hashes] === '#') hashes += 1
+      if (text[i + 1 + hashes] === '"') {
+        const terminator = '"' + '#'.repeat(hashes)
+        const end = text.indexOf(terminator, i + 2 + hashes)
+        i = end === -1 ? text.length : end + terminator.length
+        out += ' '
+        continue
+      }
+    }
     out += text[i]
     i += 1
   }
@@ -95,14 +131,19 @@ function serializesField(call, fields) {
 }
 
 const agentComms = read('crates/athena-core/src/agent_comms_connection.rs')
-const assistantLogger = read('frontend/src/utils/assistant_logger.rs')
+// assistant_logger.rs is unreferenced dead code slated for removal; keep the
+// invariant enforced only while the file exists.
+const ASSISTANT_LOGGER = 'frontend/src/utils/assistant_logger.rs'
+const assistantLogger = existsSync(resolve(root, ASSISTANT_LOGGER)) ? read(ASSISTANT_LOGGER) : null
 const fileTree = read('frontend/src/components/sidebar_dir/file_tree.rs')
 const pty = read('src-tauri/src/commands/pty.rs')
 
 const required = [
   [agentComms, /event emitted on channel \{channel\}/, 'Agent Comms fallback log is metadata-only'],
   [agentComms, /received request_id_bytes=\{\} agent_id_bytes=\{\}/, 'Agent input-request log excludes title/prompt'],
-  [assistantLogger, /\[assistant\] action=\{\} level=\{\}/, 'assistant native log is metadata-only'],
+  ...(assistantLogger !== null
+    ? [[assistantLogger, /\[assistant\] action=\{\} level=\{\}/, 'assistant native log is metadata-only']]
+    : []),
   [fileTree, /Failed to read file from the active workspace/, 'file-tree read failure is metadata-only'],
   [pty, /pty_spawn requested: session=\{\} cols=\{\} rows=\{\}/, 'PTY spawn request log excludes cwd/shell'],
 ]
@@ -126,7 +167,7 @@ for (const call of agentLogCalls) {
   }
 }
 
-const assistantLogCalls = extractLogCalls(assistantLogger)
+const assistantLogCalls = assistantLogger !== null ? extractLogCalls(assistantLogger) : []
 if (assistantLogCalls.some((call) => /\bmessage\b(?!\.len\(\))/i.test(call))) {
   failures.push('assistant logger forwards message to native logs')
 }

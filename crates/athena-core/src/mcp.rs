@@ -45,6 +45,11 @@ mod mcp_integration_tests;
 /// 2. Sends `initialize` with the session token
 /// 3. Server validates token and registers the client for broadcasts
 /// 4. Client calls tools via `tools/call`
+///
+/// `Clone` shares the token, client registry, shutdown flags, and handlers so
+/// command handlers can snapshot the server state and release the global
+/// mutex before long-running awaits.
+#[derive(Clone)]
 pub struct McpServer {
     token: String,
     active_clients: Arc<Mutex<HashMap<String, TcpStream>>>,
@@ -85,8 +90,17 @@ impl McpServer {
     /// Tauri keeps this signal in `AppState` so synchronous exit callbacks can
     /// cancel MCP even when the async server mutex is contended.
     pub fn new_with_shutdown(app_shutdown: Arc<AtomicBool>) -> Self {
+        Self::new_with_shutdown_and_token(uuid::Uuid::new_v4().to_string(), app_shutdown)
+    }
+
+    /// Construct a server with a caller-supplied auth token.
+    ///
+    /// `main()` mints the token before any thread exists so it can be
+    /// published via `std::env::set_var` race-free (PTY pane children inherit
+    /// the process environment).
+    pub fn new_with_shutdown_and_token(token: String, app_shutdown: Arc<AtomicBool>) -> Self {
         Self {
-            token: uuid::Uuid::new_v4().to_string(),
+            token,
             active_clients: Arc::new(Mutex::new(HashMap::new())),
             port: None,
             app_shutdown,
@@ -321,6 +335,12 @@ impl McpServer {
 
         let mut dead_peers = Vec::new();
         for (peer, mut stream) in streams {
+            // Bound every blocking write: this function is called from an
+            // async Tauri command, so a stalled client socket would
+            // otherwise wedge a Tokio worker thread indefinitely. A client
+            // that can't accept the notification within the timeout is
+            // treated as dead and evicted below.
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
             if stream.write_all(bytes).is_err() {
                 dead_peers.push(peer);
             }
@@ -500,8 +520,9 @@ fn is_executor_mcp_tool(name: &str) -> bool {
             | "spawn_agents"
             | "get_output"
             | "list_agent_panes"
+            | "send_message_to_agent"
+            | "read_agent_messages"
             | "code_search"
-            | "search_files"
     ) || crate::tool_schema::orchestrator_tools()
         .iter()
         .any(|tool| tool.name == name)

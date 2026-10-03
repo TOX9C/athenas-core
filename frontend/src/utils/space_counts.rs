@@ -35,7 +35,8 @@ pub fn is_agent_pane_type(at: &AgentType) -> bool {
 
 /// Count working/total/attention for a space's panes from the agent-status map.
 ///
-/// `statuses` is the `AgentStatusState.statuses` slice (pane id → status).
+/// `statuses` is a snapshot from `AgentStatusRegistry::snapshot()`
+/// (pane id → status).
 /// A pane counts toward `total` when its configured type is an agent, or when
 /// a status entry records a live (non-disconnected) agent session inside it
 /// (e.g. `claude` typed manually into a Shell pane).

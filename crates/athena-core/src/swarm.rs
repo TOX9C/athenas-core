@@ -623,6 +623,9 @@ impl SwarmCoordinator {
         let coordinator = self.clone();
         let dir_owned = dir.to_string();
         tokio::spawn(async move {
+            // Revision of the last state this watcher emitted (see below:
+            // the tick only broadcasts on change).
+            let mut last_emitted_revision: Option<u64> = None;
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
@@ -676,7 +679,18 @@ impl SwarmCoordinator {
                 if token.is_cancelled() || !coordinator.watch_is_current(&dir_owned, generation) {
                     break;
                 }
-                if let Some(ref tx) = coordinator.watch_tx {
+                // Emit only on change: the idle watcher used to re-serialize
+                // and re-broadcast the same state every 2 s forever. The
+                // revision bumps on every coordinator mutation (and on the
+                // stalled-agent rewrite above), so it is a sufficient change
+                // key; out-of-band rewrites of swarm-state.json with an
+                // unchanged revision stay silent (nothing observable
+                // changed).
+                if last_emitted_revision.is_some_and(|r| r == state.revision) {
+                    continue;
+                }
+                last_emitted_revision = Some(state.revision);
+                if let Some(tx) = &coordinator.watch_tx {
                     let _ = tx.send(state.clone());
                 }
                 coordinator.emit_state(&state);

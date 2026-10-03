@@ -139,7 +139,10 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         // mutation is guarded by the active request ID in AthenaState.
         let mut stream_store = store;
         let stream_store_for_queue = store;
-        if let Ok(u) = tauri_bridge::listen("athena:stream", move |payload: String| {
+        if let Ok(u) = tauri_bridge::listen("athena:stream", move |payload: wasm_bindgen::JsValue| {
+            let Some(payload) = payload.as_string() else {
+                return;
+            };
             let Ok(event) = serde_json::from_str::<serde_json::Value>(&payload) else {
                 return;
             };
@@ -223,8 +226,11 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
 
         // athena:askUser — Show interactive user question modal.
         let mut ask_store = store;
-        if let Ok(u) = tauri_bridge::listen("athena:askUser", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+        if let Ok(u) = tauri_bridge::listen("athena:askUser", move |payload: wasm_bindgen::JsValue| {
+            if let Some(val) = payload
+                .as_string()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            {
                 let question_id = val
                     .get("requestId")
                     .and_then(|v| v.as_str())
@@ -269,8 +275,11 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
 
         // athena:planUpdate — Update plan display.
         let mut plan_store = store;
-        if let Ok(u) = tauri_bridge::listen("athena:planUpdate", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+        if let Ok(u) = tauri_bridge::listen("athena:planUpdate", move |payload: wasm_bindgen::JsValue| {
+            if let Some(val) = payload
+                .as_string()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            {
                 let stream_request_id = val
                     .get("requestId")
                     .or_else(|| val.get("request_id"))
@@ -359,8 +368,11 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
 
         // athena:planEvaluated — Show evaluation results.
         let mut eval_store = store;
-        if let Ok(u) = tauri_bridge::listen("athena:planEvaluated", move |payload: String| {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+        if let Ok(u) = tauri_bridge::listen("athena:planEvaluated", move |payload: wasm_bindgen::JsValue| {
+            if let Some(val) = payload
+                .as_string()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            {
                 let stream_request_id = val
                     .get("requestId")
                     .or_else(|| val.get("request_id"))

@@ -12,7 +12,6 @@ use crate::stores::ui::use_ui_store;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentNotifyConfig {
-    pub finished: bool,
     pub needs_attention: bool,
     pub error: bool,
 }
@@ -20,7 +19,6 @@ pub struct AgentNotifyConfig {
 impl Default for AgentNotifyConfig {
     fn default() -> Self {
         Self {
-            finished: true,
             needs_attention: true,
             error: true,
         }
@@ -58,8 +56,9 @@ pub(crate) fn AgentsSettings() -> Element {
     let mut new_priority = use_signal(|| false);
     let mut show_form = use_signal(|| false);
 
-    let _agents_snapshot: Vec<crate::types::workspace::CustomAgent> =
-        ui_state.read().custom_agents.clone();
+    // Subscribe to the store (so edits re-render) without cloning the vec
+    // on every render.
+    let _agents_len = ui_state.read().custom_agents.len();
 
     let persist = |agents: &[_]| {
         let a = agents.to_owned();
@@ -200,9 +199,8 @@ pub(crate) fn AgentsSettings() -> Element {
                                         for a in &mut ag { a.priority = false; }
                                     }
                                     ag.push(new_agent);
-                                    let agc = ag.clone();
+                                    persist(&ag);
                                     ui_state.write().custom_agents = ag;
-                                    persist(&agc);
                                     show_form.set(false);
                                 },
                                 "Save"
@@ -219,7 +217,7 @@ pub(crate) fn AgentsSettings() -> Element {
             }
 
             // Agent notification toggles — persisted per type; the backend
-            // heartbeat applies them (finished / needs attention / error).
+            // heartbeat applies them (needs attention / error).
             AgentNotifySettings {}
 
             // Predefined agents (read-only view)
@@ -350,13 +348,13 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
                                     if a.id == target_id { a.priority = !a.priority; }
                                     else if a.priority { a.priority = false; }
                                 }
-                                let agc = ag.clone();
+                                let json = serde_json::to_string(&ag).ok();
                                 ui_state.write().custom_agents = ag;
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(json) = serde_json::to_string(&agc) {
+                                if let Some(json) = json {
+                                    wasm_bindgen_futures::spawn_local(async move {
                                         let _ = crate::tauri_bridge::store_set("custom_agents", &json).await;
-                                    }
-                                });
+                                    });
+                                }
                             },
                             if props.agent.priority {
                                 "Remove Priority"
@@ -371,13 +369,13 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
                         onclick: move |_| {
                             let mut ag = ui_state.read().custom_agents.clone();
                             ag.retain(|a| a.id != agent_id_for_delete);
-                            let agc = ag.clone();
+                            let json = serde_json::to_string(&ag).ok();
                             ui_state.write().custom_agents = ag;
-                            wasm_bindgen_futures::spawn_local(async move {
-                                if let Ok(json) = serde_json::to_string(&agc) {
+                            if let Some(json) = json {
+                                wasm_bindgen_futures::spawn_local(async move {
                                     let _ = crate::tauri_bridge::store_set("custom_agents", &json).await;
-                                }
-                            });
+                                });
+                            }
                         },
                         "Delete"
                     }
@@ -391,7 +389,7 @@ fn CustomAgentRow(props: CustomAgentRowProps) -> Element {
     }
 }
 
-/// Agent notification toggles (finished / needs attention / error). Loads
+/// Agent notification toggles (needs attention / error). Loads the
 /// the persisted config on mount and saves on any toggle. Mirrors the
 /// backend `AgentNotifyConfig` semantics: status badges always update; only
 /// the *notifications* are gated per type.
@@ -410,12 +408,6 @@ fn AgentNotifySettings() -> Element {
     // Each row flips one field, persists, and re-renders. The mutate helper
     // is inline per row (no shared closure) so the `Signal` stays `Copy`-
     // captured and no borrow escapes the event handler.
-    let set_finished = move |_| {
-        let mut next = cfg();
-        next.finished = !next.finished;
-        cfg.set(next);
-        save_agent_notify_config(next);
-    };
     let set_attention = move |_| {
         let mut next = cfg();
         next.needs_attention = !next.needs_attention;
@@ -508,12 +500,6 @@ fn AgentNotifySettings() -> Element {
 
             div {
                 style: "display: flex; flex-direction: column; gap: 2px;",
-                NotifyRow {
-                    label: "When an agent finishes work",
-                    desc: "Working → finished transition (in-app + macOS)",
-                    active: cfg().finished,
-                    on_toggle: set_finished,
-                }
                 NotifyRow {
                     label: "When an agent needs attention",
                     desc: "Waiting for input / asking a question",

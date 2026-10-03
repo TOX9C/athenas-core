@@ -4,22 +4,23 @@
 //! Contracts under defense:
 //! - `with_path_sync` reopens an existing file and sees prior data
 //!   (file-backed durability round-trip at an explicit path);
-//! - a corrupt store file surfaces a JSON error at open — never silent
-//!   data loss;
+//! - a corrupt store file is quarantined to `<name>.corrupt-*` at open and
+//!   the store starts empty — never a silent in-place overwrite;
 //! - `set_sync`/`delete_sync` persist immediately: no explicit flush needed,
 //!   a fresh handle on the same path observes the mutation;
-//! - a leftover `.tmp-*` file from a crashed write does not break loading;
-//!   the reader still sees the last good snapshot;
+//! - a leftover `.tmp-*` file from a crashed write is swept at open; the
+//!   reader still sees the last good snapshot;
 //! - dirty-flag transitions: async `set` raises `is_dirty`, `flush_if_dirty`
 //!   clears it, `set_sync` leaves it clear;
-//! - in-memory fallback: `set_sync` succeeds, writes no file, `path()` None;
+//! - in-memory fallback: `set_sync` succeeds, writes no file, `path()` None,
+//!   and flush reports `FlushOutcome::InMemory` without clearing dirty;
 //! - session store (via `new_empty` fallback dirs, unique ids per test):
-//!   corrupt session file → `get_session` errors, `list_sessions` skips it;
-//!   `update_session` on a missing id → NotFound; `delete_session` on a
-//!   missing id → false.
+//!   corrupt session file → `get_session` errors with `Corrupt` and the file
+//!   is quarantined, `list_sessions` skips it; `update_session` on a missing
+//!   id → NotFound; `delete_session` on a missing id → false.
 
 use athena_store::session::SessionStore;
-use athena_store::store::{KeyValueStore, StoreError};
+use athena_store::store::{FlushOutcome, KeyValueStore};
 
 fn unique_path(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -48,17 +49,31 @@ async fn reopen_same_path_sees_previous_data() {
 }
 
 #[tokio::test]
-async fn corrupt_store_file_errors_at_open_instead_of_silent_loss() {
+async fn corrupt_store_file_is_quarantined_at_open_not_overwritten() {
     let path = unique_path("corrupt");
     std::fs::write(&path, "{definitely not json").unwrap();
-    let err = match KeyValueStore::with_path_sync(path) {
-        Ok(_) => panic!("corrupt file must fail to open"),
-        Err(err) => err,
-    };
+
+    // Open succeeds with an empty store; the corrupt bytes are preserved.
+    let store = KeyValueStore::with_path_sync(path.clone()).unwrap();
+    let value: Option<String> = store.get("anything").unwrap();
+    assert_eq!(value, None, "recovered store starts empty");
     assert!(
-        matches!(err, StoreError::Json(_)),
-        "corrupt file must surface a parse error, got {err:?}"
+        !path.exists(),
+        "corrupt file must be renamed out of the way so the next flush cannot clobber it in place"
     );
+    let quarantined: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("store.json.corrupt-"))
+        .collect();
+    assert_eq!(
+        quarantined.len(),
+        1,
+        "corrupt file preserved as a .corrupt-* sibling"
+    );
+    let preserved = std::fs::read_to_string(path.parent().unwrap().join(&quarantined[0])).unwrap();
+    assert_eq!(preserved, "{definitely not json", "corrupt data recovered");
 }
 
 #[tokio::test]
@@ -84,7 +99,7 @@ async fn set_sync_is_immediately_durable_without_flush() {
 }
 
 #[tokio::test]
-async fn leftover_temp_file_from_crashed_write_is_tolerated() {
+async fn leftover_temp_file_from_crashed_write_is_swept_at_open() {
     let path = unique_path("crash");
     {
         let store = KeyValueStore::with_path_sync(path.clone()).unwrap();
@@ -94,6 +109,14 @@ async fn leftover_temp_file_from_crashed_write_is_tolerated() {
     let name = path.file_name().unwrap().to_string_lossy().to_string();
     let stale_tmp = path.parent().unwrap().join(format!(".{name}.tmp-stale"));
     std::fs::write(&stale_tmp, b"partial garbage").unwrap();
+    // Backdate it: the sweep only removes temp files that have been untouched
+    // for at least 60 seconds (a fresh one could belong to an in-flight write).
+    let file = std::fs::File::options()
+        .write(true)
+        .open(&stale_tmp)
+        .unwrap();
+    file.set_modified(std::time::UNIX_EPOCH).unwrap();
+    drop(file);
 
     let reopened = KeyValueStore::with_path_sync(path.clone()).unwrap();
     let value: Option<String> = reopened.get("good").unwrap();
@@ -103,16 +126,16 @@ async fn leftover_temp_file_from_crashed_write_is_tolerated() {
         "stale tmp must not shadow last good data"
     );
 
-    // A successful subsequent write cleans up its own tmp files; the stale
-    // one remains but never participates.
-    reopened.set_sync("good", &"updated".to_string()).unwrap();
+    // The startup sweep removed the orphan so it cannot accumulate forever.
     let entries: Vec<_> = std::fs::read_dir(path.parent().unwrap())
         .unwrap()
         .filter_map(Result::ok)
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    assert!(entries.iter().any(|n| n == &name), "store file present");
-    let _ = std::fs::remove_file(&stale_tmp);
+    assert!(
+        !entries.iter().any(|n| n.contains(".tmp-")),
+        "startup sweep must remove stale tmp files, got {entries:?}"
+    );
 }
 
 #[tokio::test]
@@ -139,12 +162,20 @@ async fn in_memory_fallback_never_touches_disk() {
     store.set_sync("mem", &"only".to_string()).unwrap();
     store.set("mem2", &"also".to_string()).await.unwrap();
     store.delete("mem").await.unwrap();
-    store.flush_if_dirty().await.unwrap();
+    let outcome = store.flush_with_outcome().await.unwrap();
+    assert_eq!(
+        outcome,
+        FlushOutcome::InMemory,
+        "in-memory flush must report that nothing was (or can be) written"
+    );
 
     assert!(!store.has("mem"));
     let value: Option<String> = store.get("mem2").unwrap();
     assert_eq!(value, Some("also".to_string()));
-    assert!(!store.is_dirty(), "in-memory flush clears dirty");
+    assert!(
+        store.is_dirty(),
+        "in-memory store stays dirty: the data is not durable anywhere"
+    );
     assert!(
         !std::env::temp_dir().join("athena-store-it-mem").exists(),
         "no file was ever created for this store"
@@ -175,14 +206,28 @@ async fn corrupt_session_file_errors_on_get_and_is_skipped_by_list() {
         .join(format!("{}.json", bad.id));
     std::fs::write(&bad_path, "not json at all").unwrap();
 
-    // get_session surfaces the parse error instead of pretending absence.
+    // get_session surfaces a typed corrupt error and quarantines the file.
     let err = store.get_session(&bad.id).await.unwrap_err();
-    assert!(matches!(
-        err,
-        athena_store::session::SessionStoreError::Json(_)
-    ));
+    match err {
+        athena_store::session::SessionStoreError::Corrupt(quarantined, _) => {
+            assert!(
+                quarantined.exists(),
+                "corrupt session file preserved at its quarantine path"
+            );
+            assert!(
+                quarantined
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(&format!("{}.json.corrupt-", bad.id)),
+                "quarantine name keeps the session id: {}",
+                quarantined.display()
+            );
+        }
+        other => panic!("expected Corrupt, got {other:?}"),
+    }
 
-    // list_sessions skips the unreadable file; the good one survives.
+    // list_sessions skips the corrupt file; the good one survives.
     let listed = store.list_sessions().await.unwrap();
     assert_eq!(listed.len(), 1, "corrupt file skipped");
     assert_eq!(listed[0].id, good.id);

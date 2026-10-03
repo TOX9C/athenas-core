@@ -71,84 +71,73 @@ pub struct AgentSpec {
     /// Human label.
     pub label: &'static str,
     /// Exact binary-name aliases (the key itself must be first). Matched
-    /// against the `ps` comm name for direct (non-wrapped) binaries.
+    /// against the `ps` comm name for direct (non-wrapped) binaries and
+    /// against full command-line tokens/path components by
+    /// `token_matches_spec`.
     pub binary_names: &'static [&'static str],
-    /// Legacy alias hints retained for roster metadata. Runtime matching uses
-    /// exact binary names and path components via `token_matches_spec`.
-    pub substrings: &'static [&'static str],
     /// Optional session-file probe.
     pub probe: Option<fn() -> Option<HistorySnapshot>>,
 }
 
-/// The canonical agent roster. Order matters: first substring hit wins, so
+/// The canonical agent roster. Order matters: matching is first-hit, so
 /// more-specific entries come first.
 pub const KNOWN_AGENTS: &[AgentSpec] = &[
     AgentSpec {
         key: "claude",
         label: "Claude Code",
         binary_names: &["claude"],
-        substrings: &["claude"],
         probe: Some(scrape_claude_history),
     },
     AgentSpec {
         key: "codex",
         label: "Codex",
         binary_names: &["codex"],
-        substrings: &["codex"],
         probe: Some(scrape_codex_history),
     },
     AgentSpec {
         key: "opencode",
         label: "OpenCode",
         binary_names: &["opencode"],
-        substrings: &["opencode"],
         probe: None,
     },
     AgentSpec {
         key: "gemini",
         label: "Gemini CLI",
         binary_names: &["gemini"],
-        substrings: &["gemini"],
         probe: None,
     },
     AgentSpec {
         key: "qwen",
         label: "Qwen Code",
         binary_names: &["qwen", "qwen-code"],
-        substrings: &["qwen"],
         probe: Some(scrape_qwen_history),
     },
     AgentSpec {
         key: "aider",
         label: "Aider",
         binary_names: &["aider"],
-        substrings: &["aider"],
         probe: Some(scrape_aider_history),
     },
     AgentSpec {
         key: "cursor",
         label: "Cursor CLI",
         binary_names: &["cursor", "cursor-agent"],
-        substrings: &["cursor"],
         probe: None,
     },
     AgentSpec {
         key: "freebuff",
         label: "Freebuff",
         binary_names: &["freebuff", "fb"],
-        substrings: &["freebuff"],
         probe: None,
     },
-    // "oh my pi" — the user's internal harness. Matched by exact binary name
-    // ONLY so substrings like "competition" can never false-positive.
+    // "oh my pi" — the user's internal harness. OMP is commonly installed as
+    // the `omp` Bun shim. Matched only by exact binary name (including path
+    // and argument boundaries), so unrelated commands containing "omp" —
+    // e.g. `competition` — are never false positives.
     AgentSpec {
         key: "omp",
         label: "OMP (oh my pi)",
         binary_names: &["omp", "oh-my-pi", "oh_my_pi"],
-        // OMP is commonly installed as the `omp` Bun shim. Match only
-        // path/argument boundaries here; a broad `omp` substring would turn
-        // ordinary commands such as `competition` into false agent hits.
-        substrings: &["oh-my-pi", "oh_my_pi", "/omp", " omp"],
         probe: None,
     },
 ];
@@ -399,7 +388,7 @@ fn file_mtime_ms(path: &Path) -> Option<u64> {
 }
 
 /// Parse the last *valid* user prompt from Claude `history.jsonl` content.
-fn parse_claude_history(content: &str) -> Option<HistorySnapshot> {
+fn parse_claude_history(content: &str, _mtime_ms: u64) -> Option<HistorySnapshot> {
     for line in content.lines().rev() {
         let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
             // History files are append-only and may be observed while the
@@ -434,12 +423,69 @@ fn parse_claude_history(content: &str) -> Option<HistorySnapshot> {
 /// Scrape the last *valid* user prompt from `~/.claude/history.jsonl`.
 fn scrape_claude_history() -> Option<HistorySnapshot> {
     let path = home_dir()?.join(".claude/history.jsonl");
-    let content = std::fs::read_to_string(path).ok()?;
-    parse_claude_history(&content)
+    cached_history_scrape(&path, parse_claude_history)
 }
 
+// ---------------------------------------------------------------------------
+// History-file cache
+// ---------------------------------------------------------------------------
+
+/// Parsed agent history cache, keyed by file path. The frontend polls
+/// `pty_agent_info` every ~2 s per pane; without this, every poll re-reads
+/// and re-parses the entire (append-only) history file even though it almost
+/// never changes between polls. Reparse only when mtime or length moved.
+type HistoryCache = std::collections::HashMap<PathBuf, (u64, u64, Option<HistorySnapshot>)>;
+
+static HISTORY_CACHE: std::sync::LazyLock<parking_lot::Mutex<HistoryCache>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// Read+parse `path` through [`HISTORY_CACHE`], keyed by (mtime, len).
+///
+/// `parse` receives the file content and the file's mtime in ms (some
+/// formats have no in-band timestamp and derive one). A `None` snapshot is
+/// cached too: an unchanged unparseable file must not be re-read per poll.
+/// The map is capped at the agent-roster size (~8 entries) and each entry
+/// is one parsed tail, so it never grows with session count.
+fn cached_history_scrape(
+    path: &Path,
+    parse: impl FnOnce(&str, u64) -> Option<HistorySnapshot>,
+) -> Option<HistorySnapshot> {
+    let meta = path.metadata().ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let len = meta.len();
+    if let Some((m, l, snapshot)) = HISTORY_CACHE.lock().get(path) {
+        if *m == mtime_ms && *l == len {
+            return snapshot.clone();
+        }
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    let snapshot = parse(&content, mtime_ms);
+    #[cfg(test)]
+    HISTORY_PARSE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    HISTORY_CACHE
+        .lock()
+        .insert(path.to_path_buf(), (mtime_ms, len, snapshot.clone()));
+    snapshot
+}
+
+/// Test-only: how many times [`HISTORY_CACHE`] actually read+parsed a file
+/// (cache misses). Lets tests prove a repeated scrape was served from cache.
+#[cfg(test)]
+pub(crate) fn history_cache_parse_count() -> u64 {
+    HISTORY_PARSE_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+static HISTORY_PARSE_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Parse the last *valid* user prompt from Codex `history.jsonl` content.
-fn parse_codex_history(content: &str) -> Option<HistorySnapshot> {
+fn parse_codex_history(content: &str, _mtime_ms: u64) -> Option<HistorySnapshot> {
     for line in content.lines().rev() {
         let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -471,8 +517,7 @@ fn parse_codex_history(content: &str) -> Option<HistorySnapshot> {
 /// Scrape the last *valid* user prompt from `~/.codex/history.jsonl`.
 fn scrape_codex_history() -> Option<HistorySnapshot> {
     let path = home_dir()?.join(".codex/history.jsonl");
-    let content = std::fs::read_to_string(path).ok()?;
-    parse_codex_history(&content)
+    cached_history_scrape(&path, parse_codex_history)
 }
 
 /// Parse the last user prompt from Qwen chat-file content.
@@ -541,9 +586,8 @@ fn scrape_qwen_history() -> Option<HistorySnapshot> {
         }
     };
     scan(&root, &mut newest);
-    let (path, mtime) = newest?;
-    let content = std::fs::read_to_string(path).ok()?;
-    parse_qwen_history(&content, mtime)
+    let (path, _mtime) = newest?;
+    cached_history_scrape(&path, parse_qwen_history)
 }
 
 /// Parse the last `#### user: <text>` block from Aider chat-history markdown.
@@ -572,11 +616,18 @@ fn parse_aider_history(content: &str, mtime: u64) -> Option<HistorySnapshot> {
 /// file, so the session id is derived from the file mtime.
 fn scrape_aider_history() -> Option<HistorySnapshot> {
     let path = home_dir()?.join(".aider/.aider.chat.history.md");
-    let mtime = file_mtime_ms(&path).unwrap_or(0);
-    let content = std::fs::read_to_string(&path).ok()?;
-    parse_aider_history(&content, mtime)
+    cached_history_scrape(&path, parse_aider_history)
 }
 
+
+/// Bump the (mtime, len) key of one cached history file so the next probe
+/// re-reads it even if the file itself did not change. Unit tests use this
+/// after mutating a file with the same size and a coarse filesystem mtime
+/// granularity.
+#[cfg(test)]
+pub(crate) fn history_cache_invalidate(path: &Path) {
+    HISTORY_CACHE.lock().remove(path);
+}
 /// Read a bounded byte window from a file without loading an entire session
 /// transcript into memory. OMP sessions can grow very large over time.
 fn read_file_window(path: &Path, offset: u64, max_bytes: u64) -> Option<String> {
@@ -685,7 +736,14 @@ fn parse_omp_session(content: &str, mtime_ms: u64) -> Option<HistorySnapshot> {
                 // A persisted exit is a positive boundary, but do not let a
                 // stale shutdown record override a later message in the same
                 // bounded window; this branch is only reached in file order.
-                activity = Some(AgentHistoryStatus::Completed);
+                // Exit with no completed assistant turn in the window means
+                // the agent was killed mid-flight — that is an Error, not a
+                // successful completion.
+                activity = if matches!(activity, Some(AgentHistoryStatus::Completed)) {
+                    Some(AgentHistoryStatus::Completed)
+                } else {
+                    Some(AgentHistoryStatus::Error)
+                };
             }
             _ => {}
         }
@@ -853,6 +911,75 @@ mod tests {
         assert!(!command_contains_agent("competition --verbose", "omp"));
     }
 
+    /// The history-file cache must (a) serve the parsed snapshot unchanged
+    /// across repeated scrapes (the ~2 s `pty_agent_info` poll re-probes the
+    /// same files), (b) reparse when (mtime, len) moves, and (c) cache
+    /// negative results too — an unchanged unparseable history must not be
+    /// re-read on every poll. One test (not two) because it mutates the
+    /// process-global `HOME`.
+    #[test]
+    fn history_cache_hits_reparses_and_caches_negatives() {
+        let home = std::env::temp_dir()
+            .join(format!(
+                "athena_agent_detection_cache_{}",
+                std::process::id()
+            ))
+            .join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let path = home.join(".claude/history.jsonl");
+        std::fs::write(&path, "not json at all").unwrap();
+
+        std::env::set_var("HOME", &home);
+        history_cache_invalidate(&path);
+        assert!(
+            scrape_agent_history("claude").is_none(),
+            "unparseable content must yield None"
+        );
+        let parses_after_none = history_cache_parse_count();
+        assert!(
+            scrape_agent_history("claude").is_none(),
+            "unchanged unparseable file must be served from cache"
+        );
+        assert_eq!(
+            history_cache_parse_count(),
+            parses_after_none,
+            "cached negative must not re-read or re-parse"
+        );
+
+        // Rewrite with valid content, then invalidate (what a real content
+        // change does): forces a reparse; the new snapshot is served and
+        // then cached.
+        std::fs::write(
+            &path,
+            r#"{"display":"aaaaa","sessionId":"s","timestamp":1}"#,
+        )
+        .unwrap();
+        history_cache_invalidate(&path);
+        let first = scrape_agent_history("claude").expect("reparse after invalidation");
+        assert_eq!(first.task_title, "aaaaa");
+        let parses_after_first = history_cache_parse_count();
+        assert_eq!(
+            scrape_agent_history("claude").expect("cached scrape"),
+            first,
+            "unchanged file must be served from cache"
+        );
+        assert_eq!(
+            history_cache_parse_count(),
+            parses_after_first,
+            "cached scrape must not re-read or re-parse"
+        );
+
+        // Content change with a different length (a real append) moves the
+        // key and forces a reparse.
+        std::fs::write(
+            &path,
+            r#"{"display":"second prompt here","sessionId":"s1","timestamp":2}"#,
+        )
+        .unwrap();
+        let third = scrape_agent_history("claude").expect("reparse after change");
+        assert_eq!(third.task_title, "second prompt here");
+    }
+
     #[test]
     fn classifies_bun_wrapped_omp_without_broad_substring_matches() {
         assert_eq!(
@@ -949,7 +1076,7 @@ mod tests {
     fn claude_history_parses_last_valid() {
         let content = "{\"display\":\"hi\",\"sessionId\":\"s1\",\"timestamp\":1}\n\
              {\"display\":\"do the real work now\",\"sessionId\":\"s2\",\"timestamp\":2}\n";
-        let snap = parse_claude_history(content).unwrap();
+        let snap = parse_claude_history(content, 0).unwrap();
         assert_eq!(snap.task_title, "do the real work now");
         assert_eq!(snap.session_id, "s2");
     }
@@ -957,16 +1084,16 @@ mod tests {
     #[test]
     fn claude_history_skips_invalid_prompts() {
         let content = "{\"display\":\"/exit\",\"sessionId\":\"s1\",\"timestamp\":1}\n";
-        assert!(parse_claude_history(content).is_none());
+        assert!(parse_claude_history(content, 0).is_none());
     }
 
     #[test]
     fn history_parsers_skip_truncated_newest_records() {
         let claude = "{\"display\":\"previous valid task\",\"sessionId\":\"s1\",\"timestamp\":1}\n{\"display\":";
-        assert_eq!(parse_claude_history(claude).unwrap().session_id, "s1");
+        assert_eq!(parse_claude_history(claude, 0).unwrap().session_id, "s1");
 
         let codex = "{\"text\":\"previous valid task\",\"session_id\":\"s1\",\"ts\":1}\n{\"text\":";
-        assert_eq!(parse_codex_history(codex).unwrap().session_id, "s1");
+        assert_eq!(parse_codex_history(codex, 0).unwrap().session_id, "s1");
 
         let qwen = "{\"role\":\"user\",\"content\":\"previous valid task\"}\n{\"role\":\"user\",";
         assert_eq!(
@@ -979,7 +1106,7 @@ mod tests {
     fn codex_history_parses() {
         let content =
             "{\"text\":\"fix the flaky test\",\"session_id\":\"x-1\",\"ts\":1700000000}\n";
-        let snap = parse_codex_history(content).unwrap();
+        let snap = parse_codex_history(content, 0).unwrap();
         assert_eq!(snap.task_title, "fix the flaky test");
         assert_eq!(snap.session_id, "x-1");
     }
@@ -1115,9 +1242,7 @@ mod tests {
 
     #[test]
     fn foreground_cache_dedupes_within_ttl() {
-        let _guard = FG_CACHE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = FG_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         fg_cache_clear();
         // Probe our own process group: always exists, label is whatever the
         // test binary's comm is (stable within one run). The contract under
@@ -1137,9 +1262,7 @@ mod tests {
 
     #[test]
     fn invalidation_forces_reprobe_for_recycled_pgid() {
-        let _guard = FG_CACHE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = FG_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         fg_cache_clear();
         let pgid = std::process::id() as i32;
         let no_fd = -1;

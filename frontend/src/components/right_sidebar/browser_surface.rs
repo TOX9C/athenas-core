@@ -92,6 +92,19 @@ struct SurfaceCleanup {
     window_resize_closure: Option<Closure<dyn FnMut()>>,
 }
 
+/// Decode a bridge event payload into a JSON value. The Tauri shell emits
+/// browser events as JSON-encoded strings (`wire_emitter` stringifies the
+/// payload before `emit`), so parse the inner JSON when the payload is a
+/// string.
+fn decode_event_value(payload: &JsValue) -> Result<serde_json::Value, serde_json::Error> {
+    if let Some(inner) = payload.as_string() {
+        serde_json::from_str(&inner)
+    } else {
+        serde_wasm_bindgen::from_value(payload.clone())
+        .map_err(|e| <serde_json::Error as serde::de::Error>::custom(e.to_string()))
+    }
+}
+
 /// Read the placeholder's viewport rect and push it to the backend.
 fn push_bounds_now() {
     let Some(window) = web_sys::window() else {
@@ -411,8 +424,8 @@ pub fn BrowserSurface(expanded: bool) -> Element {
             let event_id = BROWSER_ID.to_string();
             let mut url_for_event = url;
             let mut input_for_event = url_input;
-            let url_listener = tauri_bridge::listen("browser:urlChange", move |payload| {
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            let url_listener = tauri_bridge::listen("browser:urlChange", move |payload: JsValue| {
+                let Ok(value) = decode_event_value(&payload) else {
                     return;
                 };
                 if value.get("id").and_then(|v| v.as_str()) != Some(event_id.as_str()) {
@@ -429,8 +442,8 @@ pub fn BrowserSurface(expanded: bool) -> Element {
 
             let event_id = BROWSER_ID.to_string();
             let mut title_for_event = page_title;
-            let title_listener = tauri_bridge::listen("browser:titleChange", move |payload| {
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            let title_listener = tauri_bridge::listen("browser:titleChange", move |payload: JsValue| {
+                let Ok(value) = decode_event_value(&payload) else {
                     return;
                 };
                 if value.get("id").and_then(|v| v.as_str()) != Some(event_id.as_str()) {
@@ -453,8 +466,8 @@ pub fn BrowserSurface(expanded: bool) -> Element {
             let mut browser_error_for_status = browser_error;
             let load_timeout_for_status = load_timeout_for_mount.clone();
             let active_generation_for_status = active_generation_for_mount.clone();
-            let status_listener = tauri_bridge::listen("browser:statusChange", move |payload| {
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            let status_listener = tauri_bridge::listen("browser:statusChange", move |payload: JsValue| {
+                let Ok(value) = decode_event_value(&payload) else {
                     return;
                 };
                 if value.get("id").and_then(|v| v.as_str()) != Some(event_id.as_str()) {
@@ -513,7 +526,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
             let mut can_go_back_after_show = can_go_back;
             let mut can_go_forward_after_show = can_go_forward;
             let mut browser_error_after_show = browser_error;
-            let active_generation_after_show = active_load_generation.clone();
+            let active_generation_after_show = active_generation_for_mount.clone();
             let browser_parked_after_show = browser_parked_for_mount.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 match tauri_bridge::browser_show(BROWSER_ID, &create_url).await {
@@ -617,15 +630,24 @@ pub fn BrowserSurface(expanded: bool) -> Element {
     // active panel changes; ResizeObserver alone misses pure moves. Native
     // child webviews cannot participate in DOM stacking, so park them while a
     // root-level modal or notification overlay is visible.
+    let last_layout: Rc<RefCell<Option<(bool, f64, bool, Panel, RightPanel, f32)>>> =
+        use_hook(|| Rc::new(RefCell::new(None)));
     use_effect({
         let browser_parked = browser_parked.clone();
+        let last_layout = last_layout.clone();
         move || {
-            let _ = ui_state.read().sidebar_visible;
-            let _ = ui_state.read().sidebar_width;
-            let _ = ui_state.read().right_sidebar_open;
-            let _ = ui_state.read().panel;
-            let _ = panel_state.read().active_right_panel;
-            let _ = panel_state.read().right_panel_width_percent;
+            // Read every layout input (this doubles as the subscription) and
+            // re-measure only when the visible geometry actually changed;
+            // pushing bounds on every unrelated store tick fights the
+            // in-flight request coalescing.
+            let layout = (
+                ui_state.read().sidebar_visible,
+                ui_state.read().sidebar_width,
+                ui_state.read().right_sidebar_open,
+                ui_state.read().panel,
+                panel_state.read().active_right_panel,
+                panel_state.read().right_panel_width_percent,
+            );
             let is_blocked = should_park_browser(
                 ui_state.read().show_new_space_modal,
                 ui_state.read().show_swarm_modal,
@@ -640,17 +662,19 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     clear_pending_bounds();
                     park_offscreen();
                 }
-            } else if browser_parked.replace(false) {
-                SURFACE_PARKED.with(|parked| parked.set(false));
-                schedule_push_bounds();
-            } else {
-                SURFACE_PARKED.with(|parked| parked.set(false));
+                return;
+            }
+            SURFACE_PARKED.with(|parked| parked.set(false));
+            let was_parked = browser_parked.replace(false);
+            let layout_changed = last_layout.borrow_mut().replace(layout) != Some(layout);
+            if was_parked || layout_changed {
                 schedule_push_bounds();
             }
         }
     });
 
     // ── Unmount: release JS resources, schedule off-screen park ──────────────
+    let load_timeout_for_drop = load_timeout.clone();
     use_drop(move || {
         if let Some(mut c) = cleanup.take() {
             if let Some(observer) = c.resize_observer.take() {
@@ -670,7 +694,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
             unlisten();
         }
         clear_pending_bounds();
-        clear_load_timeout(&load_timeout);
+        clear_load_timeout(&load_timeout_for_drop);
         if let Some(generation) = surface_generation.borrow_mut().take() {
             request_park(generation);
         }
@@ -747,6 +771,35 @@ pub fn BrowserSurface(expanded: bool) -> Element {
         "Expand to main area"
     };
 
+    // Shared quick-link navigation used by every menu row.
+    let mut navigate_to = move |target: String| {
+        show_quick_menu.set(false);
+        let mut url_clone = url;
+        let mut input_clone = url_input;
+        wasm_bindgen_futures::spawn_local(async move {
+            match tauri_bridge::browser_navigate(BROWSER_ID, &target).await {
+                Ok(_) => {
+                    url_clone.set(target.clone());
+                    input_clone.set(target);
+                    loading.set(true);
+                }
+                Err(e) => {
+                    web_sys::console::error_1(&JsValue::from_str(&format!("Navigate: {:?}", e)))
+                }
+            }
+        });
+    };
+
+    // `Rc` handles: each button needs its own clone for the per-click async
+    // task, and the onclick closure is `FnMut` so the inner binding must be
+    // re-clonable per call — hence pre-clone here, clone again inside.
+    let load_timeout_back = load_timeout.clone();
+    let active_load_generation_back = active_load_generation.clone();
+    let load_timeout_fwd = load_timeout.clone();
+    let active_load_generation_fwd = active_load_generation.clone();
+    let load_timeout_reload = load_timeout.clone();
+    let active_load_generation_reload = active_load_generation.clone();
+
     rsx! {
         div {
             class: "pane-astrolabe-mark",
@@ -762,12 +815,21 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     disabled: !can_go_back(),
                     onclick: move |_| {
                         let mut url_clone = url;
+                        let load_timeout = load_timeout_back.clone();
+                        let active_generation = active_load_generation_back.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             match tauri_bridge::browser_back(BROWSER_ID).await {
                                 Ok(new_url) => {
                                     browser_error.set(None);
                                     url_clone.set(new_url.clone());
                                     loading.set(true);
+                                    schedule_load_timeout(
+                                        load_timeout,
+                                        active_generation.clone(),
+                                        active_generation.get(),
+                                        loading,
+                                        browser_error,
+                                    );
                                 },
                                 Err(e) => {
                                     let message = format!("Back navigation failed: {e:?}");
@@ -786,12 +848,21 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     disabled: !can_go_forward(),
                     onclick: move |_| {
                         let mut url_clone = url;
+                        let load_timeout = load_timeout_fwd.clone();
+                        let active_generation = active_load_generation_fwd.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             match tauri_bridge::browser_forward(BROWSER_ID).await {
                                 Ok(new_url) => {
                                     browser_error.set(None);
                                     url_clone.set(new_url.clone());
                                     loading.set(true);
+                                    schedule_load_timeout(
+                                        load_timeout,
+                                        active_generation.clone(),
+                                        active_generation.get(),
+                                        loading,
+                                        browser_error,
+                                    );
                                 },
                                 Err(e) => {
                                     let message = format!("Forward navigation failed: {e:?}");
@@ -809,10 +880,22 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                     title: "Reload",
                     onclick: move |_| {
                         loading.set(true);
+                        let load_timeout = load_timeout_reload.clone();
+                        let active_generation = active_load_generation_reload.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             match tauri_bridge::browser_reload(BROWSER_ID).await {
-                                Ok(_) => browser_error.set(None),
+                                Ok(_) => {
+                                    browser_error.set(None);
+                                    schedule_load_timeout(
+                                        load_timeout,
+                                        active_generation.clone(),
+                                        active_generation.get(),
+                                        loading,
+                                        browser_error,
+                                    );
+                                }
                                 Err(error) => {
+                                    loading.set(false);
                                     let message = format!("Reload failed: {error:?}");
                                     browser_error.set(Some(message.clone()));
                                     web_sys::console::warn_1(&JsValue::from_str(&message));
@@ -952,22 +1035,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                         for (name, url_str) in quick_urls.iter().cloned() {
                             button {
                                 class: "quick-menu-row lit-sweep",
-                                onclick: move |_| {
-                                    show_quick_menu.set(false);
-                                    let target = url_str.to_string();
-                                    let mut url_clone = url;
-                                    let mut input_clone = url_input;
-                                    wasm_bindgen_futures::spawn_local(async move {
-                                        match tauri_bridge::browser_navigate(BROWSER_ID, &target).await {
-                                            Ok(_) => {
-                                                url_clone.set(target.clone());
-                                                input_clone.set(target);
-                                                loading.set(true);
-                                            }
-                                            Err(e) => web_sys::console::error_1(&JsValue::from_str(&format!("Navigate: {:?}", e))),
-                                        }
-                                    });
-                                },
+                                onclick: move |_| navigate_to(url_str.to_string()),
                                 "{name}"
                             }
                         }
@@ -978,22 +1046,7 @@ pub fn BrowserSurface(expanded: bool) -> Element {
                         for (label, url_str) in localhost_urls.iter().cloned() {
                             button {
                                 class: "quick-menu-row lit-sweep",
-                                onclick: move |_| {
-                                    show_quick_menu.set(false);
-                                    let target = url_str.to_string();
-                                    let mut url_clone = url;
-                                    let mut input_clone = url_input;
-                                    wasm_bindgen_futures::spawn_local(async move {
-                                        match tauri_bridge::browser_navigate(BROWSER_ID, &target).await {
-                                            Ok(_) => {
-                                                url_clone.set(target.clone());
-                                                input_clone.set(target);
-                                                loading.set(true);
-                                            }
-                                            Err(e) => web_sys::console::error_1(&JsValue::from_str(&format!("Navigate: {:?}", e))),
-                                        }
-                                    });
-                                },
+                                onclick: move |_| navigate_to(url_str.to_string()),
                                 "{label}"
                             }
                         }

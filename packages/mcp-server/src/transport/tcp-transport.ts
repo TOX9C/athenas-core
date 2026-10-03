@@ -54,8 +54,11 @@ export class TcpTransport {
               const message = JSON.parse(line)
               session.lastActivityAt = Date.now()
               this.messageHandler?.(message, sessionId)
-            } catch {
-              // ignore malformed JSON
+            } catch (err) {
+              console.debug(
+                `[mcp-server] tcp session ${sessionId}: ignoring malformed JSON message`,
+                err,
+              )
             }
           }
         })
@@ -97,6 +100,10 @@ export class TcpTransport {
     if (!session || session.socket.destroyed) {
       return false
     }
+    // Outbound traffic is activity too: long-running tool calls (e.g.
+    // request_input blocked up to 600s) must not be reaped while their
+    // response is still being produced.
+    session.lastActivityAt = Date.now()
     session.socket.write(JSON.stringify(message) + '\n')
     return true
   }
@@ -105,9 +112,18 @@ export class TcpTransport {
     const payload = JSON.stringify(message) + '\n'
     for (const session of this.sessions.values()) {
       if (!session.socket.destroyed) {
+        session.lastActivityAt = Date.now()
         session.socket.write(payload)
       }
     }
+  }
+
+  /** Terminate a single session (e.g. rejected auth handshake). */
+  close(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    session.socket.destroy()
+    this.sessions.delete(sessionId)
   }
 
   getSessionCount(): number {

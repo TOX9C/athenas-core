@@ -28,15 +28,12 @@ pub enum AthenaStreamEvent {
         request_id: String,
         text: String,
     },
-    /// Per provider round: resolved model id and token counters the
-    /// provider actually reported (plus whether it differs from the
-    /// requested model). Emitted before `Completed` for the same request.
+    /// Provider-reported token usage for one round of an in-flight request.
     Usage {
         request_id: String,
         model: String,
         input_tokens: u64,
         output_tokens: u64,
-        /// Provider returned a different model id than was requested.
         #[serde(default)]
         model_mismatch: bool,
     },

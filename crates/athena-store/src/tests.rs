@@ -278,9 +278,16 @@ async fn test_new_empty_does_not_persist_to_disk() {
 
     store.set("k", &"v".to_string()).await.unwrap();
     assert!(store.is_dirty());
-    // flush_if_dirty on an in-memory store must be a no-op, not an error.
+    // flush_if_dirty on an in-memory store must not error — but it also must
+    // not pretend the data became durable: dirty stays set and the typed
+    // outcome reports `InMemory`.
     store.flush_if_dirty().await.unwrap();
-    assert!(!store.is_dirty(), "flush_if_dirty should clear dirty bit");
+    assert!(
+        store.is_dirty(),
+        "in-memory flush must not clear dirty — nothing was persisted"
+    );
+    let outcome = store.flush_with_outcome().await.unwrap();
+    assert_eq!(outcome, crate::FlushOutcome::InMemory);
     // No file should have been created in the temp fallback dir.
     assert!(
         !fallback_dir.exists(),

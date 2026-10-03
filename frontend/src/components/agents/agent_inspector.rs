@@ -1,10 +1,10 @@
 use super::agent_output_panel::AgentOutputPanel;
 use super::agent_selector::AgentSelector;
-use super::agent_status_bar::AgentPaneStatus;
+use super::agent_status_bar::{pane_status_of, status_dot_color, AgentPaneStatus};
 use crate::components::shared::icon::{IconBell, IconClose, IconPulse, IconSearch, IconTerminal};
 use crate::components::shared::illustration::{EmptyArt, EmptyState};
 use crate::stores::agent_output::use_agent_output_store;
-use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatus};
+use crate::stores::agent_status::use_agent_status_store;
 use crate::stores::notification::{use_notification_store, NotificationRecord, NotificationType};
 use dioxus::prelude::*;
 
@@ -15,47 +15,6 @@ pub enum InspectorTab {
     Output,
     Status,
     Notifications,
-}
-
-/// Convert store AgentStatus to the component-level AgentPaneStatus.
-fn to_pane_status(agent_status: &AgentStatus) -> AgentPaneStatus {
-    use super::agent_status_bar::ProgressInfo;
-    AgentPaneStatus {
-        pane_id: agent_status.pane_id.clone(),
-        status: match agent_status.status {
-            AgentRunStatus::Idle => "idle".to_string(),
-            AgentRunStatus::Thinking => "thinking".to_string(),
-            AgentRunStatus::Working => "working".to_string(),
-            AgentRunStatus::WaitingForInput => "waiting_for_input".to_string(),
-            AgentRunStatus::Completed => "completed".to_string(),
-            AgentRunStatus::Error => "error".to_string(),
-            AgentRunStatus::Cancelled => "cancelled".to_string(),
-            AgentRunStatus::Disconnected => "disconnected".to_string(),
-        },
-        agent_type: String::new(),
-        message: agent_status.message.clone().unwrap_or_default(),
-        progress: agent_status.progress.as_ref().map(|p| ProgressInfo {
-            current: p.current,
-            total: p.total,
-            label: p.label.clone().into(),
-        }),
-        last_updated_at: agent_status.last_updated_at,
-    }
-}
-
-/// Convert a NotificationRecord to the inspector's local NotificationItem.
-fn status_dot_color(status: &str) -> &'static str {
-    match status {
-        "idle" => "var(--textDim)",
-        "thinking" => "var(--accent)",
-        "working" => "var(--accent)",
-        "waiting_for_input" => "var(--warning)",
-        "completed" => "var(--success)",
-        "error" => "var(--error)",
-        "cancelled" => "var(--error)",
-        "disconnected" => "var(--textDim)",
-        _ => "var(--textDim)",
-    }
 }
 
 fn to_notif_item(rec: &NotificationRecord) -> NotificationItem {
@@ -78,48 +37,94 @@ fn to_notif_item(rec: &NotificationRecord) -> NotificationItem {
 
 #[component]
 pub fn AgentInspector() -> Element {
-    let mut agent_output = use_agent_output_store();
+    let agent_output = use_agent_output_store();
+    let agent_output_memo = agent_output.clone();
+    let agent_output_select = agent_output.clone();
+    let agent_output_close = agent_output.clone();
     let agent_status = use_agent_status_store();
     let notifications = use_notification_store();
 
-    let inspector_open = agent_output.read().inspector_open;
-    let selected_pane_id = agent_output.read().selected_pane_id.clone();
     let mut tab = use_signal(InspectorTab::default);
     let mut search_query = use_signal(String::new);
 
-    let pane_status: Option<AgentPaneStatus> = selected_pane_id.as_ref().and_then(|id| {
-        agent_status
-            .read()
-            .statuses
-            .iter()
-            .find(|(pid, _)| pid == id)
-            .map(|(_, s)| to_pane_status(s))
+    // Memoized lookups: these would otherwise re-scan and re-lowercase every
+    // notification on EVERY store write (any re-render of this component).
+    let selected_pane_id =
+        use_memo(move || agent_output_memo.selected_pane_id_signal().read().clone());
+    let pane_status: Option<AgentPaneStatus> = {
+        let selected = selected_pane_id.read().clone();
+        selected.as_ref().and_then(|id| {
+            agent_status
+                .status_signal(id)
+                .map(|status| pane_status_of(&status.read()))
+        })
+    };
+
+    // History backfill: while the inspector is closed, output-capture work is
+    // gated off (see `AgentOutputStore::capture_wanted`), so this pane's
+    // frontend buffer holds no lines from the closed period. On open — and on
+    // pane selection change while open — seed the buffer from the backend's
+    // always-maintained OutputBuffer tail (240 lines, same bound as the
+    // Athena context snapshot). Seeding is prepend-only by line number, so
+    // live batches that raced the fetch are never clobbered.
+    let agent_output_seed = agent_output.clone();
+    use_effect(move || {
+        let open = *agent_output_seed.inspector_open_signal().read();
+        let selected = agent_output_seed.selected_pane_id_signal().read().clone();
+        if !open {
+            return;
+        }
+        let Some(pane_id) = selected else { return };
+        let store = agent_output_seed.clone();
+        spawn(async move {
+            match crate::tauri_bridge::get_pane_history(&pane_id, 240).await {
+                Ok(history) => {
+                    let lines: Vec<crate::stores::agent_output::OutputLine> = history
+                        .into_iter()
+                        .map(|line| crate::stores::agent_output::OutputLine {
+                            is_stderr: crate::stores::agent_output::is_stderr_like(&line.text),
+                            text: std::rc::Rc::from(line.text.as_str()),
+                            pane_id: line.pane_id,
+                            line_num: line.line_num as usize,
+                            timestamp: line.timestamp as i64,
+                        })
+                        .collect();
+                    if !lines.is_empty() {
+                        store.seed_history(&pane_id, lines);
+                    }
+                }
+                Err(error) => {
+                    web_sys::console::warn_1(
+                        &format!(
+                            "[AgentInspector] history backfill failed for pane {pane_id}: {error:?}"
+                        )
+                        .into(),
+                    );
+                }
+            }
+        });
     });
 
-    let filtered_notifications: Vec<NotificationItem> = {
-        let query = search_query();
+    let filtered_notifications: Vec<NotificationItem> = use_memo(move || {
+        let pane_filter = selected_pane_id.read().clone();
+        let query = search_query.read().to_lowercase();
         notifications
             .read()
             .iter()
-            .filter(|n| {
-                if let Some(pane_id) = &selected_pane_id {
-                    n.source == *pane_id
-                } else {
-                    true
-                }
+            .filter(|n| match &pane_filter {
+                Some(pane_id) => n.source == *pane_id,
+                None => true,
             })
             .filter(|n| {
-                if query.is_empty() {
-                    true
-                } else {
-                    let q = query.to_lowercase();
-                    n.title.to_lowercase().contains(&q) || n.message.to_lowercase().contains(&q)
-                }
+                query.is_empty()
+                    || n.title.to_lowercase().contains(&query)
+                    || n.message.to_lowercase().contains(&query)
             })
             .map(to_notif_item)
             .collect()
-    };
+    })();
 
+    let inspector_open = *agent_output.inspector_open_signal().read();
     if !inspector_open {
         return rsx! {};
     }
@@ -131,7 +136,7 @@ pub fn AgentInspector() -> Element {
         (InspectorTab::Notifications, "Alerts"),
     ];
 
-    let (notif_empty_title, notif_empty_hint) = if selected_pane_id.is_some() {
+    let (notif_empty_title, notif_empty_hint) = if selected_pane_id.read().is_some() {
         ("All clear", "No notifications for this agent.")
     } else {
         ("No agent", "Select an agent to view its alerts.")
@@ -148,7 +153,7 @@ pub fn AgentInspector() -> Element {
 
                 AgentSelector {
                     on_select: move |id: String| {
-                        agent_output.write().select_agent(Some(id));
+                        agent_output_select.select_agent(Some(id));
                     }
                 }
 
@@ -157,7 +162,7 @@ pub fn AgentInspector() -> Element {
                 button {
                     class: "icon-btn",
                     title: "Close inspector",
-                    onclick: move |_| agent_output.write().set_inspector_open(false),
+                    onclick: move |_| agent_output_close.set_inspector_open(false),
                     IconClose { size: Some(15), color: Some("currentColor".to_string()) }
                 }
             }

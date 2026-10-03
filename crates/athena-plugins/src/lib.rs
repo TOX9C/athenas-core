@@ -37,6 +37,8 @@ pub const MAX_PLUGIN_CONFIG_BYTES: usize = 256 * 1024;
 pub const MAX_PLUGIN_EVENT_BYTES: usize = 256 * 1024;
 /// Maximum live sessions retained by one manager.
 pub const MAX_PLUGIN_SESSIONS: usize = 256;
+/// Maximum registered plugins retained by one manager.
+pub const MAX_PLUGINS: usize = 64;
 /// Maximum event types one session may subscribe to.
 pub const MAX_SESSION_SUBSCRIPTIONS: usize = 32;
 /// Maximum pending messages retained by one manager.
@@ -266,10 +268,12 @@ impl PluginManager {
     }
 
     /// Set the stall timeout for health checking. Sessions with no activity
-    /// for longer than this duration are marked idle.
+    /// for longer than this duration are marked idle. Values below one
+    /// second are clamped to one second so a near-zero timeout cannot
+    /// instantly stall every active session.
     pub fn set_stall_timeout(&self, timeout: Duration) -> Result<(), PluginError> {
         let mut inner = self.inner.lock()?;
-        inner.stall_timeout = timeout;
+        inner.stall_timeout = timeout.max(Duration::from_secs(1));
         Ok(())
     }
 }
@@ -878,7 +882,8 @@ mod tests {
             },
         );
 
-        assert!(event.id.starts_with("evt-"));
+        assert!(event.as_ref().unwrap().id.starts_with("evt-"));
+        let event = event.unwrap();
         assert!(event.timestamp > 0);
         assert_eq!(event.event_type, PluginEventType::Notification);
     }
@@ -918,16 +923,21 @@ mod tests {
     #[test]
     fn health_check_marks_stalled_sessions_idle() {
         let mgr = PluginManager::new();
-        // Set a very short stall timeout so sessions immediately appear stalled.
-        mgr.set_stall_timeout(Duration::from_millis(0)).unwrap();
+        // The stall timeout is clamped to >= 1s, so backdate activity instead
+        // of racing a sub-second timeout.
+        mgr.set_stall_timeout(Duration::from_secs(0)).unwrap();
         mgr.register_plugin(sample_manifest("p1")).unwrap();
 
         let s1 = mgr
             .register_session("p1", AgentType::Claude, Some("a1".into()), None, None)
             .unwrap();
-
-        // Give a tiny buffer so the session's last_activity_at is in the past.
-        std::thread::sleep(Duration::from_millis(2));
+        mgr.inner
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(&s1.id)
+            .unwrap()
+            .last_activity_at = now_millis() - 2_000;
 
         let result = mgr.health_check().unwrap();
         assert_eq!(result.stalled_sessions, 1);
@@ -935,12 +945,27 @@ mod tests {
 
         let session = mgr.get_session(&s1.id).unwrap();
         assert_eq!(session.status, SessionStatus::Idle);
+
+        // A second pass sees the session already Idle: no re-report.
+        let result = mgr.health_check().unwrap();
+        assert_eq!(result.stalled_sessions, 0);
+        assert_eq!(result.idle_sessions, 1);
+    }
+
+    #[test]
+    fn set_stall_timeout_clamps_to_one_second() {
+        let mgr = PluginManager::new();
+        mgr.set_stall_timeout(Duration::from_millis(0)).unwrap();
+        assert_eq!(
+            mgr.inner.lock().unwrap().stall_timeout,
+            Duration::from_secs(1)
+        );
     }
 
     #[test]
     fn health_check_skips_disconnected_and_waiting() {
         let mgr = PluginManager::new();
-        mgr.set_stall_timeout(Duration::from_millis(0)).unwrap();
+        mgr.set_stall_timeout(Duration::from_secs(1)).unwrap();
         mgr.register_plugin(sample_manifest("p1")).unwrap();
 
         let s1 = mgr
@@ -954,8 +979,6 @@ mod tests {
             .unwrap();
         mgr.update_session_status(&s2.id, SessionStatus::WaitingInput, None)
             .unwrap();
-
-        std::thread::sleep(Duration::from_millis(2));
 
         let result = mgr.health_check().unwrap();
         assert_eq!(result.stalled_sessions, 0);
@@ -1246,9 +1269,7 @@ mod tests {
 
     #[test]
     fn validate_mcp_command_accepts_whitelisted_executables() {
-        for cmd in &[
-            "node", "python", "python3", "ruby", "cargo", "sh", "bash", "zsh",
-        ] {
+        for cmd in &["node", "python", "python3", "ruby", "cargo"] {
             let mut manifest = sample_manifest("v10");
             manifest.install = Some(PluginInstallMethod::McpServer {
                 command: cmd.to_string(),
@@ -1259,6 +1280,75 @@ mod tests {
                 validate_plugin_manifest(&manifest).is_ok(),
                 "expected '{}' to be allowed",
                 cmd
+            );
+        }
+    }
+
+    #[test]
+    fn validate_mcp_command_rejects_shells() {
+        // Shells are not whitelisted: `sh -c <payload>` would bypass the
+        // executable whitelist entirely.
+        for cmd in &["sh", "bash", "zsh"] {
+            let mut manifest = sample_manifest("v10s");
+            manifest.install = Some(PluginInstallMethod::McpServer {
+                command: cmd.to_string(),
+                args: None,
+                env: None,
+            });
+            assert!(
+                validate_plugin_manifest(&manifest).is_err(),
+                "expected '{}' to be rejected",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn validate_mcp_args_rejects_exec_flags() {
+        for flag in &["-c", "-e", "--eval"] {
+            let mut manifest = sample_manifest("v10a");
+            manifest.install = Some(PluginInstallMethod::McpServer {
+                command: "node".to_string(),
+                args: Some(vec![flag.to_string(), "arbitrary()".to_string()]),
+                env: None,
+            });
+            let err = validate_plugin_manifest(&manifest).unwrap_err();
+            assert!(err.to_string().contains(flag));
+        }
+
+        let mut manifest = sample_manifest("v10b");
+        manifest.install = Some(PluginInstallMethod::McpServer {
+            command: "node".to_string(),
+            args: Some(vec![
+                "server.js".to_string(),
+                "--port".to_string(),
+                "1".to_string(),
+            ]),
+            env: None,
+        });
+        assert!(validate_plugin_manifest(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_mcp_env_rejects_injection_vars() {
+        for key in &[
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "NODE_OPTIONS",
+            "BASH_ENV",
+            "PYTHONPATH",
+        ] {
+            let mut env = HashMap::new();
+            env.insert(key.to_string(), "x".to_string());
+            let mut manifest = sample_manifest("v11i");
+            manifest.install = Some(PluginInstallMethod::McpServer {
+                command: "node".to_string(),
+                args: None,
+                env: Some(env),
+            });
+            assert!(
+                validate_plugin_manifest(&manifest).is_err(),
+                "expected '{key}' to be rejected"
             );
         }
     }
@@ -1391,7 +1481,10 @@ mod tests {
             .unwrap()
             .1
             .clone();
-        assert_eq!(error_payload.get("error").and_then(|v| v.as_str()), Some("boom"));
+        assert_eq!(
+            error_payload.get("error").and_then(|v| v.as_str()),
+            Some("boom")
+        );
     }
 
     #[test]

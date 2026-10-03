@@ -74,15 +74,15 @@ pub fn EmptyState(
     }
 }
 
-/// The Athena spear-A: a diamond point above solid lambda legs. Solid fills,
-/// pure geometry — legible from 14px to 52px. Shared with icon_mythology.rs
-/// and icons/athena.svg.
+/// The Athena wave: the squiggle from the app icon as a single stroked line.
+/// Legible from 14px to 52px. Shared with icon_mythology.rs and
+/// icons/athena.svg.
 #[component]
 pub fn CoreMark(size: Option<u16>) -> Element {
     let s = size.unwrap_or(20);
     let sz = format!("{s}px");
-    const MARK_FRAME: &str = "M12 7.6 L19.2 20 L15.9 20 L12 12.6 L8.1 20 L4.8 20 Z";
-    const MARK_CORE: &str = "M12 3.2 L13.3 4.9 L12 6.7 L10.7 4.9 Z";
+    const MARK_WAVE: &str =
+        "M2.5 17 C3.5 12, 5 9.5, 7 10 C9.5 10.5, 10 15, 13 13.5 C16 12, 16.5 6.5, 19 8 C20.7 9.2, 21.8 11.5, 21.5 14";
     rsx! {
         svg {
             view_box: "0 0 24 24",
@@ -92,8 +92,7 @@ pub fn CoreMark(size: Option<u16>) -> Element {
             stroke_linecap: "round",
             stroke_linejoin: "round",
             style: "width: {sz}; height: {sz}; display: inline-block; vertical-align: middle;",
-            path { d: "{MARK_FRAME}", fill: "var(--accent)", stroke: "none" }
-            path { d: "{MARK_CORE}", fill: "var(--accent)", stroke: "none" }
+            path { d: "{MARK_WAVE}", fill: "none", stroke: "var(--accent)", stroke_width: 3.4 }
         }
     }
 }

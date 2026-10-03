@@ -37,6 +37,8 @@ export async function notify(bridge: AthenaBridge, input: NotifyInput) {
     message: input.message,
     priority: input.priority as NotificationPriority,
     agentId: input.agentId,
+    metadata: input.metadata,
+    actions: input.actions,
     timestamp: Date.now(),
   }
 

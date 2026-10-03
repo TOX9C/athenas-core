@@ -14,7 +14,10 @@ const suppliedVersion =
   (process.env.GITHUB_REF_TYPE === 'tag'
     ? process.env.GITHUB_REF_NAME?.replace(/^v/, '')
     : undefined)
-const tag = suppliedVersion ?? '3.3.0'
+// Local/branch runs default to the current package.json version so the gate
+// never goes stale between releases (a hardcoded default used to fail every
+// clean checkout the moment the version bumped).
+const tag = suppliedVersion ?? JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).version
 const failures = []
 const fail = (name, detail) => failures.push(`${name}: ${detail}`)
 

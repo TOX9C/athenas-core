@@ -98,7 +98,16 @@ pub fn merge_notifications(
             // Keep the live copy: it may have been marked read or have a
             // newer count since hydration began.
             if record.timestamp > guard[index].timestamp {
-                guard[index] = record;
+                // The persisted record is newer — take it, but preserve the
+                // user actions that happened on the live copy while the
+                // history fetch was in flight.
+                let live = &guard[index];
+                let mut merged = record;
+                merged.read |= live.read;
+                merged.dismissed_at = merged.dismissed_at.or(live.dismissed_at);
+                merged.resolved_at = merged.resolved_at.or(live.resolved_at);
+                merged.count = merged.count.max(live.count);
+                guard[index] = merged;
             }
         } else {
             by_id.insert(record.id.clone(), guard.len());

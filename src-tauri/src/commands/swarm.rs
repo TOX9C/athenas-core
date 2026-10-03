@@ -59,12 +59,9 @@ pub async fn swarm_start_watch(state: State<'_, AppState>, dir: String) -> Resul
 
 /// Stop monitoring a workspace's persisted swarm state.
 #[tauri::command]
-pub fn swarm_stop_watch(state: State<'_, AppState>, dir: String) -> Result<(), String> {
+pub async fn swarm_stop_watch(state: State<'_, AppState>, dir: String) -> Result<(), String> {
     validate_dir(&state, &dir)?;
-    let coordinator = state
-        .swarm_coordinator
-        .try_lock()
-        .map_err(|_| "Swarm coordinator is busy".to_string())?;
+    let coordinator = state.swarm_coordinator.lock().await;
     coordinator.stop_watch(&dir).map_err(|e| e.to_string())
 }
 

@@ -5,8 +5,9 @@
 //! network. Every `window.__TAURI__.core.invoke(cmd, args)` call from the phone
 //! goes through `ws://<desktop-ip>:<port>/ws` (an ephemeral port); the relay
 //! dispatches to the *real* command implementations and forwards backend events
-//! back to connected listeners. The phone sees one real Athena's Core instance — same state,
-//! same sessions, same PTY terminals — exactly as the desktop app does.
+//! back to connected listeners. The phone sees a deliberately curated mirror
+//! surface — chat, shared/session-owned terminal panes, and read-oriented state —
+//! rather than the full desktop command bridge.
 //!
 //! Lifecycle: the server is runtime-toggled from the Settings panel via the
 //! `relay_start` / `relay_stop` / `relay_status` Tauri commands. When started,
@@ -20,19 +21,25 @@
 //! auto-start this experimental plaintext service; `main.rs` requires the
 //! explicit debug-build-only `ATHENA_RELAY_AUTOSTART=1` opt-in; release
 //! binaries compile relay autostart out.
+//!
+//! Token transport: the QR/deep link carries the token after `#`, so browsers
+//! never send it in an HTTP request line. Static documents/assets are public,
+//! while `/ws` accepts the token only as `Sec-WebSocket-Protocol`
+//! (`athena-relay.<token>`) — the only browser WebSocket credential channel
+//! available. The socket remains plaintext local-network traffic and the
+//! command surface is deliberately small; do not widen it without revisiting
+//! this experimental threat model.
 
 mod discovery;
 mod dispatch;
 mod shim;
 mod ws;
 
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Instant;
 
-use axum::extract::{Request, State};
-use axum::http::{header, HeaderValue, StatusCode};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use parking_lot::Mutex;
@@ -57,6 +64,9 @@ pub struct RelayCtx {
     pub token: String,
     /// Bound address used by the discovery descriptor.
     pub addr: SocketAddr,
+    /// Last pairing prompt time per peer IP, used to stop denied/timed-out
+    /// pages from resurfacing a desktop approval dialog in a tight loop.
+    pub pairing_prompt_last: Arc<Mutex<HashMap<IpAddr, Instant>>>,
 }
 
 /// Handle to a running relay server. Dropping it stops the server: the
@@ -126,11 +136,17 @@ static RELAY_LIFECYCLE: Mutex<()> = Mutex::new(());
 /// launch CWD (dev `cargo run`, bundled app, etc.).
 pub fn resolve_dist_dir(resource: &std::path::Path, exe_dir: &std::path::Path) -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
-    // Dev candidates first: `tauri dev` mirrors frontend/dist into
-    // target/debug, but that mirror lags/omits assets (observed: fonts/ never
-    // lands), and the relay must serve the real build output. In packaged
-    // .app runs the cwd candidates don't exist, so packaged paths still win.
-    let candidates = [
+    let resource_candidates = [
+        resource.join("frontend").join("dist"),
+        // Packaged Tauri resources map frontend/dist files directly under the
+        // resource root (see tauri.conf.json).
+        resource.to_path_buf(),
+        resource.join("dist"),
+    ];
+    // Dev candidates first while iterating locally; release builds prefer the
+    // signed bundle's resources so a hostile launch CWD cannot substitute a
+    // crafted frontend under the relay origin.
+    let dev_candidates = [
         // dev: <workspace>/frontend/dist (CWD is the workspace root)
         cwd.join("frontend").join("dist"),
         // dev: <workspace>/src-tauri/../frontend/dist
@@ -142,12 +158,18 @@ pub fn resolve_dist_dir(resource: &std::path::Path, exe_dir: &std::path::Path) -
             .join("..")
             .join("frontend")
             .join("dist"),
-        resource.join("frontend").join("dist"),
-        // packaged Tauri resources map frontend/dist files directly under the
-        // resource root (see tauri.conf.json).
-        resource.to_path_buf(),
-        resource.join("dist"),
     ];
+    let candidates: Vec<std::path::PathBuf> = if cfg!(debug_assertions) {
+        dev_candidates
+            .into_iter()
+            .chain(resource_candidates)
+            .collect()
+    } else {
+        resource_candidates
+            .into_iter()
+            .chain(dev_candidates)
+            .collect()
+    };
     candidates
         .iter()
         .find(|p| p.join("index.html").exists())
@@ -192,6 +214,7 @@ pub fn start(app: AppHandle, dist_dir: String, token: String) -> Result<SocketAd
         dist_dir: dist_dir.clone(),
         token: token.clone(),
         addr: bound_addr,
+        pairing_prompt_last: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let router = Router::new()
@@ -202,10 +225,6 @@ pub fn start(app: AppHandle, dist_dir: String, token: String) -> Result<SocketAd
         .route("/mobile.html", get(shim::serve_mobile))
         .route("/ws", get(ws::handle_upgrade))
         .fallback_service(ServeDir::new(dist_dir))
-        .layer(axum::middleware::from_fn_with_state(
-            ctx.clone(),
-            require_token,
-        ))
         .with_state(ctx);
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -215,7 +234,10 @@ pub fn start(app: AppHandle, dist_dir: String, token: String) -> Result<SocketAd
         .name("athena-relay-driver".into())
         .spawn(move || {
             runtime_handle.block_on(async {
-                let serve = axum::serve(bound, router);
+                let serve = axum::serve(
+                    bound,
+                    router.into_make_service_with_connect_info::<SocketAddr>(),
+                );
                 tokio::select! {
                     res = serve => {
                         if let Err(e) = res {
@@ -266,7 +288,9 @@ pub fn stop() {
 pub struct RelayStatus {
     pub running: bool,
     pub url: Option<String>,
-    pub port: u16,
+    /// Bound ephemeral port while running; no syntactically-valid placeholder
+    /// is reported after stop.
+    pub port: Option<u16>,
     /// Base64-encoded SVG QR code for the current LAN URL. This stays in the
     /// local Tauri response and is never served by the relay itself.
     pub qr_svg_base64: Option<String>,
@@ -277,11 +301,11 @@ fn lan_url_for(handle: &RelayHandle) -> String {
     let host = local_ip_address::local_ip()
         .map(|ip| ip.to_string())
         .unwrap_or_else(|_| "127.0.0.1".to_string());
-    format!(
-        "http://{host}:{}/mobile.html?mobile=1&token={}",
-        handle.addr.port(),
-        handle.token
-    )
+    pairing_url(&host, handle.addr.port(), &handle.token)
+}
+
+fn pairing_url(host: &str, port: u16, token: &str) -> String {
+    format!("http://{host}:{port}/mobile.html?mobile=1#token={token}")
 }
 
 /// Render a QR code without exposing the token through another network
@@ -298,64 +322,6 @@ fn qr_svg_base64(url: &str) -> Option<String> {
         .map(|svg| STANDARD.encode(svg.as_bytes()))
 }
 
-/// Token gate for every non-`/ws` HTTP path (documents, shim, static
-/// assets). The `/ws` upgrade authenticates via its `Sec-WebSocket-Protocol`
-/// subprotocol, and the discovery descriptor is intentionally public (like
-/// mDNS, it only advertises that a relay exists and omits the token);
-/// everything else must present the relay token as a `?token=` query param
-/// (the phone's first load from the QR/deep link) or as the
-/// `athena_relay_token` cookie. The cookie is pinned on that first
-/// authenticated response so the page's relative asset requests (shim JS,
-/// WASM, chunks) pass the gate without re-sending the query string.
-async fn require_token(State(ctx): State<RelayCtx>, req: Request, next: Next) -> Response {
-    let path = req.uri().path();
-    if path == "/ws" || path == "/__athena_discovery__.json" {
-        return next.run(req).await;
-    }
-
-    let query_ok = query_token(&req).as_deref() == Some(ctx.token.as_str());
-    let cookie_ok = cookie_token(&req).as_deref() == Some(ctx.token.as_str());
-    if !query_ok && !cookie_ok {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-
-    let mut response = next.run(req).await;
-    // First authenticated request (token came in the query, no cookie yet):
-    // pin it into a cookie scoped to the whole origin so the page's relative
-    // asset requests are authenticated too.
-    if query_ok && !cookie_ok {
-        if let Ok(value) = HeaderValue::from_str(&format!(
-            "athena_relay_token={}; Path=/; HttpOnly; SameSite=Lax",
-            ctx.token
-        )) {
-            response.headers_mut().insert(header::SET_COOKIE, value);
-        }
-    }
-    response
-}
-
-/// Extract the relay token from a `?token=` query parameter, if present.
-fn query_token(req: &Request) -> Option<String> {
-    req.uri().query().and_then(|q| {
-        q.split('&')
-            .find_map(|kv| kv.strip_prefix("token=").map(|v| v.to_string()))
-    })
-}
-
-/// Extract the relay token from the `athena_relay_token` cookie, if present.
-fn cookie_token(req: &Request) -> Option<String> {
-    req.headers()
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|part| {
-                part.trim()
-                    .strip_prefix("athena_relay_token=")
-                    .map(|v| v.to_string())
-            })
-        })
-}
-
 /// Current status — running flag + LAN URL. Cheap; safe to call from a command.
 pub fn status() -> RelayStatus {
     // Do not call `lan_url()` while holding this guard: parking_lot::Mutex is
@@ -369,13 +335,13 @@ pub fn status() -> RelayStatus {
                 running: true,
                 qr_svg_base64: qr_svg_base64(&url),
                 url: Some(url),
-                port: handle.addr.port(),
+                port: Some(handle.addr.port()),
             }
         }
         None => RelayStatus {
             running: false,
             url: None,
-            port: RELAY_PORT,
+            port: None,
             qr_svg_base64: None,
         },
     }
@@ -389,10 +355,7 @@ fn print_relay_url(addr: SocketAddr) {
                 .as_ref()
                 .map(|handle| handle.token.as_str())
                 .unwrap_or_default();
-            let url = format!(
-                "http://{lan_ip}:{port}/mobile.html?mobile=1&token={token}",
-                port = addr.port()
-            );
+            let url = pairing_url(&lan_ip.to_string(), addr.port(), token);
             println!("\n  ╔════════════════════════════════════════════════╗");
             println!("  ║  Athena's Core — mobile mirror                ║");
             println!("  ║  Open on your phone (same Wi-Fi):              ║");
@@ -422,64 +385,16 @@ fn print_relay_url(addr: SocketAddr) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cookie_token, qr_svg_base64, query_token};
-    use axum::http::header;
+    use super::{pairing_url, qr_svg_base64};
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
 
-    fn req_with_query(query: Option<&str>) -> axum::http::Request<axum::body::Body> {
-        let uri = match query {
-            Some(q) => format!("/mobile.html?{q}"),
-            None => "/mobile.html".to_string(),
-        };
-        axum::http::Request::builder()
-            .uri(uri)
-            .body(axum::body::Body::empty())
-            .unwrap()
-    }
-
-    fn req_with_cookie(value: &str) -> axum::http::Request<axum::body::Body> {
-        axum::http::Request::builder()
-            .uri("/assets/app.js")
-            .header(header::COOKIE, value)
-            .body(axum::body::Body::empty())
-            .unwrap()
-    }
-
     #[test]
-    fn query_token_extracts_only_the_token_param() {
-        assert_eq!(query_token(&req_with_query(None)), None);
-        assert_eq!(
-            query_token(&req_with_query(Some("mobile=1&token=abc123"))).as_deref(),
-            Some("abc123")
-        );
-        // Token can appear first in the query string too.
-        assert_eq!(
-            query_token(&req_with_query(Some("token=xyz&mobile=1"))).as_deref(),
-            Some("xyz")
-        );
-        // A different param must not be mistaken for the token.
-        assert_eq!(query_token(&req_with_query(Some("mobile=1&tok=abc"))), None);
-    }
-
-    #[test]
-    fn cookie_token_extracts_only_our_cookie() {
-        assert_eq!(cookie_token(&req_with_query(None)), None);
-        assert_eq!(
-            cookie_token(&req_with_cookie("athena_relay_token=abc123")).as_deref(),
-            Some("abc123")
-        );
-        assert_eq!(
-            cookie_token(&req_with_cookie(
-                "session=1; athena_relay_token=def; other=2"
-            ))
-            .as_deref(),
-            Some("def")
-        );
-        assert_eq!(
-            cookie_token(&req_with_cookie("athena_relay_tokenoops=abc")),
-            None
-        );
+    fn pairing_url_keeps_the_token_out_of_the_http_query() {
+        let url = pairing_url("192.168.1.8", 49152, "secret");
+        assert!(url.contains("?mobile=1#token=secret"));
+        assert!(!url.contains("?token="));
+        assert!(!url.contains("&token="));
     }
 
     #[test]

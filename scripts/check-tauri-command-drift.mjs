@@ -7,7 +7,11 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 function extractMainCommands(source) {
-  const match = source.match(/generate_handler!\s*\[([\s\S]*?)\]/)
+  // Strip comments and `#[...]` attributes BEFORE locating the list close:
+  // attribute brackets (e.g. `#[cfg(feature = "voice")]`) would otherwise
+  // terminate the non-greedy `[\s\S]*?\]` match early and truncate the list.
+  const stripped = source.replace(/\/\/.*$/gm, '').replace(/#\s*\[[^\]]*\]/g, ' ')
+  const match = stripped.match(/generate_handler!\s*\[([\s\S]*?)\]/)
   if (!match) {
     throw new Error('Could not find generate_handler! command list in src-tauri/src/main.rs')
   }
@@ -25,15 +29,12 @@ function extractBuildCommands(source) {
 }
 
 function extractIdentifiers(source, fileName) {
-  const withoutComments = source.replace(/\/\/.*$/gm, '')
-  const identifiers = []
+  let body = source.replace(/\/\/.*$/gm, '')
+  // Strip `#[...]` attributes (e.g. `#[cfg(feature = "...")] command,`) —
+  // a whole-line-identifier heuristic would silently drop such commands.
+  body = body.replace(/#\s*\[[^\]]*\]/g, ' ')
 
-  for (const line of withoutComments.split('\n')) {
-    const value = line.trim().replace(/,$/, '')
-    if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
-      identifiers.push(value)
-    }
-  }
+  const identifiers = [...body.matchAll(/[a-zA-Z_][a-zA-Z0-9_]*/g)].map((m) => m[0])
 
   if (identifiers.length === 0) {
     throw new Error(`Could not find commands in ${fileName}`)

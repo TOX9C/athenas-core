@@ -261,7 +261,51 @@ fn legacy_mcp_arguments_are_normalized_for_the_executor() {
 }
 
 #[test]
-fn external_discovery_excludes_placeholder_only_tools() {
+fn agent_comms_tools_execute_through_the_executor() {
+    let executor = test_tool_executor();
+    let executor = executor.read();
+
+    // Empty AgentComms: read returns a friendly "nothing connected" payload.
+    let read = super::execute_mcp_tool_call(
+        &executor,
+        "read_agent_messages",
+        &serde_json::json!({}),
+    )
+    .expect("read_agent_messages should execute");
+    assert_eq!(read.text, "No connected agent sessions.");
+    assert!(read.is_error.is_none());
+
+    // Sending to an unknown agent surfaces the AgentNotFound error instead
+    // of a placeholder string.
+    let send = super::execute_mcp_tool_call(
+        &executor,
+        "send_message_to_agent",
+        &serde_json::json!({
+            "target_agent_id": "ghost-agent",
+            "message": "hello",
+            "message_type": "instruction"
+        }),
+    );
+    assert!(send.is_err(), "unknown agent must produce an error");
+
+    // Invalid message_type is rejected before touching the comms channel.
+    let bad_type = executor
+        .execute_tool_call(
+            "send_message_to_agent",
+            &crate::tool_schema::ToolInput {
+                target_agent_id: Some("ghost-agent".into()),
+                message: Some("hi".into()),
+                message_type: Some("steal-secrets".into()),
+                ..Default::default()
+            },
+        )
+        .expect("invalid message_type returns a result");
+    assert_eq!(bad_type.is_error, Some(true));
+    assert!(bad_type.text.contains("Invalid message_type"));
+}
+
+#[test]
+fn external_discovery_covers_all_implemented_executor_tools() {
     let names: Vec<_> = super::get_tools()
         .into_iter()
         .map(|tool| tool.name)
@@ -270,17 +314,74 @@ fn external_discovery_excludes_placeholder_only_tools() {
     assert!(names.contains(&"spawn_agents".to_string()));
     assert!(names.contains(&"check_agent_status".to_string()));
     assert!(names.contains(&"workspace_switch".to_string()));
+    assert!(names.contains(&"send_message_to_agent".to_string()));
+    assert!(names.contains(&"read_agent_messages".to_string()));
+    // Push-channel tools stay out of discovery: they are agent→server
+    // reports, not request/response executor tools.
     assert!(!names.contains(&"request_input".to_string()));
-    assert!(!names.contains(&"send_message_to_agent".to_string()));
+    assert!(!names.contains(&"notify".to_string()));
+    assert!(!names.contains(&"status_update".to_string()));
 
-    // Discovery and routing must be generated from the same canonical set;
-    // otherwise clients receive tools that the transport silently rejects.
+    // Discovery and routing must agree: every discovered tool is either
+    // executor-routed or handled by the direct MCP dispatch (search_files).
     for name in names {
         assert!(
-            super::is_executor_mcp_tool(&name),
-            "discovered tool {name} must be executor-routable"
+            super::is_executor_mcp_tool(&name) || name == "search_files",
+            "discovered tool {name} must be routable (executor or direct dispatch)"
         );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_input_is_routed_through_the_agent_comms_handler() {
+    use parking_lot::Mutex;
+
+    let request = || {
+        serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_input",
+                "arguments": { "prompt": "Continue?", "title": "Input Request" }
+            }
+        }))
+        .unwrap()
+    };
+
+    // No handler configured: the call must fail loudly, not fake-ack.
+    let server = McpServer::new();
+    let result = server
+        .handle_request(&request())
+        .await
+        .result
+        .expect("tools/call returns a result");
+    assert_eq!(result["isError"], serde_json::json!(true));
+    assert!(result["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("not configured"));
+
+    // With a handler: it receives the canonical name and its reply is returned.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_handler = Arc::clone(&seen);
+    let mut server = McpServer::new();
+    server.agent_comms_handler = Some(Arc::new(
+        move |name: &str, args: &serde_json::Value| {
+            seen_handler.lock().push((name.to_string(), args.clone()));
+            serde_json::json!({ "content": [{ "type": "text", "text": "user said: yes" }] })
+        },
+    ));
+    let result = server
+        .handle_request(&request())
+        .await
+        .result
+        .expect("tools/call returns a result");
+    assert_eq!(result["content"][0]["text"], "user said: yes");
+    let seen = seen.lock();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, "request_input");
+    assert_eq!(seen[0].1["prompt"], "Continue?");
 }
 
 #[tokio::test(flavor = "current_thread")]

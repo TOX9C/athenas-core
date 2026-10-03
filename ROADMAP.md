@@ -18,7 +18,7 @@ Mission templates: three built-ins ("Feature build", "Bug hunt", "Refactor + tes
 
 ## 🚀 2026-10-01 — O1: Plan gate before swarm launch
 
-Swarm missions default to drafting-first: "Draft plan & review" calls Athena (hidden scratch session, plan-gate prompt, `create_execution_plan` only, no dispatch) and shows the resulting plan as an editable card inline in the modal (steps editable, add/remove), with explicit "Approve & run" — only approval persists the plan into the plan manager (`plan_create`) and merges its steps into the mission goal every agent receives. Cancel while generating aborts the stream. The gate is a checkbox (`Review plan before launching`, default on; unchecking skip-launches immediately).
+Swarm missions default to drafting-first: "Draft plan & review" calls Athena (hidden scratch session, plan-gate prompt, `create_execution_plan` only, no dispatch) and shows the resulting plan as an editable card inline in the modal (steps editable, add/remove), with explicit "Approve & run" — only approval persists the plan into the plan manager (plan state then flows to the UI as `athena:stream`/`athena:planUpdate` events — the old `plan_create`/`plan_update_step` polling CRUD is deleted) and merges its steps into the mission goal every agent receives. Cancel while generating aborts the stream. The gate is a checkbox (`Review plan before launching`, default on; unchecking skip-launches immediately).
 
 ## 🚀 2026-10-01 — M5: Per-agent capability scoping for swarm
 
@@ -261,8 +261,8 @@ Complete verification of every automated gate in the repo. Results:
 
 ### 📄 Docs drift — found this pass
 
-- [x] **D1 — README theme count** (closed: README corrected in v3.3.0 pass): README claims "16 themes"; `ALL_THEMES` in `frontend/src/themes/definitions.rs` has **6** (nyx, aegis, erebus, pentelic, olive, sky). Fix the claim or ship more themes.
-- [x] **D2 — Command palette advertised but removed** (closed: README corrected in v3.3.0 pass): README shortcuts table lists `Cmd+K`/`Cmd+P` "Show command palette", yet the palette is gone from the frontend — `keybindings.rs` test `removed_command_palette_shortcuts_are_not_global_actions` asserts both keys classify to `None`. Decide: restore the palette or fix the README.
+- [x] **D1 — README theme count** (closed: README corrected in v3.3.0 pass; count drifted again when new themes landed — README now says **12 themes**, matching `ALL_THEMES` in `frontend/src/themes/definitions.rs`).
+- [x] **D2 — Command palette advertised but removed** (closed; palette was later **restored**): `Cmd+K`/`Cmd+P` toggle the command palette again — `utils/keybindings.rs` `classifies_command_palette_shortcuts` asserts both bindings. README's shortcuts table is accurate.
 - [x] **D3 — contributor note added** — README "Build from source" now states there are no local pre-commit hooks and CI is the only lint gate (2026-09-02).
 
 ### 🛠 Tooling findings — found this pass
@@ -275,9 +275,9 @@ Complete verification of every automated gate in the repo. Results:
 
 1. ~~**AI chat happy path**~~ — ✅ **Done 2026-08-31**: `e2e-tests/test/specs/athena-chat-stub.e2e.mjs` drives the full loop (workspace → composer → loopback OpenAI stub → streaming bubble) and asserts the request hit the stub with the stored key/model. Config is injected at runtime via `store_set` (disk seeding races the app's in-memory store); user store values + keyring are snapshotted and restored. Caveat found & worked around: `store_get("llm.api_key")` trusts the stale `llm.api_key_status` sentinel over the keyring — the spec deletes the sentinel; whether the backend should is filed below. (Backend fixed 2026-09-10: `store_get` now treats the keyring as source of truth — a stale `llm.api_key_status="set"` flag is invalidated when the keyring is empty; `api_key_status_stale_set_flag_is_overruled_by_empty_keyring` covers it.)
 2. ~~**Kanban persistence**~~ — ✅ **Done 2026-09-10**: `kanban-persistence.e2e.mjs` extended with a real restart coverage — create/move via UI, disk assertion against `store.json`, then `browser.reloadSession()` (kills the app process, fresh session) and rehydration asserted from the UI. 2 passing.
-3. **Mobile mirror relay pairing UX** — ws auth/pairing is unit-tested in Rust; the desktop↔phone approval flow has no e2e.
-4. **Plugin failure paths** — malformed manifest / plugin crash isolation is unit-tested but not e2e.
-5. **Settings round-trip** — the new settings codex has no persistence e2e.
+3. ~~**Mobile mirror relay pairing UX**~~ — ✅ Done: `mobile-relay-pairing.e2e.mjs` covers the desktop↔phone approval flow (ws auth/pairing already unit-tested in Rust).
+4. ~~**Plugin failure paths**~~ — ✅ Done: `plugin-failure-paths.e2e.mjs` covers malformed manifest / plugin crash isolation end to end.
+5. ~~**Settings round-trip**~~ — ✅ Done: `settings-round-trip.e2e.mjs` covers persistence of the settings codex.
 
 ### 🟥 Known failing specs (2026-09-10) — RESOLVED same day
 
@@ -286,7 +286,7 @@ All three pre-existing committed-spec failures were **spec issues, not app regre
 - **`pty-broadcast`** — wdio `expect` takes one argument; the second "message" arg threw before any assertion. Fixed (explicit guard + one-arg expect). Green.
 - **`new-space-3-shells`** — `waitUntil` returned an unresolved `browser.execute()` Promise (truthy → never waited), racing the step-2 DOM; the `Agents (3/16)` text was queried before render. Fixed with awaited waits + per-click count assertions (`Agents (initial+3/16)`). Green.
 - **`omp-typing`** — depended on `window.__athenaMetrics`, but P3 gated metrics to `debug_assertions` (2026-09-02, `8eff596`) while `build-dist.sh` always ships a **release** wasm (its `--debug` flag is ignored by design — debug wasm panics WKWebView). Deep finding while fixing: `browser.keys()` delivers **untrusted** keydown/keyup with no IME/input events, which xterm.js never converts to `onData`, so raw keystroke-based drives cannot reach the PTY in this harness (backend + app input path verified healthy; interactive typing unaffected). Spec now exercises the same `onData → input router → pty_write → PTY` pipeline via xterm's `paste()` API and asserts the response in the pane buffer via `__athenaTermMap`. Green.
-- `perf-metrics.mjs` (non-e2e utility) remains unusable in the harness for the same P3 reason — needs a metrics-enabled frontend build if someone revives it.
+- Perf isolation is currently **unmeasured**: `perf-metrics.mjs` and its npm script were removed (debug-gated `__athenaMetrics` vs the always-release frontend build made the spec unpassable); revive with a metrics-enabled frontend build if needed.
 
 ---
 

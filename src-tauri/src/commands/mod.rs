@@ -23,11 +23,12 @@ mod notification;
 mod output;
 mod plan;
 mod plugin;
-pub(crate) mod routines;
+pub(crate) mod plugin_callbacks;
 mod provider_config;
 mod pty;
 pub(crate) mod relay;
 mod resume;
+mod routines;
 mod search;
 mod session;
 mod shell;
@@ -70,11 +71,15 @@ pub use notification::{
     notification_resolve,
 };
 pub use output::{
-    get_pane_history, output_buffer_append, output_buffer_clear, output_buffer_get,
+    output_buffer_append, output_buffer_clear, output_buffer_get,
     output_buffer_list,
 };
-pub use plan::{plan_create, plan_get, plan_update_step};
-pub use routines::{routines_delete, routines_list, routines_run_now, routines_set_enabled, routines_upsert};
+pub use plan::plan_get;
+pub(crate) use routines::{start as routines_timer_start, RoutineTimerDeps};
+pub use routines::{
+    routines_delete, routines_list, routines_run_now, routines_set_enabled, routines_tick,
+    routines_upsert,
+};
 pub use plugin::{
     plugin_disable, plugin_enable, plugin_get, plugin_get_config, plugin_host_discover_plugins,
     plugin_host_emit_event, plugin_host_get_session, plugin_host_list_sessions,
@@ -87,7 +92,7 @@ pub(crate) use pty::{
     now_ms, pty_attach_listener_relay, pty_read_loop, session_foreground_label, RelayReplayStore,
 };
 pub use pty::{
-    pty_agent_info, pty_attach_listener, pty_default_shell, pty_detach_listener,
+    agent_activity_acknowledge, pty_agent_info, pty_attach_listener, pty_default_shell, pty_detach_listener,
     pty_foreground_process, pty_get_cwd, pty_get_history, pty_has_session, pty_is_ready, pty_kill,
     pty_raw_replay, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write,
     read_clipboard_text,
@@ -97,9 +102,9 @@ pub use relay::{
     relay_set_pane_shared, relay_start, relay_status, relay_stop,
 };
 pub use relay::{relay_token, RELAY_ENABLED_KEY};
+pub(crate) use resume::{merge_resume_ids_into_workspaces, scan_pane_for_resume_id};
 pub use resume::capture_resume_ids_on_exit;
-#[cfg(test)]
-pub(crate) use resume::merge_resume_ids_into_workspaces;
+pub(crate) use workspace::WORKSPACE_CHANGED_EVENT;
 pub use search::{search_code, search_ripgrep};
 pub use session::{
     session_add_message, session_create, session_delete, session_get, session_list, session_update,

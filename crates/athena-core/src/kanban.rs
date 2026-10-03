@@ -21,10 +21,6 @@ pub enum KanbanError {
     InvalidStatus(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    /// Agent-owned cards need diff + test output evidence to move to
-    /// InReview. Manual cards skip this entirely.
-    #[error("card {0} requires proof of work: attach a diff summary and test log (agent cards cannot move to In Review without evidence)")]
-    ProofRequired(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -39,20 +35,6 @@ pub enum KanbanBackendStatus {
     InProgress,
     InReview,
     Complete,
-}
-
-/// Proof-of-work attached to an agent-owned card on its way to InReview:
-/// the diff summary and the tail of the agent's last run's output.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TaskEvidence {
-    /// Unified-diff text (or `git diff --stat`), capped by the caller.
-    pub diff: String,
-    /// Tail of the agent pane's recent output (last test/build excerpt),
-    /// capped by the caller.
-    pub test_log: String,
-    /// Pane whose buffer produced the test log, if identified.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_id: Option<String>,
 }
 
 /// A single Kanban task persisted to the backend KeyValueStore.
@@ -72,10 +54,6 @@ pub struct KanbanBackendTask {
     /// deserializable.
     #[serde(default)]
     pub plan_step_id: Option<String>,
-    /// Attached at each InReview transition for agent cards
-    /// (assigned_agent / plan_step_id set); None for manual cards.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<TaskEvidence>,
 }
 
 impl KanbanBackendStatus {
@@ -96,13 +74,26 @@ impl KanbanBackendStatus {
 // ---------------------------------------------------------------------------
 
 /// Backend for kanban operations using a `KeyValueStore`.
+///
+/// `ops_lock` serializes the read-modify-write cycles in
+/// `create_task`/`update_task`/`delete_task` so concurrent tool calls (or a
+/// tool call racing a frontend write through the same backend) cannot
+/// interleave `get_tasks` and `save_tasks` and silently lose tasks.
 pub struct KanbanBackend {
     store: Arc<athena_store::KeyValueStore>,
+    ops_lock: std::sync::Mutex<()>,
 }
 
 impl KanbanBackend {
     pub fn new(store: Arc<athena_store::KeyValueStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            ops_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn ops_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.ops_lock.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     fn key(&self, workspace_id: &str) -> String {
@@ -112,22 +103,29 @@ impl KanbanBackend {
     /// Get all tasks for a workspace.
     pub fn get_tasks(&self, workspace_id: &str) -> Result<Vec<KanbanBackendTask>, KanbanError> {
         let key = self.key(workspace_id);
-        let tasks_json = self.store.get::<String>(&key)?;
-        match tasks_json {
+        match self.store.get::<serde_json::Value>(&key)? {
             None => Ok(Vec::new()),
-            Some(json) => Ok(serde_json::from_str(&json)?),
+            // Legacy format: the task list was double-encoded as a JSON
+            // string inside store.json. Decode old strings on read; the next
+            // `save_tasks` writes the plain array, completing the migration.
+            Some(serde_json::Value::String(json)) => Ok(serde_json::from_str(&json)?),
+            Some(value) => Ok(serde_json::from_value(value)?),
         }
     }
 
     /// Save all tasks for a workspace.
+    ///
+    /// Uses `set_deferred` (dirty-flag) rather than `set_sync`: a
+    /// synchronous whole-store fsync per task op is O(store size) write
+    /// amplification; the background flusher persists the batch. Tasks are
+    /// stored as a plain JSON array, not a JSON-stringified string.
     pub fn save_tasks(
         &self,
         workspace_id: &str,
         tasks: &[KanbanBackendTask],
     ) -> Result<(), KanbanError> {
         let key = self.key(workspace_id);
-        let json = serde_json::to_string(tasks)?;
-        self.store.set_sync(&key, &json)?;
+        self.store.set_deferred(&key, &tasks)?;
         Ok(())
     }
 
@@ -137,6 +135,7 @@ impl KanbanBackend {
         workspace_id: &str,
         task: KanbanBackendTask,
     ) -> Result<KanbanBackendTask, KanbanError> {
+        let _guard = self.ops_guard();
         let mut tasks = self.get_tasks(workspace_id)?;
         tasks.push(task.clone());
         self.save_tasks(workspace_id, &tasks)?;
@@ -151,8 +150,8 @@ impl KanbanBackend {
         title: Option<String>,
         description: Option<String>,
         status: Option<KanbanBackendStatus>,
-        evidence: Option<TaskEvidence>,
     ) -> Result<KanbanBackendTask, KanbanError> {
+        let _guard = self.ops_guard();
         let mut tasks = self.get_tasks(workspace_id)?;
         let task = tasks
             .iter_mut()
@@ -165,25 +164,7 @@ impl KanbanBackend {
             task.description = if d.is_empty() { None } else { Some(d) };
         }
         if let Some(s) = status {
-            // Proof-of-work gate (O3): agent-owned cards require both a diff
-            // summary and a test-log excerpt before entering In Review.
-            // Manual cards (nothing agent-owned recorded) stay exempt.
-            if s == KanbanBackendStatus::InReview {
-                let is_agent_owned =
-                    task.plan_step_id.is_some() || task.assigned_agent.is_some();
-                let valid = |e: &TaskEvidence| {
-                    !e.diff.trim().is_empty() && !e.test_log.trim().is_empty()
-                };
-                let covered = evidence.as_ref().is_some_and(valid)
-                    || task.evidence.as_ref().is_some_and(valid);
-                if is_agent_owned && !covered {
-                    return Err(KanbanError::ProofRequired(task_id.to_string()));
-                }
-            }
             task.status = s;
-        }
-        if let Some(e) = evidence {
-            task.evidence = Some(e);
         }
         let updated = task.clone();
         self.save_tasks(workspace_id, &tasks)?;
@@ -192,6 +173,7 @@ impl KanbanBackend {
 
     /// Delete a task by ID.
     pub fn delete_task(&self, workspace_id: &str, task_id: &str) -> Result<(), KanbanError> {
+        let _guard = self.ops_guard();
         let mut tasks = self.get_tasks(workspace_id)?;
         let original_len = tasks.len();
         tasks.retain(|t| t.id != task_id);
@@ -225,14 +207,13 @@ mod tests {
     fn make_backend() -> (KanbanBackend, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let _path = tmp.path().join("test.json");
-        let store = athena_store::KeyValueStore::new_empty();
+        let store = athena_store::KeyValueStore::with_name_sync("test")
+            .unwrap_or_else(|_| athena_store::KeyValueStore::new_empty());
         (KanbanBackend::new(Arc::new(store)), tmp)
     }
 
     #[test]
     fn crud_round_trip() {
-        // Distinct workspace per test: the tempdir-backed store shares one
-        // underlying "test" file, and parallel rows collide otherwise.
         let (backend, _tmp) = make_backend();
         let task = KanbanBackendTask {
             id: "t1".to_string(),
@@ -244,7 +225,6 @@ mod tests {
             order: 0,
             created_at: 0,
             plan_step_id: None,
-            evidence: None,
         };
         backend.create_task("ws1", task.clone()).unwrap();
         let tasks = backend.get_tasks("ws1").unwrap();
@@ -252,73 +232,13 @@ mod tests {
         assert_eq!(tasks[0].title, "Test task");
 
         backend
-            .update_task("ws1", "t1", Some("Updated".to_string()), None, None, None)
+            .update_task("ws1", "t1", Some("Updated".to_string()), None, None)
             .unwrap();
         let tasks = backend.get_tasks("ws1").unwrap();
         assert_eq!(tasks[0].title, "Updated");
-
 
         backend.delete_task("ws1", "t1").unwrap();
         let tasks = backend.get_tasks("ws1").unwrap();
         assert!(tasks.is_empty());
     }
-
-    #[test]
-    fn proof_of_work_gate_for_agent_cards() {
-        let (backend, _tmp) = make_backend();
-        // Manual card (no agent markers) exists as the control.
-        let manual = crate::kanban::KanbanBackendTask {
-            id: "t1".to_string(),
-            space_id: "s1".to_string(),
-            title: "Manual".to_string(),
-            description: None,
-            assigned_agent: None,
-            status: KanbanBackendStatus::Todo,
-            order: 0,
-            created_at: 0,
-            plan_step_id: None,
-            evidence: None,
-        };
-        backend.create_task("ws-pow", manual).unwrap();
-
-        // Agent-owned card without evidence must not enter In Review.
-        let mut agent_task = crate::kanban::KanbanBackendTask {
-            id: "t2".to_string(),
-            space_id: "s1".to_string(),
-            title: "Agent".to_string(),
-            description: None,
-            assigned_agent: Some("claude".to_string()),
-            status: KanbanBackendStatus::Todo,
-            order: 0,
-            created_at: 0,
-            plan_step_id: None,
-            evidence: None,
-        };
-        backend.create_task("ws-pow", agent_task.clone()).unwrap();
-        let blocked = backend.update_task(
-            "ws-pow",
-            "t2",
-            None,
-            None,
-            Some(KanbanBackendStatus::InReview),
-            None,
-        );
-        assert!(matches!(blocked, Err(KanbanError::ProofRequired(_))));
-
-        // Manual moves pass the gate; agent moves with evidence land.
-        backend
-            .update_task("ws-pow", "t1", None, None, Some(KanbanBackendStatus::InReview), None)
-            .unwrap();
-        let ev = TaskEvidence {
-            diff: "diff --git a/f b/f".to_string(),
-            test_log: "ok (1 test)".to_string(),
-            pane_id: Some("pane-1".to_string()),
-        };
-        let moved = backend
-            .update_task("ws-pow", "t2", None, None, Some(KanbanBackendStatus::InReview), Some(ev))
-            .unwrap();
-        assert_eq!(moved.status, KanbanBackendStatus::InReview);
-        assert!(moved.evidence.is_some());
-    }
-
 }

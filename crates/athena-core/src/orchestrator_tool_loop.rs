@@ -22,13 +22,12 @@ impl AthenaOrchestrator {
         }
     }
 
-    /// Clear the stream request context after a turn or tool batch ends.
-    /// Mirrors the old per-call `_with_context` clear: pending ask_user
-    /// questions for the request are resolved with an error so they cannot
-    /// outlive the request.
-    pub(super) fn clear_request_context(&self) {
+    /// Clear one stream's request context after its tool batch ends. Pending
+    /// ask_user questions for only this request are resolved with an error; a
+    /// concurrent desktop or relay stream keeps its own attribution.
+    pub(super) fn clear_request_context_for(&self, request_id: &str) {
         if let Some(executor) = self.tool_executor.as_ref() {
-            executor.read().clear_request_context();
+            executor.read().clear_request_context_for(request_id);
         }
     }
 
@@ -54,9 +53,8 @@ impl AthenaOrchestrator {
         session_id: &str,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Vec<Result<(String, bool), OrchestratorError>> {
-        // Safe under the conversation lock: whole turns never overlap, so
-        // no other batch can install a different context between this
-        // install and the clear below.
+        // Contexts are keyed by stream request; concurrent desktop and relay
+        // turns can install disjoint entries while their workers execute.
         self.install_request_context(request_id, session_id);
         let results: Vec<Result<(String, bool), OrchestratorError>> =
             futures_util::stream::iter(calls.into_iter().map(|(name, input)| {
@@ -73,7 +71,7 @@ impl AthenaOrchestrator {
             .buffered(MAX_CONCURRENT_TOOLS)
             .collect::<Vec<_>>()
             .await;
-        self.clear_request_context();
+        self.clear_request_context_for(request_id);
         results
     }
 
@@ -110,11 +108,10 @@ impl AthenaOrchestrator {
         let name = name.to_string();
         // Owned so it can cross into `spawn_blocking`.
         let request_id = request_id.map(str::to_string);
-        // Read guard: concurrent batch calls all hold read guards at once —
-        // this is what makes F6 concurrency real. Context set/clear NEVER
-        // happens here (it would let the first finisher wipe the slot for
-        // siblings); it is owned by install_request_context/clear around the
-        // whole turn or batch.
+        // Read guard: concurrent batch calls all hold read guards at once.
+        // The shared request map is installed/cleared around the batch; each
+        // blocking worker carries only this call's thread-local request id so
+        // ask_user and plan events cannot inherit another stream's context.
         match tokio::task::spawn_blocking(move || {
             let executor = executor_arc.read();
             if request_id
@@ -123,7 +120,12 @@ impl AthenaOrchestrator {
             {
                 return Err(crate::tool_executor::ToolExecutorError::Cancelled);
             }
-            executor.execute_tool_call(&name, &tool_input)
+            match request_id.as_deref() {
+                Some(request_id) => {
+                    executor.execute_tool_call_with_request(&name, &tool_input, request_id)
+                }
+                None => executor.execute_tool_call(&name, &tool_input),
+            }
         })
         .await
         {

@@ -14,6 +14,8 @@ pub struct ImageRef {
 /// Enum representing the possible roles in a chat conversation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MessageRole {
+    #[serde(rename = "system")]
+    System,
     #[serde(rename = "user")]
     User,
     #[serde(rename = "athena")]
@@ -64,14 +66,9 @@ pub struct ChatSession {
 pub const MAX_SESSION_MESSAGES: usize = 10_000;
 
 /// Returns true if the message should be treated as a system message and
-/// preserved across eviction. Today `MessageRole` only has `User` and
-/// `Athena`; system prompts are stored separately in the orchestrator, so
-/// this currently never matches. Kept as a hook so that adding a `System`
-/// role later preserves eviction correctness.
-fn is_system_message(_m: &SessionMessage) -> bool {
-    // Matches the `m.role == "system"` style predicate from the spec.
-    // Extend when MessageRole gains a System variant.
-    false
+/// preserved across eviction.
+fn is_system_message(m: &SessionMessage) -> bool {
+    matches!(m.role, MessageRole::System)
 }
 
 impl ChatSession {
@@ -159,30 +156,27 @@ mod tests {
             messages: Vec::new(),
         };
 
-        // 1 "system" + 9999 user messages = 10_000 (at the cap, no eviction yet)
-        session.add_message_evicting(make_msg("sys-0", MessageRole::User));
+        // 1 system + 9999 user messages = 10_000 (at the cap, no eviction yet)
+        session.add_message_evicting(make_msg("sys-0", MessageRole::System));
         for i in 0..9_999 {
             session.add_message_evicting(make_msg(&format!("u-{i:05}"), MessageRole::User));
         }
         assert_eq!(session.messages.len(), MAX_SESSION_MESSAGES);
 
-        // Add 2 more — should evict 2 oldest messages. (MessageRole has no
-        // System variant today; the "sys-0" message above is just a
-        // placeholder so the test mirrors the spec. Once a System role
-        // is added and `is_system_message` updated, the same drain logic
-        // will preserve it.)
+        // Add 2 more — should evict the 2 oldest non-system messages while
+        // the system message is preserved.
         session.add_message_evicting(make_msg("new-1", MessageRole::User));
         session.add_message_evicting(make_msg("new-2", MessageRole::User));
 
         assert_eq!(session.messages.len(), MAX_SESSION_MESSAGES);
 
-        // The two oldest messages are gone. Since `is_system_message` always
-        // returns false (no System role in MessageRole), the first two
-        // messages inserted — sys-0 and u-00000 — are evicted.
-        assert!(!session.messages.iter().any(|m| m.id == "sys-0"));
+        // The system message survives eviction; the two oldest user
+        // messages — u-00000 and u-00001 — are dropped instead.
+        assert!(session.messages.iter().any(|m| m.id == "sys-0"));
         assert!(!session.messages.iter().any(|m| m.id == "u-00000"));
+        assert!(!session.messages.iter().any(|m| m.id == "u-00001"));
         // The next-oldest survives because we only added 2 more messages.
-        assert!(session.messages.iter().any(|m| m.id == "u-00001"));
+        assert!(session.messages.iter().any(|m| m.id == "u-00002"));
 
         // The two newest messages are at the tail.
         assert_eq!(session.messages.last().unwrap().id, "new-2");

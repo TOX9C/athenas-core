@@ -7,6 +7,7 @@ use crate::stores::notification::{
     NotificationType,
 };
 use crate::tauri_bridge;
+use wasm_bindgen::JsValue;
 use dioxus::prelude::*;
 
 fn notification_type(value: Option<&str>) -> NotificationType {
@@ -18,6 +19,17 @@ fn notification_type(value: Option<&str>) -> NotificationType {
         "task_complete" | "taskComplete" => NotificationType::TaskComplete,
         "task_error" | "taskError" => NotificationType::TaskError,
         _ => NotificationType::Info,
+    }
+}
+
+/// Decode a bridge event payload (JSON object, or a JSON-encoded string as
+/// the backend emits for notification channels) into a JSON value.
+fn decode_event_value(payload: &JsValue) -> Result<serde_json::Value, serde_json::Error> {
+    if let Some(inner) = payload.as_string() {
+        serde_json::from_str(&inner)
+    } else {
+        serde_wasm_bindgen::from_value(payload.clone())
+        .map_err(|e| <serde_json::Error as serde::de::Error>::custom(e.to_string()))
     }
 }
 
@@ -143,26 +155,49 @@ pub fn NotificationToast() -> Element {
                             continue;
                         };
                         let ntype = record.r#type.clone();
-                        let toast = Toast {
-                            id: record.id.clone(),
-                            toast_type: toast_type(&ntype),
-                            title: record.title.clone(),
-                            message: record.message.clone(),
+                        let id = record.id.clone();
+                        // Pane-scoped attention events (finished / needs input /
+                        // errored) are surfaced solely as the pulsing shell
+                        // border — no toast, no bell badge, no history row. All
+                        // other events keep the bell/history path, and only
+                        // pane-less ones fly in as toasts.
+                        let pane_attention = record.pane_id.is_some()
+                            && matches!(
+                                ntype,
+                                NotificationType::NeedsInput
+                                    | NotificationType::TaskComplete
+                                    | NotificationType::TaskError
+                                    | NotificationType::Error
+                                    | NotificationType::Success
+                            );
+                        if pane_attention {
+                            continue;
+                        }
+                        let toast = if record.pane_id.is_none()
+                            && !toasts.read().toasts.iter().any(|t| t.id == id)
+                        {
                             // Toasts are transient attention cues. Durable
                             // history and unresolved input state live in the
                             // notification store, not in this bottom-right UI.
-                            duration_ms: match ntype {
-                                NotificationType::NeedsInput => 2500,
-                                NotificationType::TaskError | NotificationType::Error => 3000,
-                                NotificationType::TaskComplete
-                                | NotificationType::Success
-                                | NotificationType::Warning => 2000,
-                                NotificationType::Info => 1800,
-                            },
+                            Some(Toast {
+                                id: id.clone(),
+                                toast_type: toast_type(&ntype),
+                                title: record.title.clone(),
+                                message: record.message.clone(),
+                                duration_ms: match ntype {
+                                    NotificationType::NeedsInput => 2500,
+                                    NotificationType::TaskError | NotificationType::Error => 3000,
+                                    NotificationType::TaskComplete
+                                    | NotificationType::Success
+                                    | NotificationType::Warning => 2000,
+                                    NotificationType::Info => 1800,
+                                },
+                            })
+                        } else {
+                            None
                         };
-                        let id = record.id.clone();
                         add_notification(&mut notifications, record);
-                        if !toasts.read().toasts.iter().any(|t| t.id == id) {
+                        if let Some(toast) = toast {
                             toasts.write().push(toast);
                         }
                     }
@@ -212,8 +247,8 @@ pub fn NotificationToast() -> Element {
         });
 
         let new_dispatcher = dispatcher;
-        if let Ok(unlisten) = tauri_bridge::listen("notifications:new", move |payload: String| {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+        if let Ok(unlisten) = tauri_bridge::listen("notifications:new", move |payload: JsValue| {
+            if let Ok(value) = decode_event_value(&payload) {
                 new_dispatcher.send(NotificationBusEvent::New(value));
             }
         }) {
@@ -222,8 +257,8 @@ pub fn NotificationToast() -> Element {
 
         let update_dispatcher = dispatcher;
         if let Ok(unlisten) =
-            tauri_bridge::listen("notifications:updated", move |payload: String| {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+            tauri_bridge::listen("notifications:updated", move |payload: JsValue| {
+                if let Ok(value) = decode_event_value(&payload) {
                     if value.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
                         update_dispatcher.send(NotificationBusEvent::MarkAllRead);
                     } else if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
@@ -237,8 +272,8 @@ pub fn NotificationToast() -> Element {
 
         let resolved_dispatcher = dispatcher;
         if let Ok(unlisten) =
-            tauri_bridge::listen("notifications:resolved", move |payload: String| {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+            tauri_bridge::listen("notifications:resolved", move |payload: JsValue| {
+                if let Ok(value) = decode_event_value(&payload) {
                     if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
                         resolved_dispatcher.send(NotificationBusEvent::Resolved(id.to_string()));
                     }
@@ -250,8 +285,8 @@ pub fn NotificationToast() -> Element {
 
         let dismissed_dispatcher = dispatcher;
         if let Ok(unlisten) =
-            tauri_bridge::listen("notifications:dismissed", move |payload: String| {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+            tauri_bridge::listen("notifications:dismissed", move |payload: JsValue| {
+                if let Ok(value) = decode_event_value(&payload) {
                     if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
                         dismissed_dispatcher.send(NotificationBusEvent::Dismissed(id.to_string()));
                     }
@@ -263,7 +298,7 @@ pub fn NotificationToast() -> Element {
 
         let clear_dispatcher = dispatcher;
         if let Ok(unlisten) =
-            tauri_bridge::listen("notifications:cleared", move |_payload: String| {
+            tauri_bridge::listen("notifications:cleared", move |_payload: JsValue| {
                 clear_dispatcher.send(NotificationBusEvent::Clear);
             })
         {

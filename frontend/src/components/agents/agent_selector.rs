@@ -10,11 +10,14 @@ pub struct AgentSelectorProps {
 
 #[component]
 pub fn AgentSelector(props: AgentSelectorProps) -> Element {
-    let mut agent_output = use_agent_output_store();
+    let agent_output = use_agent_output_store();
     let mut open = use_signal(|| false);
 
-    let agents = agent_output.read().agents.clone();
-    let selected_id = agent_output.read().selected_pane_id.clone();
+    // Membership and selection are separate small signals now: batches at
+    // event rate no longer re-render the selector.
+    let agents = agent_output.agents_signal().read().clone();
+    let selected_id = agent_output.selected_pane_id_signal().read().clone();
+    let for_select = agent_output.clone();
 
     if agents.is_empty() {
         return rsx! {
@@ -83,6 +86,10 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                             let item_bg = "transparent";
                             let item_text_color = if is_selected { "var(--accent)" } else { "var(--textDim)" };
                             let pane_id_for_select = agent.pane_id.clone();
+                            // Store isn't Copy; clone per iteration so the
+                            // `move` onclick doesn't move out of the `for`
+                            // loop's FnMut capture.
+                            let for_select_click = for_select.clone();
                             rsx! {
                                 button {
                                     key: "{agent.pane_id}",
@@ -90,7 +97,7 @@ pub fn AgentSelector(props: AgentSelectorProps) -> Element {
                                     style: "display: flex; align-items: center; gap: 8px; padding: 7px 12px; width: 100%; text-align: left; border: none; border-bottom: 1px solid var(--border); background: {item_bg}; cursor: pointer;",
                                     onclick: move |_| {
                                         props.on_select.call(pane_id_for_event.clone());
-                                        agent_output.write().select_agent(Some(pane_id_for_select.clone()));
+                                        for_select_click.select_agent(Some(pane_id_for_select.clone()));
                                         open.set(false);
                                     },
 

@@ -22,7 +22,14 @@ const tomlFiles = files.filter((file) => file.endsWith('.toml'))
 const normalizedStems = tomlFiles.map((file) => file.slice(0, -5).replaceAll('_', '-'))
 const duplicateStems = duplicates(normalizedStems)
 const actualStems = new Set(normalizedStems)
-const capability = new Set([...capabilitySource.matchAll(/"(allow-[a-z0-9-]+)"/g)].map(([, permission]) => permission))
+// Widen beyond [a-z0-9-]: a permission containing uppercase or underscores
+// must still be seen by the missing/extra comparisons instead of silently
+// falling through both.
+const capability = new Set(
+  [...capabilitySource.matchAll(/"(allow-[A-Za-z0-9_-]+)"/g)].map(([, permission]) =>
+    permission.toLowerCase().replaceAll('_', '-'),
+  ),
+)
 
 const missingFiles = [...expectedPermissions].filter((permission) => !actualStems.has(permission.slice('allow-'.length))).sort()
 const extraFiles = [...actualStems].filter((stem) => ![...expectedPermissions].some((permission) => permission === `allow-${stem}`)).sort()

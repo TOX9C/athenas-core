@@ -6,7 +6,7 @@
 //! - **Plugin-status-wins**: panes with a connected plugin-host session skip
 //!   all heuristics; the plugin drives their status (the state.rs adapter
 //!   translates `agents:*` events to add `paneId`).
-//! - **"Finished" requires a positive signal**: the agent process exiting
+//! - **Completion requires a positive signal**: the agent process exiting
 //!   (foreground returns to shell) or the shell reporting the agent's launch
 //!   command finished. Output silence alone only moves the badge to idle.
 //! - **Notifications fire on transitions only**, with per-pane cooldown.
@@ -78,7 +78,6 @@ impl AgentActivityStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NotifyKind {
     Started,
-    Finished,
     NeedsAttention,
     Error,
     Cancelled,
@@ -88,7 +87,6 @@ impl NotifyKind {
     fn as_str(self) -> &'static str {
         match self {
             NotifyKind::Started => "started",
-            NotifyKind::Finished => "finished",
             NotifyKind::NeedsAttention => "needs_attention",
             NotifyKind::Error => "error",
             NotifyKind::Cancelled => "cancelled",
@@ -102,8 +100,6 @@ impl NotifyKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentNotifyConfig {
-    /// Working → Completed transition notification.
-    pub finished: bool,
     /// Waiting-for-input / attention transition notification.
     pub needs_attention: bool,
     /// Error transition notification.
@@ -113,7 +109,6 @@ pub struct AgentNotifyConfig {
 impl Default for AgentNotifyConfig {
     fn default() -> Self {
         Self {
-            finished: true,
             needs_attention: true,
             error: true,
         }
@@ -125,7 +120,6 @@ impl AgentNotifyConfig {
     pub fn enabled(&self, kind: NotifyKind) -> bool {
         match kind {
             NotifyKind::Started | NotifyKind::Cancelled => true,
-            NotifyKind::Finished => self.finished,
             NotifyKind::NeedsAttention => self.needs_attention,
             NotifyKind::Error => self.error,
         }
@@ -134,10 +128,11 @@ impl AgentNotifyConfig {
 
 /// Default silence threshold before an agent badge moves to idle.
 pub const DEFAULT_IDLE_AFTER_MS: u64 = 30_000;
-/// Minimum working duration before a "finished" notification may fire.
-pub const DEFAULT_MIN_WORK_MS: u64 = 15_000;
 /// Per-pane cooldown between notifications of the same kind.
 pub const DEFAULT_NOTIFY_COOLDOWN_MS: u64 = 15_000;
+/// How long a launch-pending pane waits for the agent to appear in the
+/// foreground before the tracker gives up on it (3 heartbeat ticks).
+const STARTUP_GRACE_MS: u64 = 5_000;
 
 type EmittedSignature = (
     AgentActivityStatus,
@@ -172,11 +167,32 @@ struct PaneActivity {
     /// keeps one session id across many prompts, so session id alone cannot
     /// identify a new turn.
     history_timestamp_ms: Option<u64>,
+    /// History timestamp the user already acknowledged (clicked the pane
+    /// after it finished / waited / errored). The same turn's authoritative
+    /// status must not be re-applied after transient redraws (e.g. fullscreen
+    /// toggles); a NEW turn has a newer timestamp and re-arms normally.
+    acknowledged_history_ts: Option<u64>,
     last_output_at: u64,
     work_started_at: Option<u64>,
+    /// Set when the heartbeat's silence rule demoted Working → Idle for a
+    /// pane with no authoritative session record. On the next output pulse
+    /// we restore Working directly instead of flashing Thinking, so
+    /// intermittently-outputting agents don't bounce at the idle threshold.
+    demoted_from_working: bool,
+    /// When WaitingForInput was entered. TUI agents redraw (spinners, token
+    /// counters) while parked at a prompt, so raw output must never demote
+    /// waiting → working; the heartbeat demotes only when the prompt tail is
+    /// gone AND output arrived after this timestamp. Meaningful only while
+    /// `status == WaitingForInput`.
+    waiting_since: Option<u64>,
     /// Explicit agent launches print startup banners before the first
     /// heartbeat. Ignore those bytes so an idle CLI is not counted as working.
     startup_pending: bool,
+    /// When `startup_pending` was set. If the heartbeat never confirms the
+    /// expected agent in the foreground (fast one-shot run that exits between
+    /// ticks, or a failed exec), this lets the None arm give up after a grace
+    /// window instead of pinning agent_key/startup_pending forever.
+    startup_since_ms: Option<u64>,
     plugin_connected: bool,
     last_notified_at: HashMap<NotifyKind, u64>,
     /// Signature of the last emitted `agent:status` payload so we only emit
@@ -211,11 +227,18 @@ pub struct AgentActivityTracker {
     next_generation: Mutex<u64>,
     event_emitter: EventEmitter,
     notifications: Option<Arc<NotificationService>>,
+    /// Notification events built while the `panes` lock is held.
+    /// `notify_locked` cannot push to the `NotificationService` inline
+    /// because `push_notification` persists synchronously to disk (and takes
+    /// the service's `history` lock), which would stall every pane update
+    /// behind a disk write and create a `panes → notification.history` lock
+    /// edge. Instead, events accumulate here and `update` drains them after
+    /// releasing `panes`.
+    pending_notifications: Mutex<Vec<NotificationEvent>>,
     /// Per-type notification toggles (read by `notify_locked`, updated by the
     /// heartbeat from the KV store).
     notify_config: Mutex<AgentNotifyConfig>,
     pub idle_after_ms: u64,
-    pub min_work_ms: u64,
     pub notify_cooldown_ms: u64,
 }
 
@@ -254,11 +277,11 @@ impl Clone for AgentActivityTracker {
             next_generation: Mutex::new(next_generation),
             event_emitter: Arc::clone(&self.event_emitter),
             notifications: self.notifications.clone(),
+            pending_notifications: Mutex::new(Vec::new()),
             notify_config: Mutex::new(
                 *self.notify_config.lock().unwrap_or_else(|p| p.into_inner()),
             ),
             idle_after_ms: self.idle_after_ms,
-            min_work_ms: self.min_work_ms,
             notify_cooldown_ms: self.notify_cooldown_ms,
         }
     }
@@ -274,9 +297,9 @@ impl AgentActivityTracker {
             next_generation: Mutex::new(0),
             event_emitter: EventEmitter::default(),
             notifications,
+            pending_notifications: Mutex::new(Vec::new()),
             notify_config: Mutex::new(AgentNotifyConfig::default()),
             idle_after_ms: DEFAULT_IDLE_AFTER_MS,
-            min_work_ms: DEFAULT_MIN_WORK_MS,
             notify_cooldown_ms: DEFAULT_NOTIFY_COOLDOWN_MS,
         }
     }
@@ -326,9 +349,13 @@ impl AgentActivityTracker {
                 task_title: None,
                 raw_prompt: None,
                 history_timestamp_ms: None,
+                acknowledged_history_ts: None,
                 last_output_at: 0,
                 work_started_at: None,
+                demoted_from_working: false,
+                waiting_since: None,
                 startup_pending: false,
+                startup_since_ms: None,
                 plugin_connected: false,
                 last_notified_at: HashMap::new(),
                 last_emitted: None,
@@ -340,9 +367,34 @@ impl AgentActivityTracker {
     where
         F: FnOnce(&mut PaneActivity),
     {
-        let mut guard = self.panes.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(entry) = guard.get_mut(pane_id) {
-            f(entry);
+        {
+            let mut guard = self.panes.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(entry) = guard.get_mut(pane_id) {
+                f(entry);
+            }
+        }
+        self.drain_pending_notifications();
+    }
+
+    /// Push any notifications queued by `notify_locked` during a `panes`-locked
+    /// update, now that the `panes` lock has been released. `push_notification`
+    /// persists synchronously to disk and takes the notification service's
+    /// history lock; keeping it outside the `panes` guard prevents lock-order
+    /// coupling and stalls.
+    fn drain_pending_notifications(&self) {
+        let mut queue = self
+            .pending_notifications
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if queue.is_empty() {
+            return;
+        }
+        let events = std::mem::take(&mut *queue);
+        drop(queue);
+        if let Some(svc) = self.notifications.as_ref() {
+            for event in events {
+                svc.push_notification(event);
+            }
         }
     }
 
@@ -361,6 +413,38 @@ impl AgentActivityTracker {
     }
 
     // -- Lifecycle ----------------------------------------------------------
+
+    /// User acknowledged the pane's attention state (clicked its highlight).
+    /// Pins `acknowledged_history_ts` to the current turn so the tracker does
+    /// not re-apply the same authoritative Completed/Waiting/Error after
+    /// transient redraw output (e.g. a fullscreen resize), which previously
+    /// made cleared highlights return. A new turn has a newer history
+    /// timestamp and re-arms normally.
+    pub fn acknowledge_attention(&self, pane_id: &str) {
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        let was_attention = {
+            let mut guard = self.panes.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(e) = guard.get_mut(pane_id) {
+                let attention = matches!(
+                    e.status,
+                    AgentActivityStatus::Completed
+                        | AgentActivityStatus::WaitingForInput
+                        | AgentActivityStatus::Error
+                );
+                e.acknowledged_history_ts = e.history_timestamp_ms;
+                if attention {
+                    e.status = AgentActivityStatus::Idle;
+                    e.work_started_at = None;
+                }
+                attention
+            } else {
+                return;
+            }
+        };
+        if was_attention {
+            self.emit_status(pane_id);
+        }
+    }
 
     /// Ensure a pane is tracked (idempotent). Registration also marks a pane
     /// as live again, allowing a later PTY to reuse the same pane id safely.
@@ -552,11 +636,26 @@ impl AgentActivityTracker {
                 return;
             }
             match e.status {
-                // Fresh detection / new turn, first output pulse → thinking.
-                AgentActivityStatus::Idle | AgentActivityStatus::Completed => {
-                    e.status = AgentActivityStatus::Thinking;
+                AgentActivityStatus::Idle => {
+                    // Silence-demoted working agents resume directly as
+                    // Working; bouncing through Thinking each time output
+                    // resumes flickers the badge at the idle threshold.
+                    if e.demoted_from_working {
+                        e.demoted_from_working = false;
+                        e.status = AgentActivityStatus::Working;
+                    } else {
+                        // Fresh detection / new turn, first output pulse →
+                        // thinking.
+                        e.status = AgentActivityStatus::Thinking;
+                    }
                     changed = true;
                 }
+                // Completed is owned by the heartbeat's authoritative
+                // session-log record: a persistent TUI keeps streaming redraw
+                // bytes (cursor repaint, status lines) after finishing, so
+                // raw output must never tear Completed down. Only a new
+                // turn's history record (newer timestamp) moves it on.
+                AgentActivityStatus::Completed => {}
                 // Sustained output → actively working (start the work clock).
                 AgentActivityStatus::Thinking => {
                     e.status = AgentActivityStatus::Working;
@@ -565,14 +664,12 @@ impl AgentActivityTracker {
                     }
                     changed = true;
                 }
-                // User answered a prompt → back to working.
-                AgentActivityStatus::WaitingForInput => {
-                    e.status = AgentActivityStatus::Working;
-                    if e.work_started_at.is_none() {
-                        e.work_started_at = Some(now_ms);
-                    }
-                    changed = true;
-                }
+                // Waiting stays sticky here: TUI redraws (spinners, token
+                // counters) stream bytes while the agent is parked at a
+                // prompt, so raw output cannot distinguish "user answered"
+                // from noise. The heartbeat demotes when the prompt tail is
+                // gone and fresh output exists (see heartbeat()).
+                AgentActivityStatus::WaitingForInput => {}
                 _ => {}
             }
         });
@@ -638,7 +735,7 @@ impl AgentActivityTracker {
             }
             // Only treat as completion when the finished command is (a start
             // of) the agent's own launch command. Background `ls` while an
-            // agent runs must never fire "finished".
+            // agent runs must never mark completion.
             let is_agent_launch = e
                 .agent_key
                 .as_deref()
@@ -647,17 +744,10 @@ impl AgentActivityTracker {
             if !is_agent_launch {
                 return;
             }
-            let work_ok = e
-                .work_started_at
-                .map(|start| now_ms.saturating_sub(start) >= self.min_work_ms)
-                .unwrap_or(false);
             if exit_code != 0 {
                 self.notify_locked(e, NotifyKind::Error, now_ms);
                 e.status = AgentActivityStatus::Error;
             } else {
-                if e.status == AgentActivityStatus::Working && work_ok {
-                    self.notify_locked(e, NotifyKind::Finished, now_ms);
-                }
                 e.status = AgentActivityStatus::Completed;
             }
             e.agent_key = None;
@@ -734,6 +824,7 @@ impl AgentActivityTracker {
                     // agent, later output pulses represent real activity.
                     if e.startup_pending && e.agent_key.as_deref() == Some(key) {
                         e.startup_pending = false;
+                        e.startup_since_ms = None;
                         changed = true;
                     }
                     // First detection (or re-detection after completion).
@@ -771,7 +862,41 @@ impl AgentActivityTracker {
                     // than output volume or silence. This is what lets a
                     // persistent OMP process move to Completed while it stays
                     // in the foreground after returning to its input editor.
-                    let authoritative_status = history.and_then(|h| h.activity);
+                    //
+                    // Gate Completed/Waiting/Error application on evidence
+                    // that THIS pane observed the turn: history probing is
+                    // cwd- or globally-scoped, so a fresh pane (or a sibling
+                    // sharing a cwd) can be fed another turn's finished
+                    // session tail. A pane that never saw the turn start
+                    // must not claim its completion. Rejected snapshots are
+                    // pinned via the ack guard so output on later ticks
+                    // (which promotes the pane past Idle) cannot re-adopt
+                    // the same foreign turn — a genuinely new turn arrives
+                    // with a newer timestamp and re-arms normally.
+                    let proves_turn = e.work_started_at.is_some()
+                        || matches!(
+                            e.status,
+                            AgentActivityStatus::Working
+                                | AgentActivityStatus::Thinking
+                                | AgentActivityStatus::WaitingForInput
+                        );
+                    let authoritative_status = match history.and_then(|h| h.activity) {
+                        Some(status)
+                            if matches!(
+                                status,
+                                AgentHistoryStatus::Completed
+                                    | AgentHistoryStatus::WaitingForInput
+                                    | AgentHistoryStatus::Error
+                            )
+                            && !proves_turn =>
+                        {
+                            if let Some(ts) = e.history_timestamp_ms {
+                                e.acknowledged_history_ts = Some(ts);
+                            }
+                            None
+                        }
+                        other => other,
+                    };
                     if let Some(status) = authoritative_status {
                         changed |= self.apply_history_status(e, status, now_ms);
                     }
@@ -785,11 +910,8 @@ impl AgentActivityTracker {
                     // NOTE: `work_started_at` deliberately SURVIVES silence.
                     // An agent can do 10s of output then run a long silent
                     // tool call (build/upload) and exit with no further
-                    // output; if silence cleared the clock, the "finished"
-                    // notification (heartbeat None-branch) would be suppressed
-                    // for a genuinely completed agent. The min_work gate + 15s
-                    // cooldown already prevent spam, so keeping the clock
-                    // across silence is safe.
+                    // output; clearing the clock on silence would make the
+                    // completion transition look instantaneous.
                     if matches!(
                         e.status,
                         AgentActivityStatus::Working | AgentActivityStatus::Thinking
@@ -797,40 +919,85 @@ impl AgentActivityTracker {
                         && e.last_output_at > 0
                         && now_ms.saturating_sub(e.last_output_at) > self.idle_after_ms
                     {
+                        e.demoted_from_working =
+                            e.status == AgentActivityStatus::Working;
                         e.status = AgentActivityStatus::Idle;
                         changed = true;
                     }
-                    // Waiting-for-input output remains a useful fallback for
-                    // native agents and for OMP confirmation prompts, but do
-                    // not let stale tail text undo an authoritative completed
-                    // or error state from the session log.
+                    // Waiting-for-input output tail remains a useful fallback
+                    // for native agents and for OMP confirmation prompts, but
+                    // do not let stale tail text undo an authoritative
+                    // completed or error state from the session log.
+                    let tail_waiting = output_tail
+                        .map(tail_looks_waiting_for_input)
+                        .unwrap_or(false);
                     if !matches!(
                         authoritative_status,
                         Some(AgentHistoryStatus::Completed | AgentHistoryStatus::Error)
                     ) && e.status != AgentActivityStatus::WaitingForInput
-                        && output_tail
-                            .map(tail_looks_waiting_for_input)
-                            .unwrap_or(false)
+                        && tail_waiting
                     {
                         e.status = AgentActivityStatus::WaitingForInput;
+                        e.waiting_since = Some(now_ms);
                         changed = true;
                         self.notify_locked(e, NotifyKind::NeedsAttention, now_ms);
+                    } else if e.status == AgentActivityStatus::WaitingForInput
+                        && !tail_waiting
+                        && authoritative_status.is_none()
+                        && e.waiting_since
+                            .is_some_and(|since| e.last_output_at > since)
+                    {
+                        // Leave waiting only with POSITIVE evidence the prompt
+                        // was answered: the prompt text scrolled off the tail
+                        // while fresh output arrived after entry. Output alone
+                        // never demotes (sticky against TUI redraws), and an
+                        // authoritative Working record is handled (kept sticky)
+                        // by apply_status above.
+                        e.status = AgentActivityStatus::Working;
+                        e.waiting_since = None;
+                        if e.work_started_at.is_none() {
+                            e.work_started_at = Some(now_ms);
+                        }
+                        changed = true;
                     }
                 }
                 None => {
                     // Foreground returned to the shell while an agent was
-                    // working → positive completion signal.
-                    if e.agent_key.is_some() {
-                        let work_ok = e
-                            .work_started_at
-                            .map(|start| now_ms.saturating_sub(start) >= self.min_work_ms)
-                            .unwrap_or(false);
-                        if e.status == AgentActivityStatus::Working && work_ok {
-                            self.notify_locked(e, NotifyKind::Finished, now_ms);
-                        }
+                    // working → positive completion signal. Two gates:
+                    // 1. startup_pending: the heartbeat has never positively
+                    //    confirmed the agent in the foreground — this is the
+                    //    launch race (spawn → ps still says shell for a tick
+                    //    or two), not a completion.
+                    // 2. proof of work: the pane was never observed Working
+                    //    (and isn't currently past it), so the match was a
+                    //    transient classification (e.g. a node process merely
+                    //    under a dir named "claude"), not a real agent run.
+                    let proved_work = e.work_started_at.is_some()
+                        || matches!(
+                            e.status,
+                            AgentActivityStatus::Working
+                                | AgentActivityStatus::Thinking
+                                | AgentActivityStatus::WaitingForInput
+                        );
+                    if e.agent_key.is_some() && !e.startup_pending && proved_work {
                         e.status = AgentActivityStatus::Completed;
                         e.agent_key = None;
                         e.work_started_at = None;
+                        changed = true;
+                    } else if e.startup_pending
+                        && e.startup_since_ms.is_some_and(|since| {
+                            now_ms.saturating_sub(since) > STARTUP_GRACE_MS
+                        })
+                    {
+                        // Grace window elapsed without a positive foreground
+                        // confirmation: the spawn raced past the heartbeat
+                        // (fast one-shot) or the exec failed. Release the
+                        // pending claim so the pane can complete/notify
+                        // normally on future launches instead of pinning
+                        // agent_key + startup_pending forever.
+                        e.startup_pending = false;
+                        e.startup_since_ms = None;
+                        e.agent_key = None;
                         changed = true;
                     }
                 }
@@ -853,21 +1020,18 @@ impl AgentActivityTracker {
         status: AgentHistoryStatus,
         now_ms: u64,
     ) -> bool {
-        // Heartbeat-path reconciliation honors the min-work gate so a
-        // short-lived startup probe cannot produce a "finished" alert.
-        self.apply_status(entry, status, now_ms, true)
+        self.apply_status(entry, status, now_ms)
     }
 
     /// Apply an authoritative status pushed by the agent itself (OSC 6337).
-    /// Same transitions as [`Self::apply_history_status`], but the min-work
-    /// gate is bypassed — an explicit agent signal is always trustworthy.
+    /// Same transitions as [`Self::apply_history_status`].
     fn apply_pushed_status(
         &self,
         entry: &mut PaneActivity,
         status: AgentHistoryStatus,
         now_ms: u64,
     ) -> bool {
-        self.apply_status(entry, status, now_ms, false)
+        self.apply_status(entry, status, now_ms)
     }
 
     fn apply_status(
@@ -875,14 +1039,30 @@ impl AgentActivityTracker {
         entry: &mut PaneActivity,
         status: AgentHistoryStatus,
         now_ms: u64,
-        gate_min_work: bool,
     ) -> bool {
+        // Acknowledged turn: the user already clicked this pane's highlight
+        // away. Heartbeats re-read the same session-log status; re-applying it
+        // after transient redraw output (fullscreen toggles respawn no work —
+        // they only pump redraw bytes) made cleared highlights reappear as if
+        // the agent had finished again (@acknowledge_attention).
+        if entry.acknowledged_history_ts.is_some()
+            && entry.acknowledged_history_ts == entry.history_timestamp_ms
+            && matches!(
+                status,
+                AgentHistoryStatus::Completed
+                    | AgentHistoryStatus::WaitingForInput
+                    | AgentHistoryStatus::Error
+            )
+        {
+            return false;
+        }
         match status {
             AgentHistoryStatus::Working => {
                 // A durable log can say that the turn is still in flight while
                 // the terminal is visibly paused at a permission prompt. Keep
-                // the higher-fidelity WaitingForInput state until user output
-                // resumes (on_pty_output transitions it back to Working).
+                // the higher-fidelity WaitingForInput state; heartbeat demotes
+                // it only when the prompt tail is gone and fresh output exists
+                // (raw output pulses are redraw noise, never evidence).
                 if matches!(
                     entry.status,
                     AgentActivityStatus::Working | AgentActivityStatus::WaitingForInput
@@ -899,26 +1079,6 @@ impl AgentActivityTracker {
                 if entry.status == AgentActivityStatus::Completed {
                     return false;
                 }
-                if gate_min_work {
-                    let work_ok = entry
-                        .work_started_at
-                        .map(|start| now_ms.saturating_sub(start) >= self.min_work_ms)
-                        .unwrap_or(false);
-                    // WaitingForInput follows real work: the turn_end marker
-                    // or the waiting-tail heuristic can move the pane off
-                    // Working before the session-log poll observes the
-                    // settled turn. Requiring Working here made the faster
-                    // signal permanently cannibalize the "finished" alert.
-                    let was_active = matches!(
-                        entry.status,
-                        AgentActivityStatus::Working | AgentActivityStatus::WaitingForInput
-                    );
-                    if was_active && work_ok {
-                        self.notify_locked(entry, NotifyKind::Finished, now_ms);
-                    }
-                } else {
-                    self.notify_locked(entry, NotifyKind::Finished, now_ms);
-                }
                 entry.status = AgentActivityStatus::Completed;
                 entry.work_started_at = None;
                 true
@@ -928,6 +1088,7 @@ impl AgentActivityTracker {
                     return false;
                 }
                 entry.status = AgentActivityStatus::WaitingForInput;
+                entry.waiting_since = Some(now_ms);
                 self.notify_locked(entry, NotifyKind::NeedsAttention, now_ms);
                 true
             }
@@ -958,9 +1119,9 @@ impl AgentActivityTracker {
         // Record the cooldown before pushing so a failing push cannot cause
         // a retry storm on the next heartbeat.
         e.last_notified_at.insert(kind, now_ms);
-        let Some(ref svc) = self.notifications else {
+        if self.notifications.is_none() {
             return;
-        };
+        }
         let label = e
             .agent_key
             .as_deref()
@@ -971,11 +1132,6 @@ impl AgentActivityTracker {
                 NotificationType::Info,
                 "Agent started",
                 format!("{label} started working in pane {}", e.pane_id),
-            ),
-            NotifyKind::Finished => (
-                NotificationType::Success,
-                "Agent finished",
-                format!("{label} finished its work in pane {}", e.pane_id),
             ),
             NotifyKind::NeedsAttention => (
                 NotificationType::NeedsInput,
@@ -1023,7 +1179,10 @@ impl AgentActivityTracker {
             pane_id: Some(e.pane_id.clone()),
             requires_action: matches!(kind, NotifyKind::NeedsAttention),
         };
-        svc.push_notification(event);
+        self.pending_notifications
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(event);
     }
 
     fn emit_status(&self, pane_id: &str) {
@@ -1071,9 +1230,25 @@ impl AgentActivityTracker {
         let _lifecycle = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
         self.entry_or_insert(pane_id);
         self.update(pane_id, |e| {
-            if e.agent_key.is_none() {
+            // A launch on a pane whose previous turn ended (Completed/Error)
+            // is a NEW run even if agent_key is still set from a stale
+            // completion — terminal state must not survive into it.
+            if e.agent_key.is_none()
+                || matches!(
+                    e.status,
+                    AgentActivityStatus::Completed | AgentActivityStatus::Error
+                ) {
                 e.agent_key = Some(agent_key.to_string());
                 e.startup_pending = true;
+                e.startup_since_ms = Some(now_ms);
+                // A relaunch on this pane invalidates the previous turn's
+                // terminal state — Completed/Waiting/Error must not survive
+                // into the new run and pulse for an agent that just started.
+                e.status = AgentActivityStatus::Idle;
+                e.session_id = None;
+                e.work_started_at = None;
+                e.history_timestamp_ms = None;
+                e.acknowledged_history_ts = None;
                 self.notify_locked(e, NotifyKind::Started, now_ms);
             }
         });
@@ -1215,16 +1390,15 @@ pub fn tail_looks_waiting_for_input(tail: &str) -> bool {
 mod tests {
     use super::*;
     use crate::notification::NotificationService;
-    use std::sync::Mutex as StdMutex;
+    use parking_lot::Mutex as StdMutex;
 
     fn tracker() -> (AgentActivityTracker, Arc<StdMutex<Vec<serde_json::Value>>>) {
         let mut t = AgentActivityTracker::new(Some(Arc::new(NotificationService::new())));
         t.idle_after_ms = 100;
-        t.min_work_ms = 50;
         t.notify_cooldown_ms = 50;
         let events = Arc::new(StdMutex::new(Vec::new()));
         let ev = events.clone();
-        t.set_event_emitter(move |_channel, data| ev.lock().unwrap().push(data.clone()));
+        t.set_event_emitter(move |_channel, data| ev.lock().push(data.clone()));
         (t, events)
     }
 
@@ -1248,7 +1422,6 @@ mod tests {
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
         let emitted: Vec<String> = events
             .lock()
-            .unwrap()
             .iter()
             .map(|v| {
                 v.get("status")
@@ -1305,16 +1478,88 @@ mod tests {
     }
 
     #[test]
-    fn waiting_input_returns_to_working_on_answer() {
+    fn waiting_input_survives_redraw_noise_and_returns_on_heartbeat() {
         let (t, _events) = tracker();
         t.heartbeat("p1", Some("claude"), None, None, 1000);
         t.on_pty_output("p1", 1200);
         t.on_pty_output("p1", 1201);
         t.heartbeat("p1", Some("claude"), None, Some("(y/n)"), 2000);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
-        // User answers → output resumes → working again.
+        // TUI redraws (spinner/token counter) stream bytes while parked at
+        // the prompt: raw output must never demote waiting → working.
         t.on_pty_output("p1", 2100);
+        t.on_pty_output("p1", 2200);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+        // Heartbeat still sees the prompt → stays waiting.
+        t.heartbeat("p1", Some("claude"), None, Some("(y/n)"), 3000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+        // User answered: prompt scrolled off the tail AND fresh output
+        // arrived after entry → the heartbeat demotes to working.
+        t.on_pty_output("p1", 3200);
+        t.heartbeat("p1", Some("claude"), None, Some("compiling..."), 4000);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
+    }
+
+    #[test]
+    fn waiting_never_flaps_under_redraw_flood_at_production_cadence() {
+        let (t, events) = tracker();
+        // Real timings: heartbeat ticks every 1500ms (state.rs), PTY read
+        // loop flushes every 8ms (pty.rs). A TUI parked at a permission
+        // prompt redraws constantly → output flood between heartbeats.
+        t.heartbeat("p1", Some("claude"), None, None, 0);
+        t.on_pty_output("p1", 10);
+        t.on_pty_output("p1", 20);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
+        // Agent reaches a prompt; next heartbeat sees the marker in the tail.
+        t.heartbeat("p1", Some("claude"), None, Some("(y/n)"), 1500);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+        let baseline = events.lock().len();
+        // 6 seconds of TUI redraw flood (750 output pulses) with 4 heartbeat
+        // ticks that keep seeing the prompt — the ring must never flicker.
+        let mut now = 1500u64;
+        for tick in 1..=4u64 {
+            for i in 1..=187u64 {
+                t.on_pty_output("p1", now + i * 8);
+            }
+            now = 1500 * (tick + 1);
+            t.heartbeat("p1", Some("claude"), None, Some("(y/n)"), now);
+            assert_eq!(
+                status_of(&t, "p1"),
+                AgentActivityStatus::WaitingForInput,
+                "ring state flapped after heartbeat {tick}"
+            );
+        }
+        // No agent:status emission after entering waiting — the frontend ring
+        // is a pure function of this stream, so zero emissions = zero flicker.
+        assert_eq!(
+            events.lock().len(),
+            baseline,
+            "redraw noise re-emitted status; the pane border would strobe"
+        );
+        // User answers: prompt scrolls off, real output flows, heartbeat demotes.
+        t.on_pty_output("p1", now + 8);
+        t.heartbeat(
+            "p1",
+            Some("claude"),
+            None,
+            Some("applying edits..."),
+            now + 1500,
+        );
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
+    }
+
+    #[test]
+    fn waiting_input_without_answered_output_stays_waiting() {
+        let (t, _events) = tracker();
+        t.heartbeat("p1", Some("claude"), None, None, 1000);
+        t.on_pty_output("p1", 1200);
+        t.on_pty_output("p1", 1201);
+        t.heartbeat("p1", Some("claude"), None, Some("(y/n)"), 2000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+        // Prompt text scrolled off by a redraw flush but NO output arrived
+        // since entry → not evidence of an answer; stays waiting.
+        t.heartbeat("p1", Some("claude"), None, Some("plain text"), 3000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
     }
 
     #[test]
@@ -1327,34 +1572,21 @@ mod tests {
         t.on_pty_output("p1", 1201);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
 
-        // Silence alone → idle badge, NO "finished" notification.
+        // Silence alone → idle badge, NO completion.
         t.heartbeat("p1", Some("claude"), None, Some("some output here"), 1500);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
         assert_eq!(svc_arc.get_history(None).len(), 0);
 
-        // Working again, then the agent process exits to the shell → finished.
+        // Working again, then the agent process exits to the shell → completed.
         t.on_pty_output("p1", 1600);
         t.on_pty_output("p1", 1601);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
         t.heartbeat("p1", None, None, None, 2000);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
-        let history = svc_arc.get_history(None);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].title, "Agent finished");
+        // Pane-scoped attention records are gated at push_notification: the
+        // pane border highlight is the only signal now.
+        assert_eq!(svc_arc.get_history(None).len(), 0);
         let _ = events;
-    }
-
-    #[test]
-    fn completion_respects_min_work_gate() {
-        let (t, _events) = tracker();
-        let svc = t.notifications.clone().unwrap();
-        // Very short work (< min_work_ms): no notification.
-        t.heartbeat("p1", Some("codex"), None, None, 1000);
-        t.on_pty_output("p1", 1005);
-        t.on_pty_output("p1", 1006);
-        t.heartbeat("p1", None, None, None, 1010);
-        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
-        assert_eq!(svc.get_history(None).len(), 0);
     }
 
     #[test]
@@ -1371,67 +1603,8 @@ mod tests {
             2000,
         );
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
-        let history = svc.get_history(None);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].r#type, NotificationType::NeedsInput);
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
         let _ = events;
-    }
-
-    #[test]
-    fn notification_cooldown_prevents_spam() {
-        let (t, _events) = tracker();
-        let svc = t.notifications.clone().unwrap();
-        t.heartbeat("p1", Some("claude"), None, None, 1000);
-        t.on_pty_output("p1", 1100);
-        t.on_pty_output("p1", 1101);
-        t.heartbeat("p1", None, None, None, 1200); // finished #1
-        assert_eq!(svc.get_history(None).len(), 1);
-
-        // New turn → working → finished again within cooldown → no notify.
-        t.heartbeat("p1", Some("claude"), None, None, 1220);
-        t.on_pty_output("p1", 1230);
-        t.on_pty_output("p1", 1231);
-        t.heartbeat("p1", None, None, None, 1240);
-        assert_eq!(svc.get_history(None).len(), 1);
-
-        // After cooldown elapses, a third finish notifies again (with a
-        // work window that clears the min_work gate).
-        t.heartbeat("p1", Some("claude"), None, None, 1400);
-        t.on_pty_output("p1", 1410);
-        t.on_pty_output("p1", 1411);
-        t.heartbeat("p1", None, None, None, 1470);
-        assert_eq!(svc.get_history(None).len(), 2);
-    }
-
-    #[test]
-    fn notify_config_gates_notifications() {
-        let (t, _events) = tracker();
-        let svc = t.notifications.clone().unwrap();
-
-        // Finished notifications off → no history entries.
-        t.set_notify_config(AgentNotifyConfig {
-            finished: false,
-            needs_attention: true,
-            error: true,
-        });
-        t.heartbeat("p1", Some("claude"), None, None, 1000);
-        t.on_pty_output("p1", 1100);
-        t.on_pty_output("p1", 1101);
-        t.heartbeat("p1", None, None, None, 1200);
-        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
-        assert_eq!(svc.get_history(None).len(), 0);
-
-        // Re-enabled → a fresh finish notifies again.
-        t.set_notify_config(AgentNotifyConfig {
-            finished: true,
-            needs_attention: true,
-            error: true,
-        });
-        t.heartbeat("p1", Some("claude"), None, None, 1400);
-        t.on_pty_output("p1", 1500);
-        t.on_pty_output("p1", 1501);
-        t.heartbeat("p1", None, None, None, 1600);
-        assert_eq!(svc.get_history(None).len(), 1);
     }
 
     #[test]
@@ -1439,7 +1612,6 @@ mod tests {
         let (t, _events) = tracker();
         let svc = t.notifications.clone().unwrap();
         t.set_notify_config(AgentNotifyConfig {
-            finished: true,
             needs_attention: false,
             error: true,
         });
@@ -1459,7 +1631,6 @@ mod tests {
     #[test]
     fn notify_config_defaults_all_on() {
         let cfg = AgentNotifyConfig::default();
-        assert!(cfg.enabled(NotifyKind::Finished));
         assert!(cfg.enabled(NotifyKind::NeedsAttention));
         assert!(cfg.enabled(NotifyKind::Error));
     }
@@ -1486,8 +1657,7 @@ mod tests {
         // The shell reports `claude` finished → completion.
         t.on_shell_command_finished("p1", "claude --dangerously-skip-permissions", 1200);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
-        assert_eq!(svc.get_history(None).len(), 1);
-        assert_eq!(svc.get_history(None)[0].title, "Agent finished");
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
     }
 
     #[test]
@@ -1499,8 +1669,7 @@ mod tests {
         t.on_pty_output("p1", 1002);
         t.on_shell_command_finished_with_exit_code("p1", "codex", 1, 1010);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Error);
-        assert_eq!(svc.get_history(None).len(), 1);
-        assert_eq!(svc.get_history(None)[0].r#type, NotificationType::TaskError);
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
     }
 
     #[test]
@@ -1547,8 +1716,59 @@ mod tests {
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
         t.heartbeat("p1", Some("omp"), Some(&completed), None, 2000);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
-        assert_eq!(svc.get_history(None).len(), 1);
-        assert_eq!(svc.get_history(None)[0].title, "Agent finished");
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
+    }
+
+    #[test]
+    fn acknowledged_completed_turn_does_not_rearm_after_redraw() {
+        let (t, _events) = tracker();
+        let svc = t.notifications.clone().unwrap();
+        let working = HistorySnapshot {
+            task_title: "refactor the auth module".into(),
+            session_id: "omp-1".into(),
+            timestamp_ms: 1000,
+            raw_prompt: "refactor the auth module".into(),
+            activity: Some(AgentHistoryStatus::Working),
+        };
+        let completed = HistorySnapshot {
+            activity: Some(AgentHistoryStatus::Completed),
+            timestamp_ms: 2000,
+            ..working.clone()
+        };
+
+        t.heartbeat("p1", Some("omp"), Some(&working), None, 1000);
+        t.heartbeat("p1", Some("omp"), Some(&completed), None, 2000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+
+        // User clicks the pane: frontend clears locally and acknowledges the
+        // current turn in the tracker.
+        t.acknowledge_attention("p1");
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
+
+        // Fullscreen toggle: redraw bytes wake the pane, then the next
+        // heartbeat re-reads the same authoritative Completed turn. The
+        // acknowledgement pins that turn, so it must NOT re-apply.
+        t.on_pty_output("p1", 3000);
+        t.heartbeat("p1", Some("omp"), Some(&completed), None, 4000);
+        assert_ne!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+
+        // A genuinely NEW turn re-arms and notifies again.
+        let working_two = HistorySnapshot {
+            task_title: "next task".into(),
+            timestamp_ms: 5000,
+            raw_prompt: "next task".into(),
+            activity: Some(AgentHistoryStatus::Working),
+            ..working.clone()
+        };
+        let completed_two = HistorySnapshot {
+            activity: Some(AgentHistoryStatus::Completed),
+            timestamp_ms: 6000,
+            ..working_two.clone()
+        };
+        t.heartbeat("p1", Some("omp"), Some(&working_two), None, 5000);
+        t.heartbeat("p1", Some("omp"), Some(&completed_two), None, 6000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
     }
 
     #[test]
@@ -1585,7 +1805,9 @@ mod tests {
         t.heartbeat("p1", Some("omp"), Some(&working_two), None, 3000);
         t.heartbeat("p1", Some("omp"), Some(&completed_two), None, 4000);
 
-        assert_eq!(svc.get_history(None).len(), 2);
+        // Multiple turn completions still transition paned status; records are
+        // gated at push_notification (pane ring highlight is the signal).
+        assert_eq!(svc.get_history(None).len(), 0);
     }
 
     #[test]
@@ -1617,11 +1839,11 @@ mod tests {
     }
 
     #[test]
-    fn waiting_state_does_not_cannibalize_finished_notification() {
+    fn waiting_state_still_transitions_to_completed() {
         // The waiting-for-input signal (tail matcher or turn_end marker) is
         // faster than the session-log poll: by the time the settled turn is
         // observed, the pane is already WaitingForInput. Completion must
-        // still produce the "finished" notification.
+        // still apply from the WaitingForInput state.
         let (t, _events) = tracker();
         let svc = t.notifications.clone().unwrap();
         let working = HistorySnapshot {
@@ -1648,10 +1870,7 @@ mod tests {
         t.heartbeat("p1", Some("omp"), Some(&completed), None, 2000);
 
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
-        assert!(svc
-            .get_history(None)
-            .iter()
-            .any(|n| n.title == "Agent finished"));
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
     }
 
     #[test]
@@ -1767,7 +1986,7 @@ mod tests {
         assert_eq!(evicted.len(), 2);
         assert!(t.pane_ids().is_empty());
         assert_eq!(svc.get_history(None).len(), history_len);
-        let emitted = events.lock().unwrap().len();
+        let emitted = events.lock().len();
 
         // Never-output panes (last_output_at == 0) are not evicted by time.
         t.heartbeat("silent", None, None, None, 0);
@@ -1775,7 +1994,92 @@ mod tests {
             .prune_stale_panes(90_000_000, 24 * 60 * 60 * 1000)
             .is_empty());
         assert!(t.pane_ids().contains(&"silent".to_string()));
-        assert_eq!(events.lock().unwrap().len(), emitted);
+        assert_eq!(events.lock().len(), emitted);
+    }
+
+    #[test]
+    fn launch_race_never_completes_just_started_agent() {
+        // Spawn path primes the tracker with agent_key + startup_pending;
+        // ps may still report the shell foreground for the first heartbeat
+        // or two while the binary execs. That transient must not complete.
+        let (t, _events) = tracker();
+        t.notify_agent_started("p1", "claude", 1000);
+        t.heartbeat("p1", None, None, None, 1500);
+        t.heartbeat("p1", None, None, None, 2000);
+        assert_ne!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        // Once the foreground positively confirms the agent and work is
+        // observed, a later shell return completes normally.
+        t.heartbeat("p1", Some("claude"), None, None, 2500);
+        t.on_pty_output("p1", 2600);
+        t.on_pty_output("p1", 2700);
+        t.heartbeat("p1", Some("claude"), None, None, 3500);
+        t.heartbeat("p1", None, None, None, 5000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+    }
+
+    #[test]
+    fn relaunch_after_completion_resets_to_idle_not_completed() {
+        let (t, _events) = tracker();
+        // Run a short turn to a real completion.
+        t.notify_agent_started("p1", "claude", 1000);
+        t.heartbeat("p1", Some("claude"), None, None, 1500);
+        t.on_pty_output("p1", 1600);
+        t.on_pty_output("p1", 1700);
+        t.heartbeat("p1", Some("claude"), None, None, 2500);
+        t.heartbeat("p1", None, None, None, 4000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        // Same pane, same agent relaunched: stale Completed must not leak
+        // into the new run.
+        t.notify_agent_started("p1", "claude", 5000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
+        // And the startup window still protects this fresh run.
+        t.heartbeat("p1", None, None, None, 5500);
+        assert_ne!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+    }
+
+    #[test]
+    fn never_confirmed_spawn_recovers_after_grace_window() {
+        // Fast one-shot run that exits between heartbeat ticks: the startup
+        // claim must expire instead of pinning agent_key forever and blocking
+        // all future launches on this pane.
+        let (t, _events) = tracker();
+        t.notify_agent_started("p1", "claude", 1000);
+        t.heartbeat("p1", None, None, None, 2000);
+        assert_ne!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        t.heartbeat("p1", None, None, None, 1000 + 6_000);
+        // Recovered: a second launch is accepted and runs the normal cycle.
+        t.notify_agent_started("p1", "claude", 8_000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
+        t.heartbeat("p1", Some("claude"), None, None, 9_000);
+        t.on_pty_output("p1", 9_100);
+        t.on_pty_output("p1", 9_200);
+        t.heartbeat("p1", Some("claude"), None, None, 10_000);
+        t.heartbeat("p1", None, None, None, 11_000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+    }
+
+    #[test]
+    fn stale_history_completion_ignored_for_never_worked_pane() {
+        // A pane that just (re)launched can be fed ANOTHER turn's finished
+        // session log (shared cwd, or the process's own previous turn). The
+        // tracker never saw this turn start → no completion authority.
+        let (t, _events) = tracker();
+        t.heartbeat("p1", Some("claude"), None, None, 1000);
+        let stale_completed = HistorySnapshot {
+            task_title: "old turn".into(),
+            session_id: "shared-cwd-session".into(),
+            timestamp_ms: 900,
+            raw_prompt: "old turn".into(),
+            activity: Some(AgentHistoryStatus::Completed),
+        };
+        t.heartbeat("p1", Some("claude"), Some(&stale_completed), None, 1500);
+        assert_ne!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        // The rejection is pinned: later output promoting the pane past Idle
+        // must not let the SAME stale snapshot stain it on a later tick.
+        t.on_pty_output("p1", 1600);
+        t.on_pty_output("p1", 1700);
+        t.heartbeat("p1", Some("claude"), Some(&stale_completed), None, 2500);
+        assert_ne!(status_of(&t, "p1"), AgentActivityStatus::Completed);
     }
 
     #[test]
@@ -1854,8 +2158,8 @@ mod tests {
         let (t, _events) = tracker();
         let svc = t.notifications.clone().unwrap();
         // The heartbeat never observed the agent working, yet an explicit
-        // push must still fire a "finished" notification — the min-work gate
-        // is bypassed for agent-pushed signals.
+        // push must still mark the pane completed — agent-pushed signals are
+        // always authoritative.
         t.on_agent_lifecycle(
             "p1",
             &lifecycle_event(AgentLifecycleKind::Complete, Some("claude")),
@@ -1863,9 +2167,7 @@ mod tests {
             1000,
         );
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
-        let history = svc.get_history(None);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].title, "Agent finished");
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
     }
 
     #[test]
@@ -1879,10 +2181,7 @@ mod tests {
             1000,
         );
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
-        let history = svc.get_history(None);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].r#type, NotificationType::NeedsInput);
-        assert!(history[0].requires_action);
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
     }
 
     #[test]
@@ -1896,9 +2195,7 @@ mod tests {
             1000,
         );
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Error);
-        let history = svc.get_history(None);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].r#type, NotificationType::TaskError);
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
     }
 
     #[test]
@@ -1920,16 +2217,16 @@ mod tests {
         let (t, _events) = tracker();
         let svc = t.notifications.clone().unwrap();
         // No heartbeat classified the pane yet; the event's agent key is
-        // adopted so the notification carries the real label.
+        // adopted for the status payload label.
         t.on_agent_lifecycle(
             "p1",
             &lifecycle_event(AgentLifecycleKind::Request, Some("freebuff")),
             None,
             1000,
         );
-        let history = svc.get_history(None);
-        assert_eq!(history.len(), 1);
-        assert!(history[0].message.contains("Freebuff"));
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::WaitingForInput);
+        // Paned attention records are gated; status carry is the signal.
+        assert_eq!(svc.get_history(None).len(), 0);
     }
 
     #[test]
@@ -1940,7 +2237,7 @@ mod tests {
         t.on_agent_lifecycle("p1", &ev, None, 1000);
         t.on_agent_lifecycle("p1", &ev, None, 1100);
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
-        assert_eq!(svc.get_history(None).len(), 1);
+        assert_eq!(svc.get_history(None).len(), 0); // gated: pane ring only
     }
 
     #[test]
@@ -1959,5 +2256,93 @@ mod tests {
         );
         assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
         assert_eq!(svc.get_history(None).len(), 0);
+    }
+
+    #[test]
+    fn redraw_output_never_tears_down_completed() {
+        let (t, _events) = tracker();
+        let working = HistorySnapshot {
+            task_title: "build the thing".into(),
+            session_id: "omp-1".into(),
+            timestamp_ms: 1000,
+            raw_prompt: "build the thing".into(),
+            activity: Some(AgentHistoryStatus::Working),
+        };
+        let completed = HistorySnapshot {
+            activity: Some(AgentHistoryStatus::Completed),
+            timestamp_ms: 2000,
+            ..working.clone()
+        };
+        t.heartbeat("p1", Some("omp"), Some(&working), None, 1000);
+        t.heartbeat("p1", Some("omp"), Some(&completed), None, 2000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+
+        // Finished TUIs keep emitting redraw bytes; Completed must hold
+        // across an arbitrary output flood and repeated heartbeats.
+        for i in 0..50 {
+            t.on_pty_output("p1", 2100 + i);
+        }
+        t.heartbeat("p1", Some("omp"), Some(&completed), None, 3000);
+        t.on_pty_output("p1", 3100);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+    }
+
+    #[test]
+    fn new_turn_history_record_moves_completed_back_to_working() {
+        let (t, _events) = tracker();
+        let working = HistorySnapshot {
+            task_title: "task one".into(),
+            session_id: "omp-1".into(),
+            timestamp_ms: 1000,
+            raw_prompt: "task one".into(),
+            activity: Some(AgentHistoryStatus::Working),
+        };
+        let completed = HistorySnapshot {
+            activity: Some(AgentHistoryStatus::Completed),
+            timestamp_ms: 2000,
+            ..working.clone()
+        };
+        t.heartbeat("p1", Some("omp"), Some(&working), None, 1000);
+        t.heartbeat("p1", Some("omp"), Some(&completed), None, 2000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+
+        // Stray redraw no longer wakes the pane; only a NEW turn (newer
+        // history timestamp, Working record) does.
+        t.on_pty_output("p1", 2500);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Completed);
+        let working_two = HistorySnapshot {
+            task_title: "task two".into(),
+            timestamp_ms: 4000,
+            raw_prompt: "task two".into(),
+            activity: Some(AgentHistoryStatus::Working),
+            ..working.clone()
+        };
+        t.heartbeat("p1", Some("omp"), Some(&working_two), None, 4000);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
+    }
+
+    #[test]
+    fn silence_demoted_working_resumes_as_working_not_thinking() {
+        let (t, _events) = tracker();
+        t.heartbeat("p1", Some("claude"), None, None, 1000);
+        t.on_pty_output("p1", 1100);
+        t.on_pty_output("p1", 1101);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
+
+        // No authoritative record → silence (idle_after_ms = 100) → Idle.
+        t.heartbeat("p1", Some("claude"), None, None, 1000 + 1202);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Idle);
+
+        // Output resumes: straight back to Working, no Thinking flash.
+        t.on_pty_output("p1", 1000 + 1203);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Working);
+    }
+
+    #[test]
+    fn idle_agent_first_pulse_still_thinking() {
+        let (t, _events) = tracker();
+        t.heartbeat("p1", Some("claude"), None, None, 1000);
+        t.on_pty_output("p1", 1100);
+        assert_eq!(status_of(&t, "p1"), AgentActivityStatus::Thinking);
     }
 }

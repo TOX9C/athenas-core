@@ -32,7 +32,8 @@ pub fn discover(dir: &Path) -> Vec<ContextFile> {
         Ok(d) => Some(d),
         Err(_) => return out,
     };
-    while let Some(cur) = current {
+    loop {
+        let Some(cur) = current else { break };
         for name in CONTEXT_FILENAMES {
             let candidate = cur.join(name);
             if candidate.is_file() {
@@ -50,9 +51,9 @@ pub fn discover(dir: &Path) -> Vec<ContextFile> {
         if home.as_ref().is_some_and(|h| &cur == h) {
             break;
         }
-        match cur.parent() {
-            Some(p) => current = Some(p.to_path_buf()),
-            None => break,
+        current = cur.parent().map(|p| p.to_path_buf());
+        if current.is_none() {
+            break;
         }
     }
     out

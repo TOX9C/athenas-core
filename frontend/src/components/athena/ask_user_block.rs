@@ -27,7 +27,15 @@ pub fn AskUserBlockView(props: AskUserBlockViewProps) -> Element {
     // Submit an answer to the backend and settle the block into its
     // answered state. A move-closure over Copy values only, so it can be
     // copied into every handler; each handler clones its own strings.
-    let submit = move |request_id: String, response: String| {
+    // `submitting` gates against a fast double click/Enter: the store's
+    // `answered` flag is only set AFTER the async send completes, so it
+    // cannot catch a second click that fires while the first is in flight.
+    let mut submitting = use_signal(|| false);
+    let mut submit = move |request_id: String, response: String| {
+        if submitting() {
+            return;
+        }
+        submitting.set(true);
         let req_id = request_id.clone();
         let resp = response.clone();
         let mut ath = athena;

@@ -2,7 +2,12 @@ use crate::components::shared::toast::{use_toast_store, Toast, ToastType};
 use crate::tauri_bridge;
 use dioxus::prelude::*;
 use std::cell::RefCell;
+use wasm_bindgen::JsValue;
 use std::rc::Rc;
+use std::sync::atomic::AtomicU64;
+
+/// Monotonic suffix so same-millisecond plugin toasts keep distinct ids.
+static NEXT_TOAST_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Plugin registry entry.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -30,7 +35,7 @@ impl PluginBusState {
     }
 
     /// Apply a parsed backend plugin event to the store.
-    pub fn apply_plugin_event(&mut self, event: &PluginBusEvent) {
+    fn apply_plugin_event(&mut self, event: &PluginBusEvent) {
         match event {
             PluginBusEvent::RegistryUpdated(entries) => {
                 for entry in entries {
@@ -179,7 +184,17 @@ fn parse_plugin_bus_event(channel: &str, payload: &str) -> Option<PluginBusEvent
             let plugins_arr = val.get("registry")?.as_array()?;
             let mut entries = Vec::with_capacity(plugins_arr.len());
             for p in plugins_arr {
-                let id = p.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let id = p
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                // An entry without an id would upsert into a shared "" key
+                // (every blank card colliding) — skip it, mirroring the
+                // empty-`pluginId` filter on the event channels above.
+                if id.is_empty() {
+                    continue;
+                }
                 let name = p
                     .get("name")
                     .and_then(|v| v.as_str())
@@ -191,10 +206,7 @@ fn parse_plugin_bus_event(channel: &str, payload: &str) -> Option<PluginBusEvent
                     .unwrap_or("")
                     .to_string();
                 let enabled = p.get("status").and_then(|v| v.as_str()) == Some("enabled");
-                let error = p
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string);
+                let error = p.get("error").and_then(|v| v.as_str()).map(str::to_string);
                 entries.push(PluginEntry {
                     id,
                     name,
@@ -254,20 +266,27 @@ pub fn PluginEventBus() -> Element {
                 // Toasts need title/message from the payload; capture them
                 // before moving the event into the store.
                 let toast_info = match &event {
-                    PluginBusEvent::Registered { name, .. } => {
-                        Some((ToastType::Success, "Plugin Connected".to_string(), format!("{} is now connected", name), 3000))
-                    }
-                    PluginBusEvent::Error { id, error } => {
-                        Some((ToastType::Error, "Plugin Error".to_string(), format!("{}: {}", id, error), 5000))
-                    }
+                    PluginBusEvent::Registered { name, .. } => Some((
+                        ToastType::Success,
+                        "Plugin Connected".to_string(),
+                        format!("{} is now connected", name),
+                        3000,
+                    )),
+                    PluginBusEvent::Error { id, error } => Some((
+                        ToastType::Error,
+                        "Plugin Error".to_string(),
+                        format!("{}: {}", id, error),
+                        5000,
+                    )),
                     _ => None,
                 };
                 plugin_store.write().apply_plugin_event(&event);
                 if let Some((toast_type, title, message, duration_ms)) = toast_info {
                     let toast = Toast {
                         id: format!(
-                            "toast-plugin-{}",
-                            chrono::Utc::now().timestamp_millis()
+                            "toast-plugin-{}-{}",
+                            chrono::Utc::now().timestamp_millis(),
+                            NEXT_TOAST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                         ),
                         toast_type,
                         title,
@@ -296,8 +315,18 @@ pub fn PluginEventBus() -> Element {
             "plugin:event",
         ] {
             let channel_unlistens = unlistens_effect.clone();
-            if let Ok(u) = tauri_bridge::listen(channel, move |payload: String| {
-                if let Some(event) = parse_plugin_bus_event(channel, &payload) {
+            if let Ok(u) = tauri_bridge::listen(channel, move |payload: JsValue| {
+                // The Tauri shell emits plugin events as JSON-encoded
+                // strings; fall back to the object form for relay-forwarded
+                // frames.
+                let raw = if let Some(inner) = payload.as_string() {
+                    inner
+                } else if let Ok(value) = serde_wasm_bindgen::from_value::<serde_json::Value>(payload) {
+                    value.to_string()
+                } else {
+                    return;
+                };
+                if let Some(event) = parse_plugin_bus_event(channel, &raw) {
                     dispatcher.send(event);
                 }
             }) {
@@ -341,15 +370,13 @@ mod tests {
     /// disabled/error event. Pin the emitted key against the parsed key.
     #[test]
     fn id_keyed_payload_does_not_masquerade_as_plugin_id() {
-        assert!(parse_plugin_bus_event(
-            "plugin:registered",
-            r#"{"id":"wrong","name":"Wrong"}"#
-        )
-        .is_none());
+        assert!(
+            parse_plugin_bus_event("plugin:registered", r#"{"id":"wrong","name":"Wrong"}"#)
+                .is_none()
+        );
         assert!(parse_plugin_bus_event("plugin:enabled", r#"{"id":"p1"}"#).is_none());
         assert!(parse_plugin_bus_event("plugin:disabled", r#"{"id":"p1"}"#).is_none());
-        assert!(parse_plugin_bus_event("plugin:error", r#"{"id":"p1","error":"boom"}"#)
-            .is_none());
+        assert!(parse_plugin_bus_event("plugin:error", r#"{"id":"p1","error":"boom"}"#).is_none());
     }
 
     #[test]
@@ -430,14 +457,23 @@ mod tests {
         assert_eq!(store.plugins.len(), 2);
         assert!(store.plugins.iter().any(|p| p.id == "p1" && p.enabled));
         assert_eq!(
-            store.plugins.iter().find(|p| p.id == "p2").unwrap().error.as_deref(),
+            store
+                .plugins
+                .iter()
+                .find(|p| p.id == "p2")
+                .unwrap()
+                .error
+                .as_deref(),
             Some("failed to start")
         );
 
         store.apply_plugin_event(
             &parse_plugin_bus_event("plugin:registered", REGISTERED_WIRE).unwrap(),
         );
-        assert!(store.plugins.iter().any(|p| p.id == "p1" && p.name == "Test Plugin"));
+        assert!(store
+            .plugins
+            .iter()
+            .any(|p| p.id == "p1" && p.name == "Test Plugin"));
 
         store.apply_plugin_event(
             &parse_plugin_bus_event("plugin:disabled", r#"{"pluginId":"p1"}"#).unwrap(),
@@ -445,17 +481,21 @@ mod tests {
         assert!(!store.plugins.iter().find(|p| p.id == "p1").unwrap().enabled);
 
         store.apply_plugin_event(
-            &parse_plugin_bus_event("plugin:error", r#"{"pluginId":"p1","error":"boom"}"#)
-                .unwrap(),
+            &parse_plugin_bus_event("plugin:error", r#"{"pluginId":"p1","error":"boom"}"#).unwrap(),
         );
         assert_eq!(
-            store.plugins.iter().find(|p| p.id == "p1").unwrap().error.as_deref(),
+            store
+                .plugins
+                .iter()
+                .find(|p| p.id == "p1")
+                .unwrap()
+                .error
+                .as_deref(),
             Some("boom")
         );
 
         store.apply_plugin_event(
-            &parse_plugin_bus_event("plugin:event", r#"{"id":"evt-1","type":"status"}"#)
-                .unwrap(),
+            &parse_plugin_bus_event("plugin:event", r#"{"id":"evt-1","type":"status"}"#).unwrap(),
         );
         assert_eq!(store.events.len(), 1);
     }

@@ -39,7 +39,14 @@ pub fn shell_integration_compatible(shell: String) -> bool {
 }
 
 /// Strip OSC 633 sequences from terminal output data.
+///
+/// Async: `strip_osc633` is a linear scan over potentially large payloads
+/// (whole paste buffers). In Tauri 2 sync commands run on the main thread,
+/// so the scan is dispatched via `spawn_blocking` to keep the UI off the
+/// parse path.
 #[tauri::command]
-pub fn shell_integration_strip(data: String) -> String {
-    athena_core::shell_integration::strip_osc633(&data)
+pub async fn shell_integration_strip(data: String) -> String {
+    tokio::task::spawn_blocking(move || athena_core::shell_integration::strip_osc633(&data))
+        .await
+        .unwrap_or_default()
 }

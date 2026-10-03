@@ -21,12 +21,17 @@ APP_NAME="Athena's Core"
 BUNDLE_ID="com.athena.core"
 
 # ── 1. Resolve the signing identity ────────────────────────────────────────
+# Fail hard unless we find a durable Developer ID identity — a short-lived
+# "Apple Development" cert re-triggers the exact TCC permission re-prompt
+# problem this script exists to solve. Opt into the non-durable fallback
+# explicitly with ATHENA_ALLOW_DEV_SIGNING=1 when a throwaway local build is
+# really what you want.
+ALLOW_DEV_SIGNING="${ATHENA_ALLOW_DEV_SIGNING:-0}"
 IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then
-  # Prefer Developer ID (durable); fall back to Apple Development (local use).
   IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
     | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
-  if [ -z "$IDENTITY" ]; then
+  if [ -z "$IDENTITY" ] && [ "$ALLOW_DEV_SIGNING" = "1" ]; then
     IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
       | awk -F'"' '/Apple Development/ {print $2; exit}')"
   fi
@@ -52,7 +57,22 @@ fi
 case "$IDENTITY" in
   *"Developer ID Application"*) ;;
   *)
-    echo "warning: '$IDENTITY' is not a Developer ID identity." >&2
+    if [ "$ALLOW_DEV_SIGNING" != "1" ]; then
+      cat >&2 <<EOF
+error: resolved identity '$IDENTITY' is not a Developer ID identity.
+
+Grants granted to this build expire in days, re-triggering the TCC re-prompt
+loop this script exists to prevent. Pass a Developer ID explicitly:
+
+  APPLE_SIGNING_IDENTITY="Developer ID Application: ... (TEAMID)" $0
+
+Or, for a throwaway local build where re-prompting is acceptable, opt in:
+
+  ATHENA_ALLOW_DEV_SIGNING=1 $0
+EOF
+      exit 2
+    fi
+    echo "warning: '$IDENTITY' is not a Developer ID identity (ATHENA_ALLOW_DEV_SIGNING=1)." >&2
     echo "         Grants will persist only until the certificate expires." >&2
     ;;
 esac

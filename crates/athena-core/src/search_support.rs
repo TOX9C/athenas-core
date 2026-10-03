@@ -8,15 +8,13 @@ pub(super) const MAX_RESULTS: usize = 5000;
 
 /// Locate the ripgrep binary, falling back to common system paths.
 pub(crate) async fn find_rg_binary() -> Result<PathBuf, SearchError> {
-    let candidates = if cfg!(windows) {
-        vec!["rg.exe"]
+    // Absolute install prefixes only. A bare `"rg"`/`"rg.exe"` candidate
+    // would run `PathBuf::from("rg").exists()`, which tests the CWD, not
+    // PATH — the actual PATH lookup is the `which`/`where` probe below.
+    let candidates: Vec<&str> = if cfg!(windows) {
+        vec![]
     } else {
-        vec![
-            "rg",
-            "/usr/local/bin/rg",
-            "/opt/homebrew/bin/rg",
-            "/usr/bin/rg",
-        ]
+        vec!["/usr/local/bin/rg", "/opt/homebrew/bin/rg", "/usr/bin/rg"]
     };
 
     for candidate in &candidates {
@@ -83,52 +81,4 @@ pub(super) fn validate_pattern(pattern: &str) -> Result<(), SearchError> {
         ));
     }
     Ok(())
-}
-
-/// Locate the ripgrep binary synchronously.
-///
-/// **Deprecated**: Spawns a blocking `std::process::Command`. Prefer the
-/// async [`find_rg_binary`] which uses `tokio::process::Command`.
-#[deprecated(
-    since = "0.1.0",
-    note = "Spawns a blocking std::process::Command; use the async `find_rg_binary` instead"
-)]
-pub fn find_rg_binary_sync() -> Result<PathBuf, SearchError> {
-    let candidates = if cfg!(windows) {
-        vec!["rg.exe"]
-    } else {
-        vec![
-            "rg",
-            "/usr/local/bin/rg",
-            "/opt/homebrew/bin/rg",
-            "/usr/bin/rg",
-        ]
-    };
-
-    for candidate in &candidates {
-        let candidate_path = PathBuf::from(candidate);
-        if candidate_path.exists() {
-            return Ok(candidate_path);
-        }
-    }
-
-    // Try to find via `which` as last resort
-    let which_result = if cfg!(windows) {
-        std::process::Command::new("cmd")
-            .args(["/c", "where", "rg"])
-            .output()
-    } else {
-        std::process::Command::new("which").arg("rg").output()
-    };
-
-    if let Ok(output) = which_result {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
-            }
-        }
-    }
-
-    Err(SearchError::RgNotFound)
 }

@@ -60,11 +60,6 @@ pub(super) struct AgentSlot {
     pub(super) custom_id: Option<String>,
     pub(super) custom_cmd: Option<String>,
     pub(super) label: Option<String>,
-    /// Selected CLI model for this slot (None = agent default).
-    pub(super) model: Option<String>,
-    /// Per-role capability policy applied to the spawned agent command
-    /// (`None` = full access — pre-M5 behavior).
-    pub(super) capabilities: Option<crate::types::workspace::RoleCapabilities>,
 }
 
 /// Role identity color — delegated to the single source of truth in
@@ -163,34 +158,4 @@ pub(super) fn generate_id() -> String {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("{:x}-{:x}", ts, count)
-}
-
-
-/// Persist a role's capability profile to the KV store (all roles share one key).
-pub(super) fn role_caps_persist(
-    role: AgentRole,
-    caps: crate::types::workspace::RoleCapabilities,
-) {
-    let role = agent_role_str(&role).to_string();
-    wasm_bindgen_futures::spawn_local(async move {
-        let key = "swarm_role_caps";
-        let mut map: std::collections::HashMap<String, serde_json::Value> =
-            crate::tauri_bridge::store_get(key)
-                .await
-                .ok()
-                .and_then(|v| serde_json::from_str(&v).ok())
-                .unwrap_or_default();
-        let json = serde_json::to_value(&caps).unwrap_or_default();
-        map.insert(role, json);
-        let _ = crate::tauri_bridge::store_set(key, &serde_json::to_string(&map).unwrap_or_default()).await;
-    });
-}
-
-/// Load the persisted per-role capabilities, defaulting to "full" for unset roles.
-pub(super) async fn role_caps_load() -> std::collections::HashMap<String, crate::types::workspace::RoleCapabilities> {
-    crate::tauri_bridge::store_get("swarm_role_caps")
-        .await
-        .ok()
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default()
 }

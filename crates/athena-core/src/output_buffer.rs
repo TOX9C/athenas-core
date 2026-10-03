@@ -13,10 +13,30 @@ pub enum AgentSessionState {
     Completed,
 }
 
+/// Serialize a `Arc<str>` field as a plain string — avoids enabling the
+/// whole serde "rc" feature for one field.
+mod arc_str_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::sync::Arc;
+
+    pub fn serialize<S: Serializer>(value: &Arc<str>, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(value)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<str>, D::Error> {
+        Ok(Arc::from(String::deserialize(d)?.as_str()))
+    }
+}
+
 /// Represents a single line of output from a pane.
+///
+/// `pane_id` is an `Arc<str>` shared with every line of the pane so the hot
+/// append path bumps a refcount instead of allocating a fresh `String` per
+/// line. On the wire it is a plain string, unchanged.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OutputLine {
-    pub pane_id: String,
+    #[serde(with = "arc_str_serde")]
+    pub pane_id: Arc<str>,
     pub line_num: u32,
     pub timestamp: u64,
     pub text: String,
@@ -240,6 +260,7 @@ impl OutputBuffer {
                 match next {
                     // ESC [  → CSI sequence
                     b'[' => {
+                        let seq_start = i;
                         i += 2;
                         // Skip parameter bytes (0x30–0x3F)
                         while i < bytes.len() && bytes[i] >= 0x30 && bytes[i] <= 0x3F {
@@ -249,14 +270,23 @@ impl OutputBuffer {
                         while i < bytes.len() && bytes[i] >= 0x20 && bytes[i] <= 0x2F {
                             i += 1;
                         }
-                        // Skip final byte (0x40–0x7E)
-                        if i < bytes.len() {
+                        // Skip final byte (0x40–0x7E). A byte outside this range
+                        // means a truncated/malformed sequence — emit the scanned
+                        // bytes verbatim instead of eating real text (e.g. a
+                        // UTF-8 lead byte).
+                        if i < bytes.len() && (0x40..=0x7E).contains(&bytes[i]) {
                             i += 1;
+                        } else {
+                            out.extend_from_slice(&bytes[seq_start..i]);
                         }
                         continue;
                     }
-                    // ESC ]  → OSC sequence
-                    b']' => {
+                    // ESC ]  → OSC sequence; ESC _ → APC (e.g. Kitty
+                    // graphics); ESC P → DCS (e.g. sixel). All are
+                    // string sequences terminated by BEL or ESC \; their
+                    // payloads (multi-KB base64/binary) must never reach
+                    // the text buffer.
+                    b']' | b'_' | b'P' => {
                         i += 2;
                         while i < bytes.len() {
                             if bytes[i] == b'\x07' {
@@ -291,21 +321,90 @@ impl OutputBuffer {
             out.push(b);
             i += 1;
         }
-        String::from_utf8(out).unwrap_or_else(|_| text.replace('\r', ""))
+        // Lossy: a malformed/truncated escape (e.g. a multibyte UTF-8 char
+        // split across a chunk boundary) previously discarded ALL stripping
+        // for the chunk by falling back to the raw text. Dropping only the
+        // invalid byte keeps the rest of the chunk stripped.
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// If `text` ends inside an unterminated string escape (OSC `ESC ]`,
+    /// APC `ESC _`, DCS `ESC P`, or a trailing lone `ESC`), returns the byte
+    /// offset where that sequence begins. The caller carries the suffix into
+    /// the next chunk so a payload split across PTY reads is stripped whole
+    /// instead of leaking its tail into the text buffer.
+    fn trailing_string_seq_start(text: &str) -> Option<usize> {
+        let bytes = text.as_bytes();
+        let esc = bytes.iter().rposition(|&b| b == b'\x1b')?;
+        if esc + 1 == bytes.len() {
+            // Lone trailing ESC: sequence head arrives next chunk.
+            return Some(esc);
+        }
+        match bytes[esc + 1] {
+            b']' | b'_' | b'P' => {
+                // Unterminated if neither BEL nor ESC \ follows.
+                let tail = &bytes[esc + 2..];
+                let terminated = tail.contains(&b'\x07')
+                    || tail.windows(2).any(|w| w == b"\x1b\\");
+                if terminated { None } else { Some(esc) }
+            }
+            _ => None,
+        }
     }
 
     /// Append output to a pane buffer.
     /// Acquires the write lock once: creates the buffer if needed, then appends.
     pub fn append_output(&self, pane_id: &str, raw_data: &str, agent_type: Option<&str>) {
+        let mut esc_tail = Vec::new();
+        self.append_output_carried(pane_id, raw_data, agent_type, &mut esc_tail);
+    }
+
+    /// `append_output` with a carry buffer for escape sequences split across
+    /// PTY read chunks (Kitty graphics APC frames routinely exceed one 16 KiB
+    /// read). `esc_tail` must be per-session and reused across calls.
+    pub fn append_output_carried(
+        &self,
+        pane_id: &str,
+        raw_data: &str,
+        agent_type: Option<&str>,
+        esc_tail: &mut Vec<u8>,
+    ) {
+        // Prepend a sequence fragment carried from the previous chunk.
+        let owned;
+        let text: &str = if esc_tail.is_empty() {
+            raw_data
+        } else {
+            let mut merged =
+                String::with_capacity(esc_tail.len() + raw_data.len());
+            // The carry bytes were already lossy-decoded once; keep them
+            // verbatim so the rejoined sequence strips identically.
+            merged.push_str(&String::from_utf8_lossy(esc_tail));
+            merged.push_str(raw_data);
+            esc_tail.clear();
+            owned = merged;
+            &owned
+        };
+        // Hold back a trailing unterminated string sequence for next chunk.
+        let strippable = match Self::trailing_string_seq_start(text) {
+            Some(pos) => {
+                esc_tail.extend_from_slice(&text.as_bytes()[pos..]);
+                &text[..pos]
+            }
+            None => text,
+        };
         // Strip ANSI outside the lock — this is the expensive byte-scanner.
-        let stripped = Self::strip_ansi(raw_data);
+        let stripped = Self::strip_ansi(strippable);
         let raw_lines: Vec<&str> = stripped.split('\n').collect();
+
+        // One clock read and one pane-id Arc per batch: the previous version
+        // paid 3× Self::now() and a fresh pane_id String per line.
+        let now = Self::now();
+        let pane_id: Arc<str> = Arc::from(pane_id);
 
         let mut buffers = self.buffers.write();
 
         // Create buffer if it does not yet exist (single lock scope)
-        if !buffers.contains_key(pane_id) {
-            let now = Self::now();
+        if !buffers.contains_key(pane_id.as_ref()) {
             buffers.insert(
                 pane_id.to_string(),
                 PaneBuffer {
@@ -325,16 +424,21 @@ impl OutputBuffer {
             );
         }
 
-        let buf = buffers.get_mut(pane_id).expect("just inserted");
+        let buf = buffers.get_mut(pane_id.as_ref()).expect("just inserted");
 
-        buf.last_activity_at = Self::now();
+        buf.last_activity_at = now;
         if let Some(at) = agent_type {
             if buf.agent_type == "shell" {
                 buf.agent_type = at.to_string();
             }
         }
 
-        let mut emitted_lines: Vec<(u32, String)> = Vec::new();
+        // Batch lines into a single IPC event (vs one event per line). The
+        // batch is collected as lines are pushed — BEFORE trim_buffer — so a
+        // burst that overflows the cap still emits every pushed line (trim
+        // drains from the front and would otherwise drop just-pushed lines
+        // from the event, leaving a silent gap).
+        let mut batch = Vec::new();
 
         let last_idx = raw_lines.len().saturating_sub(1);
         for (i, raw_line) in raw_lines.iter().enumerate() {
@@ -346,48 +450,49 @@ impl OutputBuffer {
             }
 
             buf.line_counter += 1;
-            let now = Self::now();
             let line = OutputLine {
-                pane_id: pane_id.to_string(),
+                pane_id: Arc::clone(&pane_id),
                 line_num: buf.line_counter,
                 timestamp: now,
                 text: raw_line.to_string(),
             };
-            let line_len = raw_line.len();
+            batch.push(serde_json::json!({
+                "lineNum": line.line_num,
+                "text": raw_line,
+                "timestamp": line.timestamp,
+            }));
+            buf.total_bytes += raw_line.len();
             buf.lines.push(line);
-            buf.total_bytes += line_len;
-            emitted_lines.push((buf.line_counter, raw_line.to_string()));
         }
 
         Self::trim_buffer(buf);
+
         drop(buffers);
 
-        // Batch lines into a single IPC event instead of emitting one
-        // event per line.  For a large output burst this can reduce IPC
-        // traffic by an order of magnitude.  Each line still carries its
-        // own lineNum and timestamp so ordering is preserved.
-        if !emitted_lines.is_empty() {
-            let batch: Vec<serde_json::Value> = emitted_lines
-                .into_iter()
-                .map(|(line_num, text)| {
-                    serde_json::json!({
-                        "lineNum": line_num,
-                        "text": text,
-                        "timestamp": Self::now(),
-                    })
-                })
-                .collect();
+        if !batch.is_empty() {
             self.emit_event(
                 "output-capture:batch",
                 &serde_json::json!({
-                    "paneId": pane_id,
+                    "paneId": pane_id.as_ref(),
                     "lines": batch,
                 }),
             );
         }
     }
 
+    /// All pane ids with an output buffer. Used by the synchronous
+    /// best-effort resume capture on `RunEvent::Exit`, where async session
+    /// listing is unavailable (the read loops may already be dead).
+    pub fn all_pane_ids(&self) -> Vec<String> {
+        self.buffers.read().keys().cloned().collect()
+    }
+
     /// Get output lines from a pane buffer.
+    ///
+    /// When no `since_line`/`since_time` filters are set, offset/limit are
+    /// applied as a slice so only the requested window is cloned instead of
+    /// the whole (up to 5000-line) buffer. Tail callers should prefer
+    /// [`Self::get_output_tail`].
     pub fn get_output(&self, pane_id: &str, options: Option<&GetOutputOptions>) -> Vec<OutputLine> {
         let buffers = self.buffers.read();
         let buf = match buffers.get(pane_id) {
@@ -395,20 +500,34 @@ impl OutputBuffer {
             None => return Vec::new(),
         };
 
-        let result: Vec<OutputLine> = buf
+        let (offset, limit, since_line, since_time) = match options {
+            None => (0, usize::MAX, None, None),
+            Some(opts) => (
+                opts.offset.unwrap_or(0),
+                opts.limit.unwrap_or(usize::MAX),
+                opts.since_line,
+                opts.since_time,
+            ),
+        };
+
+        if since_line.is_none() && since_time.is_none() {
+            let start = offset.min(buf.lines.len());
+            let end = start.saturating_add(limit).min(buf.lines.len());
+            return buf.lines[start..end].to_vec();
+        }
+
+        let mut result: Vec<OutputLine> = buf
             .lines
             .iter()
             .filter(|l| {
-                if let Some(opts) = options {
-                    if let Some(since_line) = opts.since_line {
-                        if l.line_num <= since_line {
-                            return false;
-                        }
+                if let Some(since_line) = since_line {
+                    if l.line_num <= since_line {
+                        return false;
                     }
-                    if let Some(since_time) = opts.since_time {
-                        if l.timestamp <= since_time {
-                            return false;
-                        }
+                }
+                if let Some(since_time) = since_time {
+                    if l.timestamp <= since_time {
+                        return false;
                     }
                 }
                 true
@@ -417,19 +536,9 @@ impl OutputBuffer {
             .collect();
         drop(buffers);
 
-        let mut result = result;
-        if let Some(opts) = options {
-            if let Some(offset) = opts.offset {
-                if offset < result.len() {
-                    result = result.split_off(offset);
-                } else {
-                    result.clear();
-                }
-            }
-            if let Some(limit) = opts.limit {
-                result.truncate(limit);
-            }
-        }
+        let start = offset.min(result.len());
+        result.drain(..start);
+        result.truncate(limit);
 
         result
     }
@@ -582,5 +691,68 @@ impl OutputBuffer {
         if let Some(buf) = buffers.get_mut(pane_id) {
             buf.resume_id = resume_id;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn glued(ob: &OutputBuffer, pane: &str) -> String {
+        ob.get_output(pane, None)
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn strips_apc_kitty_graphics_payload() {
+        let ob = OutputBuffer::new();
+        let apc = format!("before\x1b_Ga=T,f=100;{}\x1b\\after", "A".repeat(8192));
+        ob.append_output("p", &apc, None);
+        let text = glued(&ob, "p");
+        assert_eq!(text, "beforeafter");
+    }
+
+    #[test]
+    fn strips_dcs_payload() {
+        let ob = OutputBuffer::new();
+        ob.append_output("p", "a\x1bPq#1;2;sixelflood\x1b\\b", None);
+        assert_eq!(glued(&ob, "p"), "ab");
+    }
+
+    #[test]
+    fn split_apc_across_chunks_is_carried_and_stripped() {
+        let ob = OutputBuffer::new();
+        let mut tail = Vec::new();
+        let big = "B".repeat(40_000);
+        let full = format!("start\x1b_Ga=T,f=100;{}\x1b\\end", big);
+        // Split mid-payload, as the 16 KiB PTY read would.
+        let cut = 20 + 10_000;
+        ob.append_output_carried("p", &full[..cut], None, &mut tail);
+        assert!(!tail.is_empty(), "tail must hold the unterminated APC");
+        let mid = glued(&ob, "p");
+        assert_eq!(mid, "start");
+        ob.append_output_carried("p", &full[cut..], None, &mut tail);
+        assert!(tail.is_empty());
+        let text = glued(&ob, "p");
+        assert!(
+            !text.contains('B'),
+            "payload leaked into text buffer: {:?}",
+            &text[..text.len().min(120)]
+        );
+        assert!(text.contains("start") && text.contains("end"));
+    }
+
+    #[test]
+    fn lone_trailing_esc_is_carried() {
+        let ob = OutputBuffer::new();
+        let mut tail = Vec::new();
+        ob.append_output_carried("p", "abc\x1b", None, &mut tail);
+        assert_eq!(tail, b"\x1b");
+        ob.append_output_carried("p", "]8;;http://x\x07link", None, &mut tail);
+        let text = glued(&ob, "p");
+        assert_eq!(text, "abclink");
     }
 }

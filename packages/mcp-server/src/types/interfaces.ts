@@ -1,40 +1,8 @@
 export type AgentStatus = 'running' | 'idle' | 'error' | 'waiting' | 'done' | 'blocked' | 'stalled'
 
-export type SpecAgentStatus =
-  | 'idle'
-  | 'thinking'
-  | 'working'
-  | 'waiting_for_input'
-  | 'completed'
-  | 'error'
-  | 'cancelled'
-
 export type NotificationType = 'info' | 'warning' | 'error' | 'success'
 
 export type NotificationPriority = 'low' | 'normal' | 'high' | 'critical'
-
-export type PluginEventType =
-  | 'notification'
-  | 'status_update'
-  | 'task_complete'
-  | 'task_error'
-  | 'needs_input'
-  | 'agent_spawned'
-  | 'agent_exited'
-  | 'agent_stalled'
-  | 'progress_update'
-  | 'artifact_produced'
-  | 'user_response'
-  | 'control_command'
-
-export type PluginCapability =
-  | 'notifications'
-  | 'status'
-  | 'tasks'
-  | 'agent_control'
-  | 'user_input'
-  | 'file_access'
-  | 'swarm'
 
 export interface AthenaNotification {
   type: NotificationType
@@ -128,83 +96,6 @@ export interface TaskState {
   description?: string
   spaceId?: string
 }
-
-export interface PluginEvent {
-  id: string
-  type: PluginEventType
-  source: {
-    sessionId: string
-    paneId: string | null
-    agentType: string
-    agentId: string | null
-  }
-  payload: PluginEventPayload
-  timestamp: number
-}
-
-export interface PluginEventPayload {
-  level?: NotificationType
-  message?: string
-  title?: string
-  metadata?: Record<string, unknown>
-  actions?: Array<{ id: string; label: string }>
-  status?: SpecAgentStatus
-  progress?: { current: number; total: number; label: string }
-  artifacts?: Array<{ path: string; type: 'file' | 'url' | 'image' | 'log' }>
-  taskId?: string
-  taskTitle?: string
-  result?: string
-  error?: string
-  prompt?: string
-  options?: string[]
-  requestId?: string
-  response?: string
-  responseType?: 'option' | 'freetext'
-  exitCode?: number
-  command?: 'pause' | 'resume' | 'cancel'
-}
-
-export interface McpSession {
-  sessionId: string
-  token: string
-  paneId: string | null
-  agentType: string
-  capabilities: PluginCapability[]
-  connectedAt: number
-  lastActivityAt: number
-}
-
-export interface PluginManifest {
-  id: string
-  name: string
-  version: string
-  description: string
-  author: string
-  minAthenaVersion: string
-  capabilities: PluginCapability[]
-  tools: PluginToolDefinition[]
-  subscribesTo?: PluginEventType[]
-  config?: PluginConfigSchema
-  install: PluginInstallMethod
-}
-
-export interface PluginToolDefinition {
-  name: string
-  description: string
-  inputSchema: Record<string, unknown>
-  capability: PluginCapability
-  phase: 1 | 2 | 3
-}
-
-export interface PluginConfigSchema {
-  schema: Record<string, unknown>
-  defaults: Record<string, unknown>
-}
-
-export type PluginInstallMethod =
-  | { type: 'builtin' }
-  | { type: 'mcp_server'; command: string; args?: string[]; env?: Record<string, string> }
-  | { type: 'hook'; script: string }
 
 export interface OutputEntry {
   timestamp: number

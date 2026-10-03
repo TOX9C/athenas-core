@@ -179,8 +179,6 @@
   --themeGlowOpacity: 0;
   --themeNoiseOpacity: 0;
 
-  --scrollbar-width: 6px;
-  --scrollbar-height: 6px;
 
   /* ── Retired atmosphere tokens (names frozen; values neutralized to inert) ─ */
   --great-circle: url('');
@@ -257,19 +255,18 @@ body,
   background: var(--bg) !important;
 }
 
+/* Scrollbars hidden app-wide: panels scroll without visible chrome.
+   Width 0 (not display:none) so layout calc stays defined for WebKit. */
 ::-webkit-scrollbar {
-  width: var(--scrollbar-width);
-  height: var(--scrollbar-height);
-}
-::-webkit-scrollbar-track {
+  width: 0;
+  height: 0;
   background: transparent;
 }
-::-webkit-scrollbar-thumb {
-  background: var(--bgTertiary);
-  border-radius: var(--radius-pill);
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--textDim);
+html,
+body,
+* {
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
 }
 
 .terminal-body ::selection {
@@ -1564,13 +1561,13 @@ button:disabled {
   align-self: flex-start;
   width: 72px;
   flex-shrink: 0;
-  background: var(--bgSecondary);
+  background: transparent;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   padding: 22px 0;
   /* allow it to span the full body height for the
-     vertical-spacing rhythm of six numbered items. */
+     vertical-spacing rhythm of the numbered items. */
 }
 
 .codex-tome {
@@ -1581,52 +1578,50 @@ button:disabled {
   scroll-behavior: smooth;
 }
 
-.codex-tome::-webkit-scrollbar {
-  width: 6px;
-}
-.codex-tome::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: var(--radius-pill);
-}
-
 .codex-index-item {
   position: relative;
-  padding: 13px 0;
+  padding: 10px 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   color: var(--textDim);
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 11px;
   cursor: pointer;
   background: transparent;
   border: none;
-  border-radius: var(--radius-sm);
   transition:
     color var(--dur-fast) var(--ease),
-    background-color var(--dur-fast) var(--ease),
     transform 90ms var(--ease);
 }
 .codex-index-item:hover {
   color: var(--text);
-  background-color: var(--bgHover);
 }
 .codex-index-item:active {
   transform: scale(0.96);
 }
 
+/* Section glyph — rounded tile; fills with the accent when active. */
 .codex-index-item .glyph {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 1px solid currentColor;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bgSecondary);
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.55;
-  font-size: 11px;
   line-height: 1;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.codex-index-item:hover .glyph {
+  border-color: var(--accent);
 }
 
 .codex-index-item.is-active {
@@ -1634,50 +1629,71 @@ button:disabled {
 }
 
 .codex-index-item.is-active .glyph {
-  opacity: 1;
-  border-color: var(--accent);
-  background: var(--accentSubtle);
-  box-shadow: 0 0 8px var(--accentSubtle);
-}
-
-.codex-index-item.is-active::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 26px;
   background: var(--accent);
-  border-radius: var(--radius-pill);
-  box-shadow: 0 0 8px var(--accentSubtle);
+  border-color: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 0 12px var(--accentSubtle);
 }
 
+/* Hover label — small pill floating right of the index rail. */
+.codex-index-label {
+  position: absolute;
+  left: calc(100% - 6px);
+  top: 50%;
+  transform: translate(0, -50%);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bgTertiary);
+  color: var(--text);
+  font-size: var(--text-xs);
+  font-family: var(--font-ui);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 20;
+  transition:
+    opacity var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.codex-index-item:hover .codex-index-label {
+  opacity: 1;
+  transform: translate(4px, -50%);
+}
+
+/* Section card — an elevated tile on the --bg tome floor. */
 .codex-section {
   scroll-margin-top: 20px;
-  margin-bottom: 40px;
+  margin-bottom: 22px;
+  padding: 24px 28px;
+  background: var(--bgSecondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .codex-section-head {
   display: flex;
   align-items: baseline;
-  gap: 14px;
+  gap: 12px;
   margin-bottom: 6px;
 }
 
 .codex-section-num {
-  font-family: var(--font-display);
+  font-family: var(--mono-tick, var(--font-mono));
   color: var(--accent);
-  font-size: 26px;
+  font-size: 12px;
   font-weight: 600;
-  opacity: 0.85;
+  letter-spacing: var(--mono-tick-tracking, 0.08em);
+  text-transform: uppercase;
   line-height: 1;
 }
 
 .codex-section-title {
   font-family: var(--font-display);
   color: var(--text);
-  font-size: 24px;
+  font-size: var(--text-lg);
   font-weight: 600;
   line-height: 1;
 }
@@ -1685,14 +1701,14 @@ button:disabled {
 .codex-section-intro {
   color: var(--textMuted);
   font-size: 13px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
-/* 1px --border hr with a 48px gold prefix on the left edge. */
+/* hairline rule with a short accent keyed segment on the left edge. */
 .codex-rule {
   height: 1px;
   background: var(--border);
-  margin-bottom: 20px;
+  margin-bottom: 18px;
   position: relative;
 }
 
@@ -1816,7 +1832,7 @@ button:disabled {
   padding: 18px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bgSecondary);
+  background: var(--bgTertiary);
   position: relative;
   overflow: hidden;
 }
@@ -1862,7 +1878,7 @@ button:disabled {
   padding: 11px 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bgSecondary);
+  background: var(--bgTertiary);
   cursor: pointer;
   gap: 8px;
   font-family: var(--font-ui);
@@ -2142,48 +2158,36 @@ button:disabled {
 .settings-panel .codex-index,
 .modal-container .codex-index {
   width: 60px;
-  padding: 14px 0;
+  padding: 12px 0;
 }
 
 .settings-panel .codex-index-item,
 .modal-container .codex-index-item {
-  padding: 9px 0;
-  font-size: 12px;
+  padding: 8px 0;
+  font-size: 10px;
 }
 
 .settings-panel .codex-index-item .glyph,
 .modal-container .codex-index-item .glyph {
-  width: 20px;
-  height: 20px;
-  border: 0;
-  opacity: 0.78;
-}
-
-.settings-panel .codex-index-item.is-active .glyph,
-.modal-container .codex-index-item.is-active .glyph {
-  background: transparent;
-  box-shadow: none;
+  width: 28px;
+  height: 28px;
 }
 
 .settings-panel .codex-tome,
 .modal-container .codex-tome {
-  padding: 22px 28px 32px;
+  padding: 20px 28px 32px;
   max-width: 860px;
 }
 
 .settings-panel .codex-section,
 .modal-container .codex-section {
-  margin-bottom: 30px;
-}
-
-.settings-panel .codex-section-num,
-.modal-container .codex-section-num {
-  font-size: 20px;
+  margin-bottom: 16px;
+  padding: 20px 24px;
 }
 
 .settings-panel .codex-section-title,
 .modal-container .codex-section-title {
-  font-size: 19px;
+  font-size: var(--text-md);
 }
 
 /* Resize handle — hairline at rest with no hover effect. */
@@ -2499,6 +2503,21 @@ button:disabled {
   transition:
     box-shadow var(--dur-fast) var(--ease),
     border-color var(--dur-fast) var(--ease);
+}
+
+/* Pane attention ring — a dedicated absolutely-positioned element (mirrors
+   `.pane-focus-ring`) so the pulse animation never dims the terminal itself.
+   `--accentHover` keeps the ring an accent-family color (brighter tint than
+   the static focus ring) while the pulse is the real differentiator.
+   Per-state colors (finished / waiting / errored) live on the pill status
+   dot. Inset ring avoids shifting the shared 1px grid borders. */
+.pane-attention-ring {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  box-shadow: inset 0 0 0 1px var(--accentHover);
+  animation: pulse-soft 1.6s ease-in-out infinite;
 }
 
 /* Floating ghost pill that follows the cursor during a drag. Flat surface,

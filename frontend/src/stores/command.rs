@@ -42,6 +42,8 @@ pub struct Command {
     pub handler_key: String,
     /// Optional visibility predicate key (same approach as handler).
     pub when_key: Option<String>,
+    /// Optional icon key resolved by the palette component (`palette_icon`).
+    pub icon: Option<String>,
 }
 
 /// Maximum number of recent command ids retained.

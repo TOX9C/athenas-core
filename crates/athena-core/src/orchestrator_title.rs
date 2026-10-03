@@ -1,6 +1,8 @@
 //! Title generation and retry handling for the orchestrator.
 
-use super::orchestrator_support::heuristic_fallback_title;
+use super::orchestrator_support::{
+    classify_api_error, heuristic_fallback_title, sanitize_error_message,
+};
 use super::{
     AthenaOrchestrator, OrchestratorError, ANTHROPIC_VERSION, DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_BACKOFF_DELAYS_MS,
@@ -141,8 +143,14 @@ impl AthenaOrchestrator {
                     "system": system,
                     "messages": [{"role": "user", "content": prompt}]
                 });
+                // A configured/custom base URL wins; otherwise fall back to
+                // the built-in default (overridable in tests).
+                let anthropic_base = base_url
+                    .as_deref()
+                    .unwrap_or(&self.anthropic_base_url)
+                    .trim_end_matches('/');
                 let response = client
-                    .post(format!("{}/messages", self.anthropic_base_url))
+                    .post(format!("{}/messages", anthropic_base))
                     .header("x-api-key", api_key.expose_secret())
                     .header("anthropic-version", ANTHROPIC_VERSION)
                     .header("Content-Type", "application/json")
@@ -153,10 +161,11 @@ impl AthenaOrchestrator {
                 if !response.status().is_success() {
                     let status = response.status();
                     let err_text = response.text().await.unwrap_or_default();
-                    return Err(OrchestratorError::Generic(format!(
-                        "Anthropic API error {}: {}",
-                        status, err_text
-                    )));
+                    return Err(classify_api_error(
+                        "Anthropic",
+                        status,
+                        sanitize_error_message(&err_text),
+                    ));
                 }
                 let json: serde_json::Value = response.json().await?;
                 let content = json["content"].as_array().ok_or_else(|| {
@@ -178,7 +187,12 @@ impl AthenaOrchestrator {
                 let url = match &provider {
                     LLMProvider::NvidiaNim => base_url
                         .unwrap_or_else(|| "https://integrate.api.nvidia.com/v1".to_string()),
-                    LLMProvider::OpenAI => "https://api.openai.com/v1".to_string(),
+                    // Honor a configured/custom base URL (e.g. a proxy or
+                    // OpenAI-compatible gateway) instead of always hitting
+                    // api.openai.com.
+                    LLMProvider::OpenAI => {
+                        base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string())
+                    }
                     LLMProvider::Lmstudio => {
                         base_url.unwrap_or_else(|| "http://localhost:1234/v1".to_string())
                     }
@@ -208,10 +222,11 @@ impl AthenaOrchestrator {
                 if !response.status().is_success() {
                     let status = response.status();
                     let err_text = response.text().await.unwrap_or_default();
-                    return Err(OrchestratorError::Generic(format!(
-                        "OpenAI API error {}: {}",
-                        status, err_text
-                    )));
+                    return Err(classify_api_error(
+                        "OpenAI",
+                        status,
+                        sanitize_error_message(&err_text),
+                    ));
                 }
                 let json: serde_json::Value = response.json().await?;
                 let summary = json["choices"][0]["message"]["content"]

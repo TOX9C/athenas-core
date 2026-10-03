@@ -210,20 +210,26 @@ impl AgentComms {
     ///
     /// Returns `Ok(true)` if the message was queued for delivery.
     /// Returns `AgentNotFound` if no session exists for the given agent ID.
+    ///
+    /// Uses `try_send` so a slow or hung agent (full outbound queue) can never
+    /// block the comms service; the sessions lock is released before sending.
     pub fn send_to_agent(
         &self,
         agent_id: &str,
         method: &str,
         params: &serde_json::Value,
     ) -> Result<bool, AgentCommsError> {
-        let sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| AgentCommsError::LockPoisoned)?;
-        let session = sessions
-            .values()
-            .find(|s| s.session.agent_id == agent_id)
-            .ok_or_else(|| AgentCommsError::AgentNotFound(agent_id.to_string()))?;
+        let sender = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| AgentCommsError::LockPoisoned)?;
+            sessions
+                .values()
+                .find(|s| s.session.agent_id == agent_id)
+                .map(|s| s.sender.clone())
+                .ok_or_else(|| AgentCommsError::AgentNotFound(agent_id.to_string()))?
+        };
 
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
@@ -231,7 +237,7 @@ impl AgentComms {
             "params": params,
         });
         let bytes = serde_json::to_vec(&payload)?;
-        session.sender.send(bytes).map_err(|_| {
+        sender.try_send(bytes).map_err(|_| {
             AgentCommsError::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "Send failed",
@@ -283,6 +289,105 @@ impl AgentComms {
         Ok(removed)
     }
 
+    /// Emit an `agents:inputRequested` modal prompt and block until the user
+    /// responds (or cancels/times out). Used by the MCP `request_input` tool.
+    ///
+    /// Session linkage is best-effort: the MCP caller may not own a comms
+    /// socket session, which only means `cleanup_connection` will never drop
+    /// this entry — timeout/cancel still reclaim it. `sessionId` in the
+    /// emitted payload is `null` when no session exists; the renderer's
+    /// `agents:*` adapter keys on `agentId` → `paneId`, which is what the
+    /// modal/notification path actually needs.
+    ///
+    /// Returns `Ok(response)` when the user replies via
+    /// `respond_to_input_request`, `Err(Cancelled)` when a cancel/disconnect
+    /// drops the sender, and `Err(Generic("Input request timed out"))` on
+    /// timeout. The caller MUST NOT invoke this from an async task that
+    /// shares executor threads (e.g., not on a current-thread runtime).
+    pub fn request_user_input_blocking(
+        &self,
+        agent_id: &str,
+        request_id: Option<&str>,
+        prompt: &str,
+        title: Option<&str>,
+    ) -> Result<String, AgentCommsError> {
+        use std::sync::mpsc::RecvTimeoutError;
+
+        let session_id = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| AgentCommsError::LockPoisoned)?;
+            sessions
+                .values()
+                .find(|s| s.session.agent_id == agent_id)
+                .map(|s| s.session.id.clone())
+        };
+
+        let request_id = request_id
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= MAX_AGENT_ID_BYTES
+                    && !id.chars().any(|c| c.is_control())
+            })
+            .map(str::to_string)
+            .unwrap_or_else(generate_uuid);
+
+        let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<String>(1);
+        {
+            let mut pending = self
+                .pending_input
+                .lock()
+                .map_err(|_| AgentCommsError::LockPoisoned)?;
+            // Same dup-entry rejection as `handle_request_input`: inserting
+            // over a live entry would silently drop its sender and wake the
+            // first waiter with a spurious cancel.
+            match pending.entry(request_id.clone()) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(PendingInput {
+                        session_id: session_id.clone().unwrap_or_default(),
+                        sender: input_tx,
+                    });
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(AgentCommsError::Generic(format!(
+                        "input request id already in progress: {request_id}"
+                    )));
+                }
+            }
+        }
+
+        if let Ok(guard) = self.event_emitter.lock() {
+            if let Some(emitter) = &*guard {
+                let mut payload = serde_json::json!({
+                    "sessionId": session_id,
+                    "agentId": agent_id,
+                    "requestId": request_id,
+                    "prompt": prompt,
+                    "message": prompt,
+                });
+                if let Some(title) = title {
+                    payload["title"] = serde_json::Value::String(title.to_string());
+                }
+                emitter("agents:inputRequested", &payload);
+            }
+        } else {
+            log::error!("Agent comms: event_emitter lock poisoned");
+        }
+
+        match input_rx.recv_timeout(INPUT_REQUEST_TIMEOUT) {
+            Ok(response) => Ok(response),
+            Err(RecvTimeoutError::Timeout) => {
+                if let Ok(mut pending) = self.pending_input.lock() {
+                    pending.remove(&request_id);
+                }
+                Err(AgentCommsError::Generic("Input request timed out".into()))
+            }
+            // Sender dropped by `cancel_input_request`/`cleanup_connection`.
+            Err(RecvTimeoutError::Disconnected) => Err(AgentCommsError::Cancelled),
+        }
+    }
+
     /// Broadcast a message to all connected agents.
     ///
     /// Sends the same JSON-RPC notification to every registered agent session.
@@ -292,22 +397,30 @@ impl AgentComms {
         method: &str,
         params: &serde_json::Value,
     ) -> Result<(), AgentCommsError> {
-        let sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| AgentCommsError::LockPoisoned)?;
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
         });
         let bytes = serde_json::to_vec(&payload)?;
-        for session in sessions.values() {
-            if let Err(e) = session.sender.send(bytes.clone()) {
+        // Snapshot (session id, sender) pairs and release the sessions lock
+        // before queueing: `try_send` never blocks, but holding no lock during
+        // sends keeps this method immune to any future blocking change.
+        let senders: Vec<(String, SyncSender<Vec<u8>>)> = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| AgentCommsError::LockPoisoned)?;
+            sessions
+                .values()
+                .map(|s| (s.session.id.clone(), s.sender.clone()))
+                .collect()
+        };
+        for (session_id, sender) in senders {
+            if sender.try_send(bytes.clone()).is_err() {
                 log::warn!(
-                    "broadcast send failed for session {}: {}",
-                    session.session.id,
-                    e
+                    "broadcast skipped for session {}: outbound queue full or closed",
+                    session_id
                 );
             }
         }
@@ -979,5 +1092,69 @@ mod tests {
             "session must be evicted after an oversized-line disconnect"
         );
         assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn request_user_input_blocking_emits_and_resolves() {
+        let comms = AgentComms::new();
+        let seen = Arc::new(Mutex::new(Vec::<(String, serde_json::Value)>::new()));
+        let seen_t = Arc::clone(&seen);
+        comms.set_event_emitter(move |channel, data| {
+            seen_t.lock().unwrap().push((channel.to_string(), data.clone()));
+        });
+
+        let comms_t = comms.clone();
+        let waiter = std::thread::spawn(move || {
+            comms_t.request_user_input_blocking(
+                "agent-a",
+                Some("req-1"),
+                "Need a decision?",
+                Some("Question"),
+            )
+        });
+
+        // Wait for the pending entry to register, then resolve it the same
+        // way the frontend eventually does.
+        loop {
+            if comms.pending_input.lock().unwrap().contains_key("req-1") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        comms.respond_to_input_request("req-1", "yes").unwrap();
+        let answer = waiter.join().expect("waiter panicked").unwrap();
+        assert_eq!(answer, "yes");
+
+        let events = seen.lock().unwrap();
+        let (channel, payload) = &events[0];
+        assert_eq!(channel, "agents:inputRequested");
+        assert_eq!(payload["agentId"], "agent-a");
+        assert_eq!(payload["requestId"], "req-1");
+        assert_eq!(payload["prompt"], "Need a decision?");
+        assert_eq!(payload["title"], "Question");
+        assert!(comms.pending_input_is_empty());
+    }
+
+    #[test]
+    fn request_user_input_blocking_rejects_duplicate_and_times_out() {
+        let comms = AgentComms::new();
+        comms.set_event_emitter(|_, _| {});
+        let (hold_tx, _hold_rx) = std::sync::mpsc::sync_channel::<String>(1);
+        comms.pending_input.lock().unwrap().insert(
+            "dup".to_string(),
+            PendingInput {
+                session_id: String::new(),
+                sender: hold_tx,
+            },
+        );
+        let dup = comms.request_user_input_blocking("agent-a", Some("dup"), "p", None);
+        assert!(matches!(dup, Err(AgentCommsError::Generic(_))));
+        comms.pending_input.lock().unwrap().remove("dup");
+
+        // No responder: returns a timeout error and reclaims the entry
+        // (cfg(test) INPUT_REQUEST_TIMEOUT keeps this fast).
+        let timed_out = comms.request_user_input_blocking("agent-a", None, "p", None);
+        assert!(matches!(timed_out, Err(AgentCommsError::Generic(_))));
+        assert!(comms.pending_input_is_empty());
     }
 }

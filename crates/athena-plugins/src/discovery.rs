@@ -31,7 +31,14 @@ impl PluginManager {
             // Reject oversized manifests before reading to bound memory usage.
             let metadata = match fs::metadata(&path) {
                 Ok(m) => m,
-                Err(_) => continue,
+                Err(e) => {
+                    log::warn!(
+                        "Skipping unreadable plugin manifest {}: {}",
+                        path.display(),
+                        e
+                    );
+                    continue;
+                }
             };
             if metadata.len() > MAX_MANIFEST_BYTES {
                 log::warn!(

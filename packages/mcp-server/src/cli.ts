@@ -15,16 +15,16 @@ function parseArgs(): Partial<ServerConfig> {
         break
       case '--port':
       case '-p':
-        config.websocketPort = parseInt(args[++i] ?? '4546', 10)
+        config.websocketPort = parsePort(args[++i], 4546)
         break
       case '--tcp-port':
-        config.tcpPort = parseInt(args[++i] ?? '4545', 10)
+        config.tcpPort = parsePort(args[++i], 4545)
         break
       case '--athena-host':
         config.athenaHost = args[++i]
         break
       case '--athena-port':
-        config.athenaPort = parseInt(args[++i] ?? '4545', 10)
+        config.athenaPort = parsePort(args[++i], 4545)
         break
       case '--auth-token':
         config.authToken = args[++i]
@@ -87,6 +87,15 @@ EXAMPLES
 `)
 }
 
+function parsePort(value: string | undefined, fallback: number): number {
+  const parsed = parseInt(value ?? '', 10)
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
+    console.warn(`[mcp-server] ignoring invalid port "${value}", using ${fallback}`)
+    return fallback
+  }
+  return parsed
+}
+
 function applyEnvOverrides(config: Partial<ServerConfig>): Partial<ServerConfig> {
   const merged = { ...config }
 
@@ -94,16 +103,16 @@ function applyEnvOverrides(config: Partial<ServerConfig>): Partial<ServerConfig>
     merged.transport = process.env.ATHENA_MCP_TRANSPORT as TransportType
   }
   if (process.env.ATHENA_MCP_PORT) {
-    merged.websocketPort = parseInt(process.env.ATHENA_MCP_PORT, 10)
+    merged.websocketPort = parsePort(process.env.ATHENA_MCP_PORT, merged.websocketPort ?? 4546)
   }
   if (process.env.ATHENA_MCP_TCP_PORT) {
-    merged.tcpPort = parseInt(process.env.ATHENA_MCP_TCP_PORT, 10)
+    merged.tcpPort = parsePort(process.env.ATHENA_MCP_TCP_PORT, merged.tcpPort ?? 4545)
   }
   if (process.env.ATHENA_MCP_HOST) {
     merged.athenaHost = process.env.ATHENA_MCP_HOST
   }
   if (process.env.ATHENA_MCP_ATHENA_PORT) {
-    merged.athenaPort = parseInt(process.env.ATHENA_MCP_ATHENA_PORT, 10)
+    merged.athenaPort = parsePort(process.env.ATHENA_MCP_ATHENA_PORT, merged.athenaPort ?? 4545)
   }
   if (process.env.ATHENA_MCP_TOKEN) {
     merged.authToken = process.env.ATHENA_MCP_TOKEN
@@ -129,6 +138,15 @@ async function main(): Promise<void> {
 
   try {
     await server.start()
+
+    // Bridge to the Athena app. If it isn't up yet this rejects, but the
+    // bridge keeps retrying in the background (unref'd backoff timers), so
+    // athena_* tools come alive as soon as the app appears.
+    server.connectToAthena().catch((err: unknown) => {
+      console.error(
+        `[mcp-server] could not connect to Athena at ${config.athenaHost ?? '127.0.0.1'}:${config.athenaPort ?? 4545} — will keep retrying in the background (${err instanceof Error ? err.message : err})`,
+      )
+    })
 
     if (config.transport === 'tcp') {
       console.error(`Athena MCP Server started on TCP port ${config.tcpPort ?? 4545}`)

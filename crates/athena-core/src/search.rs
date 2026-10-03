@@ -4,20 +4,45 @@ use std::collections::HashSet;
 #[path = "search_support.rs"]
 mod search_support;
 pub(crate) use search_support::find_rg_binary;
-#[allow(deprecated)]
-pub use search_support::{find_rg_binary_sync, SearchError};
+pub use search_support::SearchError;
 use search_support::{validate_pattern, MAX_CONTEXT_LINES, MAX_RESULTS};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+
+/// Read a child process's stderr to EOF on a background task so reading
+/// stdout is never blocked by a full stderr pipe.
+fn drain_stderr(stderr: Option<tokio::process::ChildStderr>) -> tokio::task::JoinHandle<Vec<u8>> {
+    tokio::spawn(async move {
+        match stderr {
+            Some(mut handle) => {
+                let mut buf = Vec::new();
+                let _ = handle.read_to_end(&mut buf).await;
+                buf
+            }
+            None => Vec::new(),
+        }
+    })
+}
 
 /// Search code using ripgrep.
 ///
-/// Spawns the `rg` binary with JSON output mode, parses the results,
-/// and returns a structured `SearchResult`.
+/// Spawns the `rg` binary with JSON output mode, streams its stdout
+/// line-by-line (never buffering the whole output), and returns a
+/// structured `SearchResult`. The match count is always bounded by
+/// [`MAX_RESULTS`], even when the caller passes `max_results: None`.
 pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, SearchError> {
     let mut options = options.clone();
     options.validate();
     // Prevent CPU-DoS via pathological regexes (catastrophic backtracking).
     validate_pattern(&options.pattern)?;
     let rg_bin = find_rg_binary().await?;
+
+    // Always apply an upper bound, even when the caller passes no limit:
+    // without this, a broad pattern over a huge tree would buffer ripgrep's
+    // entire output and every match in memory.
+    let max_matches = options
+        .max_results
+        .map(|m| m.min(MAX_RESULTS))
+        .unwrap_or(MAX_RESULTS);
 
     let mut args: Vec<String> = vec![
         "--json".into(),
@@ -33,11 +58,9 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
         args.push("--ignore-case".into());
     }
 
-    if let Some(max) = options.max_results {
-        let capped = std::cmp::min(max, MAX_RESULTS);
-        args.push("--max-count".into());
-        args.push(capped.to_string());
-    }
+    // Per-file hit cap: always set so rg itself stops emitting early.
+    args.push("--max-count".into());
+    args.push(max_matches.to_string());
 
     if let Some(ctx) = options.context_lines {
         let capped = std::cmp::min(ctx, MAX_CONTEXT_LINES);
@@ -56,22 +79,16 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
     args.push(options.pattern.clone());
     args.push(options.path.clone());
 
-    let output = tokio::process::Command::new(&rg_bin)
+    let mut child = tokio::process::Command::new(&rg_bin)
         .args(&args)
         .env("LC_ALL", "en_US.UTF-8")
-        .output()
-        .await?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
 
-    let status = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if status != 0 && status != 1 {
-        return Err(SearchError::RgExit {
-            code: status,
-            stderr: stderr.into_owned(),
-        });
-    }
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr_task = drain_stderr(child.stderr.take());
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
 
     let mut matches: Vec<SearchMatch> = Vec::new();
     let mut files_matched: HashSet<String> = HashSet::new();
@@ -80,7 +97,11 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
     // Track context lines by a key of (file_path, line_number) for proper matching.
     let mut pending_context: Vec<(String, u32, String)> = Vec::new();
 
-    for line in stdout.lines() {
+    let context_lines_count = options.context_lines.unwrap_or(0) as u32;
+
+    // Stream-parse rg's JSON lines as they arrive; stop reading (and kill
+    // rg) as soon as the cap is reached so peak memory stays bounded.
+    while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -134,7 +155,6 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
                 let mut context_before: Vec<String> = Vec::new();
                 let context_after: Vec<String> = Vec::new();
 
-                let context_lines_count = options.context_lines.unwrap_or(0) as u32;
                 for (ctx_file, ctx_line, ctx_text) in &pending_context {
                     if ctx_file == &file_path
                         && *ctx_line < line_num
@@ -175,226 +195,33 @@ pub async fn search_code(options: &SearchOptions) -> Result<SearchResult, Search
                     context_after,
                 });
 
-                if let Some(max) = options.max_results {
-                    if matches.len() >= max {
-                        truncated = true;
-                        break;
-                    }
+                if matches.len() >= max_matches {
+                    truncated = true;
+                    // Stop pulling output; rg exits promptly once killed.
+                    let _ = child.kill().await;
+                    break;
                 }
             }
             _ => {}
         }
     }
 
-    // Assign remaining context lines to after the last match
-    if !matches.is_empty() && !pending_context.is_empty() {
-        if let Some(last_match) = matches.last_mut() {
-            let context_lines_count = options.context_lines.unwrap_or(0) as u32;
-            for (ctx_file, ctx_line, ctx_text) in &pending_context {
-                if ctx_file == &last_match.file_path
-                    && *ctx_line > last_match.line_number
-                    && *ctx_line <= last_match.line_number + context_lines_count
-                {
-                    last_match.context_after.push(ctx_text.clone());
-                }
-            }
-        }
-    }
+    let status = child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1);
+    let stderr_bytes = stderr_task.await.unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
 
-    let total_matches = matches.len();
-    Ok(SearchResult {
-        matches,
-        truncated,
-        stats: SearchStats {
-            files_matched: files_matched.len(),
-            total_matches,
-        },
-    })
-}
-
-/// Synchronous version of `search_code` — runs ripgrep and parses results.
-///
-/// **Deprecated**: Spawns a blocking `std::process::Command` which can stall
-/// the Tokio worker thread. Prefer the async [`search_code`], which uses
-/// `tokio::process::Command` and integrates with the Tokio runtime.
-#[deprecated(
-    since = "0.1.0",
-    note = "Spawns a blocking std::process::Command; use the async `search_code` instead"
-)]
-pub fn search_code_sync(options: &SearchOptions) -> Result<SearchResult, SearchError> {
-    let mut options = options.clone();
-    options.validate();
-    // Prevent CPU-DoS via pathological regexes (catastrophic backtracking).
-    validate_pattern(&options.pattern)?;
-    #[allow(deprecated)]
-    let rg_bin = find_rg_binary_sync()?;
-
-    let mut args: Vec<String> = vec![
-        "--json".into(),
-        "--with-filename".into(),
-        "--line-number".into(),
-        "--column".into(),
-        "--color=never".into(),
-    ];
-
-    if options.case_sensitive {
-        args.push("--case-sensitive".into());
-    } else {
-        args.push("--ignore-case".into());
-    }
-
-    if let Some(max) = options.max_results {
-        let capped = std::cmp::min(max, MAX_RESULTS);
-        args.push("--max-count".into());
-        args.push(capped.to_string());
-    }
-
-    if let Some(ctx) = options.context_lines {
-        let capped = std::cmp::min(ctx, MAX_CONTEXT_LINES);
-        if capped > 0 {
-            args.push("--context".into());
-            args.push(capped.to_string());
-        }
-    }
-
-    if let Some(glob) = &options.glob {
-        args.push("--glob".into());
-        args.push(glob.clone());
-    }
-
-    args.push("--".into());
-    args.push(options.pattern.clone());
-    args.push(options.path.clone());
-
-    let output = std::process::Command::new(&rg_bin)
-        .args(&args)
-        .env("LC_ALL", "en_US.UTF-8")
-        .output()?;
-
-    let status = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if status != 0 && status != 1 {
+    // Skip the exit-status check when we killed rg ourselves on truncation:
+    // the status then reflects the kill, not a search error.
+    if !truncated && status != 0 && status != 1 {
         return Err(SearchError::RgExit {
             code: status,
             stderr: stderr.into_owned(),
         });
     }
 
-    let mut matches: Vec<SearchMatch> = Vec::new();
-    let mut files_matched: HashSet<String> = HashSet::new();
-    let mut truncated = false;
-    let mut pending_context: Vec<(String, u32, String)> = Vec::new();
-
-    for line in stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let parsed: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let data_type = parsed["type"].as_str().unwrap_or_default();
-
-        match data_type {
-            "context" => {
-                let data = &parsed["data"];
-                let file_path = data["path"]["text"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
-                let line_num = data["line_number"].as_u64().unwrap_or(0) as u32;
-                let text = match data["lines"]["text"].as_str() {
-                    Some(t) => t.trim_end().to_string(),
-                    None => continue,
-                };
-                pending_context.push((file_path, line_num, text));
-            }
-            "match" => {
-                let data = &parsed["data"];
-                let file_path = data["path"]["text"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
-                let line_num = data["line_number"].as_u64().unwrap_or(0) as u32;
-                let submatch = match data["submatches"].as_array() {
-                    Some(arr) if !arr.is_empty() => &arr[0],
-                    _ => continue,
-                };
-                let col = submatch["start"].as_u64().unwrap_or(1) as u32;
-                let line_text = match data["lines"]["text"].as_str() {
-                    Some(t) => t.trim_end().to_string(),
-                    None => continue,
-                };
-                let match_text = submatch["match"]["text"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
-
-                files_matched.insert(file_path.clone());
-
-                let mut context_before: Vec<String> = Vec::new();
-                let context_after: Vec<String> = Vec::new();
-
-                let context_lines_count = options.context_lines.unwrap_or(0) as u32;
-                for (ctx_file, ctx_line, ctx_text) in &pending_context {
-                    if ctx_file == &file_path
-                        && *ctx_line < line_num
-                        && *ctx_line >= line_num.saturating_sub(context_lines_count)
-                    {
-                        context_before.push(ctx_text.clone());
-                    }
-                }
-
-                // Retrospectively populate after-context for the previous match
-                // in this file. Ripgrep streams context lines after the match
-                // they belong to; those lines only arrive once the next match
-                // (or end-of-stream) is seen, so the previous match's
-                // context_after must be filled in here. Lines that also fall
-                // within this new match's before-window are left for the
-                // before-window scan above (matches ripgrep's merged-window
-                // single emission of overlapping context).
-                let before_window_start = line_num.saturating_sub(context_lines_count);
-                if let Some(prev) = matches.iter_mut().rev().find(|m| m.file_path == file_path) {
-                    for (ctx_file, ctx_line, ctx_text) in &pending_context {
-                        if ctx_file == &prev.file_path
-                            && *ctx_line > prev.line_number
-                            && *ctx_line <= prev.line_number + context_lines_count
-                            && *ctx_line < before_window_start
-                        {
-                            prev.context_after.push(ctx_text.clone());
-                        }
-                    }
-                }
-
-                matches.push(SearchMatch {
-                    file_path,
-                    line_number: line_num,
-                    column: col,
-                    line_text,
-                    match_text,
-                    context_before,
-                    context_after,
-                });
-
-                if let Some(max) = options.max_results {
-                    if matches.len() >= max {
-                        truncated = true;
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
+    // Assign remaining context lines to after the last match
     if !matches.is_empty() && !pending_context.is_empty() {
         if let Some(last_match) = matches.last_mut() {
-            let context_lines_count = options.context_lines.unwrap_or(0) as u32;
             for (ctx_file, ctx_line, ctx_text) in &pending_context {
                 if ctx_file == &last_match.file_path
                     && *ctx_line > last_match.line_number
@@ -420,7 +247,9 @@ pub fn search_code_sync(options: &SearchOptions) -> Result<SearchResult, SearchE
 /// List files matching a pattern in a directory.
 ///
 /// `max_results` is capped at [`SearchOptions::MAX_RESULTS`] (5000) to
-/// bound memory usage and prevent DoS via multi-million file paths.
+/// bound memory usage and prevent DoS via multi-million file paths, and
+/// ripgrep's output is streamed line-by-line (never fully buffered),
+/// killing the process once the cap is reached.
 pub async fn search_files(
     directory: &str,
     pattern: &str,
@@ -430,7 +259,9 @@ pub async fn search_files(
     // Cap caller-supplied `max_results` to the same upper bound used for
     // `search_code`. Without this, an attacker could pass `usize::MAX` and
     // force the process to buffer an arbitrarily large result set.
-    let max_results = max_results.map(|m| m.min(SearchOptions::MAX_RESULTS));
+    let max_results = max_results
+        .map(|m| m.min(SearchOptions::MAX_RESULTS))
+        .unwrap_or(500);
 
     let rg_bin = find_rg_binary().await?;
 
@@ -458,29 +289,44 @@ pub async fn search_files(
 
     args.push(directory.to_string());
 
-    let output = tokio::process::Command::new(&rg_bin)
+    let mut child = tokio::process::Command::new(&rg_bin)
         .args(&args)
         .env("LC_ALL", "en_US.UTF-8")
-        .output()
-        .await?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
 
-    let status = output.status.code().unwrap_or(-1);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr_task = drain_stderr(child.stderr.take());
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
 
-    if status != 0 && status != 1 {
+    // Stream file paths and stop collecting (killing rg) at the cap so the
+    // buffer never exceeds the cap, even on huge trees.
+    let mut results: Vec<String> = Vec::new();
+    let mut killed = false;
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        results.push(line.to_string());
+        if results.len() >= max_results {
+            let _ = child.kill().await;
+            killed = true;
+            break;
+        }
+    }
+
+    let status = child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1);
+    let stderr_bytes = stderr_task.await.unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
+
+    if !killed && status != 0 && status != 1 {
         return Err(SearchError::RgExit {
             code: status,
             stderr: stderr.into_owned(),
         });
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let results: Vec<String> = stdout
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .take(max_results.unwrap_or(500))
-        .map(|s| s.to_string())
-        .collect();
 
     Ok(results)
 }

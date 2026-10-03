@@ -16,6 +16,10 @@ pub enum PathValidationError {
     PathTraversal(String),
     #[error("invalid path: {0}")]
     InvalidPath(String),
+    /// The path does not exist. Kept distinct from `PathTraversal` so callers
+    /// never surface a missing file as a security violation.
+    #[error("not found: {0}")]
+    NotFound(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -31,7 +35,16 @@ pub struct PathValidator {
     /// Each entry is canonicalized before being stored. Empty by default —
     /// the sandbox stays single-root unless the caller explicitly widens it.
     extra_roots: Vec<PathBuf>,
+    /// Whether sensitive home-directory subtrees (e.g. `~/.ssh`, `~/.aws`)
+    /// are denied even though they sit inside the sandbox root. Enabled for
+    /// broadly-rooted validators such as the home-rooted fallback; disabled
+    /// for workspace-rooted ones.
+    deny_sensitive_subtrees: bool,
 }
+
+/// Subtrees of a broadly-scoped root (e.g. the home directory) that must
+/// never be readable or writable through the fs API.
+const SENSITIVE_SUBTREES: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube"];
 
 impl PathValidator {
     /// Create a new validator rooted at `root`.
@@ -45,7 +58,27 @@ impl PathValidator {
         Ok(Self {
             root,
             extra_roots: Vec::new(),
+            deny_sensitive_subtrees: false,
         })
+    }
+
+    /// Create a validator rooted at an actual workspace/project directory.
+    ///
+    /// This is the preferred way to grant fs access to callers: the sandbox
+    /// is the workspace, not the entire home directory, so no sensitive-path
+    /// blocklist is applied on top.
+    pub fn new_workspace(root: &Path) -> Result<Self, PathValidationError> {
+        Self::new(root)
+    }
+
+    /// Create a validator rooted at the user's home directory with the
+    /// sensitive-subtree blocklist enabled (`~/.ssh`, `~/.aws`, `~/.gnupg`,
+    /// `~/.kube`). This exists as a fallback for callers that predate
+    /// workspace rooting; prefer [`PathValidator::new_workspace`].
+    pub fn new_home(root: &Path) -> Result<Self, PathValidationError> {
+        let mut validator = Self::new(root)?;
+        validator.deny_sensitive_subtrees = true;
+        Ok(validator)
     }
     /// Grant additional canonical sandbox roots. Paths under any of these
     /// are accepted alongside the primary root. Roots that do not exist
@@ -76,7 +109,11 @@ impl PathValidator {
     /// the sandbox or does not exist.
     pub fn validate(&self, path: &Path) -> Result<PathBuf, PathValidationError> {
         let canonical = path.canonicalize().map_err(|e| {
-            PathValidationError::PathTraversal(format!("cannot canonicalize {:?}: {}", path, e))
+            if e.kind() == std::io::ErrorKind::NotFound {
+                PathValidationError::NotFound(format!("path {:?} does not exist", path))
+            } else {
+                PathValidationError::InvalidPath(format!("cannot canonicalize {:?}: {}", path, e))
+            }
         })?;
         self.validate_canonical(&canonical)
     }
@@ -89,22 +126,33 @@ impl PathValidator {
         // final component afterwards.
         let canonical = if path.exists() {
             path.canonicalize().map_err(|e| {
-                PathValidationError::PathTraversal(format!("cannot canonicalize {:?}: {}", path, e))
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    PathValidationError::NotFound(format!("path {:?} does not exist", path))
+                } else {
+                    PathValidationError::InvalidPath(format!(
+                        "cannot canonicalize {:?}: {}",
+                        path, e
+                    ))
+                }
             })?
         } else {
             let parent = path.parent().ok_or_else(|| {
-                PathValidationError::PathTraversal(format!("path {:?} has no parent", path))
+                PathValidationError::InvalidPath(format!("path {:?} has no parent", path))
             })?;
             let canonical_parent = parent.canonicalize().map_err(|e| {
-                PathValidationError::PathTraversal(format!(
-                    "cannot canonicalize parent of {:?}: {}",
-                    path, e
-                ))
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    PathValidationError::NotFound(format!("parent of {:?} does not exist", path))
+                } else {
+                    PathValidationError::InvalidPath(format!(
+                        "cannot canonicalize parent of {:?}: {}",
+                        path, e
+                    ))
+                }
             })?;
             if let Some(name) = path.file_name() {
                 canonical_parent.join(name)
             } else {
-                return Err(PathValidationError::PathTraversal(format!(
+                return Err(PathValidationError::InvalidPath(format!(
                     "path {:?} has no file name",
                     path
                 )));
@@ -122,6 +170,16 @@ impl PathValidator {
             return Err(PathValidationError::PathTraversal(format!(
                 "path {:?} is outside sandbox root {:?}",
                 canonical, self.root
+            )));
+        }
+        if self.deny_sensitive_subtrees
+            && SENSITIVE_SUBTREES
+                .iter()
+                .any(|sub| canonical.starts_with(self.root.join(sub)))
+        {
+            return Err(PathValidationError::PathTraversal(format!(
+                "path {:?} is inside a sensitive subtree of the sandbox root",
+                canonical
             )));
         }
         Ok(canonical.to_path_buf())
@@ -228,6 +286,57 @@ mod tests {
         for dir in [&primary, &extra, &other] {
             fs::remove_dir_all(dir).ok();
         }
+    }
+
+    #[test]
+    fn test_validate_missing_path_is_not_found_not_traversal() {
+        let temp = std::env::temp_dir();
+        let validator = PathValidator::new(&temp).expect("temp dir should exist");
+        let missing = temp.join("athena_test_definitely_missing_3f9c1a");
+        let _ = fs::remove_dir_all(&missing);
+        match validator.validate(&missing) {
+            Err(PathValidationError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_validate_write_missing_parent_is_not_found() {
+        let temp = std::env::temp_dir();
+        let validator = PathValidator::new(&temp).expect("temp dir should exist");
+        let missing_child = temp
+            .join("athena_test_missing_parent_7be2d0")
+            .join("file.txt");
+        match validator.validate_write(&missing_child) {
+            Err(PathValidationError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_home_validator_blocks_sensitive_subtrees() {
+        let base = std::env::temp_dir().join("athena_test_home_root");
+        let ssh_dir = base.join(".ssh");
+        fs::create_dir_all(&ssh_dir).unwrap();
+        let key = ssh_dir.join("id_rsa");
+        fs::write(&key, "secret").unwrap();
+
+        // Home-rooted validator denies sensitive subtrees.
+        let validator = PathValidator::new_home(&base).unwrap();
+        assert!(matches!(
+            validator.validate(&key),
+            Err(PathValidationError::PathTraversal(_))
+        ));
+        // …but still accepts other in-root paths.
+        let normal = base.join("notes.txt");
+        fs::write(&normal, "ok").unwrap();
+        assert!(validator.validate(&normal).is_ok());
+
+        // Workspace-rooted validators do not apply the blocklist.
+        let workspace = PathValidator::new_workspace(&base).unwrap();
+        assert!(workspace.validate(&key).is_ok());
+
+        fs::remove_dir_all(&base).ok();
     }
 
     #[test]

@@ -4,12 +4,13 @@
 //! whose forwarded payload is pushed back to the phone over a writer task.
 
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
@@ -30,6 +31,14 @@ const RELAY_WRITER_QUEUE: usize = 1024;
 /// WebSocket upgrade is denied. Generous by design — they may be away from the
 /// machine when the phone connects.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
+/// Minimum time between pairing prompts from one LAN peer. The peer address is
+/// available to the HTTP server, unlike a device identity inside the socket
+/// handshake.
+const PAIRING_PROMPT_INTERVAL: Duration = Duration::from_secs(30);
+/// Application close codes understood by the shim. They are terminal: a denied
+/// or timed-out page must stop reconnecting instead of re-spamming the desktop.
+pub(crate) const CLOSE_PAIRING_DENIED: u16 = 4403;
+pub(crate) const CLOSE_PAIRING_TIMEOUT: u16 = 4408;
 static ACTIVE_RELAY_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 /// Track relay `pty:raw:<pane>` subscriptions in shared state so the PTY read
 /// loop only pays for the base64 event path while a phone is listening.
@@ -56,6 +65,29 @@ fn note_raw_listener_event(app: &tauri::AppHandle, event_name: &str, delta: isiz
 }
 static PENDING_RELAY_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 
+/// Admit at most one desktop pairing prompt per peer during each interval.
+/// Timestamps older than the interval are evicted so a long-lived relay does
+/// not retain one entry for every historical LAN address.
+fn pairing_prompt_allowed(ctx: &RelayCtx, peer: IpAddr) -> bool {
+    let mut recent = ctx.pairing_prompt_last.lock();
+    pairing_prompt_allowed_at(&mut recent, peer, Instant::now())
+}
+
+fn pairing_prompt_allowed_at(
+    recent: &mut HashMap<IpAddr, Instant>,
+    peer: IpAddr,
+    now: Instant,
+) -> bool {
+    recent.retain(|_, seen| now.duration_since(*seen) < PAIRING_PROMPT_INTERVAL);
+    match recent.get(&peer) {
+        Some(_) => false,
+        None => {
+            recent.insert(peer, now);
+            true
+        }
+    }
+}
+
 use super::dispatch;
 use super::RelayCtx;
 
@@ -65,12 +97,16 @@ use super::RelayCtx;
 /// exposing the command bridge to every LAN peer.
 pub async fn handle_upgrade(
     ws: WebSocketUpgrade,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     State(ctx): State<RelayCtx>,
 ) -> axum::response::Response {
     let expected_protocol = format!("athena-relay.{}", ctx.token);
     if !auth_subprotocol_matches(&headers, &expected_protocol) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !pairing_prompt_allowed(&ctx, peer.ip()) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     // Two-stage slot budget: a socket awaiting pairing approval holds a small
     // "pending" slot, not a real connection slot. A LAN peer that opens
@@ -109,11 +145,7 @@ pub async fn handle_upgrade(
     let request_id_for_cleanup = request_id.clone();
     ws.protocols([expected_protocol])
         .on_upgrade(move |mut socket| async move {
-            let approved = tokio::time::timeout(PAIRING_TIMEOUT, approve_rx)
-                .await
-                .ok()
-                .and_then(|res| res.ok())
-                .unwrap_or(false);
+            let approval = tokio::time::timeout(PAIRING_TIMEOUT, approve_rx).await;
             {
                 let state = ctx_for_cleanup.app_handle.state::<crate::state::AppState>();
                 state
@@ -125,20 +157,42 @@ pub async fn handle_upgrade(
             // approved connection now competes for a real slot; if every real
             // slot is taken by live sessions, deny rather than exceed the cap.
             drop(pending_guard);
-            if approved {
-                let Some(connection_guard) = try_acquire_connection() else {
-                    log::warn!(
-                        "[relay] all {} connection slots in use; denying approved pairing ({request_id_for_cleanup})",
-                        MAX_RELAY_CONNECTIONS
-                    );
+            match approval {
+                Ok(Ok(true)) => {
+                    let Some(connection_guard) = try_acquire_connection() else {
+                        log::warn!(
+                            "[relay] all {} connection slots in use; denying approved pairing ({request_id_for_cleanup})",
+                            MAX_RELAY_CONNECTIONS
+                        );
+                        let _ = socket.send(Message::Close(None)).await;
+                        return;
+                    };
+                    log::info!("[relay] pairing approved ({request_id_for_cleanup})");
+                    session_loop(socket, ctx_for_session, connection_guard).await;
+                }
+                Ok(Ok(false)) => {
+                    log::warn!("[relay] pairing denied ({request_id_for_cleanup})");
+                    let _ = socket
+                        .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                            code: CLOSE_PAIRING_DENIED,
+                            reason: "pairing denied".into(),
+                        })))
+                        .await;
+                }
+                Ok(Err(_)) => {
+                    // Desktop UI vanished between prompt and response; retryable.
+                    log::warn!("[relay] pairing response channel closed ({request_id_for_cleanup})");
                     let _ = socket.send(Message::Close(None)).await;
-                    return;
-                };
-                log::info!("[relay] pairing approved ({request_id_for_cleanup})");
-                session_loop(socket, ctx_for_session, connection_guard).await;
-            } else {
-                log::warn!("[relay] pairing denied or timed out ({request_id_for_cleanup})");
-                let _ = socket.send(Message::Close(None)).await;
+                }
+                Err(_) => {
+                    log::warn!("[relay] pairing timed out ({request_id_for_cleanup})");
+                    let _ = socket
+                        .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                            code: CLOSE_PAIRING_TIMEOUT,
+                            reason: "pairing timed out".into(),
+                        })))
+                        .await;
+                }
             }
         })
 }
@@ -151,17 +205,30 @@ pub async fn handle_upgrade(
 /// lost.
 fn raw_binary_frame(pane: &str, payload: &str) -> axum::extract::ws::Message {
     use base64::Engine;
-    // The backend emits `pty:raw` with a *String* payload, which Tauri
-    // JSON-quotes before delivery — so `payload` is `"{\"sessionId\":…}"` and
-    // needs a second parse to reach the object.
-    let parsed = serde_json::from_str::<serde_json::Value>(payload).ok();
-    let parsed = match &parsed {
-        Some(serde_json::Value::String(inner)) => serde_json::from_str::<serde_json::Value>(inner).ok(),
-        other => other.clone(),
+    // Deserialize straight into a typed struct (borrowed `data`) instead of
+    // materializing a generic `Value` tree twice. Legacy emitters deliver the
+    // object JSON-quoted inside a string; unwrap the quoting, then the same
+    // typed struct parse applies — no generic outer parse + inner re-parse.
+    #[derive(serde::Deserialize)]
+    struct RawPtyPayload<'a> {
+        #[serde(borrow)]
+        data: &'a str,
+    }
+    fn decode_base64(b64: &str) -> Option<Vec<u8>> {
+        base64::engine::general_purpose::STANDARD.decode(b64).ok()
+    }
+    #[derive(serde::Deserialize)]
+    struct OwnedRawPtyPayload {
+        data: String,
+    }
+    let decoded: Option<Vec<u8>> = match serde_json::from_str::<RawPtyPayload>(payload) {
+        Ok(p) => decode_base64(p.data),
+        Err(_) => serde_json::from_str::<String>(payload)
+            .ok()
+            .and_then(|inner| serde_json::from_str::<OwnedRawPtyPayload>(&inner).ok())
+            .map(|p| p.data)
+            .and_then(|data| decode_base64(&data)),
     };
-    let decoded: Option<Vec<u8>> = parsed
-        .and_then(|v| v.get("data").and_then(|d| d.as_str()).map(str::to_string))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok());
     match decoded {
         Some(bytes) => {
             let pane_bytes = pane.as_bytes();
@@ -245,7 +312,7 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
         Arc::new(Mutex::new(HashMap::new()));
 
     // Per-connection registry of panes this phone spawned. Combined with the
-    // desktop's shared-pane set (read live via `shared_pane_ids`) to decide
+    // desktop's shared-pane set (checked live via `pane_is_shared`) to decide
     // which terminal read/write surface the phone may access. The pairing
     // token gates the connection; per-pane sharing gates the content.
     let owned_pane_ids: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -287,7 +354,7 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
             break;
         }
 
-        let msg = match serde_json::from_str::<serde_json::Value>(&text) {
+        let mut msg = match serde_json::from_str::<serde_json::Value>(&text) {
             Ok(v) => v,
             Err(e) => {
                 log::warn!("[relay] malformed ws frame: {e}");
@@ -305,8 +372,10 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
             break;
         }
 
-        let kind = msg.get("t").and_then(|t| t.as_str()).unwrap_or("");
-        match kind {
+        // Owned (one small alloc per frame) so the invoke arm can take `args`
+        // out of `msg` by move instead of cloning the whole Value.
+        let kind = msg.get("t").and_then(|t| t.as_str()).unwrap_or("").to_string();
+        match kind.as_str() {
             "invoke" => {
                 let id = msg
                     .get("id")
@@ -318,7 +387,13 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let args = msg.get("args").cloned().unwrap_or(serde_json::Value::Null);
+                // Move the args subtree out of the frame instead of cloning
+                // it — pty_write runs this per keystroke, and the data field
+                // is the largest value on the invoke path.
+                let args = msg
+                    .get_mut("args")
+                    .map(std::mem::take)
+                    .unwrap_or(serde_json::Value::Null);
                 let pane_id = dispatch::pane_id_of(&cmd, &args);
                 // Per-pane share gate: pane-scoped terminal read/write is
                 // authorized only for panes this phone spawned OR the desktop
@@ -329,7 +404,9 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
                 // authorization boundary for every relay invoke frame.
                 let authorization = {
                     let owned = owned_pane_ids.lock();
-                    dispatch::authorize_command(&cmd, &args, &owned, &shared_pane_ids(&app))
+                    dispatch::authorize_command(&cmd, &args, &owned, |pane| {
+                        pane_is_shared(&app, pane)
+                    })
                 };
                 // Chat commands resolve only when the model turn finishes —
                 // a slow or hung provider turn would otherwise seize the
@@ -362,18 +439,43 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
                     continue;
                 }
                 let result = match authorization {
+                    Ok(()) if cmd == "pty_spawn" => {
+                        // `pty_spawn` accepts an existing id as a no-op. Treat
+                        // a pre-existing session as a conflict here so the
+                        // owner registry below records only a pane this socket
+                        // actually created, never a desktop pane it merely named.
+                        match pane_id.as_deref() {
+                            Some(pane) => {
+                                let exists = crate::commands::pty_has_session(
+                                    ctx.app_handle.state::<crate::state::AppState>(),
+                                    pane.to_string(),
+                                )
+                                .await
+                                .unwrap_or_else(|e| {
+                                    log::warn!(
+                                        "[relay] failed to pre-check PTY session {pane}: {e}"
+                                    );
+                                    true
+                                });
+                                if exists {
+                                    Err(format!("relay PTY session already exists: {pane}"))
+                                } else {
+                                    dispatch::dispatch(&ctx, &cmd, args).await
+                                }
+                            }
+                            None => Err("pty_spawn missing pane id".to_string()),
+                        }
+                    }
                     Ok(()) => dispatch::dispatch(&ctx, &cmd, args).await,
                     Err(reason) => Err(reason),
                 };
-                // Record the pane id this phone spawned/killed, but only after
-                // a successful dispatch. pty_spawn/pty_spawn_agent return
-                // Ok(()) for duplicate ids without re-spawning (pty.rs:187),
-                // so inserting here covers both initial spawn AND reconnect
-                // re-registration of an already-running pane in one place.
+                // Ownership is recorded only after a successful, non-conflicting
+                // spawn. It is intentionally scoped to this socket: reconnects
+                // must re-spawn or request an explicit desktop pane share.
                 if result.is_ok() {
                     if let Some(pane) = &pane_id {
                         match cmd.as_str() {
-                            "pty_spawn" | "pty_spawn_agent" => {
+                            "pty_spawn" => {
                                 owned_pane_ids.lock().insert(pane.clone());
                             }
                             "pty_kill" => {
@@ -383,16 +485,19 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
                         }
                     }
                 }
-                let (ok, value) = match &result {
-                    Ok(v) => (true, v.clone()),
-                    Err(e) => (false, serde_json::Value::String(e.clone())),
+                // Move the dispatch result into the response frame — no clone
+                // of the (potentially large) result Value on the hot path.
+                let resp = match result {
+                    Ok(v) => {
+                        serde_json::json!({ "t": "resp", "id": id, "ok": true, "result": v })
+                    }
+                    Err(e) => {
+                        serde_json::json!({ "t": "resp", "id": id, "ok": false, "error": e })
+                    }
                 };
-                let resp = if ok {
-                    serde_json::json!({ "t": "resp", "id": id, "ok": true, "result": value })
-                } else {
-                    serde_json::json!({ "t": "resp", "id": id, "ok": false, "error": value })
-                };
-                if tx.try_send(axum::extract::ws::Message::Text(resp.to_string())).is_err()
+                if tx
+                    .try_send(axum::extract::ws::Message::Text(resp.to_string()))
+                    .is_err()
                 {
                     log::warn!("[relay] response queue full; closing slow client");
                     break;
@@ -461,10 +566,7 @@ async fn session_loop(socket: WebSocket, ctx: RelayCtx, _connection: RelayConnec
                         let owns = terminal_event_pane_id(event_name, &payload)
                             .map(|id| {
                                 owned_for_filter.lock().contains(&id)
-                                    || shared_pane_ids(&app_for_filter).contains(&id)
-                                    // Mirror-created panes stay reachable after
-                                    // a phone reconnect (see dispatch.rs auth).
-                                    || id.starts_with("mobile-")
+                                    || pane_is_shared(&app_for_filter, &id)
                             })
                             .unwrap_or(false);
                         if !owns {
@@ -595,14 +697,16 @@ fn auth_subprotocol_matches(headers: &HeaderMap, expected: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Read the live set of panes the desktop has shared with the mobile mirror.
-/// Empty by default; the desktop toggles membership via `relay_set_pane_shared`.
-/// This is read on each terminal-stream event (not snapshotted per connection)
-/// so the desktop can share/unshare panes while a phone is already paired.
-fn shared_pane_ids(app: &tauri::AppHandle) -> HashSet<String> {
+/// Check desktop-shared pane membership without cloning the set. Read live
+/// (not snapshotted per connection) so the desktop can share/unshare panes
+/// while a phone is already paired; the parking-lot lock is uncontended
+/// except for the rare `relay_set_pane_shared` toggle. # ponytail: global
+/// test-in-lock beats an Arc snapshot here because membership mutation lives
+/// in commands/relay.rs and cannot publish a swap without editing state.rs.
+fn pane_is_shared(app: &tauri::AppHandle, pane: &str) -> bool {
     let state = app.state::<crate::state::AppState>();
-    let ids: HashSet<String> = state.relay_shared_panes.lock().iter().cloned().collect();
-    ids
+    let shared = state.relay_shared_panes.lock().contains(pane);
+    shared
 }
 
 /// Extract the pane ID carried by a terminal event for relay authorization.
@@ -675,10 +779,13 @@ fn event_allowed(event: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_subprotocol_matches, event_allowed, peer_description, raw_binary_frame,
-        terminal_event_pane_id,
+        auth_subprotocol_matches, event_allowed, pairing_prompt_allowed_at, peer_description,
+        raw_binary_frame, terminal_event_pane_id,
     };
     use axum::http::{header, HeaderMap, HeaderValue};
+    use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn requires_the_exact_websocket_subprotocol() {
@@ -717,8 +824,7 @@ mod tests {
         })
         .to_string();
         let payload = serde_json::to_string(&inner).unwrap();
-        let axum::extract::ws::Message::Binary(bytes) = raw_binary_frame("pane-7", &payload)
-        else {
+        let axum::extract::ws::Message::Binary(bytes) = raw_binary_frame("pane-7", &payload) else {
             panic!("pty:raw payload must cross as a binary frame");
         };
         let pane_len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
@@ -798,6 +904,30 @@ mod tests {
             peer_description(&headers),
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)"
         );
+    }
+
+    #[test]
+    fn pairing_prompts_are_rate_limited_per_peer_and_expire() {
+        let peer = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+        let other = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 21));
+        let now = Instant::now();
+        let mut recent = HashMap::new();
+        assert!(pairing_prompt_allowed_at(&mut recent, peer, now));
+        assert!(!pairing_prompt_allowed_at(
+            &mut recent,
+            peer,
+            now + Duration::from_secs(1)
+        ));
+        assert!(pairing_prompt_allowed_at(
+            &mut recent,
+            other,
+            now + Duration::from_secs(1)
+        ));
+        assert!(pairing_prompt_allowed_at(
+            &mut recent,
+            peer,
+            now + super::PAIRING_PROMPT_INTERVAL + Duration::from_secs(1)
+        ));
     }
 
     #[test]

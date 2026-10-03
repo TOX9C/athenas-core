@@ -33,6 +33,13 @@ fn reap_process_group(pid: nix::unistd::Pid, pgid: nix::unistd::Pid) {
     use nix::sys::signal::{killpg, Signal};
     use nix::sys::wait::WaitStatus;
 
+    // Check liveness FIRST: if the child already exited and the OS recycled
+    // its pgid, killpg would signal an innocent, unrelated process group.
+    match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+        Ok(WaitStatus::StillAlive) => {} // genuinely running — proceed to signal
+        _ => return,                     // already reaped or nothing to do
+    }
+
     let _ = killpg(pgid, Signal::SIGTERM);
 
     // Grace window: poll for ~200ms for the child to exit.
@@ -53,6 +60,11 @@ fn reap_process_group(pid: nix::unistd::Pid, pgid: nix::unistd::Pid) {
     let _ = killpg(pgid, Signal::SIGKILL);
     let _ = waitpid(pid, None);
 }
+
+/// Maximum total bytes queued in `pending_writes` for a session that has not
+/// reached `Ready` yet. Without a cap, a shell that never marks ready would
+/// let every write accumulate in memory indefinitely.
+const MAX_PENDING_WRITE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Status of a PTY session lifecycle.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -175,7 +187,25 @@ pub struct TerminalSession {
     /// asynchronous IPC, so multiple writes can otherwise reach the PTY at
     /// the same time and complete out of order. Keeping one writer in flight
     /// preserves the byte order the user generated.
+    ///
+    /// Deliberately NOT taken by `mark_ready`: a paste into a full pipe can
+    /// hold this lock for up to 30 s while polling POLLOUT, and sharing it
+    /// with the readiness transition parked `mark_ready` (and the pane's
+    /// first screen) behind that drain. The transition instead serializes on
+    /// `ready_lock`, which is only ever held for the short status check and
+    /// the one-time pending flush.
     write_lock: Mutex<()>,
+    /// Serializes the Spawning → Ready transition against the write path's
+    /// status check, so a write can never observe `Spawning`, then have
+    /// `mark_ready` flush and flip status, then still enqueue into an
+    /// already-flushed `pending_writes`. Held only briefly around the
+    /// status/pending section (in `write`) and around `mark_ready` itself —
+    /// never across a live `do_write`, so a blocked PTY write cannot stall
+    /// the readiness transition. Lock order is one-directional: `write` drops
+    /// this before acquiring `write_lock`; `mark_ready` never takes
+    /// `write_lock` (during its flush no live `do_write` can exist, because
+    /// the status was `Spawning` until the flip).
+    ready_lock: Mutex<()>,
     /// Serializes PTY window-size updates. Without this lock, an older
     /// `TIOCSWINSZ` task can finish after a newer request and leave the shell
     /// at dimensions that no longer match xterm.js.
@@ -204,7 +234,21 @@ impl Drop for TerminalSession {
         // zombie until process exit; over a long app session that leaks the
         // process table. The grace-then-SIGKILL escalation also handles
         // defiant shells that ignore SIGTERM.
-        reap_process_group(self.shell_pid, self.pgid);
+        //
+        // Reaping busy-sleeps and ends in a blocking `waitpid`, so it must
+        // not run inline here: Drop can land on a tokio worker when the last
+        // Arc releases, and a hung child (D-state) would stall the executor
+        // and deadlock multi-threaded runtimes via block_in_place. Dispatch
+        // to the blocking pool instead; only when no runtime is alive (e.g.
+        // during process teardown) reap inline.
+        let pid = self.shell_pid;
+        let pgid = self.pgid;
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(move || reap_process_group(pid, pgid));
+            }
+            Err(_) => reap_process_group(pid, pgid),
+        }
         cleanup_startup_path(self.startup_cleanup_path.as_deref());
     }
 }
@@ -263,6 +307,7 @@ impl TerminalSession {
             startup_pause_deadline: std::sync::Mutex::new(None),
             pending_writes: Mutex::new(VecDeque::new()),
             write_lock: Mutex::new(()),
+            ready_lock: Mutex::new(()),
             resize_lock: Mutex::new(()),
             #[cfg(test)]
             resize_test_probe: std::sync::Mutex::new(None),
@@ -339,20 +384,33 @@ impl TerminalSession {
     /// Write data to the PTY master fd.
     /// If the session is not yet ready, data is queued for later.
     pub async fn write(&self, data: &[u8]) -> io::Result<usize> {
-        // Hold the writer lock through the pending-write check and the actual
-        // PTY write. This makes the Spawning → Ready transition and all live
-        // key writes one ordered stream rather than concurrent blocking tasks.
-        let _write_guard = self.write_lock.lock().await;
+        // Hold only `ready_lock` through the pending-write check — never the
+        // blocking PTY write. This makes the Spawning → Ready transition and
+        // the pending queue one ordered stream without letting a live write
+        // that is waiting on a full pipe park `mark_ready` behind it.
         {
-            // Keep lock order consistent with `mark_ready` (status, then
-            // pending) so a readiness transition cannot deadlock with input.
+            let _ready_guard = self.ready_lock.lock().await;
+            // Lock order is consistent with `mark_ready` (ready, then
+            // status, then pending) so a readiness transition cannot
+            // deadlock with input.
             let status = self.status.lock().await;
             if *status == PtyStatus::Spawning {
                 drop(status);
-                self.pending_writes.lock().await.push_back(data.to_vec());
+                let mut pending = self.pending_writes.lock().await;
+                // Cap total queued bytes: a session whose shell never reaches
+                // Ready would otherwise accumulate every write unboundedly.
+                let buffered: usize = pending.iter().map(Vec::len).sum();
+                if buffered + data.len() > MAX_PENDING_WRITE_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "PTY session not ready: pending write buffer full",
+                    ));
+                }
+                pending.push_back(data.to_vec());
                 return Ok(data.len());
             }
         }
+        let _write_guard = self.write_lock.lock().await;
         self.do_write(data).await
     }
 
@@ -446,11 +504,11 @@ impl TerminalSession {
                         }
                         continue;
                     }
-                    // EIO on a fresh PTY usually means the child hasn't finished exec yet;
-                    // treat as WouldBlock so callers can retry.
-                    if code == Some(5) {
-                        return Err(io::Error::new(io::ErrorKind::WouldBlock, err));
-                    }
+                    // EIO means the slave side is gone (dead PTY); retrying can
+                    // never succeed, so surface it as a terminal error instead
+                    // of letting callers spin. (The spawn handshake already
+                    // queues writes until the child has exec'd, so a fresh-PTY
+                    // EIO race does not reach this path.)
                     return Err(err);
                 }
                 total_written += written as usize;
@@ -760,8 +818,14 @@ impl TerminalSession {
     /// Mark the session as ready and flush any pending writes.
     pub async fn mark_ready(&self) {
         // Match `write`: pending startup bytes must be flushed before any
-        // later interactive input can overtake them.
-        let _write_guard = self.write_lock.lock().await;
+        // later interactive input can overtake them. `ready_lock` (not
+        // `write_lock`) gates the status flip and flush, so this transition
+        // is never parked behind an in-flight write polling a full pipe.
+        // `write_lock` is unnecessary during the flush: while the status was
+        // `Spawning`, no live `do_write` could have started, and writers
+        // blocked on `ready_lock` re-check the (now `Ready`) status only
+        // after the flush completes — preserving pending-before-live order.
+        let _ready_guard = self.ready_lock.lock().await;
         let mut status = self.status.lock().await;
         *status = PtyStatus::Ready;
         drop(status);
@@ -876,6 +940,12 @@ fn child_environment_with_startup(startup_env: Option<(&str, &std::path::Path)>)
     values.insert("TERM".to_string(), "xterm-256color".to_string());
     values.insert("COLORTERM".to_string(), "truecolor".to_string());
     values.insert("TERM_PROGRAM".to_string(), "Athena".to_string());
+    // Advertise Kitty graphics support: agent harnesses (OMP et al.) detect
+    // terminal image capability from KITTY_WINDOW_ID and emit inline image
+    // escapes instead of "[Image]" placeholders. The frontend's
+    // addon-kitty-graphics.js renders those sequences. Sessions rendered by
+    // the backend cell grid (non-xterm) drop them, matching prior behavior.
+    values.insert("KITTY_WINDOW_ID".to_string(), "athena".to_string());
     values.insert("ATHENA_SHELL_INTEGRATION".to_string(), "1".to_string());
     if let Some((key, path)) = startup_env {
         values.insert(key.to_string(), path.to_string_lossy().into_owned());
@@ -955,13 +1025,6 @@ impl SessionManager {
         // spawns are rare user actions, the work is short, and the alternative
         // (per-id locks or an in-flight spawns set) adds complexity for a
         // non-hot path.
-        //
-        // The `tokio::sync::RwLock` write guard is not held across an `.await`
-        // that yields; the only `.await` in this function is the initial
-        // `write()` acquisition, after which we hold the guard until the
-        // function returns. The blocking `libc::read` on the error pipe is
-        // short-lived (returns 0 on success via FD_CLOEXEC EOF, or 1 byte on
-        // child pre-exec error), so it does not stall the runtime worker.
         let mut sessions = self.sessions.write().await;
         if let Some(existing) = sessions.get(&id).cloned() {
             let is_exited = {
@@ -1000,7 +1063,14 @@ impl SessionManager {
             ws_ypixel: 0,
         };
 
-        let pty = openpty(Some(&winsize), None).map_err(|e| io::Error::other(e.to_string()))?;
+        let pty = match openpty(Some(&winsize), None) {
+            Ok(pty) => pty,
+            Err(e) => {
+                let _ = close(err_read);
+                let _ = close(err_write);
+                return Err(io::Error::other(e.to_string()));
+            }
+        };
         let master_fd = pty.master.into_raw_fd();
         let slave_fd = pty.slave.into_raw_fd();
 
@@ -1021,19 +1091,16 @@ impl SessionManager {
             };
             let zsh_or_bash_script = startup_script_with_user_config(shell, script);
             let result = match shell_name(shell) {
-                "zsh" => std::fs::create_dir(&base)
-                    .and_then(|_| {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            std::fs::set_permissions(
-                                &base,
-                                std::fs::Permissions::from_mode(0o700),
-                            )?;
-                        }
-                        write_new(&base.join(".zshrc"), &zsh_or_bash_script)
-                    })
-                    .map(|_| base.clone()),
+                "zsh" => {
+                    use std::os::unix::fs::DirBuilderExt;
+                    std::fs::DirBuilder::new()
+                        // Create with 0o700 atomically — a create-chmod pair
+                        // leaves a window at umask-derived permissions.
+                        .mode(0o700)
+                        .create(&base)
+                        .and_then(|_| write_new(&base.join(".zshrc"), &zsh_or_bash_script))
+                        .map(|_| base.clone())
+                }
                 "bash" => {
                     let path = base.with_extension("bashrc");
                     write_new(&path, &zsh_or_bash_script).map(|_| path)
@@ -1061,6 +1128,25 @@ impl SessionManager {
             Ok(shell_cstr) => shell_cstr,
             Err(error) => {
                 cleanup_startup_path(startup_cleanup_path.as_deref());
+                let _ = close(master_fd);
+                let _ = close(slave_fd);
+                let _ = close(err_read);
+                let _ = close(err_write);
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, error));
+            }
+        };
+        // Pre-format the cwd as a CString BEFORE fork: between fork() and
+        // execve the child may only call async-signal-safe functions, and
+        // allocating a CString there can deadlock if another thread held the
+        // allocator lock when the process forked.
+        let cwd_cstr = match CString::new(cwd.as_bytes()) {
+            Ok(cwd_cstr) => cwd_cstr,
+            Err(error) => {
+                cleanup_startup_path(startup_cleanup_path.as_deref());
+                let _ = close(master_fd);
+                let _ = close(slave_fd);
+                let _ = close(err_read);
+                let _ = close(err_write);
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, error));
             }
         };
@@ -1120,7 +1206,11 @@ impl SessionManager {
                 if setsid().is_err() {
                     let _ = unsafe { libc::write(err_write, [1u8].as_ptr() as *const _, 1) };
                     let _ = close(err_write);
-                    std::process::exit(1);
+                    // `_exit`, not `process::exit`: in a forked child the
+                    // latter runs libc exit handlers / atexit callbacks
+                    // (which may allocate or take locks held by another
+                    // thread at fork time).
+                    unsafe { libc::_exit(1) };
                 }
 
                 // Make this PTY the controlling terminal for the new session.
@@ -1133,12 +1223,14 @@ impl SessionManager {
                     let _ = libc::dup2(slave_fd, 2);
                 }
                 let _ = close(slave_fd);
-                let _ = nix::unistd::chdir(std::path::Path::new(cwd));
+                // `cwd_cstr` was allocated before fork; staying on raw
+                // libc::chdir/_exit keeps the child strictly async-signal-safe.
+                unsafe { libc::chdir(cwd_cstr.as_ptr()) };
                 let _ = nix::unistd::execve(&shell_cstr, &args, &environment);
                 // execve only returns on failure.
                 let _ = unsafe { libc::write(err_write, [2u8].as_ptr() as *const _, 1) };
                 let _ = close(err_write);
-                std::process::exit(1);
+                unsafe { libc::_exit(1) };
             }
             Ok(ForkResult::Parent { child }) => {
                 // OMP derives its terminal breadcrumb key from ttyname(0).
@@ -1160,20 +1252,31 @@ impl SessionManager {
                 let _ = close(err_write);
 
                 // Wait for the child to either report an error or succeed.
-                // When execvp succeeds the pipe is closed (FD_CLOEXEC),
-                // returning 0 bytes (EOF).
-                let mut err_buf = [0u8; 1];
-                let n = unsafe { libc::read(err_read, err_buf.as_mut_ptr() as *mut _, 1) };
-                let _ = close(err_read);
+                // When exec succeeds the pipe is closed (FD_CLOEXEC),
+                // returning 0 bytes (EOF). Normally this resolves instantly,
+                // but a child stuck before exec would block a runtime worker
+                // while holding the sessions write lock — run the read (and,
+                // on failure, the reaping waitpid) on the blocking pool.
+                let (n, err_byte) = tokio::task::spawn_blocking(move || {
+                    let mut err_buf = [0u8; 1];
+                    let n = unsafe { libc::read(err_read, err_buf.as_mut_ptr() as *mut _, 1) };
+                    let _ = close(err_read);
+                    if n > 0 {
+                        // Child reported an error; reap it so no zombie leaks.
+                        let _ = nix::sys::wait::waitpid(child, None);
+                    }
+                    (n, err_buf[0])
+                })
+                .await
+                .map_err(io::Error::other)?;
 
                 if n > 0 {
                     // Child reported an error before exec.
-                    let err_msg = match err_buf[0] {
+                    let err_msg = match err_byte {
                         1 => "setsid() failed in child process",
                         2 => "execvp() failed in child process",
                         _ => "child process setup failed",
                     };
-                    let _ = nix::sys::wait::waitpid(child, None);
                     let _ = close(master_fd);
                     cleanup_startup_path(startup_cleanup_path.as_deref());
                     return Err(io::Error::other(err_msg));
@@ -1226,6 +1329,12 @@ impl SessionManager {
                 Ok(session)
             }
             Err(e) => {
+                // No child was forked: close every fd this spawn created so
+                // they don't leak.
+                let _ = close(master_fd);
+                let _ = close(slave_fd);
+                let _ = close(err_read);
+                let _ = close(err_write);
                 cleanup_startup_path(startup_cleanup_path.as_deref());
                 Err(io::Error::other(e.to_string()))
             }
@@ -1238,12 +1347,39 @@ impl SessionManager {
     }
 
     pub async fn kill(&self, id: &str) -> io::Result<()> {
-        let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.remove(id) {
+        self.kill_if_same(id, None).await
+    }
+
+    /// Remove and reap the session under `id`, but only when the stored
+    /// session is still `expected` (when provided). A license-free kill can
+    /// race a respawn reusing the id between lookup and removal, killing the
+    /// caller's freshly spawned replacement; an `Arc` identity check makes
+    /// that race a no-op.
+    pub async fn kill_if_same(
+        &self,
+        id: &str,
+        expected: Option<&Arc<TerminalSession>>,
+    ) -> io::Result<()> {
+        let session = {
+            let mut sessions = self.sessions.write().await;
+            match sessions.get(id) {
+                Some(current)
+                    if expected.is_none_or(|expected| Arc::ptr_eq(current, expected)) =>
+                {
+                    sessions.remove(id)
+                }
+                _ => return Ok(()),
+            }
+        };
+        if let Some(session) = session {
             session.close_fd_with_reason("explicit_kill");
             // Reap on kill too (mirrors Drop) so explicit kills don't leak
-            // zombies either.
-            reap_process_group(session.shell_pid, session.pgid);
+            // zombies either. Reaping blocks (grace window + waitpid), so it
+            // must run outside the sessions write lock and off the async
+            // worker: a hung child would otherwise stall every spawn/get/list.
+            let pid = session.shell_pid;
+            let pgid = session.pgid;
+            let _ = tokio::task::spawn_blocking(move || reap_process_group(pid, pgid)).await;
         }
         Ok(())
     }
@@ -1320,10 +1456,20 @@ impl SessionManager {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Phase 3 — force reap. close_fd first so the read loop observes EOF
-        // and exits cleanly, then signal+reap the process group.
+        // and exits cleanly, then signal+reap the process group. Reaping
+        // blocks (~200ms grace + waitpid), so it runs on the blocking pool;
+        // keep one handle per session and join them all.
+        let mut reapers = Vec::with_capacity(sessions.len());
         for session in sessions {
             session.close_fd_with_reason("shutdown_all");
-            reap_process_group(session.shell_pid, session.pgid);
+            let pid = session.shell_pid;
+            let pgid = session.pgid;
+            reapers.push(tokio::task::spawn_blocking(move || {
+                reap_process_group(pid, pgid)
+            }));
+        }
+        for reaper in reapers {
+            let _ = reaper.await;
         }
         info!("shutdown_all: all PTY sessions reaped");
     }
@@ -1546,7 +1692,7 @@ impl TerminalSession {
     pub fn spawn_reader(
         self: &std::sync::Arc<Self>,
     ) -> tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>> {
-        let (tx, rx) = tokio::sync::mpsc::channel::<io::Result<Vec<u8>>>(8);
+        let (tx, rx) = tokio::sync::mpsc::channel::<io::Result<Vec<u8>>>(32);
         let session = std::sync::Arc::clone(self);
         let thread_name = format!("pty-reader-{}", session.id);
         // Kept in case the thread cannot even be spawned — the error is
@@ -1589,10 +1735,12 @@ impl TerminalSession {
                     }
                     let nbytes = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
                     if nbytes > 0 {
-                        if tx
-                            .blocking_send(Ok(buf[..nbytes as usize].to_vec()))
-                            .is_err()
-                        {
+                        // Swap the read buffer out instead of copying each
+                        // chunk: one fresh allocation per delivery, no memcpy.
+                        let n = nbytes as usize;
+                        let mut chunk = std::mem::replace(&mut buf, vec![0u8; 16 * 1024]);
+                        chunk.truncate(n);
+                        if tx.blocking_send(Ok(chunk)).is_err() {
                             return;
                         }
                         continue;
@@ -1764,6 +1912,9 @@ mod tests {
         let values: Vec<&str> = env.iter().filter_map(|value| value.to_str().ok()).collect();
         assert!(values.contains(&"TERM=xterm-256color"));
         assert!(values.contains(&"COLORTERM=truecolor"));
+        // Kitty graphics advertisement: agent harnesses key inline-image
+        // capability off this var; the xterm frontend renders the sequences.
+        assert!(values.contains(&"KITTY_WINDOW_ID=athena"));
         if let Ok(home) = std::env::var("HOME") {
             let path = values.iter().find_map(|value| value.strip_prefix("PATH="));
             assert!(path.is_some_and(|path| {

@@ -49,7 +49,12 @@ pub async fn mcp_handle_request(
     let req =
         athena_core::mcp::McpServer::parse_request(&request).ok_or("Invalid JSON-RPC request")?;
 
-    let server = state.mcp_server.lock().await;
+    // Snapshot the server and release the global mutex before the up-to-60s
+    // `handle_request` await. `McpServer` is `Clone` (its state lives in Arc
+    // fields, so the clone shares the live innards), and holding the lock
+    // across the await serialized `mcp_init`/`mcp_shutdown`/`mcp_broadcast`
+    // — and even exit-time cleanup — behind one slow or stalled tool call.
+    let server = state.mcp_server.lock().await.clone();
     let resp = match tokio::time::timeout(
         std::time::Duration::from_secs(60),
         server.handle_request(&req),

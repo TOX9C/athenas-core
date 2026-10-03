@@ -2,6 +2,7 @@
 
 use crate::stores::agent_output::OutputLine;
 use crate::stores::agent_status::{AgentProgress, AgentRunStatus};
+use crate::stores::terminal::TerminalDataEvent;
 
 /// Events that the output bus can receive from the Tauri backend.
 ///
@@ -31,7 +32,7 @@ pub(super) enum OutputBusEvent {
     },
     TerminalData {
         session_id: String,
-        payload: String,
+        event: TerminalDataEvent,
     },
     AgentConnected {
         pane_id: String,

@@ -4,15 +4,16 @@
 //! rendered state. It must be called once, in the same position in `App`, so
 //! Dioxus hook ordering remains stable.
 
-use crate::stores::ui::UITheme;
 use crate::stores::command::{use_command_store, CommandState};
+use crate::stores::ui::UITheme;
 use crate::stores::workspace::WorkspaceState;
 use crate::utils::font_size::{parse_persisted_font_size, persist_font_size};
 use crate::utils::settings_migration::{migrate_smart_pane_titles, migrate_swarm_cleanup_worktrees};
 use dioxus::prelude::*;
+use wasm_bindgen::JsValue;
 
-/// Run the root app's one-time platform, settings, workspace, and
-/// before-unload bootstrap effects.
+/// Run the root app's one-time platform, settings, and workspace bootstrap
+/// effects.
 pub fn use_startup_bootstrap(
     ui_state: Signal<crate::stores::ui::UIState>,
     workspace: Signal<WorkspaceState>,
@@ -46,7 +47,7 @@ pub fn use_startup_bootstrap(
             let last_call = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
             // Raw Tauri callbacks run outside a Dioxus scope; use the bare
             // wasm executor for the follow-up IPC call.
-            let _unlisten = crate::tauri_bridge::listen("tauri://resize", move |_payload| {
+            let _unlisten = crate::tauri_bridge::listen("tauri://resize", move |_payload: JsValue| {
                 let now = js_sys::Date::now();
                 if now - last_call.get() < 150.0 {
                     return;
@@ -122,22 +123,6 @@ pub fn use_startup_bootstrap(
         use_effect(move || {
             spawn(async move {
                 let loaded = WorkspaceState::load().await;
-                let resume_panes = loaded
-                    .spaces
-                    .iter()
-                    .flat_map(|space| space.panes.iter())
-                    .filter(|pane| pane.resume_id.is_some() || pane.resume_cmd.is_some())
-                    .count();
-                web_sys::console::log_1(
-                    &format!(
-                        "[resume-debug] startup loaded spaces={} panes={} resume_panes={} active={:?}",
-                        loaded.spaces.len(),
-                        loaded.spaces.iter().map(|space| space.panes.len()).sum::<usize>(),
-                        resume_panes,
-                        loaded.active_space_id
-                    )
-                    .into(),
-                );
                 for space in &loaded.spaces {
                     let dir = space.dir.trim();
                     if dir.is_empty() {
@@ -152,19 +137,7 @@ pub fn use_startup_bootstrap(
                 }
                 let mut state = ws.write();
                 if state.spaces.is_empty() && state.active_space_id.is_none() {
-                    web_sys::console::log_1(
-                        &"[resume-debug] startup applying loaded workspace state".into(),
-                    );
                     *state = loaded;
-                } else {
-                    web_sys::console::warn_1(
-                        &format!(
-                            "[resume-debug] startup skipped loaded workspace state; current spaces={} active={:?}",
-                            state.spaces.len(),
-                            state.active_space_id
-                        )
-                        .into(),
-                    );
                 }
             });
         });
@@ -180,23 +153,9 @@ pub fn use_startup_bootstrap(
         });
     }
 
-    // Force a final workspace save before the window closes.
-    {
-        let final_ws = workspace;
-        use_effect(move || {
-            let Some(window) = web_sys::window() else {
-                return;
-            };
-            let ws_signal = final_ws;
-            let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                ws_signal.read().save();
-            }) as Box<dyn FnMut()>);
-            let _ = js_sys::Reflect::set(
-                &window,
-                &wasm_bindgen::JsValue::from_str("onbeforeunload"),
-                closure.as_ref(),
-            );
-            closure.forget();
-        });
-    }
+    // Note: there is intentionally no `beforeunload` save hook. `save()` only
+    // enqueues an async IPC write, which cannot drain while the webview is
+    // being torn down, so the hook offered false confidence. Live saves
+    // (called after every workspace mutation) already persist changes as they
+    // happen.
 }

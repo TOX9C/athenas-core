@@ -45,7 +45,6 @@ pub async fn kanban_create_task(
         order: 0,
         created_at: now,
         plan_step_id,
-        evidence: None,
     };
     let created = state
         .kanban_backend
@@ -56,8 +55,6 @@ pub async fn kanban_create_task(
 
 /// Update an existing kanban task in the active workspace. Only the supplied
 /// fields are modified; `None` leaves them untouched.
-/// `evidence` is a JSON `TaskEvidence`({diff, test_log, pane_id?}) attached
-/// on move; required for agent cards entering In Review.
 #[tauri::command]
 pub async fn kanban_update_task(
     state: State<'_, AppState>,
@@ -65,7 +62,6 @@ pub async fn kanban_update_task(
     title: Option<String>,
     description: Option<String>,
     status: Option<String>,
-    evidence: Option<String>,
 ) -> Result<String, String> {
     let workspace_id = state
         .kanban_backend
@@ -82,19 +78,7 @@ pub async fn kanban_update_task(
 
     let updated = state
         .kanban_backend
-        .update_task(
-            &workspace_id,
-            &task_id,
-            title,
-            description,
-            status_enum,
-            match evidence.as_deref() {
-                Some(s) if !s.trim().is_empty() => Some(
-                    serde_json::from_str(s).map_err(|e| format!("bad evidence: {e}"))?,
-                ),
-                _ => None,
-            },
-        )
+        .update_task(&workspace_id, &task_id, title, description, status_enum)
         .map_err(|e| e.to_string())?;
     serde_json::to_string(&updated).map_err(|e| e.to_string())
 }

@@ -37,13 +37,12 @@ export class OutputForwarder {
         entries: this.reconnectBuffer.slice(),
         sessionId: this.config.sessionId,
       }
-      await this.sendBatch(batch).catch(() => {
-        if (this.config.bufferOnReconnect) {
-          const reclaimed = batch.entries.slice(-(MAX_BUFFER_SIZE - this.reconnectBuffer.length))
-          this.reconnectBuffer.push(...reclaimed)
-        }
-      })
-      this.reconnectBuffer = []
+      try {
+        await this.sendBatch(batch)
+        this.reconnectBuffer = []
+      } catch {
+        this.reclaimEntries(batch.entries)
+      }
     }
   }
 
@@ -94,15 +93,22 @@ export class OutputForwarder {
     }
     this.currentBatch = []
     this.sendBatch(batch).catch(() => {
-      if (this.config.bufferOnReconnect) {
-        const reclaimed = batch.entries.slice(-(MAX_BUFFER_SIZE - this.reconnectBuffer.length))
-        this.reconnectBuffer.push(...reclaimed)
-      }
+      this.reclaimEntries(batch.entries)
     })
   }
 
+  private reclaimEntries(entries: OutputEntry[]): void {
+    if (!this.config.bufferOnReconnect) return
+    // Re-append only what still fits; when the buffer is full, drop.
+    const room = Math.max(0, MAX_BUFFER_SIZE - this.reconnectBuffer.length)
+    if (room === 0) return
+    this.reconnectBuffer.push(...entries.slice(-room))
+  }
+
   private async sendBatch(batch: OutputBatch): Promise<void> {
-    if (!this.connection.isConnected()) return
+    if (!this.connection.isConnected()) {
+      throw new Error('Cannot forward output: MCP connection is not connected')
+    }
     await this.connection.callTool('athena_forward_output', {
       entries: batch.entries.map((e) => ({
         channel: e.channel,
@@ -147,5 +153,30 @@ export function hookStreamToForwarder(
   stream.on('data', handler)
   return () => {
     stream.off('data', handler)
+  }
+}
+
+/**
+ * Wrap a WriteStream's `write()` (e.g. `process.stdout`) so output is mirrored
+ * into the forwarder. Use this — not `hookStreamToForwarder` — for process
+ * stdio: WriteStreams never emit `data` events.
+ */
+export function pipeWriteStreamToForwarder(
+  stream: NodeJS.WriteStream,
+  forwarder: OutputForwarder,
+  channel: OutputChannel,
+): () => void {
+  const originalWrite = stream.write.bind(stream)
+  const patched = function (chunk: unknown, ...rest: unknown[]): boolean {
+    if (typeof chunk === 'string') {
+      forwarder.push(channel, chunk)
+    } else if (chunk instanceof Buffer || chunk instanceof Uint8Array) {
+      forwarder.push(channel, chunk.toString())
+    }
+    return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest)
+  }
+  stream.write = patched as typeof stream.write
+  return () => {
+    stream.write = originalWrite as typeof stream.write
   }
 }

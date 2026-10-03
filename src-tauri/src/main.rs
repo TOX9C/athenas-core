@@ -22,7 +22,11 @@ fn relay_autostart_requested() -> bool {
 }
 
 fn main() {
-    let app_state = state::AppState::new();
+    // Per-launch MCP auth token, minted before any thread exists so it can be
+    // published via `set_var` race-free for spawned processes (mcp-proxy, cli).
+    let mcp_token = uuid::Uuid::new_v4().to_string();
+    std::env::set_var("ATHENA_MCP_TOKEN", &mcp_token);
+    let app_state = state::AppState::new(mcp_token);
     let builder = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::default()
@@ -59,7 +63,7 @@ fn main() {
     // unconditionally aborts the app the moment the in-app browser opens. Gating
     // it behind the env var keeps normal `cargo tauri dev` runs crash-free while
     // preserving e2e, which launches the app with the var set.
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, feature = "webdriver"))]
     let builder = if std::env::var("TAURI_WEBVIEW_AUTOMATION").is_ok() {
         builder.plugin(tauri_plugin_webdriver_automation::init())
     } else {
@@ -132,6 +136,7 @@ fn main() {
             pty_detach_listener,
             pty_foreground_process,
             pty_agent_info,
+            agent_activity_acknowledge,
             // Voice input (mic → on-device transcription)
             voice_record_start,
             voice_record_stop,
@@ -155,7 +160,6 @@ fn main() {
             output_buffer_get,
             output_buffer_list,
             output_buffer_clear,
-            get_pane_history,
             // Notifications
             notification_push,
             notification_history,
@@ -167,14 +171,14 @@ fn main() {
             notification_resolve,
             notification_counts,
             // Plans
-            plan_create,
             plan_get,
-            plan_update_step,
+            // Routines
             routines_list,
             routines_upsert,
             routines_delete,
             routines_set_enabled,
             routines_run_now,
+            routines_tick,
             // Agent comms (legacy)
             agent_comms_token,
             agent_comms_sessions,
@@ -258,6 +262,16 @@ fn main() {
             relay_pairing_respond,
         ])
         .setup(|app| {
+            // Routines background scheduler: wakes every 30s and fires
+            // due interval/watch rules. Ends with the app runtime.
+            {
+                let st = app.state::<state::AppState>();
+                routines_timer_start(RoutineTimerDeps {
+                    store: st.store.clone(),
+                    orchestrator: st.orchestrator.clone(),
+                    notification: st.notification_service.clone(),
+                });
+            }
             // Request macOS notification permission up front so agent
             // alerts (finished / needs attention / error) can be delivered
             // natively without a first-use delay. No-op on other platforms.
@@ -398,7 +412,7 @@ fn main() {
                 }
                 api.prevent_exit();
                 log::info!("Exit requested -- scheduling bounded graceful shutdown");
-                log::info!("[resume-debug] RunEvent::ExitRequested received; preserving PTYs for resume capture");
+                log::info!("RunEvent::ExitRequested received; preserving PTYs for resume capture");
 
                 // Stop UI-owned services immediately; these operations are
                 // non-blocking/try-lock based and do not touch the PTY mutex.
@@ -435,7 +449,7 @@ fn main() {
                     // Defensive fallback for a platform that delivers only
                     // Exit. There is no way to defer this late event, so keep
                     // this best-effort and non-blocking.
-                    log::warn!("[resume-debug] RunEvent::Exit arrived without ExitRequested; using best-effort fallback");
+                    log::warn!("RunEvent::Exit arrived without ExitRequested; using best-effort fallback");
                     relay::stop();
                     let state = app_handle.state::<state::AppState>();
                     shutdown_browser_children(&state);
@@ -571,11 +585,11 @@ const EXIT_RESUME_CAPTURE_BUDGET_MS: u64 = 800;
 fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
     use std::sync::atomic::Ordering;
     if RESUME_CAPTURE_DONE.swap(true, Ordering::SeqCst) {
-        log::debug!("[resume-debug] capture skipped: already completed in this process");
+        log::debug!("capture skipped: already completed in this process");
         return;
     }
     log::info!(
-        "[resume-debug] capture worker starting with budget={}ms",
+        "capture worker starting with budget={}ms",
         EXIT_RESUME_CAPTURE_BUDGET_MS
     );
     let app_handle = app_handle.clone();
@@ -596,7 +610,7 @@ fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
                 let state = app_handle.state::<state::AppState>();
                 let n = commands::capture_resume_ids_on_exit(&state, EXIT_RESUME_CAPTURE_BUDGET_MS)
                     .await;
-                log::info!("[resume-debug] capture worker finished; persisted {n} resume id(s)");
+                log::info!("capture worker finished; persisted {} resume id(s)", n.0);
             });
         });
     match worker {
@@ -605,7 +619,7 @@ fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
             // been delivered and cannot be deferred. Normal Cmd+Q uses
             // `start_graceful_shutdown`, which prevents exit until this work
             // and PTY cleanup have completed.
-            log::debug!("[resume-debug] best-effort capture worker detached");
+            log::debug!("best-effort capture worker detached");
         }
         Err(e) => log::error!("resume capture: failed to spawn worker thread: {e}"),
     }
@@ -615,7 +629,7 @@ fn capture_resume_on_exit(app_handle: &tauri::AppHandle) {
 /// event loop, then request a second exit once the bounded cleanup is done.
 fn start_graceful_shutdown(app_handle: &tauri::AppHandle) {
     log::info!(
-        "[resume-debug] graceful shutdown worker starting; capture budget={}ms",
+        "graceful shutdown worker starting; capture budget={}ms",
         EXIT_RESUME_CAPTURE_BUDGET_MS
     );
     let app_handle = app_handle.clone();
@@ -642,7 +656,8 @@ fn start_graceful_shutdown(app_handle: &tauri::AppHandle) {
                 )
                 .await;
                 log::info!(
-                    "[resume-debug] graceful shutdown capture finished; persisted {persisted} resume id(s)"
+                    "graceful shutdown capture finished; persisted {} resume id(s)",
+                    persisted.0
                 );
 
                 let session_shutdown = tokio::time::timeout(
@@ -658,7 +673,7 @@ fn start_graceful_shutdown(app_handle: &tauri::AppHandle) {
                         "graceful shutdown: PTY cleanup exceeded 2200ms; allowing process exit"
                     );
                 } else {
-                    log::info!("[resume-debug] graceful shutdown PTY cleanup completed");
+                    log::info!("graceful shutdown PTY cleanup completed");
                 }
 
                 let flush = tokio::time::timeout(
