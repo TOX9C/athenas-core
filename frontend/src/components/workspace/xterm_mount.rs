@@ -22,8 +22,10 @@ use wasm_bindgen::JsCast;
 pub(crate) mod xterm_helpers;
 use xterm_helpers::{
     attach_kitty_graphics, call_fit, capture_screen_data_url, filter_graphics_for_term,
-    force_redraw, freeze_screen, is_valid_terminal_dimensions, read_css_var,
-    render_visible_rows_sync, reset_glyph_atlas, restore_term_from_session,
+    capture_viewport, force_redraw, freeze_screen, is_valid_terminal_dimensions, read_css_var,
+    register_live_terminal, render_visible_rows_sync, reset_glyph_atlas, reset_glyph_atlas_by_id,
+    evict_stale_live_terminal, pane_was_evicted,
+    restore_term_from_session, unfreeze_screen_now, unregister_live_terminal,
     schedule_fit, scroll_to_bottom, serialize_buffer,
     try_activate_addon, try_activate_canvas_addon, try_activate_web_links_addon,
     try_activate_webgl_addon,
@@ -298,6 +300,7 @@ fn schedule_raw_flush(
     ready: &Rc<RefCell<bool>>,
     follow_until: &Rc<Cell<f64>>,
     last_bottom_at: &Rc<Cell<f64>>,
+    kitty_ready: &Rc<RefCell<bool>>,
 ) {
     if *scheduled.borrow() {
         return;
@@ -310,6 +313,7 @@ fn schedule_raw_flush(
     let ready_for_task = ready.clone();
     let follow_for_task = follow_until.clone();
     let last_bottom_for_task = last_bottom_at.clone();
+    let kitty_for_task = kitty_ready.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let q_for_closure = q.clone();
         let s_for_closure = s.clone();
@@ -317,9 +321,37 @@ fn schedule_raw_flush(
         let ready_for_closure = ready_for_task.clone();
         let follow_for_closure = follow_for_task.clone();
         let last_bottom_for_closure = last_bottom_for_task.clone();
+        let kitty_for_closure = kitty_for_task.clone();
         let closure = Closure::once_into_js(Box::new(move || {
             if !*ready_for_closure.borrow() {
                 *s_for_closure.borrow_mut() = false;
+                return;
+            }
+            if !*kitty_for_closure.borrow() {
+                // The APC-G feed filter is not attached yet — writing now
+                // would leak image payloads/placeholder cells into the grid
+                // unfiltered. Retry on a short timer; the attach path
+                // flips `kitty_ready` (and flushes) when done.
+                *s_for_closure.borrow_mut() = false;
+                let retry_q = q_for_closure.clone();
+                let retry_s = s_for_closure.clone();
+                let retry_t = t_for_closure.clone();
+                let retry_ready = ready_for_closure.clone();
+                let retry_follow = follow_for_closure.clone();
+                let retry_bottom = last_bottom_for_closure.clone();
+                let retry_kitty = kitty_for_closure.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    gloo::timers::future::TimeoutFuture::new(50).await;
+                    schedule_raw_flush(
+                        &retry_q,
+                        &retry_s,
+                        &retry_t,
+                        &retry_ready,
+                        &retry_follow,
+                        &retry_bottom,
+                        &retry_kitty,
+                    );
+                });
                 return;
             }
             let chunks = q_for_closure.borrow_mut().drain(..).collect::<Vec<_>>();
@@ -355,9 +387,30 @@ fn schedule_raw_flush(
             }
         }
         if raf_failed {
-            if *ready_for_task.borrow() {
+            if *ready_for_task.borrow() && *kitty_for_task.borrow() {
                 let chunks = q.borrow_mut().drain(..).collect::<Vec<_>>();
                 flush_chunks(&t, chunks, &follow_for_task, &last_bottom_for_task);
+            } else if *ready_for_task.borrow() {
+                // Same kitty-filter gate as the rAF path.
+                let retry_q = q.clone();
+                let retry_s = s.clone();
+                let retry_t = t.clone();
+                let retry_ready = ready_for_task.clone();
+                let retry_follow = follow_for_task.clone();
+                let retry_bottom = last_bottom_for_task.clone();
+                let retry_kitty = kitty_for_task.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    gloo::timers::future::TimeoutFuture::new(50).await;
+                    schedule_raw_flush(
+                        &retry_q,
+                        &retry_s,
+                        &retry_t,
+                        &retry_ready,
+                        &retry_follow,
+                        &retry_bottom,
+                        &retry_kitty,
+                    );
+                });
             }
             *s.borrow_mut() = false;
         }
@@ -533,6 +586,9 @@ struct XtermCleanup {
     _vis_callback: Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>>,
     /// Listener lease generation shared with the attach/detach IPC tasks.
     listener_generation: Option<Rc<RefCell<Option<u64>>>>,
+    /// Token from this mount's `TerminalInputRouter::activate`; lets the drop
+    /// skip tearing down a channel a newer mount has already reactivated.
+    input_router_generation: u64,
     /// Focus recovery listener installed on the window/document. WebKit can
     /// lose the hidden textarea's native focus after app resume even while the
     /// terminal canvas remains rendered.
@@ -631,6 +687,14 @@ pub fn XtermMount(
     // have completed. This closes the startup/remount paint-order race.
     let raw_ready: Rc<RefCell<bool>> = use_hook(|| Rc::new(RefCell::new(false)));
     let raw_ready_for_effect = raw_ready.clone();
+    // Kitty graphics filter readiness: raw PTY bytes must not reach xterm
+    // until the vendored APC-G addon has attached its `feed` filter, or image
+    // payloads/placeholder cells leak into the grid as missing-glyph rows.
+    // The attach path sets this true — also when the attach gives up, since
+    // an unbounded block is worse than a warned unfiltered write when the
+    // defer-loaded addon script is missing entirely.
+    let kitty_ready: Rc<RefCell<bool>> = use_hook(|| Rc::new(RefCell::new(false)));
+    let kitty_ready_for_effect = kitty_ready.clone();
     let mut terminal_store = use_terminal_store();
     // User-focus acknowledge: pointerdown in the xterm surface clears this
     // pane's attention status (ring/dot). Captured at render top — it is a
@@ -711,6 +775,7 @@ pub fn XtermMount(
         let mut fit_ref = fit_ref;
         let mount_active_for_task = mount_active.clone();
         let raw_ready_for_task = raw_ready_for_effect.clone();
+        let kitty_ready_for_task = kitty_ready_for_effect.clone();
         let follow_until_for_task = follow_for_effect.clone();
         let last_bottom_for_task = last_bottom_for_effect.clone();
         let workspace_for_task = workspace_for_effect;
@@ -741,12 +806,36 @@ pub fn XtermMount(
                     if mounts.length() > 1 {
                         web_sys::console::warn_1(
                             &format!(
-                                "[XtermMount] {} live .xterm-mount nodes for pane {} — stale terminal instance was not disposed",
+                                "[XtermMount] {} live .xterm-mount nodes for pane {} — evicting stale terminal instance",
                                 mounts.length(),
                                 mount_id_for_spawn
                             )
                             .into(),
                         );
+                        crate::tauri_bridge::log_to_backend(
+                            "error",
+                            &format!(
+                                "[xterm] {} live .xterm-mount nodes for pane {}; stale instance evicted",
+                                mounts.length(),
+                                mount_id_for_spawn
+                            ),
+                        );
+                        // Remove the duplicate DOM twins; the current mount's
+                        // container is identified by node identity (it holds
+                        // no .xterm child yet this early, but identity is the
+                        // stable discriminator).
+                        for idx in 0..mounts.length() {
+                            let Some(node) = mounts.item(idx) else {
+                                continue;
+                            };
+                            let Ok(el) = node.dyn_into::<web_sys::Element>() else {
+                                continue;
+                            };
+                            if !el.is_same_node(Some(container.as_ref())) {
+                                el.remove();
+                            }
+                        }
+                        evict_stale_live_terminal(&mount_id_for_spawn);
                     }
                 }
             }
@@ -1015,6 +1104,9 @@ pub fn XtermMount(
                         return;
                     }
                 };
+            // Track the live terminal so a sibling pane's atlas reset can
+            // force this pane's render model to rebuild (xterm.js #6014).
+            register_live_terminal(&mount_id, &term_val);
 
             // Wait until the container has a non-zero size before opening
             // xterm.js. On remount after a pane swap, the flex grid may not
@@ -1077,7 +1169,7 @@ pub fn XtermMount(
             // appropriate escape sequence, and prevent xterm.js from also
             // forwarding its default sequence.
             let input_router = terminal_registry.input_router();
-            input_router.activate(&mount_id);
+            let input_router_generation = input_router.activate(&mount_id);
             let pane_id_keydown = mount_id.clone();
             let input_router_for_keydown = input_router.clone();
             let keydown_handler = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
@@ -1219,6 +1311,23 @@ pub fn XtermMount(
                             map
                         });
                     let _ = js_sys::Reflect::set(&terms, &JsValue::from_str(&mount_id), &term_val);
+                    // Specs call this to drive the REAL atlas-reset path
+                    // (incl. sibling repair) for the shared-atlas regression
+                    // test — a bare term.clearTextureAtlas() would bypass the
+                    // repair and is not a valid assertion of the fix.
+                    let reset_cb =
+                        wasm_bindgen::closure::Closure::wrap(Box::new(move |id: JsValue| {
+                            if let Some(id) = id.as_string() {
+                                let _ = reset_glyph_atlas_by_id(&id);
+                            }
+                        })
+                            as Box<dyn FnMut(JsValue)>);
+                    let _ = js_sys::Reflect::set(
+                        &win,
+                        &JsValue::from_str("__athenaResetAtlas"),
+                        reset_cb.as_ref(),
+                    );
+                    reset_cb.forget();
                 }
             }
 
@@ -1228,15 +1337,28 @@ pub fn XtermMount(
                 Rc::new(RefCell::new(std::collections::VecDeque::new()));
             let wq_scheduled: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
             let raw_ready_for_listener = raw_ready_for_task.clone();
+            let kitty_ready_for_listener = kitty_ready_for_task.clone();
             let wq_queue_for_ready = wq_queue.clone();
             let wq_scheduled_for_ready = wq_scheduled.clone();
             let wq_term_for_ready = wq_term.clone();
             let follow_for_listener = follow_until_for_task.clone();
             let last_bottom_for_listener = last_bottom_for_task.clone();
+            // Clones handed to the kitty-attach block so it can lift the
+            // flush gate (and drain any gated chunks) the moment the feed
+            // filter is installed.
+            let kitty_ready_for_attach = kitty_ready_for_task.clone();
+            let wq_queue_for_kitty = wq_queue.clone();
+            let wq_scheduled_for_kitty = wq_scheduled.clone();
+            let wq_term_for_kitty = wq_term.clone();
+            let raw_ready_for_kitty = raw_ready_for_listener.clone();
+            let follow_for_kitty = follow_for_listener.clone();
+            let last_bottom_for_kitty = last_bottom_for_listener.clone();
             let follow_for_ready_a = follow_until_for_task.clone();
             let last_bottom_for_ready_a = last_bottom_for_task.clone();
             let follow_for_ready_b = follow_until_for_task.clone();
             let last_bottom_for_ready_b = last_bottom_for_task.clone();
+            let kitty_ready_for_ready_a = kitty_ready_for_task.clone();
+            let kitty_ready_for_ready_b = kitty_ready_for_task.clone();
 
             // Live resume capture: scan raw PTY output for the harness's
             // `<cli> --resume <id>` line and persist it to the workspace store.
@@ -1256,7 +1378,13 @@ pub fn XtermMount(
             let listener_generation = Rc::new(RefCell::new(None));
             let listener_owner_for_attach = listener_owner_for_task.clone();
             let raw_ready_for_attach = raw_ready_for_listener.clone();
+            let mid_for_evict = mount_id.clone();
             let raw_listener = match pty_listen_raw(&mount_id, move |bytes: Vec<u8>| {
+                // This mount was force-evicted by a duplicate-mount detector:
+                // drop bytes instead of writing a disposed terminal.
+                if pane_was_evicted(&mid_for_evict) {
+                    return;
+                }
                 // Match-only write: `feed` returns a value at most once per
                 // distinct id, so this path persists exactly one update per
                 // new resume id — never per output chunk. Scan before the
@@ -1368,6 +1496,7 @@ pub fn XtermMount(
                     &raw_ready_for_listener,
                     &follow_for_listener,
                     &last_bottom_for_listener,
+                    &kitty_ready_for_listener,
                 );
             }) {
                 Ok(listener) => {
@@ -1607,10 +1736,29 @@ pub fn XtermMount(
                         }
                     }) as Box<dyn FnMut(JsValue)>);
                 let respond_js = respond_closure.into_js_value();
-                if attach_kitty_graphics(&term_val, &respond_js).is_none() {
+                if attach_kitty_graphics(&term_val, &respond_js).is_some() {
+                    // Filter installed before any flush could need it.
+                    *kitty_ready_for_attach.borrow_mut() = true;
+                    schedule_raw_flush(
+                        &wq_queue_for_kitty,
+                        &wq_scheduled_for_kitty,
+                        &wq_term_for_kitty,
+                        &raw_ready_for_kitty,
+                        &follow_for_kitty,
+                        &last_bottom_for_kitty,
+                        &kitty_ready_for_attach,
+                    );
+                } else {
                     let term_for_retry = term_val.clone();
                     let respond_for_retry = respond_js.clone();
                     let active_for_retry = mount_active_for_task.clone();
+                    let kitty_ready_for_retry = kitty_ready_for_attach.clone();
+                    let retry_q = wq_queue_for_kitty.clone();
+                    let retry_s = wq_scheduled_for_kitty.clone();
+                    let retry_t = wq_term_for_kitty.clone();
+                    let retry_raw_ready = raw_ready_for_kitty.clone();
+                    let retry_follow = follow_for_kitty.clone();
+                    let retry_bottom = last_bottom_for_kitty.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         for _ in 0..40 {
                             gloo::timers::future::TimeoutFuture::new(50).await;
@@ -1620,12 +1768,40 @@ pub fn XtermMount(
                             if attach_kitty_graphics(&term_for_retry, &respond_for_retry)
                                 .is_some()
                             {
+                                *kitty_ready_for_retry.borrow_mut() = true;
+                                schedule_raw_flush(
+                                    &retry_q,
+                                    &retry_s,
+                                    &retry_t,
+                                    &retry_raw_ready,
+                                    &retry_follow,
+                                    &retry_bottom,
+                                    &kitty_ready_for_retry,
+                                );
                                 return;
                             }
                         }
+                        // Bounded failure: unblock writes rather than freeze
+                        // the pane forever if the addon script is missing —
+                        // but escalate beyond the console so the regression is
+                        // visible in the backend log too.
+                        crate::tauri_bridge::log_to_backend(
+                            "error",
+                            "[xterm] kitty graphics addon never loaded; APC payloads will be written unfiltered",
+                        );
                         web_sys::console::warn_1(&JsValue::from_str(
                             "[athena] kitty graphics addon never loaded; APC payloads unfiltered",
                         ));
+                        *kitty_ready_for_retry.borrow_mut() = true;
+                        schedule_raw_flush(
+                            &retry_q,
+                            &retry_s,
+                            &retry_t,
+                            &retry_raw_ready,
+                            &retry_follow,
+                            &retry_bottom,
+                            &kitty_ready_for_retry,
+                        );
                     });
                 }
                 respond_js
@@ -1732,7 +1908,7 @@ pub fn XtermMount(
             > = None;
             if let Some(webgl_addon) = try_activate_webgl_addon(&window, &term_val) {
                 webgl_ctx_loss_closure =
-                    wire_webgl_context_recovery(&window, &term_val, &webgl_addon);
+                    wire_webgl_context_recovery(&window, &term_val, &webgl_addon, &mount_id);
                 webgl_addon_holder = Some(webgl_addon);
             } else if let Some(canvas_addon) = try_activate_canvas_addon(&window, &term_val) {
                 web_sys::console::warn_1(
@@ -1818,6 +1994,7 @@ pub fn XtermMount(
                 let initial_owner = listener_owner_for_task.clone();
                 let initial_follow = follow_for_ready_a.clone();
                 let initial_last_bottom = last_bottom_for_ready_a.clone();
+                let initial_kitty = kitty_ready_for_ready_a.clone();
                 // Font/atlas settle, part of the SAME handshake that releases
                 // raw output (`raw_ready`).
                 let settle_win = window.clone();
@@ -1928,6 +2105,7 @@ pub fn XtermMount(
                         &initial_ready,
                         &initial_follow,
                         &initial_last_bottom,
+                        &initial_kitty,
                     );
                     // (6) Deferred settle pass: fit + refresh + viewport
                     // restore over the next frames, at the final geometry.
@@ -2075,6 +2253,7 @@ pub fn XtermMount(
                 let initial_owner = listener_owner_for_task.clone();
                 let initial_follow = follow_for_ready_b.clone();
                 let initial_last_bottom = last_bottom_for_ready_b.clone();
+                let initial_kitty = kitty_ready_for_ready_b.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if !*initial_active.borrow() {
                         return;
@@ -2088,6 +2267,7 @@ pub fn XtermMount(
                         &initial_ready,
                         &initial_follow,
                         &initial_last_bottom,
+                        &initial_kitty,
                     );
                 });
             }
@@ -2112,6 +2292,11 @@ pub fn XtermMount(
             let mount_active_for_pointer = mount_active_for_task.clone();
             let follow_for_vis = follow_until_for_task.clone();
             let last_bottom_for_vis = last_bottom_for_task.clone();
+            // Edge-trigger only: the observer re-fires on every intersection
+            // ratio recompute during pane resizes, and each tick below resets
+            // the shared glyph atlas for ALL panes (xterm.js #6014 repair
+            // broadcast). Only a hidden→visible transition needs the heal.
+            let was_visible = Rc::new(Cell::new(true));
             let vis_closure =
                 wasm_bindgen::closure::Closure::wrap(Box::new(move |entries: JsValue| {
                     // A callback queued before use_drop disconnects the
@@ -2129,7 +2314,8 @@ pub fn XtermMount(
                                 .ok()
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
-                        if is_intersecting {
+                        let became_visible = is_intersecting && !was_visible.replace(is_intersecting);
+                        if became_visible {
                             // Rebuild the glyph atlas BEFORE refit/repaint.
                             // WKWebView can discard or corrupt the occluded
                             // canvas's WebGL atlas without firing contextlost;
@@ -2290,6 +2476,7 @@ pub fn XtermMount(
                 _visibility_observer: vis_observer_holder,
                 _vis_callback: vis_callback_holder,
                 listener_generation: Some(listener_generation),
+                input_router_generation,
                 _focus_recovery_handler: Some(focus_recovery_handler_js),
                 _focus_recovery_window: Some(window.clone()),
                 _focus_recovery_document: window.document(),
@@ -2443,6 +2630,24 @@ pub fn XtermMount(
                             .trim_end_matches("px")
                             .parse::<f64>()
                             .unwrap_or(14.0);
+                        // Freeze + pin BEFORE the first yield of the font
+                        // pipeline. The options push above already queued xterm
+                        // atlas rebuilds and repaints, and schedule_fit below spreads
+                        // fit() (canvas blank + buffer reflow, which clamps the
+                        // viewport — top of scrollback on shrink) and the
+                        // viewport restore across two rAFs. Hiding the screen
+                        // until schedule_fit's tail reveal means the compositor
+                        // never presents those intermediate frames, so the zoom
+                        // reads as a single in-place font change instead of a
+                        // jump-to-top-then-scroll-back animation. The sync
+                        // scroll pin covers a bottom-following pane for the
+                        // awaited font-ready gap.
+                        freeze_screen(&el);
+                        let was_at_bottom = capture_viewport(&term).at_bottom;
+                        if was_at_bottom {
+                            scroll_to_bottom(&term);
+                        }
+                        let family_changed = !new_family.is_empty();
                         let window_c = window.clone();
                         let fit_pending_c = fit_pending_for_font.clone();
                         let fit_dirty_c = fit_dirty_for_font.clone();
@@ -2450,18 +2655,35 @@ pub fn XtermMount(
                         let viewport_c = viewport_for_font.clone();
                         let follow_c = follow_for_font.clone();
                         let last_bottom_c = last_bottom_for_font.clone();
+                        let pane_id_c = mount_id_for_font.clone();
                         let term_c = term.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             wait_for_font_ready(&window_c, &family_to_wait, size_px).await;
                             if !*mount_active_c.borrow() {
+                                // Frozen above but no schedule_fit will run to
+                                // reveal it — unfreeze here or the pane strands
+                                // hidden on unmount racing a font change.
+                                unfreeze_screen_now(&el);
                                 return;
                             }
-                            // The option push above changed the cell metrics, so
-                            // the renderer has (or is about to have) a new
-                            // glyph atlas while the rows already painted still
-                            // index the old one. Rebuild + full repaint before
-                            // the refit, or the same scrambled-glyph symptom
-                            // shows up after a font picker change.
+                            // FAMILY or SIZE change: the option push above
+                            // changed the cell metrics, so the renderer has
+                            // (or is about to have) a new glyph atlas while
+                            // the rows already painted still index the old
+                            // one — existing cells keep their stale per-cell
+                            // UVs either way (mechanism in reset_glyph_atlas's
+                            // doc comment, xterm_helpers.rs). Rebuild + full
+                            // repaint before the refit for BOTH kinds, or the
+                            // scrambled-glyph symptom shows up after a font
+                            // picker change (family) or a Cmd+=/- zoom (size).
+                            crate::tauri_bridge::log_to_backend(
+                                "debug",
+                                &format!(
+                                    "[xterm] glyph atlas reset on font {} change (pane {})",
+                                    if family_changed { "family" } else { "size" },
+                                    pane_id_c
+                                ),
+                            );
                             reset_glyph_atlas(&term_c);
                             schedule_fit(
                                 &window_c,
@@ -2524,10 +2746,21 @@ pub fn XtermMount(
         );
         *mount_active_for_drop.borrow_mut() = false;
         *raw_ready.borrow_mut() = false;
+        // Stop sibling atlas resets from repainting this terminal once it's
+        // gone (a refresh against a disposed renderer is wasted work).
+        unregister_live_terminal(&mount_id_for_drop);
+        // Take the cleanup first so the deactivate below can carry this
+        // mount's activation token: if a newer mount already reactivated the
+        // pane (remount race), the stale teardown must leave its channel
+        // alone — otherwise kitty probe answers and keystrokes are dropped.
+        let cleanup_taken = cleanup.take();
+        let input_generation = cleanup_taken
+            .as_ref()
+            .map(|c| c.input_router_generation);
         registry_for_drop
             .input_router()
-            .deactivate(&mount_id_for_drop);
-        if let Some(mut c) = cleanup.take() {
+            .deactivate(&mount_id_for_drop, input_generation);
+        if let Some(mut c) = cleanup_taken {
             // Detach the current listener lease before unlistening. A stale
             // teardown cannot pause a newer mount because the backend checks
             // the generation. If attach is still in flight, that task notices

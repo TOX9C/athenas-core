@@ -4,7 +4,7 @@
 //! one queue per pane prevents keyboard, clipboard, and native file-drop input
 //! from overtaking one another.
 
-use crate::tauri_bridge::pty_write;
+use crate::tauri_bridge::{log_to_backend, pty_write};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -14,6 +14,11 @@ pub(crate) struct InputChannel {
     queue: std::collections::VecDeque<String>,
     draining: bool,
     active: bool,
+    /// Bumped by every `activate()`. A stale `deactivate()` from an old
+    /// mount's drop running AFTER a newer mount's `activate()` (remount
+    /// close-race family, cf. terminal_grid.rs) carries the old generation
+    /// and no-ops instead of clearing the newer mount's channel.
+    generation: u64,
 }
 
 #[derive(Clone, Default)]
@@ -28,7 +33,7 @@ impl TerminalInputRouter {
 
     /// Activate a pane. An in-flight channel is reused during a remount so its
     /// pending PTY write remains ordered; an idle channel is created lazily.
-    pub fn activate(&self, pane_id: &str) {
+    pub fn activate(&self, pane_id: &str) -> u64 {
         let channel = {
             let mut channels = self.channels.borrow_mut();
             channels
@@ -36,16 +41,27 @@ impl TerminalInputRouter {
                 .or_insert_with(|| Rc::new(RefCell::new(InputChannel::default())))
                 .clone()
         };
-        channel.borrow_mut().active = true;
+        let mut state = channel.borrow_mut();
+        state.generation += 1;
+        state.active = true;
+        state.generation
     }
 
     /// Stop and clear a pane's queue before its xterm mount is disposed.
-    pub fn deactivate(&self, pane_id: &str) {
+    /// `generation` is the token returned by the activating `activate()`; a
+    /// mismatch means a newer mount has already reactivated this pane and
+    /// this drop is stale — leave the channel alone. `None` = the caller
+    /// never saw an activation token (mount died before recording one):
+    /// fall back to the unconditional legacy teardown.
+    pub fn deactivate(&self, pane_id: &str, generation: Option<u64>) {
         let channel = self.channels.borrow().get(pane_id).cloned();
         let Some(channel) = channel else { return };
 
         let remove_now = {
             let mut state = channel.borrow_mut();
+            if generation.is_some_and(|g| g != state.generation) {
+                return;
+            }
             state.active = false;
             state.queue.clear();
             !state.draining
@@ -59,15 +75,18 @@ impl TerminalInputRouter {
     /// Enqueue input for an active pane. All callers use this method, so a
     /// dropped path cannot race normal xterm input or bracketed clipboard paste.
     pub fn enqueue(&self, pane_id: &str, data: impl Into<String>) {
+        let data = data.into();
         let Some(channel) = self.channels.borrow().get(pane_id).cloned() else {
+            log_to_backend(
+                "warn",
+                &format!(
+                    "[xterm] dropping input for unregistered pane {pane_id}: {}",
+                    payload_hint(&data)
+                ),
+            );
             return;
         };
-        enqueue_channel(
-            self.channels.clone(),
-            channel,
-            pane_id.to_string(),
-            data.into(),
-        );
+        enqueue_channel(self.channels.clone(), channel, pane_id.to_string(), data);
     }
 
     #[cfg(test)]
@@ -99,6 +118,16 @@ fn enqueue_channel(
     {
         let mut state = channel.borrow_mut();
         if !state.active {
+            // Observable drop: kitty a=q / CSI t probe answers and other
+            // input posted during the deactivate→activate remount race land
+            // here. Escaped first bytes identify the payload class.
+            log_to_backend(
+                "warn",
+                &format!(
+                    "[xterm] dropping input for inactive pane {pane_id}: {}",
+                    payload_hint(&data)
+                ),
+            );
             return;
         }
         state.queue.push_back(data);
@@ -144,6 +173,16 @@ fn enqueue_channel(
             }
         }
     });
+}
+
+/// First few bytes of a dropped payload, escape-rendered and truncated, so a
+/// drop log identifies the payload class (e.g. kitty `\u{1b}_G…` probes).
+fn payload_hint(data: &str) -> String {
+    let mut hint: String = data.chars().take(16).flat_map(char::escape_default).collect();
+    if data.len() > 16 {
+        hint.push('…');
+    }
+    hint
 }
 
 /// Quote one path as a literal POSIX shell argument.
@@ -198,11 +237,24 @@ mod tests {
     #[test]
     fn deactivating_an_idle_pane_releases_its_channel() {
         let router = super::TerminalInputRouter::new();
-        router.activate("pane-a");
+        let generation = router.activate("pane-a");
         assert_eq!(router.channel_count(), 1);
 
-        router.deactivate("pane-a");
+        router.deactivate("pane-a", Some(generation));
 
+        assert_eq!(router.channel_count(), 0);
+    }
+
+    #[test]
+    fn stale_deactivate_does_not_touch_a_newer_mounts_channel() {
+        let router = super::TerminalInputRouter::new();
+        let old = router.activate("pane-a");
+        let new = router.activate("pane-a");
+
+        router.deactivate("pane-a", Some(old));
+        assert_eq!(router.channel_count(), 1);
+
+        router.deactivate("pane-a", Some(new));
         assert_eq!(router.channel_count(), 0);
     }
 }

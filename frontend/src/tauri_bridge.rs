@@ -894,6 +894,18 @@ pub async fn pty_stage_drop_file(
     .await
 }
 
+/// Forward a frontend log line to the backend log targets (stdout +
+/// `~/Library/Logs/com.athena.core/`). Webview `console.*` output only
+/// reaches Safari Web Inspector; renderer events like WebGL context loss
+/// and glyph-atlas resets are otherwise invisible in shipped builds.
+/// Fire-and-forget: safe from synchronous render paths; failures dropped.
+pub fn log_to_backend(level: &str, message: &str) {
+    let args = serde_json::json!({ "level": level, "message": message }).to_string();
+    wasm_bindgen_futures::spawn_local(async move {
+        let _: TauriResult<()> = invoke("frontend_log", &args).await;
+    });
+}
+
 /// Write data to a PTY session.
 pub async fn pty_write(id: &str, data: &str) -> TauriResult<()> {
     invoke(
@@ -1780,6 +1792,37 @@ impl std::fmt::Display for TauriBridgeError {
 
 impl std::error::Error for TauriBridgeError {}
 
+/// Drop a listener closure only after a grace period. Tauri's JS event bus
+/// unlistens asynchronously, so an event already queued when `unlisten()` runs
+/// would otherwise invoke a freed wasm function-table entry
+/// (`RuntimeError: ... __wasm_bindgen_func_elem_*`). A 2s timer keeps the
+/// closure alive long enough for the emit queue to drain.
+// ponytail: 2s global grace; if a backend can hold emits longer, drain the
+// event bus synchronously instead of relying on a timer.
+fn defer_closure_drop(closure_js: JsValue) {
+    use wasm_bindgen::JsCast;
+    let Some(window) = web_sys::window() else {
+        drop(closure_js);
+        return;
+    };
+    let cb = wasm_bindgen::closure::Closure::once_into_js(Box::new(move || {
+        drop(closure_js);
+    }) as Box<dyn FnOnce()>);
+    if window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            cb.as_ref().unchecked_ref(),
+            2_000,
+        )
+        .is_err()
+    {
+        // Timer API unavailable: invoke the once-closure now (no events can
+        // be in flight without a functioning window).
+        if let Ok(f) = cb.dyn_into::<js_sys::Function>() {
+            let _ = f.call0(&JsValue::NULL);
+        }
+    }
+}
+
 /// Listen for Tauri push events from the backend.
 /// The callback receives the raw event payload `JsValue` (already a JS object
 /// or string) — deserialize it via `serde_wasm_bindgen::from_value`, which
@@ -1873,41 +1916,58 @@ pub fn listen(
     let unlisten_fn = Box::new(move || {
         if let Ok(unlisten) = registration.clone().dyn_into::<js_sys::Function>() {
             let _ = unlisten.call0(&JsValue::NULL);
-            drop(closure_js);
+            defer_closure_drop(closure_js);
             return;
         }
 
         let Ok(then_val) = js_sys::Reflect::get(&registration, &JsValue::from_str("then")) else {
-            drop(closure_js);
+            defer_closure_drop(closure_js);
             return;
         };
         let Ok(then_fn) = then_val.dyn_into::<js_sys::Function>() else {
-            drop(closure_js);
+            defer_closure_drop(closure_js);
             return;
         };
 
         // Attach both fulfillment and rejection branches: if the Tauri
         // `event.listen` promise rejects (registration failed), the cleanup
         // must still run or the callback closure leaks on the JS heap.
-        let closure_js = std::rc::Rc::new(closure_js);
+        // Exactly one branch runs (the promise settles once); the shared
+        // Option hands ownership to whichever fires first. JsValue::clone
+        // does not bump the externref count, so cloning the handle and
+        // dropping twice would corrupt the heap — never do that here.
+        let closure_js = std::rc::Rc::new(std::cell::RefCell::new(Some(closure_js)));
         let cleanup = wasm_bindgen::closure::Closure::once_into_js(Box::new({
             let closure_js = closure_js.clone();
             move |resolved_unlisten: JsValue| {
                 if let Ok(unlisten) = resolved_unlisten.dyn_into::<js_sys::Function>() {
                     let _ = unlisten.call0(&JsValue::NULL);
                 }
-                drop(closure_js);
+                if let Some(js) = closure_js.borrow_mut().take() {
+                    defer_closure_drop(js);
+                }
             }
         })
             as Box<dyn FnOnce(JsValue)>);
         let cleanup_reject = wasm_bindgen::closure::Closure::once_into_js(Box::new({
             let closure_js = closure_js.clone();
             move |_err: JsValue| {
-                drop(closure_js);
+                if let Some(js) = closure_js.borrow_mut().take() {
+                    defer_closure_drop(js);
+                }
             }
         })
             as Box<dyn FnOnce(JsValue)>);
-        let _ = then_fn.call2(&registration, cleanup.as_ref(), cleanup_reject.as_ref());
+        if then_fn
+            .call2(&registration, cleanup.as_ref(), cleanup_reject.as_ref())
+            .is_err()
+        {
+            // Broken thenable: no continuation will run, so nothing else
+            // holds ownership — defer the drop here.
+            if let Some(js) = closure_js.borrow_mut().take() {
+                defer_closure_drop(js);
+            }
+        }
     });
 
     Ok(unlisten_fn)

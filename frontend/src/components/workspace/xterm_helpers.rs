@@ -7,6 +7,90 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
+thread_local! {
+    /// Live xterm `Terminal` instances keyed by mount id. Every mounted pane
+    /// with the same font/theme config shares ONE WebGL glyph atlas via
+    /// xterm's CharAtlasCache (upstream xterm.js #6014), so an atlas reset
+    /// triggered by one pane must repaint ALL panes' render models — this
+    /// registry is how `reset_glyph_atlas` reaches its siblings.
+    static LIVE_TERMINALS: RefCell<std::collections::HashMap<String, JsValue>> =
+        RefCell::new(std::collections::HashMap::new());
+    /// Pane ids whose previous mount was force-evicted by a duplicate-mount
+    /// detector. The stale mount's Dioxus component can linger with
+    /// `mount_active` still true; its raw listener checks this set and stops
+    /// feeding the disposed terminal.
+    static EVICTED_PANES: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Whether a previous mount of this pane was force-evicted; the stale
+/// mount's raw listener must drop bytes instead of writing a disposed term.
+pub(crate) fn pane_was_evicted(mount_id: &str) -> bool {
+    EVICTED_PANES.with(|set| set.borrow().contains(mount_id))
+}
+
+/// Track a mounted terminal for cross-pane atlas repair. Register right
+/// after construction; unregister in the drop hook before `term.dispose()`.
+pub(crate) fn register_live_terminal(mount_id: &str, term_val: &JsValue) {
+    // The new mount owns the pane now: clear any eviction mark set when its
+    // stale predecessor was force-disposed, or this mount's own raw listener
+    // would drop its bytes too.
+    EVICTED_PANES.with(|set| {
+        set.borrow_mut().remove(mount_id);
+    });
+    LIVE_TERMINALS.with(|live| {
+        live.borrow_mut().insert(mount_id.to_string(), term_val.clone());
+    });
+}
+
+pub(crate) fn unregister_live_terminal(mount_id: &str) {
+    LIVE_TERMINALS.with(|live| {
+        live.borrow_mut().remove(mount_id);
+    });
+}
+
+/// Evict the registry entry left by a previous mount of the same pane that
+/// never unregistered — that terminal still holds its PTY raw listener, so
+/// it keeps painting the same stream somewhere off-screen (the "ghosting"
+/// duplicate-panel symptom). Disposing it releases xterm, the WebGL context,
+/// and lets the new mount claim the pane. The legit mount's `use_drop`
+/// unregisters before dispose, so a live sibling is never evicted here.
+pub(crate) fn evict_stale_live_terminal(mount_id: &str) {
+    let stale = LIVE_TERMINALS.with(|live| live.borrow_mut().remove(mount_id));
+    let Some(old_term) = stale else {
+        return;
+    };
+    EVICTED_PANES.with(|set| {
+        set.borrow_mut().insert(mount_id.to_string());
+    });
+    web_sys::console::warn_1(
+        &format!("[XtermMount] evicting stale undisposed terminal for pane {mount_id}").into(),
+    );
+    crate::tauri_bridge::log_to_backend(
+        "error",
+        &format!("[xterm] stale undisposed terminal for pane {mount_id}; force-disposed"),
+    );
+    if let Ok(dispose_fn) = js_sys::Reflect::get(&old_term, &JsValue::from_str("dispose"))
+        .and_then(|v| v.dyn_into::<js_sys::Function>())
+    {
+        let _ = dispose_fn.call0(&old_term);
+    }
+}
+
+/// E2E hook: run the FULL shared-atlas reset (including the sibling-pane
+/// repair) against a registered terminal. Called from
+/// `window.__athenaResetAtlas(id)` in WebDriver specs so the shared-atlas
+/// corruption regression (xterm.js #6014) exercises the real code path
+/// instead of a bare `term.clearTextureAtlas()`.
+pub(crate) fn reset_glyph_atlas_by_id(mount_id: &str) -> bool {
+    let term = LIVE_TERMINALS.with(|live| live.borrow().get(mount_id).cloned());
+    let Some(term) = term else {
+        return false;
+    };
+    reset_glyph_atlas(&term);
+    true
+}
+
 /// How long after a fit the write path keeps re-pinning a bottom-following
 /// pane to the bottom. The fit itself fires xterm's `onResize` → `pty_resize`
 /// → SIGWINCH, and full-screen TUIs (OMP, vim) redraw asynchronously — often
@@ -230,7 +314,23 @@ pub(crate) fn try_activate_webgl_addon(
     let instance = js_sys::Reflect::construct(&ctor, &js_sys::Array::of1(&JsValue::FALSE)).ok()?;
     let activate_val = js_sys::Reflect::get(&instance, &JsValue::from_str("activate")).ok()?;
     let activate_fn: js_sys::Function = activate_val.dyn_into().ok()?;
-    let _ = activate_fn.call1(&instance, term_val);
+    // activate() throws when the terminal is disposed/element-less; treat
+    // that as activation failure instead of returning a half-attached addon
+    // whose context-loss recovery channel would be dead.
+    if let Err(e) = activate_fn.call1(&instance, term_val) {
+        web_sys::console::warn_1(
+            &format!("[XtermMount] WebglAddon.activate() failed: {e:?}").into(),
+        );
+        crate::tauri_bridge::log_to_backend(
+            "warn",
+            "[xterm] WebglAddon.activate() threw; falling back to Canvas/DOM renderer",
+        );
+        return None;
+    }
+    crate::tauri_bridge::log_to_backend(
+        "info",
+        "[xterm] WebGL renderer active (vendored @xterm/addon-webgl 0.19.0, includes atlas page-merge fix)",
+    );
     Some(instance)
 }
 
@@ -257,6 +357,7 @@ pub(crate) fn wire_webgl_context_recovery(
     window: &web_sys::Window,
     term_val: &JsValue,
     webgl_addon: &JsValue,
+    pane_id: &str,
 ) -> Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>> {
     use wasm_bindgen::JsCast;
     let on_loss_fn: js_sys::Function =
@@ -267,14 +368,21 @@ pub(crate) fn wire_webgl_context_recovery(
     let addon_for_loss = webgl_addon.clone();
     let term_for_loss = term_val.clone();
     let window_for_loss = window.clone();
+    let pane_for_loss = pane_id.to_string();
     let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: JsValue| {
         if let Ok(dispose_fn) =
             js_sys::Reflect::get(&addon_for_loss, &JsValue::from_str("dispose"))
                 .and_then(|v| v.dyn_into::<js_sys::Function>())
         {
             web_sys::console::warn_1(
-                &"[XtermMount] WebGL context lost; falling back to Canvas renderer until restore"
-                    .into(),
+                &format!(
+                    "[XtermMount] WebGL context lost (pane={pane_for_loss}); falling back to Canvas renderer until restore"
+                )
+                .into(),
+            );
+            crate::tauri_bridge::log_to_backend(
+                "warn",
+                &format!("[xterm] webgl context lost pane={pane_for_loss}"),
             );
             let _ = dispose_fn.call0(&addon_for_loss);
         }
@@ -299,10 +407,23 @@ pub(crate) fn wire_webgl_context_recovery(
                 .and_then(|r| js_sys::Reflect::get(&r, &JsValue::from_str("_canvas")))
                 .and_then(|v| v.dyn_into())
         else {
+            // Without the canvas there is no restore listener — the pane
+            // would stay on the interim renderer forever. Never silent.
+            web_sys::console::warn_1(
+                &format!(
+                    "[XtermMount] WebGL context lost (pane={pane_for_loss}) but renderer canvas is gone; CANNOT re-arm restore listener"
+                )
+                .into(),
+            );
+            crate::tauri_bridge::log_to_backend(
+                "error",
+                &format!("[xterm] webgl restore listener NOT armed pane={pane_for_loss}"),
+            );
             return;
         };
         let term_for_restore = term_for_loss.clone();
         let window_for_restore = window_for_loss.clone();
+        let pane_for_restore = pane_for_loss.clone();
         let restored = wasm_bindgen::closure::Closure::once(move |_: JsValue| {
             // Drop the interim canvas renderer before re-attaching WebGL.
             if let Some(c) = canvas_holder.borrow_mut().take() {
@@ -313,17 +434,41 @@ pub(crate) fn wire_webgl_context_recovery(
                     let _ = dispose_fn.call0(&c);
                 }
             }
+            // Liveness guard: the pane may have been unmounted between loss
+            // and restore (webglcontextrestored targets the canvas element,
+            // even detached). Attaching a fresh WebGL context to a disposed
+            // terminal would leak it into WKWebView's context budget.
+            let term_alive = js_sys::Reflect::get(&term_for_restore, &JsValue::from_str("element"))
+                .map(|el| el.is_object() && !el.is_null())
+                .unwrap_or(false);
+            if !term_alive {
+                web_sys::console::log_1(
+                    &format!(
+                        "[XtermMount] WebGL context restored (pane={pane_for_restore}) but pane is gone; skipping re-attach"
+                    )
+                    .into(),
+                );
+                return;
+            }
             if let Some(new_addon) =
                 try_activate_webgl_addon(&window_for_restore, &term_for_restore)
             {
                 web_sys::console::log_1(
-                    &"[XtermMount] WebGL context restored; re-attached WebglAddon".into(),
+                    &format!(
+                        "[XtermMount] WebGL context restored (pane={pane_for_restore}); re-attached WebglAddon"
+                    )
+                    .into(),
+                );
+                crate::tauri_bridge::log_to_backend(
+                    "info",
+                    &format!("[xterm] webgl context restored pane={pane_for_restore}"),
                 );
                 reset_glyph_atlas(&term_for_restore);
                 if let Some(next) = wire_webgl_context_recovery(
                     &window_for_restore,
                     &term_for_restore,
                     &new_addon,
+                    &pane_for_restore,
                 ) {
                     next.forget();
                 }
@@ -477,7 +622,35 @@ pub(crate) fn write_bytes_to_term(term_val: &JsValue, bytes: &[u8]) {
     let Some(payload) = filter_graphics_for_term(term_val, bytes) else {
         return;
     };
-    write_payload_to_term(term_val, payload.as_ref());
+    write_payload_with_kitty_settle(term_val, payload.as_ref());
+}
+
+/// Write `payload` and, once xterm's async parser has consumed it, invoke
+/// the kitty addon's `__athenaKittySettle` expando. The addon's feed() runs
+/// on the raw chunk BEFORE any of it is parsed, so it arms image placements
+/// without capturing buffer/cursor state; this write callback is the only
+/// point where the chunk's preceding escapes (cursor moves, buffer switch)
+/// are guaranteed applied, and is where the anchor is actually captured.
+/// Without the settle expando (addon not attached) this is a plain write.
+fn write_payload_with_kitty_settle(term_val: &JsValue, payload: &JsValue) {
+    let settle = js_sys::Reflect::get(term_val, &JsValue::from_str("__athenaKittySettle"))
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
+    let Some(settle_fn) = settle else {
+        write_payload_to_term(term_val, payload);
+        return;
+    };
+    let Ok(write_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("write")) else {
+        return;
+    };
+    let Ok(write_fn) = write_val.dyn_into::<js_sys::Function>() else {
+        return;
+    };
+    let term_for_cb = term_val.clone();
+    let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
+        let _ = settle_fn.call0(&term_for_cb);
+    });
+    let _ = write_fn.call2(term_val, payload, &cb);
 }
 
 /// Attach the vendored Kitty graphics addon: strips APC G image sequences
@@ -496,7 +669,11 @@ pub(crate) fn attach_kitty_graphics(term_val: &JsValue, respond_js: &JsValue) ->
                 .ok()
                 .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
         })
-        .and_then(|attach_fn| attach_fn.call2(term_val, term_val, respond_js).ok());
+        .and_then(|attach_fn| attach_fn.call2(term_val, term_val, respond_js).ok())
+        // An addon that cannot initialize (no element yet) returns null;
+        // treat that as unattached so the caller's retry loop keeps trying
+        // instead of pinning an identity passthrough.
+        .filter(|v| !v.is_null() && !v.is_undefined());
     if let Some(addon) = attached {
         if let Ok(feed_fn) = js_sys::Reflect::get(&addon, &JsValue::from_str("feed")) {
             let _ = js_sys::Reflect::set(
@@ -510,6 +687,80 @@ pub(crate) fn attach_kitty_graphics(term_val: &JsValue, respond_js: &JsValue) ->
             .map(|_| addon);
     }
     None
+}
+
+/// Replace Kitty unicode-placeholder cells (U+10EEEE = F4 8E BB AE, each
+/// followed by combining diacritics from the kitty rowcolumn table) in raw
+/// PTY bytes with one NBSP sentinel (C2 A0) per cell. The sentinel survives
+/// into the xterm buffer so `addon-kitty-graphics.js refresh()` can anchor
+/// overlays to the exact image block through scroll and reflow. Last-resort
+/// path used when the JS feed filter is not attached.
+pub(crate) fn strip_kitty_placeholder_bytes(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if bytes
+        .windows(4)
+        .all(|w| w != [0xf4, 0x8e, 0xbb, 0xae])
+    {
+        return std::borrow::Cow::Borrowed(bytes);
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4);
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 3 < bytes.len()
+            && bytes[i] == 0xf4
+            && bytes[i + 1] == 0x8e
+            && bytes[i + 2] == 0xbb
+            && bytes[i + 3] == 0xae
+        {
+            out.extend_from_slice(&[0xc2, 0xa0]);
+            i += 4;
+            // Skip up to 2 following combining codepoints (row+col). They are
+            // NOT all in the CC/CD lead range — kitty's table includes D0,
+            // D6, DC … blocks, so decode the candidate codepoint and check
+            // against the kitty table (is_kitty_diacritic).
+            for _ in 0..2 {
+                if i >= bytes.len() {
+                    break;
+                }
+                let b0 = bytes[i];
+                let ulen = match b0 {
+                    0x00..=0x7f => 1,
+                    0xc0..=0xdf => 2,
+                    0xe0..=0xef => 3,
+                    _ => 4,
+                };
+                // A codepoint split at the chunk end can't be classified yet —
+                // drop the truncated tail bytes; the next chunk's continuation
+                // would be a stray trail byte at worst (bounded to one).
+                if i + ulen > bytes.len() {
+                    i = bytes.len();
+                    break;
+                }
+                let cp: u32 = match ulen {
+                    1 => b0 as u32,
+                    2 => ((b0 as u32 & 31) << 6) | (bytes[i + 1] as u32 & 63),
+                    3 => {
+                        ((b0 as u32 & 15) << 12)
+                            | ((bytes[i + 1] as u32 & 63) << 6)
+                            | (bytes[i + 2] as u32 & 63)
+                    }
+                    _ => {
+                        ((b0 as u32 & 7) << 18)
+                            | ((bytes[i + 1] as u32 & 63) << 12)
+                            | ((bytes[i + 2] as u32 & 63) << 6)
+                            | (bytes[i + 3] as u32 & 63)
+                    }
+                };
+                match char::from_u32(cp) {
+                    Some(ch) if is_kitty_diacritic(ch) => i += ulen,
+                    _ => break,
+                }
+            }
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Run a chunk through the Kitty graphics filter (expando set by
@@ -533,9 +784,10 @@ pub(crate) fn filter_graphics_for_term(term_val: &JsValue, bytes: &[u8]) -> Opti
         }
         None => {
             // ponytail: no filter attached (addon script not yet loaded).
-            // Stock xterm drops well-formed APC, but a payload split across
-            // chunks can still leak glyphs — mount code must attach before
-            // the first PTY write.
+            // Stock xterm drops well-formed APC, but placeholder runes must
+            // still not reach the grid — strip them to spaces so an
+            // unfiltered chunk degrades to blank cells, never missing-glyph
+            // soup.
             static WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -543,15 +795,41 @@ pub(crate) fn filter_graphics_for_term(term_val: &JsValue, bytes: &[u8]) -> Opti
                     "[athena] kitty graphics filter missing; writing raw chunk",
                 ));
             }
-            Some(bytes_arr.into())
+            match strip_kitty_placeholder_bytes(bytes) {
+                std::borrow::Cow::Borrowed(_) => Some(bytes_arr.into()),
+                std::borrow::Cow::Owned(stripped) => {
+                    Some(js_sys::Uint8Array::from(stripped.as_slice()).into())
+                }
+            }
         }
     }
 }
 
-/// Remove Kitty unicode-placeholder runs (U+10EEEE plus trailing combining
-/// diacritics U+0300–U+036F) from text destined for the terminal. Replayed
-/// snapshots captured while an image was displayed contain these runes and
-/// would otherwise repaint as a missing-glyph grid.
+/// Combining diacritics used by the kitty placeholder protocol: the
+/// rowcolumn-diacritics table spans codepoints far beyond U+0300–036F
+/// (U+0483, U+0592… are used once row/col exceed ~31). Membership check by
+/// decoded codepoint mirrors `addon-kitty-graphics.js` DIA_RANGES.
+pub(crate) fn is_kitty_diacritic(cp: char) -> bool {
+    let c = cp as u32;
+    match c {
+        0x0300..=0x036F | 0x0483..=0x0489 | 0x0591..=0x05BD => true,
+        0x05BF | 0x05C1 | 0x05C2 | 0x05C4 | 0x05C5 | 0x05C7 => true,
+        0x0610..=0x061A | 0x064B..=0x0659 | 0x0670 => true,
+        0x06D6..=0x06DC | 0x06DF..=0x06E4 => true,
+        0x06E7 | 0x06E8 | 0x06EA..=0x06ED => true,
+        0x0730..=0x074A | 0x07EB..=0x07F3 | 0x0951..=0x0957 => true,
+        0x1DC0..=0x1DFF | 0x20D0..=0x20F0 | 0xFE20..=0xFE2F => true,
+        0x10A0F | 0x10A38 => true,
+        _ => (0x1D185..=0x1D244).contains(&c),
+    }
+}
+
+/// Replace Kitty unicode-placeholder runs (U+10EEEE plus trailing combining
+/// diacritics from the kitty rowcolumn table) with one NBSP sentinel per
+/// image cell. Replayed snapshots captured mid-image contain these runes;
+/// splicing U+00A0 keeps the cursor advance (one cell per cell) and leaves a
+/// findable anchor that `addon-kitty-graphics.js refresh()` scans for when
+/// positioning the overlay after a buffer replay.
 pub(crate) fn strip_kitty_placeholders(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains('\u{10EEEE}') {
         return std::borrow::Cow::Borrowed(text);
@@ -561,9 +839,10 @@ pub(crate) fn strip_kitty_placeholders(text: &str) -> std::borrow::Cow<'_, str> 
     for ch in text.chars() {
         if ch == '\u{10EEEE}' {
             skip = true;
+            out.push('\u{00A0}');
             continue;
         }
-        if skip && ('\u{0300}'..='\u{036F}').contains(&ch) {
+        if skip && is_kitty_diacritic(ch) {
             continue;
         }
         skip = false;
@@ -578,7 +857,7 @@ pub(crate) fn write_str_to_term(term_val: &JsValue, text: &str) {
     // graphics frames; writing them raw would leak payload bytes as text or,
     // with the filter attached, paint overlays twice.
     if let Some(payload) = filter_graphics_for_term(term_val, text.as_bytes()) {
-        write_payload_to_term(term_val, payload.as_ref());
+        write_payload_with_kitty_settle(term_val, payload.as_ref());
     }
 }
 
@@ -911,10 +1190,11 @@ pub(crate) fn schedule_fit(
                 *viewport_for_refresh_fallback.borrow_mut() = None;
             }
             *pending_for_refresh_fallback.borrow_mut() = false;
-            unfreeze_screen_now(&container_for_fallback);
             if dirty_for_refresh_fallback.replace(false)
                 && *active_for_refresh_fallback.borrow()
             {
+                // The follow-up pair reveals at its own tail; don't unfreeze
+                // here or the blank/reflow window becomes visible again.
                 schedule_fit(
                     &window_for_fallback,
                     &fit_for_fallback,
@@ -927,6 +1207,8 @@ pub(crate) fn schedule_fit(
                     &follow_for_fallback,
                     &last_bottom_for_fallback,
                 );
+            } else {
+                unfreeze_screen_now(&container_for_fallback);
             }
         }
     });
@@ -940,7 +1222,9 @@ pub(crate) fn schedule_fit(
             restore_viewport(term_val, state);
         }
         *pending.borrow_mut() = false;
-        unfreeze_screen_now(container);
+        // Reveal only when no follow-up pair will run — that pair unfreezes
+        // at its own tail; revealing first would re-expose the blank/reflow
+        // window the freeze exists to hide.
         if dirty.replace(false) && *active.borrow() {
             schedule_fit(
                 window,
@@ -954,6 +1238,8 @@ pub(crate) fn schedule_fit(
                 follow_until,
                 last_bottom_at,
             );
+        } else {
+            unfreeze_screen_now(container);
         }
     }
 }
@@ -1112,6 +1398,37 @@ pub(crate) fn reset_glyph_atlas(term_val: &JsValue) {
     // visible rows, before the caller can write the next byte.
     refresh_full(term_val);
     render_visible_rows_sync(term_val);
+
+    // Sibling repair (xterm.js #6014, fixed upstream only in
+    // @xterm/addon-webgl 0.20.0-beta): the glyph atlas is SHARED across all
+    // same-config terminals (CharAtlasCache), but the render-model reset
+    // above ran only for THIS terminal. Every other live pane keeps per-cell
+    // UVs into the wiped atlas and would paint mis-sliced glyph fragments
+    // until its rows happen to be rewritten. Each sibling must therefore run
+    // ITS OWN clearTextureAtlas(): that clears the sibling renderer's model
+    // (cells diff-mismatch → UVs re-derived) and arms _needsFullRefresh so
+    // even a paused/hidden pane self-repairs on unpause. The shared-atlas
+    // clear is idempotent (TextureAtlas.clearTexture early-returns on empty),
+    // while the model clear + full refresh still run. A bare refresh() would
+    // NOT suffice: the renderer diffs rows and skips unchanged cells, keeping
+    // their stale UVs. (Verified against @xterm/addon-webgl 0.18.0 sources.)
+    let siblings = LIVE_TERMINALS.with(|live| {
+        live.borrow()
+            .iter()
+            .filter(|(_, t)| !js_sys::Object::is(t, term_val))
+            .map(|(_, t)| t.clone())
+            .collect::<Vec<_>>()
+    });
+    if !siblings.is_empty() {
+        crate::tauri_bridge::log_to_backend(
+            "info",
+            &format!("[xterm] atlas reset; repairing {} sibling pane(s)", siblings.len()),
+        );
+        for sibling in siblings {
+            let _ = call0(&sibling, "clearTextureAtlas");
+            render_visible_rows_sync(&sibling);
+        }
+    }
 }
 
 fn call0(target: &JsValue, name: &str) -> Result<JsValue, JsValue> {
@@ -1236,9 +1553,55 @@ pub(crate) async fn wait_for_container_size(container: &web_sys::Element) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_container_sized, is_valid_terminal_dimensions, poll_container_size, ContainerSizePoll,
-        CONTAINER_SIZE_RETRIES,
+        is_container_sized, is_valid_terminal_dimensions, poll_container_size, strip_kitty_placeholder_bytes, strip_kitty_placeholders,
+        ContainerSizePoll, CONTAINER_SIZE_RETRIES,
     };
+
+    #[test]
+    fn kitty_placeholders_become_nbsp_sentinels() {
+        // One image cell = U+10EEEE + N combining diacritics (row/col id).
+        // Each cell splices one NBSP sentinel: preserves the sender's cursor
+        // advance (one column) AND remains findable by the overlay refresh.
+        let cell = "\u{10EEEE}\u{0302}\u{0305}";
+        let input = format!("ab{cell}{cell}cd");
+        let out = strip_kitty_placeholders(&input);
+        let expected = format!("ab{0}{0}cd", '\u{00A0}');
+        assert_eq!(out, expected);
+        // Placeholder without diacritics: one sentinel, skip flag resets.
+        let bare = strip_kitty_placeholders("\u{10EEEE}x");
+        assert_eq!(bare, format!("{}x", '\u{00A0}'));
+        // No placeholders → borrowed unchanged.
+        let plain = "no placeholders here";
+        assert!(matches!(
+            strip_kitty_placeholders(plain),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn kitty_placeholder_bytes_become_nbsp_sentinels() {
+        // Cell = F4 8E BB AE + diacritic pair (CC 82 = U+0302). Two cells
+        // between text must yield exactly two NBSP sentinels — no rune leak,
+        // no column loss.
+        let mut bytes = b"ab".to_vec();
+        for _ in 0..2 {
+            bytes.extend_from_slice(&[0xf4, 0x8e, 0xbb, 0xae, 0xcc, 0x82]);
+        }
+        bytes.extend_from_slice(b"cd");
+        assert_eq!(
+            strip_kitty_placeholder_bytes(&bytes).as_ref(),
+            b"ab\xc2\xa0\xc2\xa0cd"
+        );
+        // Dangling diacritic lead at chunk end is dropped, not leaked.
+        let mut dangling = b"x".to_vec();
+        dangling.extend_from_slice(&[0xf4, 0x8e, 0xbb, 0xae, 0xcc]);
+        assert_eq!(strip_kitty_placeholder_bytes(&dangling).as_ref(), b"x\xc2\xa0");
+        // No placeholders → borrowed unchanged.
+        assert!(matches!(
+            strip_kitty_placeholder_bytes(b"plain"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
 
     #[test]
     fn terminal_dimensions_require_a_real_xterm_grid() {

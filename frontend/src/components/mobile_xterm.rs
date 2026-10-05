@@ -400,10 +400,34 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
                         &window_for_task,
                         &term,
                         addon,
+                        &pane_id_for_task,
                     )
                 {
                     loss_closure.forget();
                 }
+            }
+
+            // Track the live terminal so a sibling pane's atlas reset can
+            // force this pane's render model to rebuild (xterm.js #6014).
+            crate::components::workspace::xterm_mount::xterm_helpers::register_live_terminal(
+                &pane_id_for_task,
+                &term,
+            );
+
+            // DPR change (external display, moving between screens): the
+            // atlas keeps stale cell metrics — reset it, same as the desktop
+            // mount (xterm_mount.rs). Without this the mobile pane paints
+            // mis-sliced glyphs until a remount.
+            {
+                let term_for_dpr = term.clone();
+                crate::components::workspace::xterm_mount::xterm_helpers::watch_dpr_change(
+                    Rc::new(move || {
+                        crate::components::workspace::xterm_mount::xterm_helpers::reset_glyph_atlas(
+                            &term_for_dpr,
+                        );
+                    }),
+                    active_for_task.clone(),
+                );
             }
 
             // Replay best-effort scrollback before resuming the raw VT stream.
@@ -418,6 +442,11 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             }
 
             if !*active_for_task.borrow() {
+                // Aborted mid-setup: drop the live-terminal registration made
+                // above so sibling atlas resets never refresh a dead pane.
+                crate::components::workspace::xterm_mount::xterm_helpers::unregister_live_terminal(
+                    &pane_id_for_task,
+                );
                 let pane_for_cancel = pane_id_for_task.clone();
                 let owner_for_cancel = listener_owner_for_task.clone();
                 wasm_bindgen_futures::spawn_local(async move {
@@ -618,6 +647,9 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
 
     use_drop(move || {
         *active_for_drop.borrow_mut() = false;
+        crate::components::workspace::xterm_mount::xterm_helpers::unregister_live_terminal(
+            &pane_id_for_drop,
+        );
         if let Some(mut mounted) = cleanup.take() {
             let generation = mounted
                 .listener_generation
