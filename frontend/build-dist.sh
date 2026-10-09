@@ -113,6 +113,13 @@ done
 rm -f "$DIST_DIR"/assets/athena-frontend_bg.wasm \
       "$DIST_DIR"/assets/athena-frontend-dx*.js
 
+# Cache-bust the kitty addon: WKWebView caches subresources by URL across
+# app restarts, so without a fresh token the pane keeps running a stale
+# addon build after every frontend rebuild.
+KITTY_V="v$(date +%s)"
+perl -pi -e "s|\./vendor/xterm/addon-kitty-graphics\.js(\?v=\w+)?|./vendor/xterm/addon-kitty-graphics.js?v=$KITTY_V|g" "$DIST_DIR/index.html"
+echo "Kitty addon cache token: $KITTY_V"
+
 # Replace Dioxus-generated entry documents with our custom ones.
 # index.html keeps the desktop diagnostics; mobile.html mounts the same WASM
 # bundle in companion mode for the installable PWA.
