@@ -429,4 +429,194 @@ describe('xterm glyph coherence', function () {
     // The restore path rebuilt the atlas.
     expect(resetsAfter).toBeGreaterThan(resetsBefore)
   })
+
+  // Regression for the shared glyph atlas (xterm.js #6014): all same-config
+  // panes share ONE CharAtlasCache atlas, and clearTextureAtlas() only
+  // rebuilds the CALLING terminal's render model. Sibling panes keep per-cell
+  // UVs into the wiped atlas and paint mis-sliced glyph fragments until their
+  // rows are rewritten — the "randomly garbled terminal" symptom. The fix
+  // makes reset_glyph_atlas force a full repaint on EVERY live terminal.
+  //
+  // Drive the REAL reset path via window.__athenaResetAtlas (exposed by
+  // XtermMount in e2e mode); a bare term.clearTextureAtlas() from JS would
+  // bypass the sibling repair and prove nothing.
+  it('repaints sibling panes when one pane resets the shared atlas', async function () {
+    this.timeout(180000)
+
+    await ensureSpaceWithShell()
+    // Need TWO panes: an initiator and an idle sibling left untouched.
+    let paneIds = await browser.execute(
+      `return (${PANE_WRAP_JS}).map((p) => p.getAttribute('data-pane-id'))`,
+    )
+    if (paneIds.length < 2) {
+      const before = paneIds.length
+      await browser.execute(() => {
+        Array.from(document.querySelectorAll('button'))
+          .find((b) => (b.getAttribute('title') || '').startsWith('Add Shell'))
+          ?.click()
+      })
+      await browser.waitUntil(
+        () => browser.execute(`return (${PANE_WRAP_JS}).length === ${before + 1}`),
+        { timeout: 20000, interval: 250, timeoutMsg: 'Add Shell did not add a pane' },
+      )
+      await browser.pause(4000)
+      paneIds = await browser.execute(
+        `return (${PANE_WRAP_JS}).map((p) => p.getAttribute('data-pane-id'))`,
+      )
+    }
+    const [initiator, sibling] = paneIds
+    console.log('[shared] initiator:', initiator, 'sibling:', sibling)
+
+    // Fill the sibling with numbered lines so any glyph corruption is visible
+    // as wrong/mis-sliced text, then let it go idle.
+    await browser.execute(
+      (id) => window.__TAURI__.core.invoke('pty_write', { id, data: 'seq 1 40 | nl -ba\n' }),
+      sibling,
+    )
+    await browser.pause(2500)
+
+    // Snapshot the sibling's render state (cell text + which rows repaint).
+    const snapshot = `((id) => {
+      const term = (window.__athenaTermMap || {})[id]
+      if (!term) return { ok: false, reason: 'no term' }
+      const buf = term.buffer.active
+      const lines = []
+      for (let y = 0; y < Math.min(buf.length, 8); y++) {
+        lines.push(buf.getLine(y)?.translateToString(true) ?? null)
+      }
+      // Instrument clearTextureAtlas on THIS instance to observe the sibling
+      // repair (the fix calls sibling.clearTextureAtlas(), which clears the
+      // sibling renderer's own render model — a bare refresh diffs rows and
+      // would keep stale UVs, so we assert on the model-clearing call).
+      if (!term.__athenaClearLog) {
+        term.__athenaClearLog = []
+        const origClear = term.clearTextureAtlas.bind(term)
+        term.clearTextureAtlas = () => {
+          term.__athenaClearLog.push({ t: performance.now() })
+          return origClear()
+        }
+      }
+      term.__athenaClearLog.length = 0
+      return { ok: true, lines }
+    })`
+    const beforeSnap = await browser.execute(`return (${snapshot})(${JSON.stringify(sibling)})`)
+    console.log('[shared] sibling before:', JSON.stringify(beforeSnap))
+    expect(beforeSnap.ok).toBe(true)
+
+    // Trigger the REAL reset path on the INITIATOR only.
+    const hookType = await browser.execute('return typeof window.__athenaResetAtlas')
+    expect(hookType).toBe('function')
+    await browser.execute(`window.__athenaResetAtlas(${JSON.stringify(initiator)})`)
+    await browser.pause(1500)
+
+    // The sibling MUST have received its own clearTextureAtlas (its render
+    // model rebuilds against the cleared atlas instead of keeping stale UVs).
+    // Pre-fix nobody calls the sibling's clearTextureAtlas from a reset
+    // triggered on another pane, so this assertion fails before the fix.
+    const repair = await browser.execute(
+      `return ((id) => {
+        const term = (window.__athenaTermMap || {})[id]
+        if (!term || !term.__athenaClearLog) return { ok: false }
+        return { ok: true, clears: term.__athenaClearLog.length }
+      })(${JSON.stringify(sibling)})`,
+    )
+    console.log('[shared] sibling repair:', JSON.stringify(repair))
+    expect(repair.ok).toBe(true)
+    expect(repair.clears).toBeGreaterThan(0)
+
+    // And the sibling's top rows must still hold the original text.
+    const afterSnap = await browser.execute(`return (${snapshot})(${JSON.stringify(sibling)})`)
+    console.log('[shared] sibling after:', JSON.stringify(afterSnap.lines))
+    expect(afterSnap.ok).toBe(true)
+    expect(afterSnap.lines).toEqual(beforeSnap.lines)
+  })
+
+  // Regression for the kitty-graphics placeholder leak+desync: when OMP draws
+  // an inline image it sends an APC G payload followed by a rectangle of
+  // U+10EEEE + combining-diacritic placeholder cells, advancing its cursor by
+  // those cells. The addon must (a) strip placeholder runes while splicing
+  // exactly one invisible NBSP sentinel per cell — preserving the sender's
+  // cursor advance and keeping a findable anchor in the buffer — and
+  // (b) paint the decoded image into the overlay layer over that block.
+  // Pre-fix, stripped cells collapsed so trailing text landed on the image's
+  // rows, and missing filters left tofu/missing-glyph grids behind.
+  it('strips kitty placeholders into sentinel cells and paints the image overlay', async function () {
+    this.timeout(120000)
+
+    await ensureSpaceWithShell()
+    const paneIds = await browser.execute(
+      `return (${PANE_WRAP_JS}).map((p) => p.getAttribute('data-pane-id'))`,
+    )
+    expect(paneIds.length).toBeGreaterThan(0)
+    const paneId = paneIds[0]
+
+    // Wait for this pane's kitty feed filter (attached on mount; retries
+    // until the defer-loaded addon script evaluates).
+    await browser.waitUntil(
+      (id) =>
+        browser.execute(
+          `return typeof ((window.__athenaTermMap || {})[${JSON.stringify(id)}] || {}).__athenaKittyFeed === 'function'`,
+        ),
+      { timeout: 30000, interval: 250, timeoutMsg: 'kitty feed filter never attached' },
+    )
+
+    // 1x1 PNG; q=2 keeps the addon from answering into the PTY input queue,
+    // C=1 suppresses the auto cursor-drop so the only cursor advance comes
+    // from the 4 placeholder cells that follow.
+    const result = await browser.execute(
+      (id) => {
+        const term = (window.__athenaTermMap || {})[id]
+        if (!term) return { ok: false, reason: 'no term' }
+        const PNG_B64 =
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+        const ESC = String.fromCharCode(27)
+        const apc = `${ESC}_Ga=T,f=100,q=2,C=1,c=4,r=2;${PNG_B64}${ESC}\\`
+        const enc = new TextEncoder()
+        const cell = enc.encode('\u{10EEEE}\u0302') // one placeholder cell
+        const payload = []
+        payload.push(...enc.encode(apc), ...enc.encode('\r\n'))
+        for (let n = 0; n < 4; n++) payload.push(...cell)
+        payload.push(...enc.encode('MARK\r\n'))
+        const filtered = term.__athenaKittyFeed(new Uint8Array(payload))
+        if (filtered) term.write(filtered)
+        return { ok: true, filtered: !!filtered }
+      },
+      paneId,
+    )
+    expect(result.ok).toBe(true)
+    await browser.pause(800)
+
+    const inspect = await browser.execute(
+      (id) => {
+        const term = (window.__athenaTermMap || {})[id]
+        if (!term) return { ok: false, reason: 'no term' }
+        const buf = term.buffer.active
+        const PLACEHOLDER_RE = /\u{10EEEE}/u
+        let placeholderLines = 0
+        let markLine = null
+        for (let y = 0; y < buf.length; y++) {
+          const text = buf.getLine(y)?.translateToString(true) || ''
+          if (PLACEHOLDER_RE.test(text)) placeholderLines++
+          if (text.includes('MARK')) markLine = text
+        }
+        const layer = term.element && term.element.querySelector('.athena-kitty-layer')
+        return {
+          ok: true,
+          placeholderLines,
+          markLine,
+          overlayChildren: layer ? layer.children.length : -1,
+        }
+      },
+      paneId,
+    )
+    console.log('[kitty] inspect:', JSON.stringify(inspect))
+    expect(inspect.ok).toBe(true)
+    // (a) no placeholder runes in the grid, and the 4 stripped cells became
+    // 4 NBSP sentinel cells  (that's what the refresh scan looks for) —
+    // 'MARK' starts at column 4 of its line.
+    expect(inspect.placeholderLines).toBe(0)
+    expect(inspect.markLine).toBe('\u00a0\u00a0\u00a0\u00a0MARK')
+    // (b) the image painted into the overlay layer.
+    expect(inspect.overlayChildren).toBe(1)
+  })
 })
