@@ -11,7 +11,7 @@
 **Athena's Core** is a native macOS workspace that puts your terminal, AI chat, task board, and agent team in a single window — so you stop switching between five apps to get one thing done.
 
 <p align="center">
-  <img src="docs/assets/screens/workspace-climax.png" alt="Athena's Core workspace with terminal, task board, and AI panels open together" width="100%" />
+  <img src="docs/media/hero.gif" alt="Athena's Core — from a blank workspace to a running agent team, 25 seconds, real capture" width="100%" />
 </p>
 
 ---
@@ -38,21 +38,17 @@
 
 ## Get it
 
-**macOS 13+ on Apple Silicon.**
+**macOS 13+ on Apple Silicon.** One line via Homebrew:
 
-The release build exposes 144 IPC commands.
+```bash
+brew install --no-quarantine tox9c/tap/athenas-core
+```
 
-1. Open the [Releases](https://github.com/TOX9C/athenas-core/releases) page.
-2. Download the latest `.dmg`.
-3. Drag Athena's Core into **Applications** and launch.
+`--no-quarantine` means Gatekeeper never evaluates the unsigned app — no security-prompt dance at all.
 
-> **Unsigned build.** Athena's Core is not yet notarized by Apple. On first launch macOS will say it can't be opened. On **macOS 15 Sequoia and later**: open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the Athena's Core message, then confirm. On older macOS versions, right-click the app and choose **Open**. You only do this once.
->
-> Via Homebrew instead (`--no-quarantine` means Gatekeeper never evaluates the app):
->
-> ```bash
-> brew install --no-quarantine tox9c/tap/athenas-core
-> ```
+**Prefer the DMG?** Grab the latest build from [Releases](https://github.com/TOX9C/athenas-core/releases), drag it into **Applications**, and launch.
+
+> **Unsigned build.** Athena's Core ships unsigned — no Apple Developer account yet; a deliberate cost decision, not an oversight. On **macOS 15 Sequoia and later**, first launch: **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to the Athena's Core message. On older macOS, right-click the app → **Open**. Once, then never again (the brew path above skips this entirely).
 
 ## Keyboard shortcuts
 
