@@ -14,6 +14,33 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
 
+thread_local! {
+    /// Event names whose listener has been registered. The panel
+    /// unmounts/remounts on every sidebar tab switch; unlistening on unmount
+    /// freed the wasm closure while the backend was still emitting in-flight
+    /// events (func_elem trap — plan .plans/fix-wasm-chat-func-elem-trap.md,
+    /// item 2), and re-registering would stack duplicate listeners. Register
+    /// once per event name and leak deliberately: the callbacks write to the
+    /// app-lifetime Athena store signal obtained from the Dioxus context.
+    /// ponytail: bounded leak — exactly one closure per event name (4 total).
+    static ATHENA_LISTENERS: RefCell<std::collections::HashSet<&'static str>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Returns true the first time it is called for `event`; later calls (panel
+/// remounts) return false so the leaked listener is never duplicated. The
+/// claim happens only after a successful listen, so a failed first
+/// registration is retried on the next mount instead of dead-claiming the
+/// event forever.
+fn claim_athena_listener(event: &'static str) -> bool {
+    ATHENA_LISTENERS.with(|set| set.borrow_mut().insert(event))
+}
+
+/// True if `event` was already claimed by a previous (or this) mount.
+fn athena_listener_claimed(event: &'static str) -> bool {
+    ATHENA_LISTENERS.with(|set| set.borrow().contains(event))
+}
+
 /// Rendering mode for the Athena chat panel.
 #[derive(Clone, Copy, PartialEq, Default)]
 pub enum AthenaPanelMode {
@@ -46,6 +73,9 @@ fn schedule_stream_flush(
     let queue_for_frame = queue.clone();
     let scheduled_for_frame = scheduled.clone();
     let flush = move || {
+        // The store signal is app-lifetime (provided at the App root), so
+        // this frame is safe to run even if the panel unmounted while it
+        // was queued.
         let deltas = queue_for_frame.borrow_mut().drain(..).collect::<Vec<_>>();
         if !deltas.is_empty() {
             let mut state = store.write();
@@ -81,18 +111,8 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
     let stream_delta_queue: Rc<RefCell<Vec<(String, String)>>> =
         use_hook(|| Rc::new(RefCell::new(Vec::new())));
     let stream_delta_scheduled: Rc<RefCell<bool>> = use_hook(|| Rc::new(RefCell::new(false)));
-    let unlisteners: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> =
-        use_hook(|| Rc::new(RefCell::new(Vec::new())));
-    let unlisteners_clone = unlisteners.clone();
-
     let is_open = athena_state.read().is_open;
     let mode = props.mode;
-
-    // Only gate visibility by is_open in overlay mode.
-    // In compact mode the parent (right sidebar) controls visibility.
-    if mode == AthenaPanelMode::Overlay && !is_open {
-        return rsx! {};
-    }
 
     // Register Tauri event listeners on mount.
     use_effect(move || {
@@ -139,6 +159,7 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         // mutation is guarded by the active request ID in AthenaState.
         let mut stream_store = store;
         let stream_store_for_queue = store;
+        if !athena_listener_claimed("athena:stream") {
         if let Ok(u) = tauri_bridge::listen("athena:stream", move |payload: wasm_bindgen::JsValue| {
             let Some(payload) = payload.as_string() else {
                 return;
@@ -221,11 +242,17 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                 _ => {}
             }
         }) {
-            unlisteners_clone.borrow_mut().push(u);
+            // Deliberate leak: the listener lives for the process; the
+            // handle is never unlistened. Claim only now so a failed
+            // listen is retried on the next mount.
+            claim_athena_listener("athena:stream");
+            std::mem::forget(u);
+        }
         }
 
         // athena:askUser — Show interactive user question modal.
         let mut ask_store = store;
+        if !athena_listener_claimed("athena:askUser") {
         if let Ok(u) = tauri_bridge::listen("athena:askUser", move |payload: wasm_bindgen::JsValue| {
             if let Some(val) = payload
                 .as_string()
@@ -270,11 +297,17 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     .handle_ask_user(question_id, question, options);
             }
         }) {
-            unlisteners_clone.borrow_mut().push(u);
+            // Deliberate leak: the listener lives for the process; the
+            // handle is never unlistened. Claim only now so a failed
+            // listen is retried on the next mount.
+            claim_athena_listener("athena:askUser");
+            std::mem::forget(u);
+        }
         }
 
         // athena:planUpdate — Update plan display.
         let mut plan_store = store;
+        if !athena_listener_claimed("athena:planUpdate") {
         if let Ok(u) = tauri_bridge::listen("athena:planUpdate", move |payload: wasm_bindgen::JsValue| {
             if let Some(val) = payload
                 .as_string()
@@ -363,11 +396,17 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                     .handle_plan_update(plan_id, goal, steps, status);
             }
         }) {
-            unlisteners_clone.borrow_mut().push(u);
+            // Deliberate leak: the listener lives for the process; the
+            // handle is never unlistened. Claim only now so a failed
+            // listen is retried on the next mount.
+            claim_athena_listener("athena:planUpdate");
+            std::mem::forget(u);
+        }
         }
 
         // athena:planEvaluated — Show evaluation results.
         let mut eval_store = store;
+        if !athena_listener_claimed("athena:planEvaluated") {
         if let Ok(u) = tauri_bridge::listen("athena:planEvaluated", move |payload: wasm_bindgen::JsValue| {
             if let Some(val) = payload
                 .as_string()
@@ -435,7 +474,12 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
                 );
             }
         }) {
-            unlisteners_clone.borrow_mut().push(u);
+            // Deliberate leak: the listener lives for the process; the
+            // handle is never unlistened. Claim only now so a failed
+            // listen is retried on the next mount.
+            claim_athena_listener("athena:planEvaluated");
+            std::mem::forget(u);
+        }
         }
     });
 
@@ -595,13 +639,15 @@ pub fn AthenaPanel(props: AthenaPanelProps) -> Element {
         }
     });
 
-    // Cleanup: unlisten all event listeners on component unmount.
-    let unlisteners_drop = unlisteners.clone();
-    use_drop(move || {
-        for unlisten in unlisteners_drop.borrow_mut().drain(..) {
-            unlisten();
-        }
-    });
+    // Event listeners outlive the panel by design (claim_athena_listener);
+    // there is nothing to tear down on unmount.
+
+    // Only gate visibility by is_open in overlay mode.
+    // In compact mode the parent (right sidebar) controls visibility.
+    // MUST stay below all hooks: hook order may not depend on is_open.
+    if mode == AthenaPanelMode::Overlay && !is_open {
+        return rsx! {};
+    }
 
     let state = athena_state.read();
 

@@ -15,21 +15,9 @@ pub struct ChatMessageProps {
     pub streaming: bool,
 }
 
-/// Render the live assistant message word-by-word so each freshly arrived
-/// word resolves out of a blur (stream-in). Earlier words keep their settled
-/// spans (positional diffing preserves them), so the effect reads as a
-/// continuous unfold rather than a full re-flash per delta.
-fn streaming_content(content: &str) -> Element {
-    let words: Vec<&str> = content.split(' ').collect();
+/// Blinking caret shown while assistant text is still arriving.
+fn streaming_caret() -> Element {
     rsx! {
-        for (i, word) in words.iter().enumerate() {
-            span {
-                key: "w-{i}",
-                style: "display: inline; will-change: filter, opacity; animation: stream-in 420ms cubic-bezier(0.22,0.61,0.36,1) both;",
-                "{word} "
-            }
-        }
-        // Blinking caret while text is still arriving.
         span {
             aria_hidden: "true",
             style: "display: inline-block; width: 2px; height: 12px; margin-left: 2px; border-radius: 2px; background: var(--text); vertical-align: text-bottom; animation: blink-caret 1s step-end infinite;",
@@ -174,10 +162,9 @@ pub fn AthenaChatMessage(props: ChatMessageProps) -> Element {
                                 ""
                             },
 
-                            if is_streaming && has_content {
-                                {streaming_content(&msg.content)}
-                            } else {
-                                span { "{msg.content}" }
+                            span { "{msg.content}" }
+                            if is_streaming {
+                                {streaming_caret()}
                             }
 
                             // Copy button inline with text.
