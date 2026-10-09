@@ -24,7 +24,7 @@ cargo tauri dev               # run the app; only Rust changes recompile live
 ## Gotchas
 
 - macOS 15+ install: System Settings → Privacy & Security → Open Anyway (right-click → Open no longer bypasses Gatekeeper).
-- Pricing/store link lives in the README License section (placeholder until the Lemon Squeezy store exists). License key check is NOT implemented; when built: activate once, store locally, offline forever — never gate a running app on license status.
+- Pricing/store link lives in the README License section (placeholder until the Lemon Squeezy store exists). License activation IS implemented (`license_activate`/`license_deactivate`/`license_status` in `src-tauri/src/commands/license.rs`, Lemon Squeezy API, wired into the settings UI): activate once, store locally, offline forever — `license_status` is a local read only, never gate a running app on license status.
 - Verbatim-legal files (`LICENSE`) must not diverge from the published BSL 1.1 text.
 
 Rules: commit only files you changed — NEVER `git commit -am` / `-A`; stage explicit paths only (the working tree often carries unrelated in-flight work, and 2026-09-26 incident: a `-am` commit swept ~190 files of user WIP into a docs commit and pushed it public). Prefer `gh` CLI for GitHub operations (authenticated as TOX9C).

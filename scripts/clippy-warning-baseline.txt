@@ -2,8 +2,4 @@
 # Each line permits exactly ONE warning instance; a second occurrence of the
 # same lint in the same file needs its own duplicated line after review.
 clippy::await_holding_lock|src-tauri/src/commands/relay.rs
-clippy::let_unit_value|src-tauri/src/relay/mod.rs
 
-# Reviewed 2026-08-24 (Session C): introduced by provider-preset/modal churn (1e2926b), not test-track code.
-clippy::needless_borrow|src-tauri/src/commands/pty.rs
-clippy::unnecessary_map_or|src-tauri/src/commands/provider_config.rs
