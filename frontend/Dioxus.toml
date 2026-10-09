@@ -11,3 +11,9 @@ watch_path = ["src", "public"]
 
 [build]
 target = "web"
+
+[web.wasm_opt]
+# dx downloads its own current binaryen and runs wasm-opt during release
+# web builds; level z matches the manual -Oz pass removed from build-dist.sh
+# (apt's binaryen 116 could not parse modern toolchain wasm).
+level = "z"

@@ -60,9 +60,8 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version 2.11.1 --locked
 
-      # wasm-opt is mandatory for build-dist.sh (hard-fails when missing).
-      - name: Install binaryen (wasm-opt)
-        run: brew list binaryen &>/dev/null || brew install binaryen
+      # wasm-opt is no longer needed: dx runs its own downloaded binaryen
+      # ([web.wasm_opt] level "z" in frontend/Dioxus.toml).
 
       - name: Install Cargo audit
         run: cargo install cargo-audit --version 0.22.2 --locked

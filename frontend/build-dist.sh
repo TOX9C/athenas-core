@@ -38,29 +38,12 @@ if [ -z "$DX_BIN" ] || [ ! -x "$DX_BIN" ]; then
 fi
 "$DX_BIN" build $DX_FLAG
 
-# wasm-opt is REQUIRED for release distribution builds: it shaves 20-30% off
-# the release WASM, and silently shipping the unoptimized artifact produced
-# noticeably slower cold starts. Fail loudly with install instructions
-# instead of continuing.
-if ! command -v wasm-opt &>/dev/null; then
-  echo "error: wasm-opt (binaryen) not found; install it before building:" >&2
-  echo "  macOS:  brew install binaryen" >&2
-  echo "  Ubuntu: sudo apt-get install -y binaryen" >&2
-  exit 1
-fi
-
-wasm_opt_run() {
-  local input_wasm="$1"
-  tmpfile=$(mktemp)
-  if wasm-opt -Oz "$input_wasm" -o "$tmpfile" 2>/dev/null; then
-    mv "$tmpfile" "$input_wasm"
-    echo "wasm-opt: optimized $(basename "$input_wasm")"
-  else
-    rm -f "$tmpfile"
-    echo "error: wasm-opt optimization failed for $(basename "$input_wasm")" >&2
-    exit 1
-  fi
-}
+# wasm-opt is handled by dx itself: [web.wasm_opt] level "z" in Dioxus.toml
+# runs its own downloaded (current) binaryen during `dx build --release`.
+# The former manual pass here was removed — it depended on whatever stale
+# system binaryen was in PATH (Ubuntu apt ships v116, which cannot parse
+# wasm produced by the current rustc toolchain) and only saved ~0.4% on
+# top of dx's own optimization.
 
 rm -rf "$DIST_DIR"
 cp -r "$BUILD_DIR" "$DIST_DIR"
@@ -68,13 +51,7 @@ cp -r "$BUILD_DIR" "$DIST_DIR"
 # archive before anything else looks at dist (perf#5, see comment below).
 rm -rf "$DIST_DIR/art"
 
-# Optimize the main WASM file before creating stable aliases
-for wasm in "$DIST_DIR"/assets/athena-frontend_bg-dx*.wasm; do
-  [ -f "$wasm" ] && wasm_opt_run "$wasm"
-done
-for wasm in "$DIST_DIR"/wasm/athena-frontend_bg-dx*.wasm; do
-  [ -f "$wasm" ] && wasm_opt_run "$wasm"
-done
+# (wasm optimization loop removed — dx handles it; see comment above)
 
 # Tauri serves dist/ as static files, so vendored assets must be copied into it.
 VENDOR_DIR="$SCRIPT_DIR/vendor"
