@@ -55,7 +55,7 @@ pub use browser::{
     browser_back, browser_forward, browser_hide, browser_navigate, browser_reload,
     browser_set_bounds, browser_show, shutdown_browser_children,
 };
-pub use diagnostics::diagnostics_export;
+pub use diagnostics::{diagnostics_export, frontend_log};
 pub use drop::pty_stage_drop_file;
 pub use context::{project_context_apply, project_context_list};
 pub use filesystem::{

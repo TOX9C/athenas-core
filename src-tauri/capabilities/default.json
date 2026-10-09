@@ -26,6 +26,7 @@
     "allow-window-close",
     "allow-window-is-maximized",
     "allow-diagnostics-export",
+    "allow-frontend-log",
     "allow-fs-read-file",
     "allow-fs-list-dir",
     "allow-fs-write-file",

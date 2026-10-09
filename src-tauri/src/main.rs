@@ -75,6 +75,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Diagnostics
             diagnostics_export,
+            frontend_log,
             // Window
             window_minimize,
             window_maximize,

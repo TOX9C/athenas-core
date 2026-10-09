@@ -6,6 +6,7 @@ const COMMANDS: &[&str] = &[
     "window_platform",
     "pty_default_shell",
     "diagnostics_export",
+    "frontend_log",
     "pty_stage_drop_file",
     "pty_spawn",
     "pty_write",

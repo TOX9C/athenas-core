@@ -7,6 +7,26 @@ const MAX_LOG_FILE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TOTAL_LOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FRONTEND_BYTES: usize = 512 * 1024;
 
+/// Forward a single webview log line into the backend log targets
+/// (stdout + `~/Library/Logs/com.athena.core/`). Webview console output only
+/// reaches Safari Web Inspector; terminal renderer events (WebGL context
+/// loss, glyph-atlas resets) are invisible in shipped builds without this.
+/// The message is capped and stripped of control chars so a misbehaving
+/// webview cannot forge log lines or flood the file.
+#[tauri::command]
+pub fn frontend_log(level: String, message: String) {
+    let sanitized: String = message
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(500)
+        .collect();
+    match level.as_str() {
+        "warn" => log::warn!("[webview] {sanitized}"),
+        "error" => log::error!("[webview] {sanitized}"),
+        _ => log::info!("[webview] {sanitized}"),
+    }
+}
+
 /// Export a support-safe diagnostic bundle to the user's Downloads directory.
 ///
 /// The bundle intentionally contains only bounded, redacted runtime logs and
