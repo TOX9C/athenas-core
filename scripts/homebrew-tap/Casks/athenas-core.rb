@@ -1,3 +1,7 @@
+# Copy this file into the TOX9C/homebrew-tap repo at Casks/athenas-core.rb.
+# version + sha256 are placeholders: fill from the GitHub release at publish
+# time (release-macos.yml already uploads "<dmg>.sha256" alongside the DMG).
+
 cask "athenas-core" do
   version "3.4.1"
   sha256 "1766dc639016248d6bafc800f59b81f11f7b95aadcfeab2fab5aa4c205737e0b"
