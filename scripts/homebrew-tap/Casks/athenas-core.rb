@@ -15,7 +15,7 @@ cask "athenas-core" do
   desc "Native macOS workspace: terminal, AI chat, task board, and agent team"
   homepage "https://github.com/TOX9C/athenas-core"
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
   depends_on arch: :arm64
 
   app "Athena's Core.app"
