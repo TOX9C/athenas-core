@@ -1,15 +1,11 @@
-# Copy this file into the TOX9C/homebrew-tap repo at Casks/athenas-core.rb.
-# version + sha256 are placeholders: fill from the GitHub release at publish
-# time (release-macos.yml already uploads "<dmg>.sha256" alongside the DMG).
 cask "athenas-core" do
-  version "3.4.0"
-  sha256 "61419832ddced95a15bee07773b9767133fec2e6875d1575e47d0a5b131a545c"
+  version "3.4.1"
+  sha256 "1766dc639016248d6bafc800f59b81f11f7b95aadcfeab2fab5aa4c205737e0b"
 
-  # NOTE: the local DMG is "Athena's Core_<v>_aarch64.dmg" (passes the
-  # release workflow's --expected-name gate against the local artifact),
-  # but GitHub normalizes the asset name to dots on upload. Do NOT change
-  # the workflow gate — on each release, update version+sha256 here and
-  # confirm the dot-form asset name still matches the release page.
+  # NOTE: the local DMG is "Athena's Core_<v>_aarch64.dmg", but GitHub
+  # normalizes the asset name to dots on upload. On each release, bump
+  # version + sha256 here from the release's .sha256 asset and confirm
+  # the dot-form asset name still matches the release page.
   url "https://github.com/TOX9C/athenas-core/releases/download/v#{version}/Athena.s.Core_#{version}_aarch64.dmg"
   name "Athena's Core"
   desc "Native macOS workspace: terminal, AI chat, task board, and agent team"
