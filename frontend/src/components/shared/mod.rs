@@ -6,3 +6,4 @@ pub mod illustration;
 pub mod metrics_badge;
 pub mod modal;
 pub mod toast;
+pub mod update_banner;

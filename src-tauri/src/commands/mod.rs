@@ -36,6 +36,7 @@ pub(crate) mod store;
 mod swarm;
 pub(crate) mod voice;
 mod window;
+mod update;
 mod workspace;
 
 pub use agent_notify::agent_notify_install;
@@ -111,6 +112,7 @@ pub use session::{
     session_add_message, session_create, session_delete, session_get, session_list, session_update,
 };
 pub use store::{store_delete, store_get, store_has, store_set, test_llm_api_key};
+pub use update::{update_check, update_open_release};
 pub use swarm::{
     swarm_create, swarm_create_task, swarm_read_mailbox, swarm_read_state, swarm_send_message,
     swarm_set_status, swarm_start_watch, swarm_stop_watch, swarm_update_agent, swarm_update_task,

@@ -349,6 +349,17 @@ pub async fn license_status() -> TauriResult<String> {
     invoke("license_status", "{}").await
 }
 
+/// Update check (GitHub releases). Returns `{current, latest, update_available}`.
+pub async fn update_check() -> TauriResult<String> {
+    invoke("update_check", "{}").await
+}
+
+/// Open the latest-release page in the user's default browser.
+/// The URL is a backend constant — the renderer cannot choose it.
+pub async fn update_open_release() -> TauriResult<()> {
+    invoke("update_open_release", "{}").await
+}
+
 /// Export a redacted diagnostic bundle assembled by the native backend.
 /// `frontend_logs` and `frontend_metrics` are supplied by the bounded browser
 /// diagnostics ring in `frontend/index.html`.

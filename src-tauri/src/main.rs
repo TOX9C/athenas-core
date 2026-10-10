@@ -249,6 +249,9 @@ fn main() {
             license_activate,
             license_deactivate,
             license_status,
+            // Update check (GitHub releases; opens the release page in a browser)
+            update_check,
+            update_open_release,
             // Mobile mirror relay
             relay_start,
             relay_stop,

@@ -54,6 +54,12 @@ pub struct UIState {
     /// When the user launches a swarm from SwarmModal, this carries the
     /// goal text into the NewSpaceModal so it isn't lost on the handoff.
     pub pending_swarm_goal: Option<String>,
+    /// Latest release version when a newer GitHub release exists and the
+    /// user hasn't dismissed the banner for that version (e.g. "v3.5.0").
+    /// Set by the startup check in `startup_bootstrap`; the update banner
+    /// renders while this is `Some`. Dismissal is persisted per-version
+    /// under the `update_dismissed_version` store key.
+    pub pending_update: Option<String>,
     /// A URL requested by a terminal link click. Consumed by the embedded
     /// browser surface on mount so a cold-open lands directly on the link
     /// (avoiding a default-page flash). Harmless if left stale: `browser_show`
@@ -81,6 +87,7 @@ impl Default for UIState {
             smart_pane_titles: true,
             swarm_cleanup_worktrees: true,
             pending_swarm_goal: None,
+            pending_update: None,
             pending_browser_url: None,
             custom_agents: Vec::new(),
         }

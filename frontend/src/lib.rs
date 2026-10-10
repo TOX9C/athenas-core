@@ -851,6 +851,8 @@ pub fn App() -> Element {
                 // Center content
                 div {
                     style: "flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; min-height: 0;",
+                    components::shared::update_banner::UpdateBanner {}
+
 
                     div {
                         style: "flex: 1; display: flex; min-height: 0; min-width: 0;",

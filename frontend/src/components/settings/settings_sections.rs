@@ -1108,6 +1108,60 @@ pub(super) fn AboutSettings() -> Element {
             exporting.set(false);
         });
     };
+    let mut checking = use_signal(|| false);
+    let mut ui = crate::stores::ui::use_ui_store();
+    let mut check_status = use_signal(String::new);
+    let check_updates = move |_| {
+        if checking() {
+            return;
+        }
+        checking.set(true);
+        check_status.set("Checking GitHub for a newer release…".to_string());
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::tauri_bridge::update_check().await {
+                Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Ok(value) => {
+                        let available = value
+                            .get("update_available")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let latest = value
+                            .get("latest")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        if available {
+                            // Respect a dismissal the user already made for
+                            // this exact version — a manual re-check must not
+                            // resurrect a banner they already declined.
+                            let dismissed = crate::tauri_bridge::store_get(
+                                "update_dismissed_version",
+                            )
+                            .await
+                            .unwrap_or_default();
+                            if dismissed != latest {
+                                check_status.set(format!("{latest} is available."));
+                                ui.write().pending_update = Some(latest.to_string());
+                            } else {
+                                check_status.set(format!(
+                                    "{latest} is available (banner dismissed)."
+                                ));
+                            }
+                        } else {
+                            check_status.set("You're up to date.".to_string());
+                        }
+                    }
+                    Err(error) => {
+                        check_status.set(format!("Unexpected response: {error}"));
+                    }
+                },
+                Err(error) => {
+                    check_status.set(format!("Couldn't reach GitHub: {error:?}"));
+                }
+            }
+            checking.set(false);
+        });
+    };
+
 
     rsx! {
         div {
@@ -1167,6 +1221,36 @@ pub(super) fn AboutSettings() -> Element {
                 }
             }
         }
+
+        // ── Update ──
+        div {
+            style: "max-width: 620px; margin: 0 auto; padding: 0 20px 28px;",
+            div {
+                style: "border-top: 1px solid var(--border); padding-top: 24px; margin-top: 8px;",
+                div {
+                    style: "font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--accent); margin-bottom: 6px;",
+                    "Update"
+                }
+                p {
+                    style: "font-family: var(--font-display); font-style: italic; color: var(--textDim); font-size: 12px; line-height: 1.6; margin-bottom: 14px;",
+                    "Athena's Core ships as an unsigned app — download the new DMG from GitHub Releases (or brew upgrade) and replace the old app. Your settings and workspaces live outside the app bundle and carry over."
+                }
+                button {
+                    class: "btn-secondary btn-sm",
+                    r#type: "button",
+                    disabled: checking(),
+                    onclick: check_updates,
+                    if checking() { "Checking…" } else { "Check for updates" }
+                }
+                if !check_status().is_empty() {
+                    div {
+                        style: "margin-top: 10px; color: var(--textDim); font-family: var(--font-mono); font-size: 10px; word-break: break-word;",
+                        "{check_status}"
+                    }
+                }
+            }
+        }
+
 
         // ── Support the Developer ──
         div {

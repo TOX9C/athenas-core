@@ -153,6 +153,41 @@ pub fn use_startup_bootstrap(
         });
     }
 
+    // Check for a newer GitHub release once at launch. Silent on any failure
+    // (offline, rate-limit, unparsable tag) — the About section has the
+    // manual button with visible errors. A version the user already
+    // dismissed stays dismissed until a *different* newer release appears.
+    {
+        let mut ui = ui_state;
+        use_effect(move || {
+            spawn(async move {
+                let Ok(raw) = crate::tauri_bridge::update_check().await else {
+                    return;
+                };
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                    return;
+                };
+                if !value
+                    .get("update_available")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                let Some(latest) = value.get("latest").and_then(|v| v.as_str()) else {
+                    return;
+                };
+                let dismissed = crate::tauri_bridge::store_get("update_dismissed_version")
+                    .await
+                    .unwrap_or_default();
+                if dismissed == latest {
+                    return;
+                }
+                ui.write().pending_update = Some(latest.to_string());
+            });
+        });
+    }
+
     // Note: there is intentionally no `beforeunload` save hook. `save()` only
     // enqueues an async IPC write, which cannot drain while the webview is
     // being torn down, so the hook offered false confidence. Live saves

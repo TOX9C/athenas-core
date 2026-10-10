@@ -164,6 +164,8 @@
     "allow-license-activate",
     "allow-license-deactivate",
     "allow-license-status",
+    "allow-update-check",
+    "allow-update-open-release",
     "allow-test-llm-api-key",
     "allow-llm-list-models",
     "allow-workspace-add-trusted-root",
