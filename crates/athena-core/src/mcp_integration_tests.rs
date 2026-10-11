@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-struct NoopEventSender;
+pub(crate) struct NoopEventSender;
 
 impl ToolEventSender for NoopEventSender {
     fn agent_spawned(&self, _id: &str, _agent_type: &str, _agent_cmd: &str) {}

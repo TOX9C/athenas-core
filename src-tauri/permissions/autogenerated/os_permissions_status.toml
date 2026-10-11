@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-os-permissions-status"
+description = "Enables the os_permissions_status command without any pre-configured scope."
+commands.allow = ["os_permissions_status"]
+
+[[permission]]
+identifier = "deny-os-permissions-status"
+description = "Denies the os_permissions_status command without any pre-configured scope."
+commands.deny = ["os_permissions_status"]

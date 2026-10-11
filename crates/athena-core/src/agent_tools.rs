@@ -33,15 +33,27 @@ impl ToolExecutor {
             .command
             .as_deref()
             .ok_or_else(|| ToolExecutorError::MissingParam("command".to_string()))?;
-        // Strict allowlist: commands must be explicitly permitted
-        let allowed: Vec<String> = std::env::var("ATHENA_COMMAND_ALLOWLIST")
-            .ok()
-            .map(|s| s.split(',').map(|c| c.trim().to_string()).collect())
-            .unwrap_or_default();
+        // Allowlist = the user's configured custom agents (Settings → Agents),
+        // persisted under the "custom_agents" KV key by the frontend. This used to
+        // read ATHENA_COMMAND_ALLOWLIST from the env, which is unset in the shipped
+        // app — so every custom-agent launch failed with "Command not in allowlist".
+        let allowed: Vec<String> = match self.store.get::<String>("custom_agents") {
+            Ok(Some(json)) => serde_json::from_str::<Vec<serde_json::Value>>(&json)
+                .map(|agents| {
+                    agents
+                        .iter()
+                        .filter_map(|a| a.get("command").and_then(|c| c.as_str()))
+                        .map(|c| c.trim().to_string())
+                        .filter(|c| !c.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         if !allowed.contains(&command.trim().to_string()) {
             return Err(ToolExecutorError::Notification(format!(
-                "Command not in allowlist: '{}'",
-                command
+                "Custom agent not found: '{command}'. Add it in Settings → Agents, \
+                 or launch a built-in agent instead."
             )));
         }
         let agent_count = args.agent_count.unwrap_or(1);
@@ -371,5 +383,73 @@ impl ToolExecutor {
             text: format!("Prompt sent to {}.", pane_id),
             is_error: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod custom_agent_allowlist_tests {
+    use super::*;
+    use crate::tool_executor::ToolExecutor;
+    use crate::mcp::mcp_integration_tests::NoopEventSender;
+    use std::sync::Arc;
+
+    fn executor_with_agents(json: &str) -> ToolExecutor {
+        let store = athena_store::KeyValueStore::new_empty();
+        assert!(store.set_sync("custom_agents", &json.to_string()).is_ok());
+        ToolExecutor::new(
+            Arc::new(crate::output_buffer::OutputBuffer::new()),
+            Arc::new(crate::plan_manager::PlanManager::new()),
+            Arc::new(crate::agent_comms::AgentComms::new()),
+            Arc::new(NoopEventSender),
+            Arc::new(store),
+            None,
+        )
+    }
+
+    fn args_with_command(cmd: &str) -> ToolInput {
+        ToolInput {
+            command: Some(cmd.to_string()),
+            ..ToolInput::default()
+        }
+    }
+
+    #[test]
+    fn accepts_exact_command_of_configured_agent() {
+        let exec = executor_with_agents(
+            r#"[{"id":"custom-1","alias":"Opus","command":"claude --model opus","is_claude":true,"priority":false}]"#,
+        );
+        let result = exec.launch_custom_agent(&args_with_command("claude --model opus"));
+        assert!(result.is_ok(), "exact stored command must launch: {result:?}");
+        assert!(result.unwrap().text.contains("1 custom agents"));
+    }
+
+    #[test]
+    fn trims_whitespace_before_matching() {
+        let exec = executor_with_agents(
+            r#"[{"id":"custom-1","alias":"Opus","command":"claude --model opus","is_claude":true,"priority":false}]"#,
+        );
+        let result = exec.launch_custom_agent(&args_with_command("  claude --model opus  "));
+        assert!(result.is_ok(), "trimmed command must match stored command");
+    }
+
+    #[test]
+    fn rejects_unknown_command_with_actionable_error() {
+        let exec = executor_with_agents("[]");
+        let err = exec
+            .launch_custom_agent(&args_with_command("rm -rf /"))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Settings → Agents"),
+            "error must point at Settings, got: {err}"
+        );
+    }
+
+    #[test]
+    fn malformed_store_json_fails_closed() {
+        let exec = executor_with_agents("not json");
+        let err = exec
+            .launch_custom_agent(&args_with_command("claude --model opus"))
+            .unwrap_err();
+        assert!(err.to_string().contains("Settings → Agents"));
     }
 }

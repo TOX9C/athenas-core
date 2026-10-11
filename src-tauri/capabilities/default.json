@@ -179,6 +179,8 @@
     "allow-relay-pairing-respond",
     "allow-voice-record-start",
     "allow-voice-record-stop",
+    "allow-os-permissions-status",
+    "allow-os-permissions-open-settings",
     "allow-agent-notify-install"
   ]
 }

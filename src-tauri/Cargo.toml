@@ -93,6 +93,8 @@ objc2 = { version = "0.6", optional = true }
 block2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", features = ["NSBundle", "NSError", "NSString", "NSURL"], optional = true }
 objc2-speech = { version = "0.3", optional = true }
+objc2-av-foundation = { version = "0.3", optional = true, default-features = false, features = ["AVCaptureDevice", "AVMediaFormat"] }
+objc2-user-notifications = { version = "0.3", optional = true, default-features = false, features = ["UNUserNotificationCenter", "UNNotificationSettings", "block2"] }
 
 [features]
 # Both feature groups are on by default so release behavior is unchanged;
@@ -105,6 +107,8 @@ voice = [
     "dep:block2",
     "dep:objc2-foundation",
     "dep:objc2-speech",
+    "dep:objc2-av-foundation",
+    "dep:objc2-user-notifications",
 ]
 relay = [
     "dep:axum",

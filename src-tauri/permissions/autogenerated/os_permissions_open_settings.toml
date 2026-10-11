@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-os-permissions-open-settings"
+description = "Enables the os_permissions_open_settings command without any pre-configured scope."
+commands.allow = ["os_permissions_open_settings"]
+
+[[permission]]
+identifier = "deny-os-permissions-open-settings"
+description = "Denies the os_permissions_open_settings command without any pre-configured scope."
+commands.deny = ["os_permissions_open_settings"]

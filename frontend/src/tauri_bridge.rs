@@ -485,6 +485,25 @@ mod contract_tests {
         );
         assert!(args.get("paneId").is_none());
     }
+
+    /// Regression (review Critical): Tauri serializes `Vec<PermissionRow>`
+    /// as a JSON array in the invoke response — NOT a string. The status
+    /// bridge must decode via serde_wasm_bindgen from the raw JsValue;
+    /// a `String` cast returns None for arrays and the panel stays empty.
+    #[test]
+    fn os_permission_rows_decode_from_array_shaped_js_value() {
+        // Exactly what the backend serializes: [{"id":..,"status":..}]
+        let delivered = serde_json::from_str::<serde_json::Value>(
+            r#"[{"id":"microphone","status":"granted"},{"id":"notifications","status":"not_determined"}]"#,
+        )
+        .unwrap();
+        let rows: Vec<super::OsPermissionRow> =
+            serde_json::from_value(delivered).expect("array shape must decode");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "microphone");
+        assert_eq!(rows[0].status, "granted");
+        assert_eq!(rows[1].status, "not_determined");
+    }
 }
 
 /// Notification operations
@@ -1424,6 +1443,38 @@ pub async fn voice_record_start() -> TauriResult<()> {
 /// silent, or recognition failed).
 pub async fn voice_record_stop() -> TauriResult<String> {
     invoke("voice_record_stop", "{}").await
+}
+
+// ---------------------------------------------------------------------------
+// OS permission status (read-only TCC report)
+// ---------------------------------------------------------------------------
+
+/// One row of the backend's OS-permission snapshot.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OsPermissionRow {
+    pub id: String,
+    pub status: String,
+}
+
+/// Live macOS TCC status for mic / speech recognition / notifications.
+/// Non-macOS builds return `not_applicable` rows.
+pub async fn os_permissions_status() -> TauriResult<Vec<OsPermissionRow>> {
+    // Tauri delivers `Vec<PermissionRow>` as a JSON ARRAY, not a string —
+    // a String cast returns None and the panel silently renders nothing.
+    // Decode from the raw JsValue (same pattern as git_diff).
+    let value: JsValue = invoke("os_permissions_status", "{}").await?;
+    serde_wasm_bindgen::from_value(value)
+        .map_err(|e| js_sys::Error::new(&format!("failed to parse permission rows: {e}")).into())
+}
+
+/// Open the System Settings pane for one permission (`panel` is one of
+/// microphone / speech_recognition / notifications; validated backend-side).
+pub async fn os_permissions_open_settings(panel: &str) -> TauriResult<()> {
+    invoke(
+        "os_permissions_open_settings",
+        &serde_json::json!({ "panel": panel }).to_string(),
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

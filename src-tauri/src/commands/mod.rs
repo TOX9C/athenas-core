@@ -31,6 +31,7 @@ pub(crate) mod relay;
 mod resume;
 mod routines;
 mod search;
+mod os_permissions;
 mod session;
 pub(crate) mod store;
 mod swarm;
@@ -99,6 +100,7 @@ pub use pty::{
     pty_raw_replay, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write,
     read_clipboard_text,
 };
+pub use os_permissions::{os_permissions_open_settings, os_permissions_status};
 pub use relay::{
     relay_list_shared_panes, relay_pairing_respond, relay_request_pane_share,
     relay_set_pane_shared, relay_start, relay_status, relay_stop,

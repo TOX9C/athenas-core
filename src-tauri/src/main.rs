@@ -141,6 +141,9 @@ fn main() {
             // Voice input (mic → on-device transcription)
             voice_record_start,
             voice_record_stop,
+            // OS permission status (read-only TCC report)
+            os_permissions_status,
+            os_permissions_open_settings,
             // Trusted workspace roots
             workspace_add_trusted_root,
             workspace_remove_trusted_root,

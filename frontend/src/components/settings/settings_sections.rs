@@ -139,6 +139,8 @@ pub(super) fn GeneralSettings() -> Element {
             }
         }
 
+        GroupLabel { label: "OS Permissions" }
+        OsPermissionsSection {}
         GroupLabel { label: "Swarm" }
 
         /* ── Worktree cleanup label + toggle row ── */
@@ -1663,6 +1665,123 @@ fn ProjectContextSection() -> Element {
                                     onchange: move |e| toggle(id_swarm.clone(), "swarm", e.checked()),
                                 }
                                 "swarm"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// macOS TCC status for the permissions Athena uses (mic, speech,
+/// notifications). Read-only rows + deep links; requests still happen on
+/// first use. Accessibility / Screen Recording are intentionally absent —
+/// no Athena feature reads them.
+#[component]
+fn OsPermissionsSection() -> Element {
+    let mut rows = use_signal(Vec::<crate::tauri_bridge::OsPermissionRow>::new);
+    let mut loaded = use_signal(|| false);
+    let mut refreshing = use_signal(|| false);
+
+    use_effect(move || {
+        if loaded() {
+            return;
+        }
+        loaded.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::tauri_bridge::os_permissions_status().await {
+                Ok(list) => rows.set(list),
+                Err(e) => web_sys::console::error_1(
+                    &format!("[OsPermissionsSection] initial status fetch failed: {e:?}").into(),
+                ),
+            }
+        });
+    });
+
+    let refresh = move |_| {
+        if *refreshing.read() {
+            return;
+        }
+        refreshing.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::tauri_bridge::os_permissions_status().await {
+                Ok(list) => rows.set(list),
+                Err(e) => web_sys::console::error_1(
+                    &format!("[OsPermissionsSection] recheck failed: {e:?}").into(),
+                ),
+            }
+            refreshing.set(false);
+        });
+    };
+
+    rsx! {
+        div {
+            style: "padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bgSecondary); margin-bottom: 8px;",
+            div {
+                style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;",
+                span { style: "font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--accent);", "macOS permissions" }
+                button {
+                    class: "btn-secondary btn-sm",
+                    disabled: *refreshing.read(),
+                    onclick: refresh,
+                    "Recheck"
+                }
+            }
+            span {
+                style: "font-size: 11px; color: var(--textDim); display: block; margin-bottom: 8px;",
+                "Live status of the permissions Athena's voice input and notifications use. Prompts appear on first use; grants are managed by macOS."
+            }
+            for row in rows.read().iter() {
+                {
+                    let id = row.id.clone();
+                    let label = match row.id.as_str() {
+                        "microphone" => "Microphone",
+                        "speech_recognition" => "Speech Recognition",
+                        "notifications" => "Notifications",
+                        other => other,
+                    };
+                    let (status_text, status_color) = match row.status.as_str() {
+                        "granted" => ("Granted", "var(--success)"),
+                        "denied" => ("Denied", "var(--error)"),
+                        "not_determined" => ("Not asked yet", "var(--warning)"),
+                        "unknown" => ("Unknown (dev build)", "var(--textDim)"),
+                        _ => ("N/A on this platform", "var(--textDim)"),
+                    };
+                    let needs_action = row.status == "denied" || row.status == "not_determined";
+                    let rows_handle = rows;
+                    rsx! {
+                        div {
+                            key: "{id}",
+                            style: "display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0;",
+                            span { style: "font-size: 12px; color: var(--text);", "{label}" }
+                            div {
+                                style: "display: flex; align-items: center; gap: 8px;",
+                                span { style: "font-size: 11px; color: {status_color};", "{status_text}" }
+                                if needs_action {
+                                    {
+                                        let panel = id.clone();
+                                        rsx! {
+                                            button {
+                                                class: "btn-secondary btn-sm",
+                                                onclick: move |_| {
+                                                    let panel = panel.clone();
+                                                    let mut rows_handle = rows_handle;
+                                                    wasm_bindgen_futures::spawn_local(async move {
+                                                        let _ = crate::tauri_bridge::os_permissions_open_settings(&panel).await;
+                                                        // Immediate refresh picks up any change the
+                                                        // user already made; the Recheck button
+                                                        // covers changes made after this fetch.
+                                                        if let Ok(list) = crate::tauri_bridge::os_permissions_status().await {
+                                                            rows_handle.set(list);
+                                                        }
+                                                    });
+                                                },
+                                                "Open Settings"
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
