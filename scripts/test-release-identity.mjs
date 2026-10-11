@@ -25,5 +25,7 @@ assert.match(mismatched.stderr, new RegExp(`version: package\\.json version ${pk
 assert.match(mismatched.stderr, new RegExp(`version: src-tauri/tauri\\.conf\\.json version ${pkgVersion.replace(/\./g, '\\.')} != 9\\.9\\.9`))
 assert.match(mismatched.stderr, new RegExp(`version: frontend/Cargo\\.toml version ${pkgVersion.replace(/\./g, '\\.')} != 9\\.9\\.9`))
 assert.match(mismatched.stderr, new RegExp(`version: src-tauri/Cargo\\.toml version ${pkgVersion.replace(/\./g, '\\.')} != 9\\.9\\.9`))
+assert.match(mismatched.stderr, new RegExp(`version: Cargo\\.lock athenas-core version ${pkgVersion.replace(/\./g, '\\.')} != 9\\.9\\.9`))
+assert.match(mismatched.stderr, new RegExp(`version: Cargo\\.lock athena-frontend version ${pkgVersion.replace(/\./g, '\\.')} != 9\\.9\\.9`))
 
 console.log('release identity checks passed')

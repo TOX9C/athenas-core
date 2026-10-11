@@ -42,8 +42,20 @@ const metadata = [
   ['frontend/Cargo.toml', cargoVersion(frontendCargo)],
   ['src-tauri/Cargo.toml', cargoVersion(tauriCargo)],
 ]
+const lockfile = read('Cargo.lock')
+const lockVersion = (crate) =>
+  lockfile.match(new RegExp(`name = "${crate}"\nversion = "([^"]+)"`))?.[1]
+metadata.push(
+  ['Cargo.lock athenas-core', lockVersion('athenas-core')],
+  ['Cargo.lock athena-frontend', lockVersion('athena-frontend')],
+)
 for (const [name, version] of metadata) {
-  if (version !== tag) fail('version', `${name} version ${version ?? '<missing>'} != ${tag}`)
+  if (version !== tag) {
+    fail('version', `${name} version ${version ?? '<missing>'} != ${tag}`)
+    if (name.startsWith('Cargo.lock')) {
+      fail('fix', `${name}: regenerate with: cargo update --workspace, then commit Cargo.lock`)
+    }
+  }
 }
 
 if (tauri.productName !== "Athena's Core") fail('product identity', 'product name is not final')
