@@ -348,7 +348,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     .into(),
                                                 );
                                                 launch_error.set(Some(
-                                                    "Couldn't grant access to this folder. Check macOS permissions and try again."
+                                                    "Couldn't grant access to this folder. Athena's trust dialog was declined or the folder was rejected — retry and confirm the Trust Folder dialog."
                                                         .to_string(),
                                                 ));
                                                 return;
@@ -467,7 +467,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                         .into(),
                                                     );
                                                     launch_error.set(Some(
-                                                        "Couldn't create the swarm mission. Check the folder permissions and try again."
+                                                        "Couldn't create the swarm mission. Retry the launch and confirm the Trust Folder dialog when prompted."
                                                             .to_string(),
                                                     ));
                                                 }
