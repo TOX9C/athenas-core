@@ -3,8 +3,8 @@
 # time (release-macos.yml already uploads "<dmg>.sha256" alongside the DMG).
 
 cask "athenas-core" do
-  version "3.4.1"
-  sha256 "1766dc639016248d6bafc800f59b81f11f7b95aadcfeab2fab5aa4c205737e0b"
+  version "3.4.2"
+  sha256 "bb63763bcd67d27e72676c1cd19794f771570d3a248fbde5e579aba1ca0f523d"
 
   # NOTE: the local DMG is "Athena's Core_<v>_aarch64.dmg", but GitHub
   # normalizes the asset name to dots on upload. On each release, bump
