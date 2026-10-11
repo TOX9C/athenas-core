@@ -1690,8 +1690,11 @@ fn OsPermissionsSection() -> Element {
         }
         loaded.set(true);
         wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(list) = crate::tauri_bridge::os_permissions_status().await {
-                rows.set(list);
+            match crate::tauri_bridge::os_permissions_status().await {
+                Ok(list) => rows.set(list),
+                Err(e) => web_sys::console::error_1(
+                    &format!("[OsPermissionsSection] initial status fetch failed: {e:?}").into(),
+                ),
             }
         });
     });
@@ -1702,8 +1705,11 @@ fn OsPermissionsSection() -> Element {
         }
         refreshing.set(true);
         wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(list) = crate::tauri_bridge::os_permissions_status().await {
-                rows.set(list);
+            match crate::tauri_bridge::os_permissions_status().await {
+                Ok(list) => rows.set(list),
+                Err(e) => web_sys::console::error_1(
+                    &format!("[OsPermissionsSection] recheck failed: {e:?}").into(),
+                ),
             }
             refreshing.set(false);
         });
@@ -1763,7 +1769,9 @@ fn OsPermissionsSection() -> Element {
                                                     let mut rows_handle = rows_handle;
                                                     wasm_bindgen_futures::spawn_local(async move {
                                                         let _ = crate::tauri_bridge::os_permissions_open_settings(&panel).await;
-                                                        // Recheck after the user returns to the app
+                                                        // Immediate refresh picks up any change the
+                                                        // user already made; the Recheck button
+                                                        // covers changes made after this fetch.
                                                         if let Ok(list) = crate::tauri_bridge::os_permissions_status().await {
                                                             rows_handle.set(list);
                                                         }

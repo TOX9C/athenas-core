@@ -50,7 +50,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     // Skip Claude Code's own permission prompts for Claude panes launched
     // from this modal. Opt-in per launch; persisted on the pane so
     // remounts keep it. Consumed at spawn via get_agent_command.
-    let bypass_claude_prompts: Signal<bool> = use_signal(|| false);
+    let mut bypass_claude_prompts: Signal<bool> = use_signal(|| false);
 
     // If launched from SwarmModal, pre-set swarm mode and carry over the goal.
     use_effect(move || {
@@ -467,7 +467,7 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                         .into(),
                                                     );
                                                     launch_error.set(Some(
-                                                        "Couldn't create the swarm mission. Retry the launch and confirm the Trust Folder dialog when prompted."
+                                                        "Couldn't create the swarm mission. The folder is already trusted; check the swarm state file is writable and try again."
                                                             .to_string(),
                                                     ));
                                                 }
@@ -537,6 +537,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                         },
                         onclick: move |_| {
                             mode.set("terminal".to_string());
+                            // Mode switch = fresh launch context; the bypass
+                            // opt-in never leaks across mode selections.
+                            bypass_claude_prompts.set(false);
                             step.set(1);
                         },
 
@@ -561,6 +564,9 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                         },
                         onclick: move |_| {
                             mode.set("swarm".to_string());
+                            // No bypass toggle renders in swarm mode, so the
+                            // signal must not carry a stale terminal-mode opt-in.
+                            bypass_claude_prompts.set(false);
                             step.set(1);
                         },
 
