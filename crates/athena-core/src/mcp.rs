@@ -28,7 +28,7 @@ mod mcp_transport;
 
 #[cfg(test)]
 #[path = "mcp_integration_tests.rs"]
-mod mcp_integration_tests;
+pub(crate) mod mcp_integration_tests;
 
 // ---------------------------------------------------------------------------
 // MCP Server
