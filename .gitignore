@@ -51,8 +51,18 @@ frontend/target/
 # E2E test artifacts
 e2e-tests/test/screenshots/
 
+# Local AI-harness design review state (screenshot stubs) — never commit
+.impeccable/
+.hyperframes/
+
 # Local agent / assistant configuration and scratch state
 .claude/
+
+# Local agent / assistant runtime state
+.ade/
+.freebuff/
+.agents/
+.codex/
 
 # Backup / legacy directories
 backup_*/
@@ -61,11 +71,17 @@ dist-electron/
 # Old / legacy tool directories
 .omo/
 
-# Local agent / assistant runtime state
-.ade/
-.freebuff/
-.agents/
-.codex/
+# Marketing render output, site drafts, and docs snapshots — kept local
+brag-output/
+site-v2/
+docs-backup-*/
+
+# Branding AI-generation prompts/intermediates — derived icons stay tracked
+branding/icons/urls.txt
+branding/icons/reference/
+branding/brand-guide.html
+branding/lockups.html
+branding/*.jpg
 
 # Local planning docs (moved out of the public repo — never commit plans)
 .plans/
@@ -74,7 +90,6 @@ dist-electron/
 *.md
 !README.md
 !ROADMAP.md
-!CLAUDE.md
 
 # Rust compile artifacts (redundant with target/ but explicit)
 *.rlib
