@@ -789,6 +789,12 @@
           "markdownDescription": "Enables the notification_resolve command without any pre-configured scope."
         },
         {
+          "description": "Enables the os_permissions_open_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-os-permissions-open-settings",
+          "markdownDescription": "Enables the os_permissions_open_settings command without any pre-configured scope."
+        },
+        {
           "description": "Enables the os_permissions_status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-os-permissions-status",
@@ -1747,6 +1753,12 @@
           "type": "string",
           "const": "deny-notification-resolve",
           "markdownDescription": "Denies the notification_resolve command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the os_permissions_open_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-os-permissions-open-settings",
+          "markdownDescription": "Denies the os_permissions_open_settings command without any pre-configured scope."
         },
         {
           "description": "Denies the os_permissions_status command without any pre-configured scope.",

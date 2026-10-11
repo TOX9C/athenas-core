@@ -35,7 +35,7 @@ pub struct PermissionRow {
 /// framework gets its own typed mapper; never share raw positional values.
 /// `restricted` maps to Denied for UI purposes (parental controls — the
 /// user cannot grant it in Settings anyway).
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "voice"))]
 fn mic_status_from_av(raw: objc2_av_foundation::AVAuthorizationStatus) -> PermissionStatus {
     use objc2_av_foundation::AVAuthorizationStatus as AV;
     match raw {
@@ -51,7 +51,7 @@ fn mic_status_from_av(raw: objc2_av_foundation::AVAuthorizationStatus) -> Permis
 /// Case order: NotDetermined=0 Denied=1 Authorized=2 Provisional=3
 /// Ephemeral=4. Provisional/Ephemeral count as Granted (the OS delivers
 /// notifications under those states).
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "voice"))]
 fn notif_status_from_un(raw: objc2_user_notifications::UNAuthorizationStatus) -> PermissionStatus {
     use objc2_user_notifications::UNAuthorizationStatus as UN;
     match raw {
@@ -155,22 +155,24 @@ pub async fn os_permissions_status() -> Result<Vec<PermissionRow>, CommandError>
                 }
                 use objc2_user_notifications::UNUserNotificationCenter;
                 let center = UNUserNotificationCenter::currentNotificationCenter();
-                let (tx, rx) = std::sync::mpsc::channel::<std::ptr::NonNull<objc2_user_notifications::UNNotificationSettings>>();
+                // Send the Copy status enum, NOT the NonNull: ObjC callback
+                // arguments are owned by the framework for the duration of
+                // the invocation only (same contract voice.rs documents) —
+                // dereferencing the pointer after the block returns is a UAF.
+                let (tx, rx) = std::sync::mpsc::channel::<objc2_user_notifications::UNAuthorizationStatus>();
                 let block = RcBlock::new(
                     move |settings: std::ptr::NonNull<objc2_user_notifications::UNNotificationSettings>| {
-                        let _ = tx.send(settings);
+                        // SAFETY: pointer valid for the duration of this
+                        // callback invocation; extract the Copy value now.
+                        let settings = unsafe { settings.as_ref() };
+                        let _ = tx.send(settings.authorizationStatus());
                     },
                 );
                 // The UNUserNotificationCenter method is safe in objc2 0.3
                 // bindings (block lifetime managed by RcBlock here).
                 center.getNotificationSettingsWithCompletionHandler(&block);
                 match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-                    Ok(ptr) => {
-                        // SAFETY: the framework hands us a valid settings
-                        // object for the duration of the callback.
-                        let settings = unsafe { ptr.as_ref() };
-                        notif_status_from_un(settings.authorizationStatus())
-                    }
+                    Ok(status) => notif_status_from_un(status),
                     _ => PermissionStatus::Unknown,
                 }
             }
@@ -243,7 +245,7 @@ pub async fn os_permissions_open_settings(panel: String) -> Result<(), CommandEr
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "voice"))]
     #[test]
     fn av_mapper_covers_all_cases() {
         use objc2_av_foundation::AVAuthorizationStatus as AV;
@@ -253,7 +255,7 @@ mod tests {
         assert_eq!(mic_status_from_av(AV::Authorized), PermissionStatus::Granted);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "voice"))]
     #[test]
     fn un_mapper_covers_all_cases() {
         use objc2_user_notifications::UNAuthorizationStatus as UN;
