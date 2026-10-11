@@ -207,6 +207,38 @@ pub async fn os_permissions_status() -> Result<Vec<PermissionRow>, CommandError>
     }
 }
 
+/// Open the System Settings pane for a permission. The URL is chosen
+/// server-side from a fixed allowlist — the renderer cannot open arbitrary
+/// URLs through this command.
+#[tauri::command]
+pub async fn os_permissions_open_settings(panel: String) -> Result<(), CommandError> {
+    let url = match panel.as_str() {
+        "microphone" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        "speech_recognition" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
+        }
+        "notifications" => {
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        }
+        _ => {
+            return Err(CommandError::InvalidInput(format!(
+                "unknown permission panel: {panel}"
+            )))
+        }
+    };
+    let opened = std::process::Command::new("open")
+        .arg(url)
+        .status()
+        .map(|s| s.success())
+        .map_err(|e| CommandError::Internal(format!("failed to open System Settings: {e}")))?;
+    if !opened {
+        return Err(CommandError::Internal(
+            "System Settings failed to open".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

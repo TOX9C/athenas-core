@@ -1427,6 +1427,35 @@ pub async fn voice_record_stop() -> TauriResult<String> {
 }
 
 // ---------------------------------------------------------------------------
+// OS permission status (read-only TCC report)
+// ---------------------------------------------------------------------------
+
+/// One row of the backend's OS-permission snapshot.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OsPermissionRow {
+    pub id: String,
+    pub status: String,
+}
+
+/// Live macOS TCC status for mic / speech recognition / notifications.
+/// Non-macOS builds return `not_applicable` rows.
+pub async fn os_permissions_status() -> TauriResult<Vec<OsPermissionRow>> {
+    let raw: String = invoke("os_permissions_status", "{}").await?;
+    serde_json::from_str(&raw)
+        .map_err(|e| js_sys::Error::new(&format!("failed to parse permission rows: {e}")).into())
+}
+
+/// Open the System Settings pane for one permission (`panel` is one of
+/// microphone / speech_recognition / notifications; validated backend-side).
+pub async fn os_permissions_open_settings(panel: &str) -> TauriResult<()> {
+    invoke(
+        "os_permissions_open_settings",
+        &serde_json::json!({ "panel": panel }).to_string(),
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
 // Athena chat (orchestrator) operations
 // ---------------------------------------------------------------------------
 
