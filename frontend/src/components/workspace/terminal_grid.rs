@@ -43,6 +43,14 @@ fn render_shell_pane(
     rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id, custom_cmd, bypass_mode } }
 }
 
+#[cfg(feature = "xterm")]
+fn focus_pane_terminal(pane_id: &str) {
+    crate::components::workspace::xterm_mount::xterm_helpers::focus_live_terminal(pane_id);
+}
+
+#[cfg(not(feature = "xterm"))]
+fn focus_pane_terminal(_pane_id: &str) {}
+
 #[cfg(not(feature = "xterm"))]
 fn render_shell_pane(pane_id: String, _cwd: String) -> Element {
     rsx! { TerminalPaneBody { key: "terminal-body-{pane_id}", pane_id } }
@@ -929,7 +937,23 @@ fn PaneItem(props: PaneItemProps) -> Element {
                                     fullscreen_pane_id.set(None);
                                 } else {
                                     fullscreen_pane_id.set(Some(pane_id_for_fullscreen.clone()));
+                                    // The full-screened pane must own the keyboard
+                                    // immediately. set_active re-routes global
+                                    // shortcuts and re-arms the active-pane focus
+                                    // effect (xterm_mount) — which no-ops when
+                                    // this pane is already active, hence the
+                                    // direct focus call below. Mirrors the
+                                    // pane-body pointerdown activation path.
+                                    terminal_store
+                                        .write()
+                                        .set_active(pane_id_for_fullscreen.clone());
                                 }
+                                // Refocus either way: the toggle is user intent to
+                                // type. On enter, the previously-focused sibling
+                                // pane is about to go display:none — WebKit drops
+                                // its focus to <body> and nothing else would
+                                // restore it.
+                                focus_pane_terminal(&pane_id_for_fullscreen);
                             },
                             if is_fullscreen {
                                 IconMinimize { size: Some(12), color: Some("currentColor".to_string()) }

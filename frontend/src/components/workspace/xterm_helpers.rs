@@ -91,6 +91,36 @@ pub(crate) fn reset_glyph_atlas_by_id(mount_id: &str) -> bool {
     true
 }
 
+/// Focus a pane's live xterm terminal via `term.focus()` — the same API the
+/// container's capture-phase pointerdown path uses. Immediate call plus one
+/// animation-frame refocus: WKWebView can move first-responder state during
+/// same-frame layout mutations (the proven double-tap from
+/// `schedule_xterm_focus` in xterm_mount.rs).
+///
+/// Returns `false` (with a console warn) when no live terminal is registered
+/// for the pane — i.e. the mount task has not registered yet (the active-pane
+/// effect covers focus once it does) or the pane is disposed (lookup is the
+/// staleness guard: the drop hook unregisters before `term.dispose()`).
+pub(crate) fn focus_live_terminal(mount_id: &str) -> bool {
+    let term = LIVE_TERMINALS.with(|live| live.borrow().get(mount_id).cloned());
+    let Some(term) = term else {
+        web_sys::console::warn_1(
+            &format!("[XtermMount] focus_live_terminal: no live terminal for pane {mount_id}").into(),
+        );
+        return false;
+    };
+    super::focus_xterm(&term);
+    let Some(window) = web_sys::window() else {
+        return true;
+    };
+    let term_for_frame = term.clone();
+    let frame = wasm_bindgen::closure::Closure::once_into_js(move || {
+        super::focus_xterm(&term_for_frame);
+    });
+    let _ = window.request_animation_frame(frame.as_ref().unchecked_ref());
+    true
+}
+
 /// How long after a fit the write path keeps re-pinning a bottom-following
 /// pane to the bottom. The fit itself fires xterm's `onResize` → `pty_resize`
 /// → SIGWINCH, and full-screen TUIs (OMP, vim) redraw asynchronously — often
