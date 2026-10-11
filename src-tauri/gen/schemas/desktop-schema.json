@@ -789,6 +789,12 @@
           "markdownDescription": "Enables the notification_resolve command without any pre-configured scope."
         },
         {
+          "description": "Enables the os_permissions_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-os-permissions-status",
+          "markdownDescription": "Enables the os_permissions_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the output_buffer_append command without any pre-configured scope.",
           "type": "string",
           "const": "allow-output-buffer-append",
@@ -1741,6 +1747,12 @@
           "type": "string",
           "const": "deny-notification-resolve",
           "markdownDescription": "Denies the notification_resolve command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the os_permissions_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-os-permissions-status",
+          "markdownDescription": "Denies the os_permissions_status command without any pre-configured scope."
         },
         {
           "description": "Denies the output_buffer_append command without any pre-configured scope.",

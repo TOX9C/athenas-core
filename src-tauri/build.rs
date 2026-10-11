@@ -27,6 +27,7 @@ const COMMANDS: &[&str] = &[
     "workspace_add_trusted_root",
     "workspace_remove_trusted_root",
     "workspace_list_trusted_roots",
+    "os_permissions_status",
     "fs_read_file",
     "fs_list_dir",
     "fs_write_file",
