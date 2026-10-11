@@ -85,7 +85,6 @@ const MAX_MESSAGES: usize = 100;
 
 const DEFAULT_MODEL: &str = "claude";
 const DEFAULT_PROVIDER: &str = "anthropic";
-const DEFAULT_BYPASS_MODE: bool = true;
 const DEFAULT_AUTO_LAUNCH: bool = true;
 
 /// Global Athena chat state.
@@ -118,7 +117,6 @@ pub struct AthenaState {
     pub retry_notice: Option<String>,
     pub model: String,
     pub provider: String,
-    pub bypass_mode: bool,
     pub auto_launch: bool,
     pub session_id: Option<String>,
     /// Per-request usage accumulated from `usage` stream events until the
@@ -170,7 +168,6 @@ impl AthenaState {
             retry_notice: None,
             model: DEFAULT_MODEL.to_string(),
             provider: DEFAULT_PROVIDER.to_string(),
-            bypass_mode: DEFAULT_BYPASS_MODE,
             auto_launch: DEFAULT_AUTO_LAUNCH,
             session_id: None,
             session_title: String::new(),
@@ -459,9 +456,6 @@ impl AthenaState {
         self.provider = provider.into();
     }
 
-    pub fn set_bypass_mode(&mut self, bypass: bool) {
-        self.bypass_mode = bypass;
-    }
 
     pub fn set_auto_launch(&mut self, auto: bool) {
         self.auto_launch = auto;

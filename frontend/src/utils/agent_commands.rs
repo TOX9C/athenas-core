@@ -181,6 +181,18 @@ mod tests {
     }
 
     #[test]
+    fn claude_bypass_adds_skip_permissions_flag() {
+        let cmd = get_agent_command(&AgentType::Claude, None, true).unwrap();
+        assert!(cmd.contains("--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn claude_without_bypass_has_no_skip_flag() {
+        let cmd = get_agent_command(&AgentType::Claude, None, false).unwrap();
+        assert!(!cmd.contains("--dangerously-skip-permissions"));
+    }
+
+    #[test]
     fn built_in_agent_commands_cover_omp_and_bypass() {
         assert_eq!(
             get_agent_command(&AgentType::Omp, None, false),

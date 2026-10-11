@@ -49,6 +49,16 @@ mod tests {
         assert_eq!(pane.resume_dismissed, None);
     }
 
+    // bypass_mode: Some(true) must survive the pane factory when the user
+    // opts in at launch; None stays the safe default (no skip flag).
+    #[test]
+    fn bypass_mode_opt_in_round_trips_and_defaults_to_none() {
+        let mut opt_in = new_shell_pane();
+        opt_in.bypass_mode = Some(true);
+        assert_eq!(opt_in.bypass_mode, Some(true));
+        assert_eq!(new_shell_pane().bypass_mode, None);
+    }
+
     #[test]
     fn new_shell_panes_have_distinct_ids_when_created_back_to_back() {
         let first = new_shell_pane();

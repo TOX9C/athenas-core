@@ -47,6 +47,11 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
     let _init_snapshot = ui_state.read().custom_agents.clone();
     let pane_agents: Signal<Vec<AgentRowState>> = use_signal(|| init_agent_rows(&_init_snapshot));
 
+    // Skip Claude Code's own permission prompts for Claude panes launched
+    // from this modal. Opt-in per launch; persisted on the pane so
+    // remounts keep it. Consumed at spawn via get_agent_command.
+    let bypass_claude_prompts: Signal<bool> = use_signal(|| false);
+
     // If launched from SwarmModal, pre-set swarm mode and carry over the goal.
     use_effect(move || {
         let pending = ui_state.read().pending_swarm_goal.clone();
@@ -193,7 +198,12 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                     // modal row still shows "Shell"/"Codex"
                                                     // via AgentRowState.label at creation.
                                                     label: None,
-                                                    bypass_mode: None,
+                                                    // Skip flag: only Claude
+                                                    // panes honor bypass;
+                                                    // None = safe default.
+                                                    bypass_mode: (row.agent_type == AgentType::Claude
+                                                        && bypass_claude_prompts())
+                                                        .then_some(true),
                                                     project_name: None,
                                                     model_name: None,
                                                     resume_id: None,
@@ -283,7 +293,11 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                                 custom_cmd: slot.custom_cmd.clone(),
                                                 custom_agent_id: slot.custom_id.clone(),
                                                 label: slot.label.clone(),
-                                                bypass_mode: None,
+                                                // Skip flag: only Claude
+                                                // slots honor bypass.
+                                                bypass_mode: (slot.agent_type == AgentType::Claude
+                                                    && bypass_claude_prompts())
+                                                    .then_some(true),
                                                 project_name: None,
                                                 model_name: None,
                                                 resume_id: None,
@@ -662,6 +676,35 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                             }
                         }
 
+                        // Skip-permissions toggle: shown only when at
+                        // least one Claude pane is being launched.
+                        if pane_agents.read().iter().any(|r| r.agent_type == AgentType::Claude && r.count > 0) {
+                            div {
+                                style: "display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 4px; background: var(--bgSecondary);",
+                                div {
+                                    style: "display: flex; flex-direction: column; gap: 2px; min-width: 0;",
+                                    span {
+                                        style: "font-size: var(--text-xs); font-weight: 500; color: var(--textMuted);",
+                                        "Skip Claude permission prompts"
+                                    }
+                                    span {
+                                        style: "font-size: var(--text-2xs); color: var(--textDim);",
+                                        "Launches Claude with --dangerously-skip-permissions. Athena's own sandbox still applies. Trusted workspaces only."
+                                    }
+                                }
+                                {
+                                    let mut bypass_snapshot = bypass_claude_prompts;
+                                    rsx! {
+                                        crate::components::settings::settings_modal::Toggle {
+                                            active: bypass_claude_prompts(),
+                                            on_toggle: move |_| {
+                                                bypass_snapshot.set(!bypass_snapshot());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         for (idx, row) in pane_rows_snapshot.iter().enumerate() {
                             {
                                 let count_val = row.count;
