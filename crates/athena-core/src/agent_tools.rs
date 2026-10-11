@@ -407,9 +407,10 @@ mod custom_agent_allowlist_tests {
     }
 
     fn args_with_command(cmd: &str) -> ToolInput {
-        let mut args = ToolInput::default();
-        args.command = Some(cmd.to_string());
-        args
+        ToolInput {
+            command: Some(cmd.to_string()),
+            ..ToolInput::default()
+        }
     }
 
     #[test]
