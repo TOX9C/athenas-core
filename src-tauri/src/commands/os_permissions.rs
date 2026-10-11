@@ -228,7 +228,8 @@ pub async fn os_permissions_open_settings(panel: String) -> Result<(), CommandEr
             )))
         }
     };
-    let opened = std::process::Command::new("open")
+    // Absolute path: never PATH-resolved (relay review hardening, CWE-426).
+    let opened = std::process::Command::new("/usr/bin/open")
         .arg(url)
         .status()
         .map(|s| s.success())

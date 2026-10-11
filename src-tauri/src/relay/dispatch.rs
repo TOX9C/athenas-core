@@ -170,9 +170,10 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
         "store_set" => {
             let key = opts.req::<String>("key")?;
             let value = opts.req::<String>("value")?;
-            if !mobile_store_key_allowed(&key) {
-                return Err(format!("relay store key is not available: {key}"));
+            if !mobile_store_key_writable(&key) {
+                return Err(format!("relay store key is not writable: {key}"));
             }
+            let value = sanitize_relay_store_value(&key, value)?;
             commands::store_set(app.clone(), state, key, value).await?;
             Ok(Value::Null)
         }
@@ -390,10 +391,10 @@ pub fn authorize_command(
     Ok(())
 }
 
-/// Store values needed to boot/render the existing frontend. Keep this
+/// Store values the phone may READ to boot/render the UI. Keep this
 /// explicit: allowing arbitrary `store_get` keys would expose secrets and
 /// unrelated persisted state over the LAN.
-fn mobile_store_key_allowed(key: &str) -> bool {
+fn mobile_store_key_readable(key: &str) -> bool {
     matches!(
         key,
         "theme"
@@ -404,6 +405,51 @@ fn mobile_store_key_allowed(key: &str) -> bool {
             | "agent_notify_config"
             | "workspaces"
     )
+}
+
+/// Store values the phone may WRITE. Deliberately narrower than the read
+/// list: `custom_agents` is the execution allowlist for the chat tool
+/// `launch_custom_agent`, so a paired phone writing it could plant a
+/// command and then launch it via relay-driven `athena_chat` (relay
+/// review finding ATH-RELAY-CUSTOM-AGENTS-RCE). It stays readable so the
+/// phone UI can display configured agents.
+fn mobile_store_key_writable(key: &str) -> bool {
+    matches!(
+        key,
+        "theme" | "font_family" | "font_size" | "smart_pane_titles" | "workspaces"
+    )
+}
+
+/// Back-compat alias for read checks.
+fn mobile_store_key_allowed(key: &str) -> bool {
+    mobile_store_key_readable(key)
+}
+
+/// Security (relay review finding ATH-BYPASS-RELAY-WORKSPACES-INJECTION):
+/// the phone may write `workspaces` for pane layout, but security-relevant
+/// pane fields must never come from the relay — `bypass_mode: true` would
+/// arm --dangerously-skip-permissions on the next spawn of that pane.
+/// Strip them from every relay-written workspaces payload; anything
+/// unparsable is rejected rather than stored (fail closed).
+fn sanitize_relay_store_value(key: &str, value: String) -> Result<String, String> {
+    if key != "workspaces" {
+        return Ok(value);
+    }
+    let mut parsed: Value = serde_json::from_str(&value)
+        .map_err(|e| format!("relay workspaces write is not valid JSON: {e}"))?;
+    if let Some(spaces) = parsed.get_mut("spaces").and_then(|s| s.as_array_mut()) {
+        for space in spaces.iter_mut() {
+            if let Some(panes) = space.get_mut("panes").and_then(|p| p.as_array_mut()) {
+                for pane in panes.iter_mut() {
+                    if let Some(obj) = pane.as_object_mut() {
+                        // Never accept a relay-armed permission bypass.
+                        obj.remove("bypass_mode");
+                    }
+                }
+            }
+        }
+    }
+    serde_json::to_string(&parsed).map_err(|e| format!("relay workspaces re-encode failed: {e}"))
 }
 
 /// JSON-serialize a command result.
@@ -527,6 +573,44 @@ mod tests {
         for key in ["llm.api_key", "relay_token", "workspace.trusted_roots"] {
             assert!(!mobile_store_key_allowed(key));
         }
+    }
+
+    /// Security (relay review finding ATH-RELAY-CUSTOM-AGENTS-RCE):
+    /// custom_agents is the execution allowlist for the chat tool
+    /// launch_custom_agent, so a paired phone must never write it — it
+    /// stays readable for the phone UI. Workspaces stays writable only
+    /// for pane layout, with bypass_mode stripped by the write path.
+    #[test]
+    fn store_write_allowlist_excludes_execution_config() {
+        // Readable from the phone (UI display)...
+        assert!(mobile_store_key_readable("custom_agents"));
+        // ...but never writable: phone-planted commands must not become
+        // launchable via relay-driven athena_chat → launch_custom_agent.
+        assert!(!mobile_store_key_writable("custom_agents"));
+        assert!(mobile_store_key_writable("theme"));
+        assert!(mobile_store_key_writable("workspaces"));
+    }
+
+    #[test]
+    fn relay_workspaces_write_strips_bypass_mode() {
+        let hostile = r#"{"active_space_id":"s1","spaces":[{"id":"s1","panes":[{"id":"p1","agent_type":"claude","bypass_mode":true},{"id":"p2","agent_type":"shell"}]}]}"#;
+        let sanitized = sanitize_relay_store_value("workspaces", hostile.to_string())
+            .expect("valid JSON must sanitize");
+        let parsed: Value = serde_json::from_str(&sanitized).unwrap();
+        let pane = &parsed["spaces"][0]["panes"][0];
+        assert!(
+            pane.get("bypass_mode").is_none(),
+            "relay-written pane must never carry bypass_mode; got {pane}"
+        );
+        // Layout data passes through untouched.
+        assert_eq!(pane["agent_type"], "claude");
+        // Non-workspaces keys are stored verbatim.
+        assert_eq!(
+            sanitize_relay_store_value("theme", "dark".to_string()).unwrap(),
+            "dark"
+        );
+        // Malformed workspaces JSON is rejected, not stored.
+        assert!(sanitize_relay_store_value("workspaces", "not json".to_string()).is_err());
     }
 
     fn owned(pane: &str) -> HashSet<String> {
