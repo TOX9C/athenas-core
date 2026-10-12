@@ -110,7 +110,8 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: athena-linux-${{ github.ref_name }}
+          # Artifact names reject '/'; ref_name carries it for port/** branches.
+          name: athena-linux-${{ join(split(github.ref_name, '/'), '-') }}
           path: |
             ${{ steps.artifact.outputs.deb_path }}
             ${{ steps.artifact.outputs.deb_path }}.sha256
