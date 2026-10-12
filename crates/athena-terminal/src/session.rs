@@ -44,8 +44,6 @@ pub struct TerminalUpdate {
     pub cursor_visible: bool,
 }
 
-/// A PTY session combining a shell process, PTY file descriptor, and terminal grid.
-
 #[cfg(test)]
 #[derive(Clone)]
 struct ResizeTestProbe {

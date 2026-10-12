@@ -301,6 +301,10 @@ static FG_CACHE: std::sync::LazyLock<
 /// process group is gone — callers fall back to `"shell"`.
 pub fn resolve_foreground_label(master_fd: i32, fallback_pgid: i32) -> Option<String> {
     let mut pgid = fallback_pgid;
+    // tcgetpgrp is Unix-only. On Windows there is no controlling-terminal
+    // concept and master_fd is always -1 (the ConPTY backend exposes no
+    // numeric fd), so this block never runs there.
+    #[cfg(unix)]
     if master_fd >= 0 {
         let fg_pgid = unsafe { libc::tcgetpgrp(master_fd) };
         if fg_pgid > 0 {

@@ -63,11 +63,19 @@ if (tauri.identifier !== 'com.athena.core') fail('product identity', 'bundle ide
 if (tauri.bundle?.macOS?.minimumSystemVersion !== '13.0') fail('macOS target', 'minimum macOS version must be 13.0')
 if (tauri.bundle?.macOS?.entitlements !== 'entitlements.plist') fail('entitlements', 'production entitlements path is not configured')
 if (!/<dict\s*\/>/.test(entitlements)) fail('entitlements', 'production entitlements must remain empty until a capability is justified')
-if (tauri.bundle?.targets !== 'dmg' && !(Array.isArray(tauri.bundle?.targets) && tauri.bundle.targets.length === 1 && tauri.bundle.targets[0] === 'dmg')) {
-  fail('artifact target', 'public macOS scope must package only the DMG target')
+const allowedTargets = new Set(['dmg', 'deb', 'appimage', 'nsis'])
+const targets = Array.isArray(tauri.bundle?.targets) ? tauri.bundle.targets : [tauri.bundle?.targets]
+if (
+  targets.length === 0 ||
+  targets.some((target) => !allowedTargets.has(target))
+) {
+  fail('artifact target', 'public scope must package only allowed targets (dmg, deb, appimage, nsis)')
 }
-if (!/macOS(?: \d+(?:\.\d+)?\+)? on Apple Silicon/.test(readme)) {
+if (!/macOS 13\+ on Apple Silicon/.test(readme)) {
   fail('README platform scope', 'README must document macOS 13+ on Apple Silicon')
+}
+if (!/Linux \(x86_64, beta\)/.test(readme)) {
+  fail('README platform scope', 'README must document the Linux beta scope')
 }
 if (failures.length) {
   console.error('Release identity checks failed:')
