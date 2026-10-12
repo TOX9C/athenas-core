@@ -68,6 +68,12 @@ describe('mcp-proxy TCP bridge', () => {
       const proxyExit = once(proxy, 'exit')
       const proxyError = once(proxy, 'error')
       socket = await waitForProxyConnection(server)
+      // Windows teardown ordering: RST can arrive after test assertions
+      // passed — swallow on the test socket so vitest doesn't count it.
+      socket.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ECONNRESET') return
+        throw error
+      })
       const request = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n'
       proxy.stdin.write(request)
       expect(await readLine(socket)).toBe(request.trim())
