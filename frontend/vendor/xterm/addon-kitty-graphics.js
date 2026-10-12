@@ -162,21 +162,31 @@
       var ox = screen ? screen.offsetLeft : 0;
       var oy = screen ? screen.offsetTop : 0;
 
-      // The overlay position comes from the NBSP sentinel cells the feed
-      // spliced where placeholders were — the buffer owns scroll/reflow and we
-      // just mirror it. Scan the visible viewport for runs of sentinel cells;
-      // each contiguous row-run is one image's block.
+      // Scan the viewport EXTENDED by the tallest live image on both sides:
+      // a block straddling the viewport top is otherwise found as a fragment
+      // whose first row is NOT the image's true top, and a full-height
+      // overlay positioned at a fragment's row pins it over live text (the
+      // top-left pin bug). With complete blocks every position is truthful;
+      // tops above the screen and bottoms past it are clipped by the layer's
+      // overflow:hidden — visibility stays purely geometric, mirroring kitty.
+      var maxRows = 0;
+      for (var mi = 0; mi < images.length; mi++) {
+        if (images[mi].rows > maxRows) maxRows = images[mi].rows;
+      }
       var blocks = [];
       var cur = null;
-      for (var ly = vy; ly < Math.min(buf.length, vy + term.rows); ly++) {
+      var scanTo = Math.min(buf.length, vy + term.rows + maxRows + 1);
+      for (var ly = Math.max(0, vy - maxRows - 1); ly < scanTo; ly++) {
         var line = buf.getLine(ly);
-        var col = -1;
-        if (line) col = line.translateToString(true).indexOf(" ");
+        var text = line ? line.translateToString(true) : "";
+        var col = text.indexOf("\u00a0");
         if (col >= 0) {
           if (cur && cur.open) {
             cur.rows++;
           } else {
-            cur = { top: ly, col: col, rows: 1, open: true };
+            var rl = 0;
+            while (col + rl < text.length && text.charCodeAt(col + rl) === 0xa0) rl++;
+            cur = { top: ly, col: col, rows: 1, runLen: rl, open: true };
             blocks.push(cur);
           }
         } else if (cur) {
