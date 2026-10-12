@@ -215,13 +215,14 @@ jobs:
 
       - name: cargo check (Windows target surface)
         # Compile-check the whole workspace on Windows, including the
-        # cfg(windows) backends (ConPTY stub, LockFileEx swarm lock,
-        # USERPROFILE home resolution). Tests run where the platform
-        # surface exists; PTY behavior tests stay on macOS runners
-        # until the ConPTY backend lands fully.
+        # cfg(windows) backends (ConPTY PTY, LockFileEx swarm lock,
+        # USERPROFILE home resolution).
         run: cargo check --workspace --locked
 
       - name: cargo test (platform-neutral crates)
+        # athena-terminal's PTY behavior suite is Unix-shaped (fork/PTY
+        # fixtures); athenas-core's gate suite runs on macOS/Linux runners.
+        # The remaining crates run fully here.
         run: cargo test --workspace --exclude athena-terminal --exclude athenas-core --locked
 
   security:

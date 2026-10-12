@@ -59,7 +59,7 @@ sudo apt install ./Athena.s.Core_<version>_amd64.deb
 chmod +x Athena*.AppImage && ./Athena*.AppImage
 ```
 
-Linux builds need WebKitGTK 4.1 present (the `.deb` declares the dependency; AppImage bundles its own runtime). Voice input is macOS-only for now. **Windows is in progress** — PTY sessions land behind a ConPTY backend before the first `.exe` ships; watch Releases.
+Linux builds need WebKitGTK 4.1 present (the `.deb` declares the dependency; AppImage bundles its own runtime). Voice input is macOS-only for now. **Windows build in progress** — the ConPTY terminal backend is implemented and CI-gated; the first `.exe` ships after release-workflow artifacts and on-device QA pass.
 
 ## Keyboard shortcuts
 
