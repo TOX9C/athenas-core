@@ -556,7 +556,7 @@ pub(crate) fn watch_dpr_change(on_change: Rc<dyn Fn()>, active: Rc<RefCell<bool>
     install(on_change, active);
 }
 
-/// Composite every canvas under `.xterm-screen` into a PNG data URL.
+/// Composite every canvas under `.xterm-screen` into an offscreen canvas.
 ///
 /// The composite is sized from the source canvas's own `width/height`
 /// (device pixels), not the element's `clientWidth/Height` (CSS pixels):
@@ -565,9 +565,13 @@ pub(crate) fn watch_dpr_change(on_change: Rc<dyn Fn()>, active: Rc<RefCell<bool>
 /// (`clientWidth` of a detached element is 0). `.xterm-screen` fills the
 /// mount container and the WebGL renderer paints into one canvas, so all
 /// canvases draw at (0,0) in composite space.
-pub(crate) fn capture_screen_data_url(
+///
+/// The returned canvas element IS the cover bitmap — no PNG/`to_data_url`
+/// encode on the main thread. `css_size` carries the capture-time CSS box
+/// so the cover can pin the bitmap to its original size.
+pub(crate) fn capture_screen_canvas(
     container: &web_sys::Element,
-) -> Option<(String, (f64, f64))> {
+) -> Option<(web_sys::HtmlCanvasElement, (f64, f64))> {
     let canvases = container.query_selector_all(".xterm-screen canvas").ok()?;
     if canvases.length() == 0 {
         return None;
@@ -616,14 +620,7 @@ pub(crate) fn capture_screen_data_url(
     if !drew_any {
         return None;
     }
-    // A cover larger than this is storing scrollback-scale PNGs for nothing;
-    // the pane repaints once real output arrives regardless.
-    const MAX_COVER_DATA_URL_BYTES: usize = 2 * 1024 * 1024;
-    let url = composite.to_data_url().ok()?;
-    if url.len() > MAX_COVER_DATA_URL_BYTES || url == "data:," {
-        return None;
-    }
-    Some((url, css_size))
+    Some((composite, css_size))
 }
 
 pub(crate) fn try_activate_addon(

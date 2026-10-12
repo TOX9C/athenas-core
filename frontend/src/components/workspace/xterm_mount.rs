@@ -21,7 +21,7 @@ use wasm_bindgen::JsCast;
 #[path = "xterm_helpers.rs"]
 pub(crate) mod xterm_helpers;
 use xterm_helpers::{
-    attach_kitty_graphics, call_fit, capture_screen_data_url, filter_graphics_for_term,
+    attach_kitty_graphics, call_fit, capture_screen_canvas, filter_graphics_for_term,
     capture_viewport, force_redraw, freeze_screen, is_valid_terminal_dimensions, read_css_var,
     register_live_terminal, render_visible_rows_sync, reset_glyph_atlas, reset_glyph_atlas_by_id,
     evict_stale_live_terminal, pane_was_evicted,
@@ -42,8 +42,9 @@ use xterm_helpers::{
 // consumed on use; WASM is single-threaded so a thread_local RefCell is the
 // whole synchronization story.
 thread_local! {
-    static REMOUNT_COVERS: RefCell<std::collections::HashMap<String, (f64, String, (f64, f64))>> =
-        RefCell::new(std::collections::HashMap::new());
+    static REMOUNT_COVERS: RefCell<
+        std::collections::HashMap<String, (f64, web_sys::HtmlCanvasElement, (f64, f64))>,
+    > = RefCell::new(std::collections::HashMap::new());
 }
 
 /// Covers older than this are discarded: a stale frame is worse than the
@@ -54,7 +55,7 @@ const REMOUNT_COVER_TTL_MS: f64 = 10_000.0;
 /// schedule its fade-out once the new terminal has painted. No-op when
 /// nothing was captured for this pane.
 fn install_remount_cover(container: &web_sys::Element, pane_id: &str) {
-    let Some((captured_at, data_url, (css_w, css_h))) =
+    let Some((captured_at, canvas, (css_w, css_h))) =
         REMOUNT_COVERS.with(|covers| covers.borrow_mut().remove(pane_id))
     else {
         return;
@@ -85,12 +86,14 @@ fn install_remount_cover(container: &web_sys::Element, pane_id: &str) {
         &format!(
             "position: absolute; inset: 0; z-index: 5; pointer-events: none; \
              background-color: var(--terminalBg, var(--bg)); \
-             background-image: url(\"{}\"); background-size: {css_w}px {css_h}px; \
-             background-repeat: no-repeat; \
-             transition: opacity 140ms ease-out;",
-            data_url
+             transition: opacity 140ms ease-out;"
         ),
     );
+    // The canvas keeps its device-px backing; pinning its inline CSS size to
+    // the capture-time box prevents the stretch-blur without any encode.
+    let _ = canvas.style().set_property("width", &format!("{css_w}px"));
+    let _ = canvas.style().set_property("height", &format!("{css_h}px"));
+    let _ = cover_el.append_child(&canvas);
     let _ = container.append_child(&cover_el);
     // The fade is triggered separately by `fade_remount_cover` once the new
     // terminal has written its first content. This timeout is the failure
@@ -2800,12 +2803,12 @@ pub fn XtermMount(
                     // moment ago has already been cleared and a bare capture
                     // would read transparency.
                     render_visible_rows_sync(&c.term);
-                    if let Some((data_url, css_size)) = capture_screen_data_url(container) {
+                    if let Some((canvas, css_size)) = capture_screen_canvas(container) {
                         let captured_at = js_sys::Date::now();
                         REMOUNT_COVERS.with(|covers| {
                             covers
                                 .borrow_mut()
-                                .insert(mount_id_for_drop.clone(), (captured_at, data_url, css_size));
+                                .insert(mount_id_for_drop.clone(), (captured_at, canvas, css_size));
                         });
                     }
                 }
