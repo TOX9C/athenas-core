@@ -1,0 +1,346 @@
+<!doctype html>
+<!--
+  Headless harness for the "kitty overlay pins to viewport top-left on scroll
+  down / vanishes on scroll up / mispairs sentinel blocks" bug class.
+
+  Loads the SAME vendored xterm.js + addon-kitty-graphics.js the app ships,
+  attaches the addon the same way xterm_mount.rs does (feed filter +
+  __athenaKittySettle), then replays a faithful OMP image stream:
+    - APC G a=T,f=100,C=1,c=20,r=4 payload followed by a 20x4 rectangle of
+      U+10EEEE placeholder cells, with 60 filler lines above (one carrying
+      a stray mid-text NBSP at col>0 — a false sentinel block) and
+      'MARK-AFTER' below,
+    - a second image (i=2, c=12,r=3 → its own pkey) followed by a 12x3
+      placeholder grid ~40 rows below the first, 'MARK-AFTER-2' below it,
+    - filler lines below so scrolling past both blocks works both ways.
+
+  Scenarios (each dumps overlay geometry from .athena-kitty-layer):
+    1. initial       — viewport at the stream bottom; no block visible.
+    2. partial-above — scroll so the sentinel block STARTS above the
+                       viewport (top rows cut off). THE BUG: overlay
+                       positioned at viewport top-left with FULL image
+                       height, covering unrelated text.
+    3. fully-above   — scroll until the whole block is above the viewport.
+                       Expect: overlay hidden (display:none). Bug variant:
+                       pinned visible.
+    4. back-in-view  — scroll back down until the block is visible again.
+                       Expect: overlay restored at its true position.
+    5. far-below     — scroll to the stream bottom; all blocks above.
+    6. scrolled-up-past-block — scroll up past the block from below.
+    7. fully-below   — scroll to top; block below the viewport bottom.
+                       Expect: hidden.
+    8. multi-image-scrolled-past-first — viewport shows ONLY image 2's
+                       block. THE BUG: the scan pairs blocks index-wise,
+                       so image 1's overlay steals image 2's block and
+                       image 2's overlay vanishes.
+    9. stray-nbsp    — viewport shows the stray NBSP line AND image 1's
+                       block. THE BUG: the false stray block pairs to
+                       image 1, anchoring its overlay to the stray row.
+
+  Usage (from the repo root):
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+      --headless=new --enable-unsafe-swiftshader --allow-file-access-from-files \
+      --virtual-time-budget=20000 --dump-dom \
+      e2e-tests/test/fixtures/xterm-kitty-scroll-harness.html
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>pending</title>
+    <link rel="stylesheet" href="../../../frontend/vendor/xterm/xterm.css" />
+    <style>
+      body { background: #08090b; margin: 0; font-family: monospace; color: #e7e4dc; }
+      .pane { width: 640px; height: 380px; }
+      #out { color: #e7e4dc; font-size: 12px; }
+    </style>
+    <script src="../../../frontend/vendor/xterm/xterm.js"></script>
+    <script src="../../../frontend/vendor/xterm/addon-kitty-graphics.js"></script>
+  </head>
+  <body>
+    <div class="pane" id="pane"></div>
+    <pre id="out"></pre>
+    <script>
+      const results = {}
+      const ESC = '\x1b'
+      const PNG_B64 =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+      const C = 20, R = 4 // image 1 cell size: 20 cols x 4 rows
+      const C2 = 12, R2 = 3 // image 2 cell size: 12 cols x 3 rows (own pkey i=2)
+
+      function writeSync(term, data) {
+        return new Promise((resolve) => term.write(data, resolve))
+      }
+
+      async function scenario() {
+        const term = new window.Terminal({
+          fontFamily: 'monospace',
+          fontSize: 14,
+          scrollback: 1000,
+          convertEol: false,
+          theme: { background: '#08090b', foreground: '#e7e4dc' },
+        })
+        term.open(document.getElementById('pane'))
+
+        const kitty = window.AthenaKitty.attach(term, () => {})
+        term.__athenaKittyFeed = kitty.feed
+
+        // Faithful OMP stream: 60 filler lines, then image 1 + placeholder
+        // rectangle, then filler lines so scrolling past the block in both
+        // directions is possible. Mirrors OMP sizing: c=20,r=4, C=1 so only
+        // placeholders advance the cursor; each grid row is c cells followed
+        // by a real \r\n (that is how OMP reserves rows).
+        const fill = (from, to) =>
+          Array.from({ length: to - from }, (_, i) => `line ${from + i + 1} alpha bravo charlie delta`).join('\r\n')
+        const apc = (n, cols, rows) =>
+          `${ESC}_Ga=T,f=100,q=2,C=1,i=${n},c=${cols},r=${rows};${PNG_B64}${ESC}\\`
+        const cell = '\u{10EEEE}\u0302'
+        let payload = fill(0, 60) + '\r\n' + apc(1, C, R) + '\r\n'
+        for (let row = 0; row < R; row++) {
+          payload += cell.repeat(C)
+          payload += '\r\n'
+        }
+        payload += 'MARK-AFTER\r\n' + fill(60, 100)
+        // Image 2 sits ~40 rows below image 1 (its sentinel block lands at
+        // buffer rows ~107-109): same faithful shape, but c=12,r=3 and i=2
+        // so the addon records a separate placement instead of replacing
+        // image 1.
+        payload += '\r\n' + apc(2, C2, R2) + '\r\n'
+        for (let row = 0; row < R2; row++) {
+          payload += cell.repeat(C2)
+          payload += '\r\n'
+        }
+        payload += 'MARK-AFTER-2\r\n' + fill(100, 160)
+
+        // One filler line ABOVE image 1 gets a stray NBSP mid-text (col>0,
+        // not part of any placeholder grid): the addon's viewport scan sees
+        // a one-row false sentinel block that can mispair with an image.
+        payload = payload.replace('line 56 alpha bravo', 'line 56 alpha\u00a0bravo')
+
+        const filtered = kitty.feed(new TextEncoder().encode(payload))
+        await writeSync(term, filtered)
+        term.__athenaKittySettle && term.__athenaKittySettle()
+        await new Promise((r) => setTimeout(r, 250))
+
+        // Cell height in CSS px. The addon sizes each overlay from its
+        // own c/r params, so overlay HEIGHT identifies the image even if
+        // onload completion order differs from stream order: image 1 is
+        // R rows tall, image 2 is R2 rows tall.
+        const cellHpx = (() => {
+          const svc = term._core && term._core._renderService
+          const c = svc && svc.dimensions && svc.dimensions.css && svc.dimensions.css.cell
+          return c ? c.height : 380 / term.rows
+        })()
+        const imgIndex = (el) => {
+          const h = parseFloat(el.style.height)
+          if (Number.isNaN(h)) return -1
+          return Math.abs(h - R * cellHpx) < 0.5 ? 0 : Math.abs(h - R2 * cellHpx) < 0.5 ? 1 : -1
+        }
+        const dump = (label) => {
+          const buf = term.buffer.active
+          const layer = term.element.querySelector('.athena-kitty-layer')
+          // Sentinel row runs across the WHOLE buffer (grid vs stray):
+          let firstRow = -1, lastRow = -1
+          const runs = [] // {top, rows, col} NBSP row-runs, buffer order
+          let run = null
+          for (let y = 0; y < buf.length; y++) {
+            const t = buf.getLine(y)?.translateToString(true) || ''
+            const col = t.indexOf('\u00a0')
+            if (col >= 0) {
+              if (firstRow === -1) firstRow = y
+              lastRow = y
+              if (run && y === run.top + run.rows) {
+                run.rows++
+              } else {
+                run = { top: y, rows: 1, col: col }
+                runs.push(run)
+              }
+            } else {
+              run = null
+            }
+          }
+          const gridRuns = runs.filter((r2) => r2.rows >= 2 && r2.col === 0)
+          // Legacy single-image fields (image 1's grid) + stray-row info:
+          results[label] = {
+            viewportY: buf.viewportY,
+            rows: term.rows,
+            sentinelFirstRow: gridRuns.length ? gridRuns[0].top : firstRow,
+            sentinelLastRow: gridRuns.length
+              ? gridRuns[0].top + gridRuns[0].rows - 1
+              : lastRow,
+            blocks: gridRuns.map((r2) => ({ top: r2.top, rows: r2.rows, col: r2.col })),
+            // Overlay identity: image 1 is R rows tall, image 2 is R2 rows
+            // (the addon sizes overlays from each image's own c/r). A
+            // hidden overlay has no styles yet, so fall back to children
+            // order = append order = APC stream order.
+            overlays: layer
+              ? Array.from(layer.children).map((el, i) => ({
+                  img: imgIndex(el) === -1 ? i : imgIndex(el),
+                  display: el.style.display,
+                  left: el.style.left,
+                  top: el.style.top,
+                  width: el.style.width,
+                  height: el.style.height,
+                }))
+              : [],
+            overlayCount: layer ? layer.children.length : -1,
+          }
+          // Keep the original single-overlay field name working for the
+          // pre-existing verdicts: image 1's overlay, by size when styled,
+          // else by append order (= APC stream order).
+          const kids = layer ? Array.from(layer.children) : []
+          const img = kids.find((el) => imgIndex(el) === 0) || kids[0] || null
+          results[label].overlay = img
+            ? {
+                display: img.style.display,
+                left: img.style.left,
+                top: img.style.top,
+                width: img.style.width,
+                height: img.style.height,
+              }
+            : null
+        }
+
+
+        dump('initial')
+        // Sentinel block: buffer rows ~61-64 (after 60 fillers + \r\n).
+        // viewport rows = term.rows (viewportY..viewportY+rows-1).
+        const first = results.initial.sentinelFirstRow
+        const last = results.initial.sentinelLastRow
+
+        // Partial-above: viewportY = first + 2 → block's top 2 rows cut off.
+        term.scrollToLine(first + 2)
+        await new Promise((r) => setTimeout(r, 120))
+        dump('partial-above')
+
+        // Fully-above: viewportY = last + 5.
+        term.scrollToLine(last + 5)
+        await new Promise((r) => setTimeout(r, 120))
+        dump('fully-above')
+
+        // Back in view: viewportY = first - 2.
+        term.scrollToLine(first - 2)
+        await new Promise((r) => setTimeout(r, 120))
+        dump('back-in-view')
+
+        // Scroll-UP path (user report: scrolling up makes it vanish):
+        // from below the block, scroll up past it, then back into range.
+        term.scrollToLine(140)
+        await new Promise((r) => setTimeout(r, 120))
+        dump('far-below')
+        term.scrollToLine(20)
+        await new Promise((r) => setTimeout(r, 120))
+        dump('scrolled-up-past-block')
+
+        // Fully-below: viewport at top.
+        term.scrollToLine(0)
+        await new Promise((r) => setTimeout(r, 120))
+        dump('fully-below')
+        // Multi-image: viewport shows ONLY image 2's sentinel block (image
+        // 1's block fully above). Expect: image 2's overlay visible at its
+        // own block, image 1's overlay hidden. Bug: index-wise pairing
+        // gives image 1 image 2's block and hides image 2 entirely.
+        const img2Top = results.initial.blocks[1] ? results.initial.blocks[1].top : last + 40
+        term.scrollToLine(img2Top - 3)
+        await new Promise((r) => setTimeout(r, 120))
+        dump('multi-image-scrolled-past-first')
+
+        // Stray NBSP: viewport shows the stray line (row 55) AND image 1's
+        // block (rows first..last). Expect: overlay 1 top matches image
+        // 1's block top row. Bug: the false stray block pairs to image 1.
+        term.scrollToLine(50)
+        await new Promise((r) => setTimeout(r, 120))
+        dump('stray-nbsp')
+
+        kitty.dispose()
+
+        // Self-verdict against the bug this harness exists for: with the
+        // sentinel block's true top ABOVE the viewport (partial-above), the
+        // overlay must never extend below the block's last visible row —
+        // pre-fix it pins at top:0 with FULL height, covering text.
+        const px = (v) => (v === '' || v == null ? null : parseFloat(v))
+        const cellH = cellHpx
+        const verdict = {}
+        for (const label of ['partial-above', 'back-in-view']) {
+          const o = results[label].overlay
+          const vy = results[label].viewportY
+          const last = results[label].sentinelLastRow
+          if (!o || o.display === 'none') {
+            verdict[label] = 'FAIL(overlay hidden while block visible)'
+            continue
+          }
+          const bottom = px(o.top) + px(o.height)
+          const fragmentBottom = (last - vy + 1) * cellH
+          verdict[label] =
+            bottom <= fragmentBottom + 0.5
+              ? 'PASS'
+              : `FAIL(overlay bottom ${bottom}px > fragment bottom ${fragmentBottom}px — pinned over text)`
+        }
+
+        // multi-image-scrolled-past-first: PASS iff image 2's overlay is
+        // visible at image 2's own sentinel block top AND image 1's overlay
+        // is hidden. Pre-fix: index-wise pairing makes image 1 steal
+        // image 2's block and image 2 vanish (or both misplaced).
+        {
+          const s = results['multi-image-scrolled-past-first']
+          const o1 = s.overlays.find((x) => x.img === 0) || null
+          const o2 = s.overlays.find((x) => x.img === 1) || null
+          const block2 = s.blocks[1]
+          if (!o2) {
+            verdict['multi-image-scrolled-past-first'] =
+              'FAIL(image 2 overlay missing)'
+          } else if (o2.display === 'none') {
+            verdict['multi-image-scrolled-past-first'] =
+              'FAIL(image 2 overlay hidden while its block is visible)'
+          } else if (!block2) {
+            verdict['multi-image-scrolled-past-first'] =
+              'FAIL(image 2 sentinel block not found)'
+          } else if (!o1 || o1.display !== 'none') {
+            verdict['multi-image-scrolled-past-first'] =
+              'FAIL(image 1 overlay visible while its block is above viewport)'
+          } else {
+            const wantTop = (block2.top - s.viewportY) * cellH
+            const gotTop = px(o2.top)
+            verdict['multi-image-scrolled-past-first'] =
+              Math.abs(gotTop - wantTop) <= 0.5
+                ? 'PASS'
+                : `FAIL(image 2 overlay top ${gotTop}px, want ${wantTop}px at its own sentinel block)`
+          }
+        }
+
+        // stray-nbsp: PASS iff image 1's overlay top matches image 1's
+        // sentinel block first row — NOT the stray NBSP row's position.
+        // Pre-fix: the stray row's false block pairs to image 1 and drags
+        // its overlay up (or fully out of place).
+        {
+          const s = results['stray-nbsp']
+          const o1 = s.overlays.find((x) => x.img === 0) || null
+          const block1 = s.blocks[0]
+          if (!o1 || o1.display === 'none') {
+            verdict['stray-nbsp'] = 'FAIL(image 1 overlay hidden while block visible)'
+          } else if (!block1) {
+            verdict['stray-nbsp'] = 'FAIL(image 1 sentinel block not found)'
+          } else {
+            const wantTop = (block1.top - s.viewportY) * cellH
+            const gotTop = px(o1.top)
+            verdict['stray-nbsp'] =
+              Math.abs(gotTop - wantTop) <= 0.5
+                ? 'PASS'
+                : `FAIL(overlay top ${gotTop}px, want ${wantTop}px — paired to stray NBSP row, not its own block)`
+          }
+        }
+        results.verdict = verdict
+      }
+
+      ;(async () => {
+        try {
+          await scenario()
+        } catch (e) {
+          results.error = String(e && e.stack ? e.stack : e)
+        }
+        document.getElementById('out').textContent =
+          'HARNESS_RESULT ' + JSON.stringify(results)
+        document.title = 'HARNESS_DONE'
+      })()
+    </script>
+  </body>
+</html>
