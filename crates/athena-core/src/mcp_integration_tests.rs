@@ -440,13 +440,18 @@ async fn oversized_tcp_json_line_is_rejected_and_connection_closes() {
     writer.write_all(b"\n").await.unwrap();
 
     // Oversized input is deliberately dropped without a JSON-RPC response.
-    assert_eq!(
-        read_line_with_timeout(&mut reader)
-            .await
-            .expect("oversized input should close the connection before the read timeout"),
-        None,
-        "oversized MCP line should close the connection without a response"
-    );
+    // The connection close can surface either as a clean EOF (Unix: read
+    // returns 0) or as a connection-reset error (Windows: the server drops
+    // the line mid-write, so the peer sees WSAECONNRESET instead of a
+    // graceful shutdown) — both are the transport refusing oversized input.
+    match read_line_with_timeout(&mut reader).await {
+        Ok(None) => {}
+        Ok(Some(line)) => panic!(
+            "oversized MCP line should close the connection without a response, got: {line}"
+        ),
+        Err("failed to read MCP response") => {} // connection reset = closed
+        Err(other) => panic!("unexpected read result for oversized input: {other}"),
+    }
     server.request_shutdown();
     assert!(server.wait_for_tcp_shutdown().await);
     server.shutdown();
