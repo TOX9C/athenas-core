@@ -24,6 +24,7 @@ use xterm_helpers::{
     attach_kitty_graphics, call_fit, capture_screen_canvas, filter_graphics_for_term,
     capture_viewport, force_redraw, freeze_screen, is_valid_terminal_dimensions, read_css_var,
     register_live_terminal, render_visible_rows_sync, reset_glyph_atlas, reset_glyph_atlas_by_id,
+    reset_glyph_atlas_for_mount,
     evict_stale_live_terminal, pane_was_evicted,
     restore_term_from_session, unfreeze_screen_now, unregister_live_terminal,
     schedule_fit, scroll_to_bottom, serialize_buffer,
@@ -2044,8 +2045,12 @@ pub fn XtermMount(
                     }
                     // (3) Rebuild the glyph atlas from the settled metrics and
                     // repaint the full viewport in this same task, so no row
-                    // can keep stale atlas coordinates.
-                    reset_glyph_atlas(&initial_term);
+                    // can keep stale atlas coordinates. A NEW pane joining
+                    // same-config siblings shares their settled atlas —
+                    // resetting it would wipe what every sibling renders
+                    // from, forcing the synchronous sibling-repair storm
+                    // (the Add Shell blackout). First mount still resets.
+                    reset_glyph_atlas_for_mount(&initial_term, &settle_family, font_size_val);
                     // (4) Commit the final geometry for the initial SIGWINCH
                     // contract. Must follow the reset, which can change cell
                     // metrics: the dimensions published below have to be the

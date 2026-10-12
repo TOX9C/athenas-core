@@ -1391,6 +1391,17 @@ pub(crate) fn unfreeze_screen_now(container: &web_sys::Element) {
 // oversized cells (the "font suddenly 2x" symptom) until restarted.
 // ---------------------------------------------------------------------------
 pub(crate) fn reset_glyph_atlas(term_val: &JsValue) {
+    // E2E/debug probe: count every atlas reset on the window so specs can
+    // assert a routine Add Shell mount does NOT reset the shared atlas
+    // (window.__athenaAtlasResets delta 0) while a genuine first mount does.
+    if let Some(window) = web_sys::window() {
+        let key = JsValue::from_str("__athenaAtlasResets");
+        let count = js_sys::Reflect::get(&window, &key)
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let _ = js_sys::Reflect::set(&window, &key, &JsValue::from_f64(count + 1.0));
+    }
     // Primary: public Terminal.clearTextureAtlas() (present in the vendored
     // bundle). Unconditionally rebuilds the WebGL glyph atlas and triggers a
     // full repaint — this is the state that holds oversized rasterization, and
@@ -1456,6 +1467,43 @@ pub(crate) fn reset_glyph_atlas(term_val: &JsValue) {
             render_visible_rows_sync(&sibling);
         }
     }
+}
+
+/// Mount-path atlas policy: a NEW pane joining existing same-config siblings
+/// shares their already-settled CharAtlasCache entry — clearing it would wipe
+/// the atlas every sibling's render model points into, forcing the
+/// synchronous sibling repair repaint (O(panes × viewport)) on every
+/// "Add Shell". Only a first mount (or config change) needs the full reset
+/// for font settle.
+pub(crate) fn reset_glyph_atlas_for_mount(
+    term_val: &JsValue,
+    font_family: &str,
+    font_size: f64,
+) {
+    let sibling_with_same_config = LIVE_TERMINALS.with(|live| {
+        live.borrow()
+            .iter()
+            .any(|(_, t)| !js_sys::Object::is(t, term_val) && same_font_config(t, font_family, font_size))
+    });
+    if sibling_with_same_config {
+        return; // atlas already settled by the sibling; plain fit() suffices
+    }
+    reset_glyph_atlas(term_val);
+}
+
+fn same_font_config(term: &JsValue, family: &str, size: f64) -> bool {
+    let Ok(options) = js_sys::Reflect::get(term, &JsValue::from_str("options")) else {
+        return false;
+    };
+    let term_family = js_sys::Reflect::get(&options, &JsValue::from_str("fontFamily"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    let term_size = js_sys::Reflect::get(&options, &JsValue::from_str("fontSize"))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or_default();
+    term_family == family && term_size == size
 }
 
 fn call0(target: &JsValue, name: &str) -> Result<JsValue, JsValue> {
