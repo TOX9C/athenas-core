@@ -189,6 +189,7 @@ jobs:
         # The terminal crate still runs its full test suite locally and in
         # the macOS release workflow (runs-on: macos-14), where the trigger
         # does not occur.
+        run: cargo test --workspace --exclude athena-terminal --locked
 
   rust-tests-windows:
     name: Rust check and tests (Windows)
