@@ -345,10 +345,24 @@ pub fn remove_worktree(repo_path: &Path, name: &str) -> Result<(), GitError> {
     let root = repo
         .workdir()
         .ok_or_else(|| GitError::Git("bare repositories cannot hold worktrees".into()))?;
-    let expected = canonicalize(root.join(WORKTREE_PREFIX).join(name));
+    let expected_raw = root.join(WORKTREE_PREFIX).join(name);
+    let prefix_raw = root.join(WORKTREE_PREFIX);
+    // Compare under ONE canonicalization policy. Windows canonicalize
+    // returns verbatim \\?\ paths, and a fallback (non-canonical) path can
+    // never prefix-match one — so when either side fails to canonicalize
+    // (e.g. the worktree is already removed), fall back to the raw
+    // constructed forms for both. The check stays meaningful either way:
+    // `name` is validated (no traversal/separators) and both paths share
+    // the same repo root.
+    let (expected, prefix) = match (
+        expected_raw.canonicalize(),
+        prefix_raw.canonicalize(),
+    ) {
+        (Ok(expected), Ok(prefix)) => (expected, prefix),
+        _ => (expected_raw, prefix_raw),
+    };
 
     // Defense in depth: never prune anything outside the managed prefix.
-    let prefix = canonicalize(root.join(WORKTREE_PREFIX));
     if !expected.starts_with(&prefix) {
         return Err(GitError::Git(format!(
             "refusing to remove worktree outside {WORKTREE_PREFIX}: {}",
