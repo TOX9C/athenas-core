@@ -173,10 +173,11 @@
       for (var mi = 0; mi < images.length; mi++) {
         if (images[mi].rows > maxRows) maxRows = images[mi].rows;
       }
+      if (maxRows > 500) maxRows = 500;
       var blocks = [];
       var cur = null;
       var scanTo = Math.min(buf.length, vy + term.rows + maxRows + 1);
-      for (var ly = Math.max(0, vy - maxRows - 1); ly < scanTo; ly++) {
+      for (var ly = Math.max(0, vy - maxRows); ly < scanTo; ly++) {
         var line = buf.getLine(ly);
         var text = line ? line.translateToString(true) : "";
         var col = text.indexOf("\u00a0");
@@ -185,12 +186,34 @@
             cur.rows++;
           } else {
             var rl = 0;
-            while (col + rl < text.length && text.charCodeAt(col + rl) === 0xa0) rl++;
+            for (var rc = col; rc < text.length; rc++) {
+              if (text.charCodeAt(rc) === 0xa0) rl++;
+            }
             cur = { top: ly, col: col, rows: 1, runLen: rl, open: true };
             blocks.push(cur);
           }
         } else if (cur) {
           cur.open = false;
+        }
+      }
+
+      // Pair images to blocks by shape (sentinel run length == image cols),
+      // oldest image to topmost matching block: OMP places images in
+      // document order and blocks come out in buffer order. Raw index pairing
+      // painted an image at another image's block whenever a stray NBSP row
+      // (false block) or an out-of-window image shifted the arrays.
+      var owner = new Array(blocks.length);
+      for (var pi = 0; pi < images.length; pi++) {
+        for (var bi = 0; bi < blocks.length; bi++) {
+          if (owner[bi]) continue;
+          if (blocks[bi].runLen >= images[pi].cols) { owner[bi] = images[pi]; break; }
+        }
+      }
+      // Order fallback for wrapped blocks (runLen != cols after reflow).
+      for (var pi2 = 0; pi2 < images.length; pi2++) {
+        if (owner.indexOf(images[pi2]) !== -1) continue;
+        for (var bi2 = 0; bi2 < blocks.length; bi2++) {
+          if (!owner[bi2] && blocks[bi2].runLen >= 2) { owner[bi2] = images[pi2]; break; }
         }
       }
 
@@ -202,7 +225,10 @@
           img.el.style.display = "none";
           continue;
         }
-        var block = i < blocks.length ? blocks[i] : null;
+        var block = null;
+        for (var oi = 0; oi < owner.length; oi++) {
+          if (owner[oi] === img) { block = blocks[oi]; break; }
+        }
         if (img.reportSettle) {
           // Anchor at capture (arm) vs first post-parse refresh: armCursor
           // is the still-unparsed cursor cell feed() would have wrongly used.
