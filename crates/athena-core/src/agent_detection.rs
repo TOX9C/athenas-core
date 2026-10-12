@@ -300,17 +300,25 @@ static FG_CACHE: std::sync::LazyLock<
 /// Returns `None` when the session has no controlling terminal or the
 /// process group is gone — callers fall back to `"shell"`.
 pub fn resolve_foreground_label(master_fd: i32, fallback_pgid: i32) -> Option<String> {
-    let mut pgid = fallback_pgid;
     // tcgetpgrp is Unix-only. On Windows there is no controlling-terminal
-    // concept and master_fd is always -1 (the ConPTY backend exposes no
-    // numeric fd), so this block never runs there.
+    // concept and the ConPTY backend exposes no numeric fd, so the probe
+    // is compiled out and the fallback pgid is used directly. The leading
+    // underscore re-binding keeps the parameter "used" on Windows.
+    #[cfg(not(unix))]
+    let _ = master_fd;
     #[cfg(unix)]
-    if master_fd >= 0 {
-        let fg_pgid = unsafe { libc::tcgetpgrp(master_fd) };
-        if fg_pgid > 0 {
-            pgid = fg_pgid;
+    let pgid = {
+        let mut pgid = fallback_pgid;
+        if master_fd >= 0 {
+            let fg_pgid = unsafe { libc::tcgetpgrp(master_fd) };
+            if fg_pgid > 0 {
+                pgid = fg_pgid;
+            }
         }
-    }
+        pgid
+    };
+    #[cfg(not(unix))]
+    let pgid = fallback_pgid;
     if pgid <= 0 {
         return None;
     }
