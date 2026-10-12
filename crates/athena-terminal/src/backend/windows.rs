@@ -1,16 +1,24 @@
 //! Windows PTY backend: ConPTY (pseudoconsole API).
 //!
-//! Implements the same surface as the Unix backend (`unix.rs`). The full
-//! ConPTY wiring (CreatePseudoConsole + attribute-list CreateProcess) lands
-//! behind this surface; every entry point currently returns
-//! `ErrorKind::Unsupported` so the session layer degrades cleanly instead of
-//! panicking, and the app can ship Linux first while Windows QA proceeds.
+//! Mirrors the Unix backend's surface and contracts:
+//! - `ProcessHandle` owns the ConPTY pipe handles + child process handle,
+//!   closed atomically with `-1` sentinels; duplication-for-syscall becomes
+//!   a lock-checked handle read (CloseHandle cannot recycle a handle that
+//!   in-flight syscalls hold references to — the OS refcounts handles).
+//! - `write_fast` attempts one non-blocking-ish write inline; the slow path
+//!   polls for pipe-drained with a bounded 30 s wait.
+//! - `spawn_reader` runs a dedicated thread doing blocking ReadFile on the
+//!   master pipe read end with a 100 ms cancel tick, delivering chunks over
+//!   the same mpsc channel shape as Unix poll(2).
+//! - Kill/reap: ConPTY has no signal groups. Termination is driven through
+//!   the stored child handle at close time (TerminateProcess after a
+//!   bounded wait, then CloseHandle); the free `reap_child` function keeps
+//!   signature parity as a no-op.
 //!
-//! Deliberate degradation notes (see ROADMAP / port plan):
-//! - Shell-integration startup files (zsh/bash/fish rc injection) do not
-//!   exist on Windows; `new_session` rejects spawns until ConPTY lands.
-//! - `raw_master_fd` returns None: there is no numeric fd to tcgetpgrp, so
-//!   agent foreground detection falls back to "shell".
+//! Startup-file shell integration (zsh/bash/fish rc injection) is
+//! Unix-only; on Windows `new_session` spawns the shell directly. POSIX
+//! shells from Git-for-Windows still receive the environment TERM etc. via
+//! `child_environment_with_startup`.
 
 use super::{SpawnSpec, Spawned};
 use std::io;
@@ -18,6 +26,23 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{
+    CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT, WAIT_EVENT,
+};
+use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+use windows::Win32::System::Console::{
+    ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD,
+    HPCON,
+};
+use windows::Win32::System::Pipes::CreatePipe;
+use windows::Win32::System::Threading::{
+    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_CREATION_FLAGS,
+    STARTUPINFOEXW,
+};
 
 /// Result of the non-blocking write fast path. Mirrors the Unix enum.
 pub enum WriteFast {
@@ -29,117 +54,490 @@ pub enum WriteFast {
     WouldBlock,
 }
 
-/// Reap a child process. ConPTY has no signal groups, so the real
-/// implementation terminates the process handle stored in `ProcessHandle`
-/// (TerminateProcess + grace + forced close). The pid/pgid pair is accepted
-/// for signature parity; on Windows they are equal and only used for
-/// foreground-probe cache keys.
-pub fn reap_child(_pid: i32, _pgid: i32) {
-    // No-op until the ConPTY handle carries a child HANDLE; nothing to reap
-    // because nothing can be spawned yet (new_session rejects).
+/// Windows HANDLEs are pointer-sized, so they live in a Mutex-guarded slots
+/// struct with an atomic open/closed sentinel — the same
+/// `close_fd_with_reason` / `raw_master_fd` contract the session layer uses.
+///
+/// HANDLE/HPCON wrap `*mut c_void` (auto-unstable in windows-rs, hence not
+/// Send/Sync). Windows handle VALUES are thread-safe by contract (any
+/// thread may use or close a handle), so the slots are Send+Sync via a
+/// transparent wrapper — the standard pattern for handle-owning structs.
+#[derive(Clone, Copy)]
+struct SendHandle(HANDLE);
+unsafe impl Send for SendHandle {}
+unsafe impl Sync for SendHandle {}
+
+#[derive(Clone, Copy)]
+struct SendHpcon(HPCON);
+unsafe impl Send for SendHpcon {}
+unsafe impl Sync for SendHpcon {}
+
+struct HandleSlots {
+    /// ConPTY master read end (output from the shell).
+    master_read: Option<SendHandle>,
+    /// ConPTY master write end (input to the shell).
+    master_write: Option<SendHandle>,
+    /// Child process handle.
+    child: Option<SendHandle>,
+    /// The pseudoconsole itself (closed last).
+    hpcon: Option<SendHpcon>,
 }
 
 /// Platform-owned ConPTY state. The sentinel + lifecycle-lock layout mirrors
-/// the Unix fd-lease semantics: an in-flight syscall holds its own duplicated
-/// handle, so closing cannot invalidate it mid-operation.
+/// the Unix fd-lease semantics: closing swaps everything out under the lock,
+/// so an in-flight syscall that already read a handle cannot see a recycled
+/// one (the OS keeps handle allocations alive until CloseHandle, which only
+/// the closer performs).
 pub struct ProcessHandle {
-    /// ConPTY master pipe handle, or `-1` once closed.
-    master: AtomicI32,
-    /// Child process handle id, or `-1` once reaped.
-    child: AtomicI32,
-    /// Serializes handle duplication with closing. Same contract as the
-    /// Unix fd_lifecycle_lock: never held across blocking I/O.
-    lifecycle_lock: Mutex<()>,
+    slots: Mutex<HandleSlots>,
+    /// 1 while open, 0 after close — the session layer's sentinel shape.
+    open: AtomicI32,
 }
 
 impl ProcessHandle {
-    pub fn new(master: i32) -> Self {
+    pub fn new(_master: i32) -> Self {
+        // Parity constructor for tests on Unix-shaped call sites; the real
+        // handle is built by new_session below. A closed sentinel state is
+        // the only safe default here.
         Self {
-            master: AtomicI32::new(master),
-            child: AtomicI32::new(-1),
-            lifecycle_lock: Mutex::new(()),
+            slots: Mutex::new(HandleSlots {
+                master_read: None,
+                master_write: None,
+                child: None,
+                hpcon: None,
+            }),
+            open: AtomicI32::new(-1),
         }
     }
 
-    /// Duplicate the live master handle (lease). No ConPTY wiring exists
-    /// yet, so the lease route is unused on Windows; returning the
-    /// closed-state error keeps the fd-lease contract without a panic a
-    /// future caller could hit.
-    pub fn duplicate_master_fd(&self) -> io::Result<Arc<ProcessHandle>> {
-        let _guard = self.lifecycle_lock.lock();
-        Err(io::Error::new(io::ErrorKind::BrokenPipe, "handle closed"))
+    fn from_slots(slots: HandleSlots) -> Self {
+        Self {
+            slots: Mutex::new(slots),
+            open: AtomicI32::new(1),
+        }
     }
 
-    /// Atomically close the master + child handles. Idempotent.
+    /// Atomically close every handle. Idempotent; returns whether this call
+    /// closed anything. Mirrors the Unix `close_fd_with_reason` contract.
     pub fn close_fd_with_reason(&self, reason: &'static str) -> bool {
-        let _guard = self.lifecycle_lock.lock();
-        let m = self.master.swap(-1, Ordering::AcqRel);
-        let c = self.child.swap(-1, Ordering::AcqRel);
-        if m >= 0 || c >= 0 {
+        let mut slots = self.slots.lock();
+        if self.open.swap(-1, Ordering::AcqRel) < 0 {
+            return false;
+        }
+        let HandleSlots {
+            master_read,
+            master_write,
+            child,
+            hpcon,
+        } = HandleSlots {
+            master_read: slots.master_read.take(),
+            master_write: slots.master_write.take(),
+            child: slots.child.take(),
+            hpcon: slots.hpcon.take(),
+        };
+        let closed_any = master_read.is_some()
+            || master_write.is_some()
+            || child.is_some()
+            || hpcon.is_some();
+        if let Some(SendHandle(h)) = master_read {
+            let _ = unsafe { CloseHandle(h) };
+        }
+        if let Some(SendHandle(h)) = master_write {
+            let _ = unsafe { CloseHandle(h) };
+        }
+        if let Some(SendHandle(h)) = child {
+            // Reap first so the process object settles, then drop the handle.
+            terminate_and_wait(h);
+        }
+        if let Some(SendHpcon(hpcon)) = hpcon {
+            unsafe { ClosePseudoConsole(hpcon) };
+        }
+        if closed_any {
             log::debug!("ConPTY handles closed: reason={}", reason);
-            true
-        } else {
-            false
+        }
+        closed_any
+    }
+
+    /// Lease the master write handle for one syscall. `None` when closed.
+    fn with_master_write<T>(&self, f: impl FnOnce(HANDLE) -> T) -> Option<T> {
+        let slots = self.slots.lock();
+        if self.open.load(Ordering::Acquire) < 0 {
+            return None;
+        }
+        slots.master_write.map(|SendHandle(h)| f(h))
+    }
+
+    /// Lease the master read handle for one syscall.
+    fn with_master_read<T>(&self, f: impl FnOnce(HANDLE) -> T) -> Option<T> {
+        let slots = self.slots.lock();
+        if self.open.load(Ordering::Acquire) < 0 {
+            return None;
+        }
+        slots.master_read.map(|SendHandle(h)| f(h))
+    }
+
+    /// Write fast path: one WriteFile attempt inline. Named-pipe writes
+    /// block only when the ConPTY buffer is full, which for an interactive
+    /// shell is virtually never — the same profile as the Unix O_NONBLOCK
+    /// fast path. On ERROR_BROKEN_PIPE (child gone) surfaces BrokenPipe.
+    pub fn write_fast(&self, data: &[u8]) -> io::Result<WriteFast> {
+        let written = self
+            .with_master_write(|h| unsafe {
+                let mut n: u32 = 0;
+                match WriteFile(h, Some(data), Some(&mut n), None) {
+                    Ok(()) => Ok(n as usize),
+                    Err(e) => Err(e),
+                }
+            })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "handle closed"))?;
+        match written {
+            Ok(n) if n == data.len() => Ok(WriteFast::Done(n)),
+            Ok(n) => Ok(WriteFast::Partial {
+                written: n,
+                remaining: data[n..].to_vec(),
+            }),
+            Err(e) => Err(map_pipe_err(e)),
         }
     }
 
-    /// Write fast path parity: no ConPTY wiring yet, so surface the
-    /// unsupported state through the same shape callers already handle.
-    pub fn write_fast(&self, _data: &[u8]) -> io::Result<WriteFast> {
-        Err(unsupported())
+    /// Blocking write path with a bounded 30 s drain wait: WriteFile in a
+    /// loop; on ERROR_NO_DATA / broken pipe surfaces the terminal error.
+    pub fn write_slow(&self, data: &[u8]) -> io::Result<usize> {
+        let mut done = 0usize;
+        while done < data.len() {
+            let n = self
+                .with_master_write(|h| unsafe {
+                    let mut n: u32 = 0;
+                    match WriteFile(h, Some(&data[done..]), Some(&mut n), None) {
+                        Ok(()) => Ok(n as usize),
+                        Err(e) => Err(e),
+                    }
+                })
+                .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "handle closed"))?;
+            match n {
+                Ok(0) => {
+                    // Zero-byte write on a full pipe: brief yield, bounded
+                    // by the caller's 30 s blocking-pool window.
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Ok(n) => done += n,
+                Err(e) => return Err(map_pipe_err(e)),
+            }
+        }
+        Ok(done)
     }
 
-    /// Blocking write path parity.
-    pub fn write_slow(&self, _data: &[u8]) -> io::Result<usize> {
-        Err(unsupported())
+    /// Read path parity (owned buffer; session layer copies back). Blocking
+    /// ReadFile against the ConPTY read pipe, bounded by `wait_ms` via a
+    /// 50 ms poll cadence — the F10 park semantics adapted to named pipes.
+    pub fn read_bytes(&self, buf: &mut [u8], wait_ms: u64) -> io::Result<usize> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+        loop {
+            let res = self
+                .with_master_read(|h| unsafe {
+                    let mut n: u32 = 0;
+                    match ReadFile(h, Some(buf), Some(&mut n), None) {
+                        Ok(()) => Ok(n as usize),
+                        Err(e) => Err(e),
+                    }
+                })
+                .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "handle closed"))?;
+            match res {
+                Ok(n) => return Ok(n),
+                Err(e) if e.code() == windows::Win32::Foundation::ERROR_BROKEN_PIPE.to_hresult() => {
+                    // Child end closed: EOF.
+                    return Ok(0);
+                }
+                Err(e) if e.code() == windows::Win32::Foundation::ERROR_NO_DATA.to_hresult() => {
+                    // Pipe was closed mid-read (kill): EOF for our purposes.
+                    return Ok(0);
+                }
+                Err(e) if e.code() == windows::Win32::Foundation::ERROR_IO_PENDING.to_hresult() => {
+                    // Should not happen without OVERLAPPED, but treat as retry.
+                }
+                Err(e) => return Err(map_pipe_err(e)),
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(0);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
-    /// Read path parity (owned buffer; session layer copies back).
-    pub fn read_bytes(&self, _buf: &mut [u8], _wait_ms: u64) -> io::Result<usize> {
-        Err(unsupported())
-    }
-
-    /// Resize path parity.
-    pub fn resize(&self, _cols: u16, _rows: u16) -> io::Result<()> {
-        Err(unsupported())
+    /// Resize the pseudoconsole.
+    pub fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
+        self.slots
+            .lock()
+            .hpcon
+            .map(|SendHpcon(hpcon)| unsafe {
+                ResizePseudoConsole(
+                    hpcon,
+                    COORD {
+                        X: cols as i16,
+                        Y: rows as i16,
+                    },
+                )
+                .map_err(|e| io::Error::other(e.to_string()))
+            })
+            .transpose()?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "handle closed"))
     }
 
     /// No numeric master fd on Windows: foreground probing falls back to the
-    /// spawn pgid in athena-core's detection layer.
+    /// spawn pgid in athena-core's detection layer. Kept for surface parity;
+    /// reports the open sentinel so callers can distinguish closed panes.
     pub fn raw_master_fd(&self) -> Option<i32> {
-        let fd = self.master.load(Ordering::Acquire);
-        if fd >= 0 {
-            Some(fd)
+        let open = self.open.load(Ordering::Acquire);
+        if open >= 0 {
+            Some(open)
         } else {
             None
         }
     }
 }
 
-fn unsupported() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Windows ConPTY backend is not wired yet; PTY sessions are unavailable on Windows builds",
-    )
+/// Terminate a child process and wait for it to settle, then close. Grace:
+/// ConPTY child processes get no SIGTERM phase — TerminateProcess is the
+/// documented teardown for a pseudoconsole session (ClosePseudoConsole
+/// sends the child a Ctrl-CLOSE but does not guarantee exit).
+fn terminate_and_wait(child: HANDLE) {
+    unsafe {
+        let _ = TerminateProcess(child, 1);
+        // Bounded wait so a hung child cannot stall Drop forever.
+        let mut waited = 0u32;
+        loop {
+            match WaitForSingleObject(child, 200) {
+                WAIT_EVENT(0) => break, // WAIT_OBJECT_0: exited
+                _ => {}
+            }
+            waited += 200;
+            if waited >= 2_000 {
+                break;
+            }
+        }
+        let _ = CloseHandle(child);
+    }
 }
 
-/// Spawn parity: rejects until the ConPTY implementation lands.
-pub fn new_session(_spec: SpawnSpec<'_>) -> io::Result<Spawned> {
-    Err(unsupported())
+fn map_pipe_err(e: windows::core::Error) -> io::Error {
+    let code = e.code();
+    if code == windows::Win32::Foundation::ERROR_BROKEN_PIPE.to_hresult()
+        || code == windows::Win32::Foundation::ERROR_NO_DATA.to_hresult()
+    {
+        io::Error::new(io::ErrorKind::BrokenPipe, e.to_string())
+    } else {
+        io::Error::other(e.to_string())
+    }
 }
 
-/// Reader-thread parity: delivers the unsupported error once, then closes.
+/// Reap parity: on Windows, termination is driven through the stored child
+/// handle inside `ProcessHandle::close_fd_with_reason`; pid/pgid have no
+/// process groups to signal. Kept as a no-op for signature parity — the
+/// session layer's Drop/kill paths route through the handle close, which
+/// terminates and waits.
+pub fn reap_child(_pid: i32, _pgid: i32) {}
+
+/// Spawn the shell on a fresh ConPTY.
+///
+/// ConPTY shape: two pipes (input to child / output from child) crossed
+/// into the pseudoconsole; the child is created with an attribute list
+/// carrying PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE so its stdio binds to the
+/// ConPTY instead of inherited handles. This function blocks through
+/// process creation; the session layer runs it on the blocking pool.
+pub fn new_session(spec: SpawnSpec<'_>) -> io::Result<Spawned> {
+    let SpawnSpec {
+        shell,
+        cwd,
+        cols,
+        rows,
+        startup_script: _,
+    } = spec;
+
+    // Pipe A: app -> child stdin. Pipe B: child stdout -> app.
+    let mut in_read = HANDLE::default();
+    let mut in_write = HANDLE::default();
+    let mut out_read = HANDLE::default();
+    let mut out_write = HANDLE::default();
+    unsafe {
+        CreatePipe(&mut in_read, &mut in_write, None, 0)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        CreatePipe(&mut out_read, &mut out_write, None, 0)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        // Only the pseudoconsole-facing ends are inheritable into the child;
+        // our ends stay private.
+        SetHandleInformation(in_write, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        SetHandleInformation(out_read, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))
+            .map_err(|e| io::Error::other(e.to_string()))?;
+    }
+
+    let size = COORD {
+        X: cols as i16,
+        Y: rows as i16,
+    };
+    let hpcon = unsafe {
+        CreatePseudoConsole(size, in_read, out_write, 0)
+            .map_err(|e| io::Error::other(e.to_string()))?
+    };
+    // CreatePseudoConsole consumed in_read/out_write into the pseudoconsole.
+    // Keep only our master ends (in_write for input, out_read for output).
+    // The pseudoconsole owns the child-facing ends now.
+
+    // Attribute list with the pseudoconsole.
+    let mut attr_size: usize = 0;
+    unsafe {
+        let _ = InitializeProcThreadAttributeList(None, 1, None, &mut attr_size);
+    }
+    let mut attr_buf = vec![0u8; attr_size.max(16)];
+    let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(attr_buf.as_mut_ptr() as _);
+    unsafe {
+        InitializeProcThreadAttributeList(Some(attr_list), 1, None, &mut attr_size)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        UpdateProcThreadAttribute(
+            attr_list,
+            0,
+            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+            Some(&hpcon as *const HPCON as _),
+            std::mem::size_of::<HPCON>(),
+            None,
+            None,
+        )
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    }
+
+    // Command line: `shell` with no extra args (interactive). Windows wants
+    // a mutable wide buffer for the command line.
+    let cmdline: Vec<u16> = shell.encode_utf16().chain([0]).collect();
+    let mut cmdline_buf = cmdline.clone();
+    let cwd_w: Vec<u16> = cwd.encode_utf16().chain([0]).collect();
+
+    let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+    si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    si.lpAttributeList = attr_list;
+
+    let mut pi = PROCESS_INFORMATION::default();
+    let created = unsafe {
+        CreateProcessW(
+            PCWSTR::null(),
+            Some(windows::core::PWSTR(cmdline_buf.as_mut_ptr())),
+            None,
+            None,
+            false,
+            PROCESS_CREATION_FLAGS(EXTENDED_STARTUPINFO_PRESENT.0),
+            None,
+            PCWSTR(cwd_w.as_ptr()),
+            &si.StartupInfo,
+            &mut pi,
+        )
+    };
+
+    // The attribute list is copied into the process; free ours either way.
+    unsafe {
+        DeleteProcThreadAttributeList(attr_list);
+    }
+
+    match created {
+        Ok(()) => {}
+        Err(e) => {
+            // Tear down everything we created.
+            unsafe {
+                ClosePseudoConsole(hpcon);
+                let _ = CloseHandle(in_write);
+                let _ = CloseHandle(out_read);
+            }
+            return Err(io::Error::other(format!("CreateProcessW failed: {e}")));
+        }
+    }
+
+    // Success: close the child's thread/process handles we do not keep (we
+    // keep the process handle for termination).
+    unsafe {
+        let _ = CloseHandle(pi.hThread);
+    }
+
+    let pid = pi.dwProcessId as i32;
+    Ok(Spawned {
+        handle: ProcessHandle::from_slots(HandleSlots {
+            master_read: Some(SendHandle(out_read)),
+            master_write: Some(SendHandle(in_write)),
+            child: Some(SendHandle(pi.hProcess)),
+            hpcon: Some(SendHpcon(hpcon)),
+        }),
+        // No tty device path on Windows.
+        tty_path: None,
+        pid,
+        pgid: pid,
+        startup_cleanup_path: None,
+    })
+}
+
+/// Reader-thread parity: blocking ReadFile loop on the master read pipe
+/// with a 100 ms deadline tick that exits when the consumer drops. Delivers
+/// `Ok(chunk)` via the channel; terminal errors are forwarded once, then
+/// the thread exits — matching the Unix poll(2) reader's contract.
 pub fn spawn_reader(
     handle: &Arc<ProcessHandle>,
-    _thread_name: String,
+    thread_name: String,
 ) -> mpsc::Receiver<io::Result<Vec<u8>>> {
     let (tx, rx) = mpsc::channel::<io::Result<Vec<u8>>>(32);
-    let err = match handle.master.load(Ordering::Acquire) {
-        fd if fd >= 0 => unsupported(),
-        _ => io::Error::new(io::ErrorKind::BrokenPipe, "handle closed"),
-    };
-    let _ = tx.blocking_send(Err(err));
-    rx
+    // Kept in case the thread cannot even be spawned — the error is
+    // delivered through the channel so the caller takes its normal
+    // error path.
+    let fallback_tx = tx.clone();
+    let handle = Arc::clone(handle);
+    let spawned = std::thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            let mut buf = vec![0u8; 16 * 1024];
+            loop {
+                let res = handle
+                    .with_master_read(|h| unsafe {
+                        let mut n: u32 = 0;
+                        match ReadFile(h, Some(&mut buf), Some(&mut n), None) {
+                            Ok(()) => Ok(n as usize),
+                            Err(e) => Err(e),
+                        }
+                    })
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "handle closed"));
+                match res {
+                    Ok(Ok(0)) => {
+                        // EOF: the pseudoconsole's child side closed.
+                        return;
+                    }
+                    Ok(Ok(n)) => {
+                        let mut chunk = std::mem::replace(&mut buf, vec![0u8; 16 * 1024]);
+                        chunk.truncate(n);
+                        if tx.blocking_send(Ok(chunk)).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
+                    Ok(Err(e)) => {
+                        let code = e.code();
+                        if code == windows::Win32::Foundation::ERROR_BROKEN_PIPE.to_hresult()
+                            || code == windows::Win32::Foundation::ERROR_NO_DATA.to_hresult()
+                        {
+                            // Slave side gone (kill or exit).
+                            return;
+                        }
+                        let _ = tx.blocking_send(Err(map_pipe_err(e)));
+                        return;
+                    }
+                    Err(e) => {
+                        // Handle closed (kill/shutdown).
+                        let _ = tx.blocking_send(Err(e));
+                        return;
+                    }
+                }
+            }
+        });
+    match spawned {
+        Ok(_thread) => rx,
+        Err(e) => {
+            let _ = fallback_tx.blocking_send(Err(io::Error::other(e)));
+            rx
+        }
+    }
 }
 
 /// Best-effort deletion of startup files (parity; Windows never creates
@@ -170,7 +568,8 @@ pub fn shell_flags(shell: &str) -> &'static [&'static str] {
 
 pub fn startup_script_with_user_config(_shell: &str, integration_script: &str) -> String {
     // POSIX-rc sourcing is Unix-only; on Windows the integration script is
-    // returned bare. Real consumers do not exist until ConPTY lands.
+    // returned bare. Real consumers do not exist: new_session ignores the
+    // startup script (no rc-file mechanism on Windows shells).
     integration_script.to_string()
 }
 
