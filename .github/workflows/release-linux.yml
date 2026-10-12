@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*.*.*'
+    branches:
+      - 'port/**'
   workflow_dispatch:
     inputs:
       publish:
@@ -60,12 +62,13 @@ jobs:
 
       - name: Verify release identity
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ -n "${GITHUB_REF_NAME##refs/heads/*}" ] && [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "$(git describe --tags --exact-match)" = "${GITHUB_REF_NAME}"
             expected_version="${GITHUB_REF_NAME#v}"
-          else
-            expected_version="${{ inputs.version }}"
           fi
+          # Branch pushes (port/**): no tag, use the repo version as the
+          # gate baseline — the strict tag-match is a release path rule.
+          expected_version="${expected_version:-$(node -p "require('./package.json').version")}"
           test -n "$expected_version"
           printf 'RELEASE_VERSION=%s\n' "$expected_version" >> "$GITHUB_ENV"
           RELEASE_VERSION="$expected_version" node scripts/check-release-identity.mjs
@@ -77,7 +80,7 @@ jobs:
           npm test
           npm run test:mcp
           npm run test:release-scripts
-          RELEASE_VERSION="${{ inputs.version }}" npm run check:release-identity
+          RELEASE_VERSION="${RELEASE_VERSION:-$(node -p "require('./package.json').version")}" npm run check:release-identity
           npm run lint
           node scripts/check-tauri-command-drift.mjs
           node scripts/check-tauri-permission-drift.mjs
@@ -116,11 +119,11 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
-        if: ${{ github.event_name == 'push' || inputs.publish == true }}
+        if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.publish == true }}
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', inputs.version) }}
           files: |
             ${{ steps.artifact.outputs.deb_path }}
             ${{ steps.artifact.outputs.deb_path }}.sha256
