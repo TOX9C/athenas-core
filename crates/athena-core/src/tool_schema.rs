@@ -531,10 +531,14 @@ mod tests {
 
     #[test]
     fn cli_agents_still_wrap_the_prompt() {
-        assert_eq!(
-            build_agent_command("claude", Some("hello world")),
+        // shell-escape quotes with single quotes on Unix and double quotes
+        // on Windows; both are correct escaping for the platform's shell.
+        let expected = if cfg!(windows) {
+            "claude -p \"hello world\""
+        } else {
             "claude -p 'hello world'"
-        );
+        };
+        assert_eq!(build_agent_command("claude", Some("hello world")), expected);
         assert_eq!(build_agent_command("codex", None), "codex");
     }
 }
