@@ -92,6 +92,7 @@
 
     var paneId = null;
     function logPlace(phase, msg) {
+      if (!(window.__athenaKittyDebug === true)) return;
       try {
         if (paneId === null) {
           var m = term.element && term.element.closest &&
@@ -402,13 +403,16 @@
       }
       var decoded = data ? b64decode(data) : null;
       if (a === "t") {
-        var failText = null;
         if (!decoded) {
-          // TEMP: self-report into the pane — backend logging has proven
-          // unreliable during this debug session.
+          // Decode failed: report to console only. The EINVAL response to
+          // the sender already carries the failure — never write
+          // diagnostics into the user's pane.
           var body = parsed.data || "";
-          failText = "\r\n[kitty FAIL a=t i=" + (params.i||"0") + " len=" + body.length + " head=" + JSON.stringify(body.slice(0, 50)) + " tail=" + JSON.stringify(body.slice(-30)) + " atobTest=" + (function(){ try { atob(body.slice(0,64)); return "ok"; } catch (e) { return "ERR:" + e; } })() + "]\r\n";
-          try { term.write(failText); } catch (_) {}
+          console.warn("[kitty] a=t decode failed",
+            "i=" + (params.i || "0"),
+            "len=" + body.length,
+            "head=" + JSON.stringify(body.slice(0, 50)),
+            "tail=" + JSON.stringify(body.slice(-30)));
         }
         if (decoded) transmitted[params.i || "0"] = { params: params, data: decoded };
         if (quiet < 1) respond("\x1b_G" + idFlag + (decoded ? ";OK" : ";EINVAL:empty") + "\x1b\\");
