@@ -43,8 +43,8 @@ const metadata = [
   ['src-tauri/Cargo.toml', cargoVersion(tauriCargo)],
 ]
 const lockfile = read('Cargo.lock')
-const lockVersion = (crate) =>
-  lockfile.match(new RegExp(`name = "${crate}"\nversion = "([^"]+)"`))?.[1]
+const lockVersion = (crate, lockText = lockfile) =>
+  lockText.match(new RegExp(`name = "${crate}"\\r?\\nversion = "([^"]+)"`))?.[1]
 metadata.push(
   ['Cargo.lock athenas-core', lockVersion('athenas-core')],
   ['Cargo.lock athena-frontend', lockVersion('athena-frontend')],
