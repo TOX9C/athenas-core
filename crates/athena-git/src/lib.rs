@@ -833,7 +833,16 @@ mod tests {
                 fs::remove_dir_all(&dir).unwrap();
             }
             fs::create_dir_all(&dir).unwrap();
-            git2::Repository::init(&dir).unwrap();
+            // Windows git defaults to core.autocrlf=true, which rewrites
+            // working-tree files to CRLF on checkout and breaks the tests'
+            // byte-exact content assertions. The app itself never wants
+            // line-ending conversion on agent worktrees either — pin the
+            // raw-transfer behavior so all platforms see identical bytes.
+            let repo = git2::Repository::init(&dir).unwrap();
+            repo.config()
+                .unwrap()
+                .set_str("core.autocrlf", "false")
+                .unwrap();
             TempRepo(dir)
         }
 
