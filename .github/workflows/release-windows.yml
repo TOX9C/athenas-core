@@ -1,0 +1,124 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the verified artifacts to the GitHub release'
+        required: true
+        default: false
+        type: boolean
+      version:
+        description: 'Version to build for a manual dispatch (for example 3.4.2)'
+        required: true
+        default: '3.4.2'
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout release revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --version 0.7.9 --locked
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version 2.11.1 --locked
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release identity
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            test "$(git describe --tags --exact-match)" = "${GITHUB_REF_NAME}"
+            expected_version="${GITHUB_REF_NAME#v}"
+          else
+            expected_version="${{ inputs.version }}"
+          fi
+          test -n "$expected_version"
+          printf 'RELEASE_VERSION=%s\n' "$expected_version" >> "$GITHUB_ENV"
+          RELEASE_VERSION="$expected_version" node scripts/check-release-identity.mjs
+
+      - name: Run release checks
+        shell: bash
+        run: |
+          bash frontend/build-dist.sh
+          cargo check --workspace --locked
+          npm test
+          npm run test:mcp
+          npm run test:release-scripts
+          RELEASE_VERSION="${{ inputs.version }}" npm run check:release-identity
+          npm run lint
+          node scripts/check-tauri-command-drift.mjs
+          node scripts/check-tauri-permission-drift.mjs
+          node scripts/check-plugin-integration.mjs
+          # Platform-neutral crates only: athena-terminal's PTY suite is
+          # Unix-shaped until ConPTY lands; athenas-core pulls the Tauri
+          # binary whose gate suite runs on macOS/Linux runners.
+          cargo test --workspace --exclude athena-terminal --exclude athenas-core --locked
+
+      - name: Build NSIS installer
+        # NSIS bundles the WebView2 bootstrapper (tauri.conf.json
+        # windows.webviewInstallMode) so first launch on a clean machine
+        # installs the runtime without user downloads.
+        run: cargo tauri build --bundles nsis
+
+      - name: Locate artifacts
+        id: artifact
+        shell: bash
+        run: |
+          setup=$(find target/release/bundle/nsis -maxdepth 1 -type f -name '*-setup.exe' -print -quit)
+          test -n "$setup"
+          echo "setup_path=$setup" >> "$GITHUB_OUTPUT"
+          # Windows artifact naming: no spaces (the macOS DMG name keeps them,
+          # GitHub normalizes on upload; keep local names clean here).
+          echo "setup_name=$(basename "$setup")" >> "$GITHUB_OUTPUT"
+
+      - name: Checksum artifact
+        shell: bash
+        run: |
+          sha256sum "${{ steps.artifact.outputs.setup_path }}" > "${{ steps.artifact.outputs.setup_path }}.sha256"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: athena-windows-${{ github.ref_name }}
+          path: |
+            ${{ steps.artifact.outputs.setup_path }}
+            ${{ steps.artifact.outputs.setup_path }}.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: ${{ github.event_name == 'push' || inputs.publish == true }}
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
+          files: |
+            ${{ steps.artifact.outputs.setup_path }}
+            ${{ steps.artifact.outputs.setup_path }}.sha256
