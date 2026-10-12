@@ -168,6 +168,7 @@
               ? gridRuns[0].top + gridRuns[0].rows - 1
               : lastRow,
             blocks: gridRuns.map((r2) => ({ top: r2.top, rows: r2.rows, col: r2.col })),
+            strayRows: runs.filter((r2) => r2.rows < 2 || r2.col > 0).map((r2) => r2.top),
             // Overlay identity: image 1 is R rows tall, image 2 is R2 rows
             // (the addon sizes overlays from each image's own c/r). A
             // hidden overlay has no styles yet, so fall back to children
