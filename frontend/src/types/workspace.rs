@@ -54,12 +54,51 @@ pub enum GridTemplate {
     X2x2,
     #[strum(serialize = "2x3")]
     X2x3,
+    #[strum(serialize = "3x2")]
+    X3x2,
     #[strum(serialize = "3x3")]
     X3x3,
     #[strum(serialize = "3x4")]
     X3x4,
     #[strum(serialize = "4x4")]
     X4x4,
+}
+
+impl GridTemplate {
+    /// Columns of the grid this template lays out. Note: variant names and
+    /// strum labels read rows x cols ("1x2" = 1 row, 2 columns), while the
+    /// grid selector's display label is cols x rows.
+    pub fn columns(&self) -> usize {
+        match self {
+            GridTemplate::X1x1 => 1,
+            GridTemplate::X1x2 => 2,
+            GridTemplate::X2x2 => 2,
+            GridTemplate::X2x3 => 3,
+            GridTemplate::X3x2 => 2,
+            GridTemplate::X3x3 => 3,
+            GridTemplate::X3x4 => 4,
+            GridTemplate::X4x4 => 4,
+        }
+    }
+
+    /// Rows of the grid this template lays out.
+    pub fn rows(&self) -> usize {
+        match self {
+            GridTemplate::X1x1 => 1,
+            GridTemplate::X1x2 => 1,
+            GridTemplate::X2x2 => 2,
+            GridTemplate::X2x3 => 2,
+            GridTemplate::X3x2 => 3,
+            GridTemplate::X3x3 => 3,
+            GridTemplate::X3x4 => 3,
+            GridTemplate::X4x4 => 4,
+        }
+    }
+
+    /// Number of pane slots the template can hold.
+    pub fn capacity(&self) -> usize {
+        self.columns() * self.rows()
+    }
 }
 
 /// Configuration for a single pane within a space.

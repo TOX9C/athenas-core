@@ -80,15 +80,9 @@ pub fn WorkspaceGrid(props: WorkspaceGridProps) -> Element {
     };
 
     let pane_count = space.panes.len();
-    let (cols, _rows) = match space.grid {
-        crate::types::workspace::GridTemplate::X1x1 => (1usize, 1usize),
-        crate::types::workspace::GridTemplate::X1x2 => (2, 1),
-        crate::types::workspace::GridTemplate::X2x2 => (2, 2),
-        crate::types::workspace::GridTemplate::X2x3 => (3, 2),
-        crate::types::workspace::GridTemplate::X3x3 => (3, 3),
-        crate::types::workspace::GridTemplate::X3x4 => (4, 3),
-        crate::types::workspace::GridTemplate::X4x4 => (4, 4),
-    };
+    // Rows derive from pane count below; only the column count comes from the
+    // template. The `3x2` label is 2 columns x 3 rows.
+    let cols = space.grid.columns();
 
     if pane_count == 0 {
         return rsx! {

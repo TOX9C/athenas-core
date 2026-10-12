@@ -21,6 +21,20 @@ pub fn grid_for_pane_count(count: usize) -> GridTemplate {
     }
 }
 
+/// Growth-only template policy for pane add/remove: keep the current
+/// template while it has spare capacity; grow to the smallest fitting
+/// template only when exceeded. Never downgrades — a user-chosen template
+/// (e.g. 4 panes in a 3x3 grid) survives adding a 5th pane as a 3x3 with
+/// two empty slots... which grows on the 10th. This stops the gratuitous
+/// whole-grid reflow (every pane resizing at once) on routine pane adds.
+pub fn ensure_grid_capacity(current: GridTemplate, pane_count: usize) -> GridTemplate {
+    if current.capacity() < pane_count {
+        grid_for_pane_count(pane_count)
+    } else {
+        current
+    }
+}
+
 /// Swap two panes within a space by pane id — *pure* core of
 /// [`WorkspaceState::swap_pane_agents`], extracted so the swap logic is
 /// unit-testable on the host without the WASM-only `save()` path. Returns
@@ -137,5 +151,76 @@ mod swap_panes_tests {
         assert!(swap_panes_by_id(&mut space, "a", "shell"));
         assert_eq!(space.panes.len(), 4);
         assert_eq!(space.grid, grid_before);
+    }
+}
+
+#[cfg(test)]
+mod ensure_grid_capacity_tests {
+    use super::*;
+    use crate::types::workspace::GridTemplate;
+
+    #[test]
+    fn keeps_template_with_spare_capacity_on_add() {
+        // 5 panes in a user-chosen 3x3 (capacity 9): the old unconditional
+        // grid_for_pane_count would downgrade to 2x3, reflowing every pane.
+        assert_eq!(
+            ensure_grid_capacity(GridTemplate::X3x3, 5),
+            GridTemplate::X3x3
+        );
+    }
+
+    #[test]
+    fn grows_only_when_exceeded() {
+        assert_eq!(
+            ensure_grid_capacity(GridTemplate::X2x2, 5),
+            GridTemplate::X2x3
+        );
+        // Exactly at capacity stays.
+        assert_eq!(
+            ensure_grid_capacity(GridTemplate::X2x2, 4),
+            GridTemplate::X2x2
+        );
+    }
+
+    #[test]
+    fn growth_matches_grid_for_pane_count() {
+        assert_eq!(
+            ensure_grid_capacity(GridTemplate::X1x1, 2),
+            grid_for_pane_count(2)
+        );
+        assert_eq!(
+            ensure_grid_capacity(GridTemplate::X2x3, 7),
+            grid_for_pane_count(7)
+        );
+    }
+
+    #[test]
+    fn never_shrinks() {
+        assert_eq!(
+            ensure_grid_capacity(GridTemplate::X4x4, 3),
+            GridTemplate::X4x4
+        );
+    }
+
+    #[test]
+    fn template_dimensions_are_consistent() {
+        let all = [
+            (GridTemplate::X1x1, 1, 1),
+            (GridTemplate::X1x2, 2, 1),
+            (GridTemplate::X2x2, 2, 2),
+            (GridTemplate::X2x3, 3, 2),
+            (GridTemplate::X3x2, 2, 3),
+            (GridTemplate::X3x3, 3, 3),
+            (GridTemplate::X3x4, 4, 3),
+            (GridTemplate::X4x4, 4, 4),
+        ];
+        // Variant names and strum labels follow rows x cols ("1x2" = 1 row,
+        // 2 columns); the selector's display label is cols x rows (pre-existing).
+        for (t, cols, rows) in all {
+            assert_eq!(t.columns(), cols, "{:?} columns", t);
+            assert_eq!(t.rows(), rows, "{:?} rows", t);
+            assert_eq!(t.capacity(), cols * rows, "{:?} capacity", t);
+            assert_eq!(format!("{}", t), format!("{rows}x{cols}"), "{:?} label", t);
+        }
     }
 }

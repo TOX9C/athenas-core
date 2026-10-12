@@ -14,6 +14,7 @@ pub fn GridTemplateSelector(props: GridTemplateSelectorProps) -> Element {
         GridTemplate::X1x2,
         GridTemplate::X2x2,
         GridTemplate::X2x3,
+        GridTemplate::X3x2,
         GridTemplate::X3x3,
         GridTemplate::X3x4,
         GridTemplate::X4x4,
@@ -27,15 +28,8 @@ pub fn GridTemplateSelector(props: GridTemplateSelectorProps) -> Element {
                 {
                     let tmpl_val = *tmpl;
                     let is_selected = tmpl_val == props.selected;
-                    let (cols, rows) = match tmpl_val {
-                        GridTemplate::X1x1 => (1, 1),
-                        GridTemplate::X1x2 => (2, 1),
-                        GridTemplate::X2x2 => (2, 2),
-                        GridTemplate::X2x3 => (3, 2),
-                        GridTemplate::X3x3 => (3, 3),
-                        GridTemplate::X3x4 => (4, 3),
-                        GridTemplate::X4x4 => (4, 4),
-                    };
+                    let cols = tmpl_val.columns();
+                    let rows = tmpl_val.rows();
                     let label = format!("{}x{}", cols, rows);
                     let border = if is_selected { "1px solid var(--accent)" } else { "1px solid var(--border)" };
                     let bg = if is_selected { "var(--accentSubtle)" } else { "var(--bgTertiary)" };

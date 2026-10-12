@@ -15,7 +15,7 @@ pub use crate::types::workspace::{AgentType, GridTemplate, PaneConfig, Space};
 #[path = "workspace_helpers.rs"]
 mod workspace_helpers;
 
-pub use workspace_helpers::{grid_for_pane_count, swap_panes_by_id};
+pub use workspace_helpers::{ensure_grid_capacity, grid_for_pane_count, swap_panes_by_id};
 
 /// Key used in KeyValueStore for workspace persistence.
 const WORKSPACES_KEY: &str = "workspaces";
@@ -148,7 +148,9 @@ impl WorkspaceState {
     pub fn add_pane_to_space(&mut self, space_id: &str, pane: PaneConfig) {
         if let Some(space) = self.spaces.iter_mut().find(|s| s.id == space_id) {
             space.panes.push(pane);
-            space.grid = grid_for_pane_count(space.panes.len());
+            // Growth-only: never reflow the whole grid just because a pane
+            // was added — only grow when the current template overflows.
+            space.grid = ensure_grid_capacity(space.grid, space.panes.len());
         }
         self.save();
     }
@@ -156,7 +158,10 @@ impl WorkspaceState {
     pub fn remove_pane_from_space(&mut self, space_id: &str, pane_id: &str) {
         if let Some(space) = self.spaces.iter_mut().find(|s| s.id == space_id) {
             space.panes.retain(|p| p.id != pane_id);
-            space.grid = grid_for_pane_count(space.panes.len());
+            // Keep the template on removal (extra capacity renders no extra
+            // cells — rows derive from pane count), so re-adding a pane
+            // doesn't re-trigger the reflow either.
+            space.grid = ensure_grid_capacity(space.grid, space.panes.len());
         }
         self.save();
     }
