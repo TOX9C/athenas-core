@@ -28,7 +28,7 @@ pub(crate) static MCP_RUNTIME_STOP_TX: std::sync::Mutex<Option<tokio::sync::watc
 pub struct TauriEventSender {
     app_handle: Arc<parking_lot::Mutex<Option<AppHandle>>>,
     pending_questions: Arc<parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
-    session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
+    session_manager: Arc<athena_terminal::session::SessionManager>,
     /// Best-effort synchronous cache of "known" session IDs so that
     /// `has_session` can answer from a sync trait method.
     active_sessions: Arc<parking_lot::Mutex<HashSet<String>>>,
@@ -53,7 +53,7 @@ impl TauriEventSender {
         pending_questions: Arc<
             parking_lot::Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
         >,
-        session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
+        session_manager: Arc<athena_terminal::session::SessionManager>,
         output_buffer: Arc<athena_core::output_buffer::OutputBuffer>,
         agent_activity: Arc<athena_core::agent_activity::AgentActivityTracker>,
     ) -> Self {
@@ -178,9 +178,12 @@ impl ToolEventSender for TauriEventSender {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "/".to_string());
 
-            let sm = session_manager.lock().await;
-            let session_result = sm.spawn(id.clone(), &default_shell, &cwd, 80, 24).await;
-            drop(sm);
+            // SessionManager is internally synchronized (sessions RwLock +
+            // per-id spawn locks); no outer mutex — a slow fork cannot convoy
+            // other panes' resizes behind this spawn.
+            let session_result = session_manager
+                .spawn(id.clone(), &default_shell, &cwd, 80, 24)
+                .await;
 
             match session_result {
                 Ok(session) => {
@@ -243,8 +246,7 @@ impl ToolEventSender for TauriEventSender {
 
         handle.spawn(async move {
             for pane_id in pane_ids {
-                let sm = session_manager.lock().await;
-                if let Err(e) = sm.kill(&pane_id).await {
+                if let Err(e) = session_manager.kill(&pane_id).await {
                     log::error!("Failed to kill PTY session {}: {}", pane_id, e);
                 }
             }
@@ -265,8 +267,7 @@ impl ToolEventSender for TauriEventSender {
         };
 
         handle.spawn(async move {
-            let sm = session_manager.lock().await;
-            if let Err(e) = sm.write(&pane_id, data.as_bytes()).await {
+            if let Err(e) = session_manager.write(&pane_id, data.as_bytes()).await {
                 log::error!("Failed to write to PTY session {}: {}", pane_id, e);
             }
         });
@@ -299,12 +300,10 @@ impl ToolEventSender for TauriEventSender {
         // transient SessionManager contention into a false "No active PTY"
         // result. The live-buffer fallback covers panes that have already
         // produced output while their session lock is busy.
-        let session_manager = Arc::clone(&self.session_manager);
-        for _ in 0..4 {
-            if let Ok(sm) = session_manager.try_lock() {
-                return sm.has_session_sync(pane_id);
-            }
-            std::thread::yield_now();
+        // SessionManager::has_session_sync is itself non-blocking (uses
+        // try_read internally); no need to spin on an outer mutex here.
+        if self.session_manager.has_session_sync(pane_id) {
+            return true;
         }
 
         has_live_buffer
@@ -599,8 +598,10 @@ pub struct AppState {
     pub mcp_server: Arc<tokio::sync::Mutex<athena_core::mcp::McpServer>>,
     pub swarm_coordinator: Arc<tokio::sync::Mutex<athena_core::swarm::SwarmCoordinator>>,
 
-    /// PTY session manager for terminal operations.
-    pub session_manager: Arc<tokio::sync::Mutex<athena_terminal::session::SessionManager>>,
+    /// PTY session manager — internally synchronized; the outer tokio Mutex
+    /// was removed so `pty_resize` (every pane's SIGWINCH path) doesn't queue
+    /// behind any in-flight spawn's fork/exec.
+    pub session_manager: Arc<athena_terminal::session::SessionManager>,
 
     /// Pending user-response questions shared between TauriEventSender and
     /// the athena_user_answer command.
@@ -717,9 +718,7 @@ impl AppState {
             Some(Arc::clone(&notification_service)),
         ));
 
-        let session_manager = Arc::new(tokio::sync::Mutex::new(
-            athena_terminal::session::SessionManager::new(),
-        ));
+        let session_manager = Arc::new(athena_terminal::session::SessionManager::new());
 
         let mcp_runtime_stop = Arc::new(AtomicBool::new(false));
         let agent_heartbeat_started = Arc::new(AtomicBool::new(false));
@@ -1643,10 +1642,7 @@ impl AppState {
                     // live quiet panes every tick.
                     agent_activity
                         .prune_stale_panes(crate::commands::now_ms(), 24 * 60 * 60 * 1000);
-                    let sessions = {
-                        let sm = session_manager.lock().await;
-                        sm.list_sessions().await
-                    };
+                    let sessions = session_manager.list_sessions().await;
 
                     // Pane vanished (closed/killed) while an agent ran in it:
                     // one last buffer scan before dropping the tracking entry.
@@ -1720,11 +1716,9 @@ impl AppState {
                     for sid in &sessions {
                         let connected = plugin_panes.contains(sid);
                         agent_activity.set_plugin_connected(sid, connected);
-                        let session = {
-                            let sm = session_manager.lock().await;
-                            sm.get_session(sid).await
+                        let Some(session) = session_manager.get_session(sid).await else {
+                            continue;
                         };
-                        let Some(session) = session else { continue };
                         let fg = crate::commands::session_foreground_label(&session).await;
                         let fg_opt = if fg == "shell" { None } else { Some(fg) };
 

@@ -195,8 +195,10 @@ pub async fn pty_spawn(
     state.ensure_agent_activity_heartbeat();
 
     let integration_script = shell_integration_script(&shell_str);
-    let session_manager = state.session_manager.lock().await;
-    let session_result = session_manager
+    // SessionManager is internally synchronized; a slow spawn (fork/exec/
+    // pipe-wait) no longer queues other panes' resize behind an outer mutex.
+    let session_result = state
+        .session_manager
         .spawn_with_startup_script(
             id.clone(),
             &shell_str,
@@ -206,7 +208,6 @@ pub async fn pty_spawn(
             integration_script.as_deref(),
         )
         .await;
-    drop(session_manager);
 
     match session_result {
         Ok(session) => {
@@ -1045,18 +1046,14 @@ impl RelayReplayStore {
 pub async fn pty_write(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
     validate_session_id(&id)?;
     validate_data_size(data.as_bytes(), "pty_write data")?;
-    // Grab the session Arc under a short lock, then release the global
-    // session_manager mutex before the (potentially blocking) write. This
-    // stops one big paste from serializing every other pane's keystrokes
-    // behind it. `get_session` returns a cloned Arc and drops its read lock
-    // before returning, so the write below is lock-free.
-    let session = {
-        let session_manager = state.session_manager.lock().await;
-        session_manager
-            .get_session(&id)
-            .await
-            .ok_or_else(|| "session not found".to_string())?
-    };
+    // Grab the session Arc, then the write runs directly against it.
+    // SessionManager is internally synchronized; no outer mutex serializes
+    // one pane's big paste behind another pane's operations.
+    let session = state
+        .session_manager
+        .get_session(&id)
+        .await
+        .ok_or_else(|| "session not found".to_string())?;
     let written = session
         .write(data.as_bytes())
         .await
@@ -1090,12 +1087,10 @@ pub async fn pty_kill(state: State<'_, AppState>, id: String) -> Result<(), Stri
     // existence and captures the pgid before the kill removes the session:
     // the shared foreground cache must not serve the dead session's label to
     // a recycled pgid for up to one TTL window.
-    let session_manager = state.session_manager.lock().await;
-    let session = session_manager.get_session(&id).await;
+    let session = state.session_manager.get_session(&id).await;
     let killed_pgid = session.as_ref().map(|s| s.pgid.as_raw());
     let existed = killed_pgid.is_some();
-    let result = session_manager.kill_if_same(&id, session.as_ref()).await;
-    drop(session_manager);
+    let result = state.session_manager.kill_if_same(&id, session.as_ref()).await;
     if let Some(pgid) = killed_pgid {
         athena_core::agent_detection::invalidate_foreground_cache(pgid);
     }
@@ -1144,11 +1139,10 @@ pub async fn pty_resize(
         rows,
         owner
     );
-    let session_manager = state.session_manager.lock().await;
-    let result = session_manager
+    let result = state
+        .session_manager
         .resize(&id, cols, rows, owner.as_deref())
         .await;
-    drop(session_manager);
     result.map_err(|e| e.to_string())
 }
 
@@ -1160,9 +1154,7 @@ pub async fn pty_get_history(state: State<'_, AppState>, id: String) -> Result<S
         let wait = state.rate_limiter.retry_after_secs("pty_get_history");
         return Err(format!("Rate limit exceeded. Please wait {wait}s."));
     }
-    let session_manager = state.session_manager.lock().await;
-    let session = session_manager.get_session(&id).await;
-    drop(session_manager);
+    let session = state.session_manager.get_session(&id).await;
 
     if let Some(s) = session {
         let grid = s.grid.lock().await;
@@ -1184,9 +1176,7 @@ pub async fn pty_get_history(state: State<'_, AppState>, id: String) -> Result<S
 /// Check whether a PTY session with the given ID exists.
 #[tauri::command]
 pub async fn pty_has_session(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    let session_manager = state.session_manager.lock().await;
-    let result = session_manager.has_session(&id).await;
-    drop(session_manager);
+    let result = state.session_manager.has_session(&id).await;
     Ok(result)
 }
 
@@ -1194,24 +1184,20 @@ pub async fn pty_has_session(state: State<'_, AppState>, id: String) -> Result<b
 /// Returns true only when the session status is Ready (shell has started).
 #[tauri::command]
 pub async fn pty_is_ready(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    let session_manager = state.session_manager.lock().await;
-    let result = match session_manager.get_session(&id).await {
+    let result = match state.session_manager.get_session(&id).await {
         Some(session) => {
             let status = session.status.lock().await;
             *status == athena_terminal::session::PtyStatus::Ready
         }
         None => false,
     };
-    drop(session_manager);
     Ok(result)
 }
 
 /// Get the working directory of a PTY session, if known.
 #[tauri::command]
 pub async fn pty_get_cwd(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
-    let session_manager = state.session_manager.lock().await;
-    let session = session_manager.get_session(&id).await;
-    drop(session_manager);
+    let session = state.session_manager.get_session(&id).await;
 
     if let Some(s) = session {
         Ok(Some(s.cwd.clone()))
@@ -1253,9 +1239,7 @@ pub fn agent_activity_acknowledge(state: State<'_, AppState>, pane_id: String) {
 /// extract its current task title from the agent's own state files.
 #[tauri::command]
 pub async fn pty_agent_info(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    let session_manager = state.session_manager.lock().await;
-    let session = session_manager.get_session(&id).await;
-    drop(session_manager);
+    let session = state.session_manager.get_session(&id).await;
 
     let Some(s) = session else {
         let info = AgentInfo {
@@ -1317,9 +1301,7 @@ pub async fn pty_foreground_process(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<String, String> {
-    let session_manager = state.session_manager.lock().await;
-    let session = session_manager.get_session(&id).await;
-    drop(session_manager);
+    let session = state.session_manager.get_session(&id).await;
 
     if let Some(s) = session {
         // Shared TTL-cached tcgetpgrp + ps classification (see
@@ -1400,8 +1382,10 @@ pub async fn pty_spawn_agent(
     state.ensure_agent_activity_heartbeat();
 
     let integration_script = shell_integration_script(&shell_str);
-    let session_manager = state.session_manager.lock().await;
-    let session_result = session_manager
+    // SessionManager is internally synchronized; a slow spawn (fork/exec/
+    // pipe-wait) no longer queues other panes' resize behind an outer mutex.
+    let session_result = state
+        .session_manager
         .spawn_with_startup_script(
             id.clone(),
             &shell_str,
@@ -1411,7 +1395,6 @@ pub async fn pty_spawn_agent(
             integration_script.as_deref(),
         )
         .await;
-    drop(session_manager);
 
     match session_result {
         Ok(session) => {
@@ -1500,8 +1483,7 @@ pub async fn pty_set_xterm(
     id: String,
     is_xterm: bool,
 ) -> Result<(), String> {
-    let sm = state.session_manager.lock().await;
-    if let Some(session) = sm.get_session(&id).await {
+    if let Some(session) = state.session_manager.get_session(&id).await {
         session
             .is_xterm
             .store(is_xterm, std::sync::atomic::Ordering::Relaxed);
@@ -1525,8 +1507,7 @@ pub(crate) async fn pty_attach_listener_impl(
     replace_current: Option<bool>,
 ) -> Result<String, String> {
     validate_session_id(&id)?;
-    let sm = state.session_manager.lock().await;
-    if let Some(session) = sm.get_session(&id).await {
+    if let Some(session) = state.session_manager.get_session(&id).await {
         let generation = session
             .attach_listener(owner, replace_current.unwrap_or(false))
             .ok_or_else(|| "a newer listener is already attached".to_string())?;
@@ -1598,8 +1579,7 @@ pub async fn pty_detach_listener(
     let generation = generation
         .parse::<u64>()
         .map_err(|_| "invalid listener generation".to_string())?;
-    let sm = state.session_manager.lock().await;
-    if let Some(session) = sm.get_session(&id).await {
+    if let Some(session) = state.session_manager.get_session(&id).await {
         let paused = if generation == 0 {
             session.cancel_startup_pause(&owner)
         } else {

@@ -76,6 +76,7 @@ fn main() {
             // Diagnostics
             diagnostics_export,
             frontend_log,
+            resource_stats,
             // Window
             window_minimize,
             window_maximize,
@@ -665,8 +666,7 @@ fn start_graceful_shutdown(app_handle: &tauri::AppHandle) {
                 let session_shutdown = tokio::time::timeout(
                     std::time::Duration::from_millis(2_200),
                     async {
-                        let manager = state.session_manager.lock().await;
-                        manager.shutdown_all().await;
+                        state.session_manager.shutdown_all().await;
                     },
                 )
                 .await;

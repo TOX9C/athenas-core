@@ -97,12 +97,33 @@ struct ResizeTestProbe {
     continue_after_acquire: Arc<tokio::sync::Notify>,
 }
 
+/// Test probe for the per-id spawn critical section: `parked` fires once the
+/// id lock is held (map lock NOT held); `release` lets the spawn continue and
+/// actually fork. See the convoy test
+/// `resize_of_other_id_completes_while_spawn_waits` (Task 4).
+#[cfg(test)]
+#[derive(Clone)]
+struct SpawnParkProbe {
+    parked: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
 #[cfg(test)]
 impl ResizeTestProbe {
     fn new() -> Self {
         Self {
             acquired: Arc::new(tokio::sync::Notify::new()),
             continue_after_acquire: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl SpawnParkProbe {
+    fn new() -> Self {
+        Self {
+            parked: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -848,6 +869,17 @@ impl TerminalSession {
 /// Manages all active PTY sessions.
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, Arc<TerminalSession>>>>,
+    /// Per-id spawn critical sections. Serialize same-id spawns (the
+    /// duplicate-id race) WITHOUT holding the sessions map lock across the
+    /// fork/exec/pipe-wait, so unrelated resizes/kills never queue behind a
+    /// slow spawn (the SIGWINCH convoy after Add Shell).
+    spawn_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Test probe: park a spawn INSIDE its critical section (id lock held,
+    /// map lock not) to prove unrelated resizes don't convoy behind it.
+    /// Notifies `parked` once the per-id spawn guard is taken, then blocks
+    /// until `release` fires — mirroring the `ResizeTestProbe` shape.
+    #[cfg(test)]
+    spawn_park_probe: Option<Arc<SpawnParkProbe>>,
 }
 
 /// Return flags that keep the app terminal independent from broken or
@@ -981,7 +1013,17 @@ impl SessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            spawn_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            spawn_park_probe: None,
         }
+    }
+
+    /// Test-only: park a spawn inside its critical section (id lock held,
+    /// map lock not) to prove unrelated resizes don't convoy behind it.
+    #[cfg(test)]
+    fn set_spawn_park_probe(&mut self, probe: Option<Arc<SpawnParkProbe>>) {
+        self.spawn_park_probe = probe;
     }
 
     pub async fn spawn(
@@ -1010,37 +1052,58 @@ impl SessionManager {
             id, shell, cwd
         );
 
-        // P1-2 / Task 4.3 atomic check-insert fix.
-        //
-        // Hold the `write()` lock for the ENTIRE critical section so that the
-        // "does this id exist?" check and the "insert new session" write are
-        // atomic with respect to every other `spawn` call. Without this, two
-        // concurrent callers using the same `id` could both pass the read-lock
-        // check, both fork(), and the second `insert` would overwrite the
-        // first — closing its master_fd, sending SIGTERM to a possibly
-        // unrelated process group, and orphaning the child as a zombie.
-        //
-        // This serializes concurrent `spawn` calls (even on different ids) for
-        // the duration of a fork+exec+error-pipe-wait. That is acceptable:
-        // spawns are rare user actions, the work is short, and the alternative
-        // (per-id locks or an in-flight spawns set) adds complexity for a
-        // non-hot path.
-        let mut sessions = self.sessions.write().await;
-        if let Some(existing) = sessions.get(&id).cloned() {
-            let is_exited = {
-                let status = existing.status.lock().await;
-                *status == PtyStatus::Exited
-            };
-            if is_exited {
-                // A natural PTY exit leaves the old Arc alive until its reader
-                // task finishes. Remove only the map entry here; the old task
-                // retains ownership of its fd/process cleanup, and this new
-                // spawn gets a fresh reader claim and PTY.
-                sessions.remove(&id);
-            } else {
-                info!("PTY session {} already exists, returning existing", id);
-                return Ok(existing);
+        // Per-id critical section: concurrent spawns of the SAME id serialize
+        // here (so the check-insert stays atomic w.r.t. that race), while
+        // spawns of different ids — and every other id's resize/kill/read —
+        // proceed without queuing behind this fork/exec/pipe-wait. The old
+        // code held the sessions map write lock for the ENTIRE body, which
+        // convoyed every other pane's SIGWINCH behind a new shell spawn
+        // (Task 4, new-terminal blackout).
+        let id_lock = {
+            let mut locks = self.spawn_locks.lock().await;
+            Arc::clone(locks.entry(id.clone()).or_default())
+        };
+        let _id_guard = id_lock.lock().await;
+
+        // Initial check under a read lock; no map lock is held during
+        // fork/exec below. Fast path: same id already live → return it.
+        {
+            let sessions = self.sessions.read().await;
+            if let Some(existing) = sessions.get(&id).cloned() {
+                let is_exited = {
+                    let status = existing.status.lock().await;
+                    *status == PtyStatus::Exited
+                };
+                if !is_exited {
+                    info!("PTY session {} already exists, returning existing", id);
+                    return Ok(existing);
+                }
             }
+        }
+        // Exited cleanup under a SHORT write lock (still holding the per-id
+        // lock, so no other same-id spawn can race in). A natural PTY exit
+        // leaves the old Arc alive until its reader task finishes; remove
+        // only the map entry here — the old task keeps its fd cleanup.
+        {
+            let mut sessions = self.sessions.write().await;
+            if let Some(existing) = sessions.get(&id).cloned() {
+                let is_exited = {
+                    let status = existing.status.lock().await;
+                    *status == PtyStatus::Exited
+                };
+                if is_exited {
+                    sessions.remove(&id);
+                }
+            }
+        }
+
+        // Test probe: park mid-critical-section — id lock held, map lock NOT
+        // held, fork not yet done. Lets resize_of_other_id_… prove the
+        // convoy is gone.
+        #[cfg(test)]
+        if let Some(probe) = self.spawn_park_probe.clone() {
+            probe.parked.notify_one();
+            probe.release.notified().await;
         }
 
         // Create a pipe for the child to report pre-exec errors.
@@ -1213,6 +1276,24 @@ impl SessionManager {
                     unsafe { libc::_exit(1) };
                 }
 
+                // Rust's std runtime sets SIGPIPE to SIG_IGN in the parent,
+                // and ignored dispositions survive execve. A hand-rolled
+                // fork/exec (unlike std::process::Command) must restore
+                // SIG_DFL itself, or every command in the spawned shell
+                // inherits EPIPE-returning writes (`yes | head` errors
+                // instead of dying silently). The forking thread can also
+                // be a tokio worker with signals blocked, so clear the mask.
+                unsafe {
+                    let mut action: libc::sigaction = std::mem::zeroed();
+                    libc::sigemptyset(&mut action.sa_mask);
+                    action.sa_sigaction = libc::SIG_DFL;
+                    libc::sigaction(libc::SIGPIPE, &action, std::ptr::null_mut());
+
+                    let mut empty_mask: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut empty_mask);
+                    libc::sigprocmask(libc::SIG_SETMASK, &empty_mask, std::ptr::null_mut());
+                }
+
                 // Make this PTY the controlling terminal for the new session.
                 // This is critical for interactive shells (readline line editing,
                 // job control, SIGINT on Ctrl+C, etc.).
@@ -1309,14 +1390,15 @@ impl SessionManager {
                     startup_cleanup_path.clone(),
                 ));
 
-                // Defensive re-check: with the write lock held continuously
-                // from the top of the function, this branch is unreachable
-                // (no other `spawn` task could have inserted the same id).
-                // We keep it as a safety net in case the lock scope is ever
-                // refactored (e.g. to swap in a per-id lock or in-flight set)
-                // and a future contributor re-introduces a release point
-                // between the initial check and this insert.
+                // Defensive duplicate re-check under a SHORT write lock. A
+                // same-id spawn can't arrive here concurrently (the per-id
+                // lock at fn top serializes them), but a future contributor
+                // could move the lock-Map entry or add another insert path;
+                // keep this net: close the duplicate's fd, SIGTERM its
+                // process group, reap it, and return the winner's session.
+                let mut sessions = self.sessions.write().await;
                 if let Some(existing) = sessions.get(&id).cloned() {
+                    drop(sessions);
                     session.close_fd_with_reason("duplicate_session");
                     let _ =
                         nix::sys::signal::killpg(session.pgid, nix::sys::signal::Signal::SIGTERM);
@@ -1324,8 +1406,20 @@ impl SessionManager {
                         nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG));
                     return Ok(existing);
                 }
-
                 sessions.insert(id.clone(), session.clone());
+                drop(sessions);
+                // Prune our per-id lock entry so the map doesn't grow with
+                // one-off pane ids. `Arc::ptr_eq` guards against a racer that
+                // already replaced the entry; if so, that racer's own prune
+                // will handle it at ITS release. Per waiter safety, we hold
+                // our guard to the end of this scope, so a queued same-id
+                // spawn that already cloned this Arc will still get the slot
+                // once our guard drops below.
+                let mut locks = self.spawn_locks.lock().await;
+                if matches!(locks.get(&id), Some(lock) if Arc::ptr_eq(lock, &id_lock)) {
+                    locks.remove(&id);
+                }
+                drop(locks);
                 Ok(session)
             }
             Err(e) => {
@@ -2059,6 +2153,48 @@ mod tests {
         assert!(manager.has_session("same_id").await);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn child_shell_has_default_sigpipe_disposition() {
+        let manager = SessionManager::new();
+        let session = manager
+            .spawn("sigpipe-test".to_string(), "/bin/sh", "/", 80, 24)
+            .await
+            .expect("spawn /bin/sh");
+        let mut rx = session.spawn_reader();
+        session.mark_ready().await;
+        // With SIGPIPE inherited as SIG_IGN (Rust std parenting without a
+        // reset in the child), `yes` sees write() return EPIPE and prints a
+        // "Broken pipe" error instead of dying on the signal: GNU yes prints
+        // "yes: standard output: Broken pipe", BSD yes prints
+        // "yes: stdout: Broken pipe".
+        session
+            .write(b"yes | head -1; echo SIGPIPE_MARK\n")
+            .await
+            .expect("write probe");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut collected = Vec::new();
+        loop {
+            match tokio::time::timeout_at(deadline.into(), rx.recv()).await {
+                Ok(Some(Ok(chunk))) => {
+                    collected.extend_from_slice(&chunk);
+                    if collected
+                        .windows(12)
+                        .any(|w| w == b"SIGPIPE_MARK".as_slice())
+                    {
+                        break;
+                    }
+                }
+                other => panic!("reader ended early or timed out: {other:?}"),
+            }
+        }
+        let out = String::from_utf8_lossy(&collected);
+        assert!(
+            !out.contains("Broken pipe"),
+            "child inherited ignored SIGPIPE: {out}"
+        );
+        manager.kill("sigpipe-test").await.ok();
+    }
+
     #[tokio::test]
     async fn spawn_nonexistent_shell_fails_cleanly() {
         let manager = SessionManager::new();
@@ -2312,6 +2448,49 @@ mod tests {
             .kill("resize-owner-race")
             .await
             .expect("kill should succeed");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn resize_of_other_id_completes_while_spawn_waits() {
+        // Session A spawn: no probe armed yet — runs normally.
+        let mut manager = SessionManager::new();
+        manager
+            .spawn("convoy-a".to_string(), "/bin/sh", "/", 80, 24)
+            .await
+            .expect("spawn A should succeed");
+
+        // Arm the probe so B's spawn parks right after its per-id lock is
+        // taken.
+        let probe = Arc::new(SpawnParkProbe::new());
+        manager.set_spawn_park_probe(Some(Arc::clone(&probe)));
+        let manager = Arc::new(manager);
+
+        let manager_b = Arc::clone(&manager);
+        let spawn_b = tokio::spawn(async move {
+            manager_b
+                .spawn("convoy-b".to_string(), "/bin/sh", "/", 80, 24)
+                .await
+        });
+        // Wait until B parks inside its critical section (per-id lock held,
+        // map lock NOT held).
+        probe.parked.notified().await;
+
+        // Resize of an unrelated id must NOT queue behind B's wait.
+        let resized = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            manager.resize("convoy-a", 100, 30, None),
+        )
+        .await
+        .expect("resize of convoy-a must not queue behind parked spawn convoy-b");
+        assert!(resized.is_ok());
+
+        probe.release.notify_one();
+        spawn_b
+            .await
+            .expect("spawn B task should not panic")
+            .expect("spawn B should succeed");
+        manager.kill("convoy-a").await.expect("kill A should succeed");
+        manager.kill("convoy-b").await.expect("kill B should succeed");
     }
 
     #[test]

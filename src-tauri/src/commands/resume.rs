@@ -230,10 +230,7 @@ async fn capture_resume_ids_on_exit_inner(state: &AppState, wait_ms: u64) -> (us
     // pass must eat into the same budget as the poll, or a slow classify
     // collides with the outer stall-guard timeout.
     let started = tokio::time::Instant::now();
-    let all_sessions = {
-        let sm = state.session_manager.lock().await;
-        sm.list_sessions().await
-    };
+    let all_sessions = state.session_manager.list_sessions().await;
     log::info!(
         "capture discovered {} live PTY session(s): {:?}",
         all_sessions.len(),
@@ -249,10 +246,9 @@ async fn capture_resume_ids_on_exit_inner(state: &AppState, wait_ms: u64) -> (us
     // them would waste the entire wait budget. The classification costs a `ps`
     // per session, but that is fast compared to the 4 s wait budget.
     let agent_sessions: Vec<String> = {
-        let sm = state.session_manager.lock().await;
         let mut agents = Vec::new();
         for id in &all_sessions {
-            match sm.get_session(id).await {
+            match state.session_manager.get_session(id).await {
                 Some(s) => {
                     let label = session_foreground_label(&s).await;
                     let is_agent = AGENT_FG_NAMES.contains(&label.as_str());
@@ -290,9 +286,8 @@ async fn capture_resume_ids_on_exit_inner(state: &AppState, wait_ms: u64) -> (us
         );
 
         // Send `/exit` + Enter to every agent PTY.
-        let sm = state.session_manager.lock().await;
         for id in &agent_sessions {
-            match sm.write(id, b"/exit\r").await {
+            match state.session_manager.write(id, b"/exit\r").await {
                 Ok(bytes) => log::info!("sent /exit to pane={} bytes={bytes}", id),
                 Err(e) => log::warn!("/exit write failed pane={} error={e}", id),
             }

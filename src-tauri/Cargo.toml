@@ -43,6 +43,10 @@ keyring = { version = "3", features = [
 # Used for platform-native log and diagnostics export locations.
 dirs = "6"
 parking_lot = { version = "0.12", features = ["send_guard"] }
+# Direct libproc FFI for the whole-app resource pill (CPU/RAM of main,
+# renderer, and PTY children). athena-core already brings libc into the
+# graph, but declaring it here keeps the dependency pinned for this crate.
+libc = "0.2"
 # athena-fs is deliberately not listed here even though athena-core re-uses
 # it: the app must not depend on it directly (it was an unused duplicate
 # dependency); it reaches the graph transitively via athena-core.

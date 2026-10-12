@@ -25,6 +25,7 @@ chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 path-clean = "1.0"
 url = "2.5"
+libc = "0.2"
 
 # Dev profile keeps the default "unwind" panic strategy for useful
 # stack traces during debugging. This is explicit (not just a comment)
