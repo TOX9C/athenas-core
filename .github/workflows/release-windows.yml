@@ -37,12 +37,14 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Install ripgrep (MCP search tests shell out to rg)
+        # Mirrors the brew install ripgrep on macOS — the mcp-server tests shell out to `rg``.
+        run: choco install ripgrep -y --no-progress
 
       - name: Install Dioxus CLI
         run: cargo install dioxus-cli --version 0.7.9 --locked
