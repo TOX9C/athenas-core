@@ -288,10 +288,14 @@ async fn test_new_empty_does_not_persist_to_disk() {
     );
     let outcome = store.flush_with_outcome().await.unwrap();
     assert_eq!(outcome, crate::FlushOutcome::InMemory);
-    // No file should have been created in the temp fallback dir.
+    // No KeyValueStore file should have been created in the temp fallback
+    // dir. (The DIR itself may legitimately exist: SessionStore's own
+    // new_empty fallback creates it on construction, and the integration
+    // test binary constructs one in parallel — the in-memory KeyValueStore
+    // contract is only that no store FILE is ever written.)
     assert!(
-        !fallback_dir.exists(),
-        "new_empty must not write to the temp fallback dir"
+        !fallback_dir.join("store.json").exists(),
+        "new_empty must not write a store file to the temp fallback dir"
     );
 
     // set_sync must succeed (in-memory only) and also not touch disk.
@@ -325,9 +329,11 @@ async fn test_new_empty_drop_does_not_write() {
     }
 
     assert!(
-        !fallback_dir.exists(),
-        "Drop of an in-memory store must not create a temp fallback dir"
+        !fallback_dir.join("store.json").exists(),
+        "Drop of an in-memory store must not write a store file"
     );
+    // Intentionally NOT asserting dir absence: SessionStore's fallback
+    // constructor creates the dir legitimately (see the note above).
 }
 
 #[test]
