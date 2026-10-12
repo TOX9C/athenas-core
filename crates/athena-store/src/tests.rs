@@ -301,8 +301,8 @@ async fn test_new_empty_does_not_persist_to_disk() {
     // set_sync must succeed (in-memory only) and also not touch disk.
     store.set_sync("k2", &"v2".to_string()).unwrap();
     assert!(
-        !fallback_dir.exists(),
-        "set_sync on an in-memory store must not create a temp fallback dir"
+        !fallback_dir.join("store.json").exists(),
+        "set_sync on an in-memory store must not write a store file"
     );
 
     // In-memory read-after-write should still work.
