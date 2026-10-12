@@ -67,26 +67,24 @@ fn lock_exclusive(file: &std::fs::File) -> Result<(), SwarmError> {
 #[cfg(windows)]
 fn lock_exclusive(file: &std::fs::File) -> Result<(), SwarmError> {
     use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK};
     use windows::Win32::System::IO::OVERLAPPED;
     // Blocking LockFileEx over the whole file — the flock(2) equivalent.
     // The lock releases when the File (and its handle) drops.
-    let handle = file.as_raw_handle() as _;
+    let handle = HANDLE(file.as_raw_handle() as _);
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
-    let rv = unsafe {
+    unsafe {
         LockFileEx(
             handle,
             LOCKFILE_EXCLUSIVE_LOCK,
-            0,
+            None,
             u32::MAX,
             u32::MAX,
             &mut overlapped,
         )
-    };
-    if rv.is_err() {
-        return Err(SwarmError::Io(std::io::Error::last_os_error()));
     }
-    Ok(())
+    .map_err(|e| SwarmError::Io(std::io::Error::other(e)))
 }
 
 fn validate_identifier(value: &str) -> Result<(), SwarmError> {
