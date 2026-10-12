@@ -340,6 +340,7 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "uuid",
+ "windows 0.61.3",
  "wiremock",
 ]
 
@@ -429,10 +430,12 @@ dependencies = [
  "libc",
  "log",
  "nix 0.31.3",
+ "parking_lot",
  "serde",
  "tokio",
  "tokio-test",
  "vte",
+ "windows 0.61.3",
 ]
 
 [[package]]

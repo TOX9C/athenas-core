@@ -51,6 +51,44 @@ fn generate_id(prefix: &str) -> String {
     format!("{}-{}", prefix, uuid::Uuid::new_v4())
 }
 
+/// Take an exclusive advisory lock on the mailbox lock file, blocking until
+/// acquired. flock(2) on Unix; LockFileEx (blocking) on Windows. The lock is
+/// released when the File (handle) drops.
+#[cfg(unix)]
+fn lock_exclusive(file: &std::fs::File) -> Result<(), SwarmError> {
+    use std::os::unix::io::AsRawFd;
+    let fd = file.as_raw_fd();
+    if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 {
+        return Err(SwarmError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn lock_exclusive(file: &std::fs::File) -> Result<(), SwarmError> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK};
+    use windows::Win32::System::IO::OVERLAPPED;
+    // Blocking LockFileEx over the whole file — the flock(2) equivalent.
+    // The lock releases when the File (and its handle) drops.
+    let handle = file.as_raw_handle() as _;
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    let rv = unsafe {
+        LockFileEx(
+            handle,
+            LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if rv.is_err() {
+        return Err(SwarmError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
 fn validate_identifier(value: &str) -> Result<(), SwarmError> {
     if value.is_empty()
         || value.len() > MAX_ID_BYTES
@@ -513,10 +551,7 @@ impl SwarmCoordinator {
                 .create(true)
                 .truncate(false)
                 .open(&lock_path)?;
-            let fd = std::os::unix::io::AsRawFd::as_raw_fd(&lock_file);
-            if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 {
-                return Err(SwarmError::Io(std::io::Error::last_os_error()));
-            }
+            lock_exclusive(&lock_file)?;
             let mut messages: Vec<MailboxMessage> = match std::fs::read_to_string(&mailbox_path) {
                 Ok(content) => serde_json::from_str(&content).unwrap_or_else(|error| {
                     let sidecar = format!("{}.corrupt", mailbox_path.display());

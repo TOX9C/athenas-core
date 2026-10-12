@@ -3,7 +3,7 @@
 <img src="src-tauri/icons/128x128.png?v=2025" alt="Athena's Core" width="128" height="128" />
 
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-blue)](https://github.com/TOX9C/athenas-core/releases)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%2B%20Linux%20beta-blue)](https://github.com/TOX9C/athenas-core/releases)
 [![Rust](https://img.shields.io/badge/Rust-Tauri%202%20%2B%20Dioxus-orange)](https://www.rust-lang.org/)
 [![Stars](https://img.shields.io/github/stars/TOX9C/athenas-core?style=social)](https://github.com/TOX9C/athenas-core)
 [![Donate](https://img.shields.io/badge/Donate-NowPayments-purple)](https://nowpayments.io/donation/tox9c)
@@ -49,6 +49,17 @@ brew install --no-quarantine tox9c/tap/athenas-core
 **Prefer the DMG?** Grab the latest build from [Releases](https://github.com/TOX9C/athenas-core/releases), drag it into **Applications**, and launch.
 
 > **Unsigned build.** Athena's Core ships unsigned — no Apple Developer account yet; a deliberate cost decision, not an oversight. On **macOS 15 Sequoia and later**, first launch: **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to the Athena's Core message. On older macOS, right-click the app → **Open**. Once, then never again (the brew path above skips this entirely).
+
+**Linux (x86_64, beta).** Download the `.deb` (Debian/Ubuntu 22.04+) or the `.AppImage` (runs on most distros) from [Releases](https://github.com/TOX9C/athenas-core/releases):
+
+```bash
+# .deb
+sudo apt install ./Athena.s.Core_<version>_amd64.deb
+# AppImage — make executable and run, no install
+chmod +x Athena*.AppImage && ./Athena*.AppImage
+```
+
+Linux builds need WebKitGTK 4.1 present (the `.deb` declares the dependency; AppImage bundles its own runtime). Voice input is macOS-only for now. **Windows is in progress** — PTY sessions land behind a ConPTY backend before the first `.exe` ships; watch Releases.
 
 ## Keyboard shortcuts
 

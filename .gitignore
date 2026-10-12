@@ -147,3 +147,4 @@ core.*
 
 # Generated icon backups (regenerable via branding/process_icon.py)
 src-tauri/icons-backup/
+target

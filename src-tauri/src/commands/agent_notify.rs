@@ -109,7 +109,15 @@ fi
 /// Home directory, read fresh from the environment (the hook configs and the
 /// emitter script all live under `$HOME`, not the workspace sandbox).
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    // $HOME on Unix; USERPROFILE on Windows (env var, not std::env::home_dir
+    // which is deprecated there). Read fresh from the environment because
+    // hook configs and the emitter script live under the user's home, not
+    // the workspace sandbox.
+    #[cfg(unix)]
+    let dir = std::env::var_os("HOME");
+    #[cfg(windows)]
+    let dir = std::env::var_os("USERPROFILE");
+    dir.map(PathBuf::from)
 }
 
 // ---------------------------------------------------------------------------

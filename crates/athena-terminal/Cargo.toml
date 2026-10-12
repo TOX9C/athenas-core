@@ -9,9 +9,19 @@ serde = { workspace = true }
 log = { workspace = true }
 vte = "0.15"
 bitflags = { version = "2.9", features = ["serde"] }
+tokio = { version = "1.43", features = ["sync", "rt", "macros", "time"] }
+parking_lot = "0.12"
+
+[target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["term", "process", "fs", "signal"] }
 libc = "0.2"
-tokio = { version = "1.43", features = ["sync", "rt", "macros", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "rt"] }

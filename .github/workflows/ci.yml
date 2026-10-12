@@ -189,7 +189,39 @@ jobs:
         # The terminal crate still runs its full test suite locally and in
         # the macOS release workflow (runs-on: macos-14), where the trigger
         # does not occur.
-        run: cargo test --workspace --exclude athena-terminal --locked
+
+  rust-tests-windows:
+    name: Rust check and tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Materialize placeholder frontend dist
+        shell: bash
+        run: |
+          mkdir -p frontend/dist/assets frontend/dist/vendor
+          echo '<!-- placeholder; build-dist.sh writes the real one before bundling -->' > frontend/dist/index.html
+          for f in styles.css mobile.html mobile.css manifest.webmanifest sw.js; do
+            cp "frontend/public/$f" "frontend/dist/$f"
+          done
+
+      - name: cargo check (Windows target surface)
+        # Compile-check the whole workspace on Windows, including the
+        # cfg(windows) backends (ConPTY stub, LockFileEx swarm lock,
+        # USERPROFILE home resolution). Tests run where the platform
+        # surface exists; PTY behavior tests stay on macOS runners
+        # until the ConPTY backend lands fully.
+        run: cargo check --workspace --locked
+
+      - name: cargo test (platform-neutral crates)
+        run: cargo test --workspace --exclude athena-terminal --exclude athenas-core --locked
 
   security:
     name: Cargo advisory audit

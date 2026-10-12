@@ -44,7 +44,20 @@
       "minimumSystemVersion": "13.0",
       "entitlements": "entitlements.plist"
     },
-    "targets": "dmg",
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    },
+    "targets": ["dmg", "deb", "appimage", "nsis"],
     "resources": {
       "../frontend/dist/index.html": "./index.html",
       "../frontend/dist/styles.css": "./styles.css",

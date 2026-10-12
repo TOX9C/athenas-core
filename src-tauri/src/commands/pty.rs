@@ -35,11 +35,13 @@ fn clamp_pty_dimension(v: u16) -> u16 {
 
 /// Validate a shell binary path for PTY spawning.
 ///
-/// Allowed if the canonicalized path lives under `/bin` or `/usr/bin`, or if it
-/// matches the invoking user's `$SHELL` after canonicalization. This stops a
-/// renderer from spawning `/usr/sbin/installer`, a homebrew binary, or an
-/// arbitrary executable while still permitting standard shells (bash, zsh,
-/// sh, fish when in /usr/bin).
+/// Allowed if the canonicalized path lives under a system shell directory
+/// (`/bin`, `/usr/bin` on Unix; System32 + Git-for-Windows bins on Windows),
+/// or if it matches the invoking user's `$SHELL` after canonicalization.
+/// This stops a renderer from spawning installer binaries, homebrew
+/// executables, or arbitrary binaries while still permitting standard
+/// shells (zsh, bash, sh, fish on Unix; powershell, cmd, git-bash on
+/// Windows).
 fn validate_shell(shell: &str) -> Result<std::path::PathBuf, String> {
     if shell.is_empty() {
         return Err("shell path is empty".to_string());
@@ -62,20 +64,32 @@ fn validate_shell(shell: &str) -> Result<std::path::PathBuf, String> {
         }
     }
 
-    // Canonicalize and require the binary to live under a system bin dir.
-    // Using canonicalize (not lexical check) so symlinks are resolved: a
-    // symlink in /bin pointing to /Users/x/evil is followed and then rejected
-    // because the target isn't under /bin or /usr/bin.
-    let allowed_ancestors = [
-        std::path::Path::new("/bin"),
-        std::path::Path::new("/usr/bin"),
+    // Canonicalize and require the binary to live under a system shell
+    // directory. Using canonicalize (not lexical check) so symlinks are
+    // resolved: a symlink in a bin dir pointing to a user-writable path is
+    // followed and then rejected.
+    #[cfg(unix)]
+    let allowed_ancestors: &[std::path::PathBuf] = &[
+        std::path::PathBuf::from("/bin"),
+        std::path::PathBuf::from("/usr/bin"),
     ];
+    #[cfg(windows)]
+    let allowed_ancestors: &[std::path::PathBuf] = {
+        // System32 (powershell.exe, cmd.exe) and the Git-for-Windows bin
+        // dirs — the only shell sources a renderer may request.
+        const KNOWN: &[&str] = &[
+            r"C:\Windows\System32",
+            r"C:\Program Files\Git\bin",
+            r"C:\Program Files\Git\usr\bin",
+        ];
+        KNOWN.iter().map(std::path::PathBuf::from).collect()
+    };
     let ok = allowed_ancestors
         .iter()
         .any(|allowed| canon.starts_with(allowed));
     if !ok {
         return Err(format!(
-            "shell binary '{}' is outside the allowed system directories (/bin, /usr/bin) and does not match $SHELL",
+            "shell binary '{}' is outside the allowed system directories and does not match $SHELL",
             shell
         ));
     }
@@ -1092,7 +1106,7 @@ pub async fn pty_kill(state: State<'_, AppState>, id: String) -> Result<(), Stri
     // a recycled pgid for up to one TTL window.
     let session_manager = state.session_manager.lock().await;
     let session = session_manager.get_session(&id).await;
-    let killed_pgid = session.as_ref().map(|s| s.pgid.as_raw());
+    let killed_pgid = session.as_ref().map(|s| s.pgid);
     let existed = killed_pgid.is_some();
     let result = session_manager.kill_if_same(&id, session.as_ref()).await;
     drop(session_manager);
@@ -1271,8 +1285,8 @@ pub async fn pty_agent_info(state: State<'_, AppState>, id: String) -> Result<St
     // Resolve the live foreground process group (tcgetpgrp on the master fd,
     // shell pgid as fallback) and classify it through the shared TTL cache so
     // concurrent frontend bursts share one `ps` spawn per pgid.
-    let master_fd = s.master_fd.load(std::sync::atomic::Ordering::Acquire);
-    let pgid = s.pgid.as_raw();
+    let master_fd = s.raw_master_fd().unwrap_or(-1);
+    let pgid = s.pgid;
     let process = tokio::task::spawn_blocking(move || {
         // `ps` spawn + (cached) agent-history file I/O: both are synchronous
         // filesystem/process probes that must stay off the async executor.
@@ -1325,8 +1339,8 @@ pub async fn pty_foreground_process(
         // Shared TTL-cached tcgetpgrp + ps classification (see
         // `resolve_foreground_label`): concurrent frontend bursts share one
         // `ps` spawn per pgid.
-        let master_fd = s.master_fd.load(std::sync::atomic::Ordering::Acquire);
-        let pgid = s.pgid.as_raw();
+        let master_fd = s.raw_master_fd().unwrap_or(-1);
+        let pgid = s.pgid;
         tokio::task::spawn_blocking(move || {
             Ok(
                 athena_core::agent_detection::resolve_foreground_label(master_fd, pgid)
@@ -1353,8 +1367,8 @@ pub(crate) use athena_core::agent_detection::AGENT_FG_NAMES;
 pub(crate) async fn session_foreground_label(
     session: &Arc<athena_terminal::session::TerminalSession>,
 ) -> String {
-    let master_fd = session.master_fd.load(std::sync::atomic::Ordering::Acquire);
-    let pgid = session.pgid.as_raw();
+    let master_fd = session.raw_master_fd().unwrap_or(-1);
+    let pgid = session.pgid;
     tokio::task::spawn_blocking(move || {
         athena_core::agent_detection::resolve_foreground_label(master_fd, pgid)
             .unwrap_or_else(|| "shell".to_string())
