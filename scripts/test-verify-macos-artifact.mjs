@@ -1,5 +1,14 @@
 #!/usr/bin/env node
 
+// This suite stubs macOS's hdiutil/find/file binaries with #!/bin/sh
+// fixtures; on Windows those cannot be executed (spawnSync ENOENT), and
+// the real verify-macos-artifact.mjs cannot run DMG checks there anyway.
+// Unix stubs don't teach us anything on a Windows host, so skip.
+if (process.platform === 'win32') {
+  console.log('Skipping macOS artifact verifier tests on Windows (no hdiutil)')
+  process.exit(0)
+}
+
 import { spawnSync } from 'node:child_process'
 import { strict as assert } from 'node:assert'
 import { fileURLToPath } from 'node:url'
