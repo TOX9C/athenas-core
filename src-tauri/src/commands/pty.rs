@@ -74,7 +74,7 @@ fn validate_shell(shell: &str) -> Result<std::path::PathBuf, String> {
         std::path::PathBuf::from("/usr/bin"),
     ];
     #[cfg(windows)]
-    let allowed_ancestors: &[std::path::PathBuf] = {
+    let allowed_ancestors: Vec<std::path::PathBuf> = {
         // System32 (powershell.exe, cmd.exe) and the Git-for-Windows bin
         // dirs — the only shell sources a renderer may request.
         const KNOWN: &[&str] = &[

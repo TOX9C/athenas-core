@@ -1181,28 +1181,32 @@ impl AppState {
                         }
                     }
 
-                    let title = data
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Agent")
-                        .to_string();
-                    let body = data
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let ntype = data
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("info")
-                        .to_string();
-                    let sound = match ntype.as_str() {
-                        "needs_input" => "Sosumi",
-                        "task_error" | "error" => "Basso",
-                        _ => "Glass",
-                    };
+                    // Payload fields are consumed only by the macOS native
+                    // notification below; on other targets the in-app
+                    // frontend notification (emitted above) is the whole
+                    // story, so the locals live inside the gate.
                     #[cfg(target_os = "macos")]
                     {
+                        let title = data
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Agent")
+                            .to_string();
+                        let body = data
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let ntype = data
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("info")
+                            .to_string();
+                        let sound = match ntype.as_str() {
+                            "needs_input" => "Sosumi",
+                            "task_error" | "error" => "Basso",
+                            _ => "Glass",
+                        };
                         use tauri_plugin_notification::NotificationExt;
                         if let Err(e) = handle
                             .notification()
