@@ -1,0 +1,17 @@
+# Enforce LF line endings for all text files on checkout, regardless of the
+# developer's local core.autocrlf setting. The repo's Prettier/ESLint config
+# assumes LF (`endOfLine: lf`), and Windows runners check out CRLF by default
+# — without this the lint gate produces 5,949 `Delete ␍` errors there.
+#
+# Binary formats (images, archives, etc.) are LEFT-ALONE by this line:
+# `text=auto` only converts files Git classifies as text.
+* text=auto eol=lf
+
+# Explicitly binary formats — belt-and-braces so future *.ico/*.pngs in
+# resources/ never get byte-rewritten even if a text sniff misfires.
+*.icns binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.woff2 binary
+*.dmg binary
