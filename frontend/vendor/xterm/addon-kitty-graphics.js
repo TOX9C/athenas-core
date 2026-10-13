@@ -341,7 +341,7 @@
                 if (rtext.charCodeAt(rr2) === 0xa0) rlen++;
               }
             }
-            if (rlen < pimg.cols) pimg.blockTop = undefined;
+            if (rlen < pimg.cols) { pimg.blockTop = undefined; pimg.paired = false; }
           }
           if (pimg.blockTop !== undefined && covered) {
             var stillThere = false;
@@ -350,7 +350,7 @@
                 stillThere = true; break;
               }
             }
-            if (!stillThere) pimg.blockTop = undefined;
+            if (!stillThere) { pimg.blockTop = undefined; pimg.paired = false; }
           }
         }
         pimg.lastBufLen = buf.length;
