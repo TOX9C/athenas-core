@@ -87,21 +87,21 @@ jobs:
           # macOS/Linux runners.
           cargo test --workspace --exclude athena-terminal --exclude athenas-core --locked
 
-      - name: Build NSIS installer
-        # NSIS bundles the WebView2 bootstrapper (tauri.conf.json
-        # windows.webviewInstallMode) so first launch on a clean machine
-        # installs the runtime without user downloads.
-        run: cargo tauri build --bundles nsis --verbose
+      - name: Build MSI installer
+        # NSIS fails on "Athena's Core": its template interpolation into
+        # the installer macro quoting breaks on the apostrophe (observed:
+        # NSISCOMCALL in IsShortcutTarget, installer.nsi line 817). MSI's
+        # Handlebars→XML template carries the name correctly. WiX is a
+        # first-class Tauri bundle; same WebView2 bootstrapper behavior.
+        run: cargo tauri build --bundles msi --verbose
 
       - name: Locate artifacts
         id: artifact
         shell: bash
         run: |
-          setup=$(find target/release/bundle/nsis -maxdepth 1 -type f -name '*-setup.exe' -print -quit)
+          setup=$(find target/release/bundle/msi -maxdepth 1 -type f -name '*.msi' -print -quit)
           test -n "$setup"
           echo "setup_path=$setup" >> "$GITHUB_OUTPUT"
-          # Windows artifact naming: no spaces (the macOS DMG name keeps them,
-          # GitHub normalizes on upload; keep local names clean here).
           echo "setup_name=$(basename "$setup")" >> "$GITHUB_OUTPUT"
 
       - name: Checksum artifact

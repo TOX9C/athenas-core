@@ -63,7 +63,7 @@ if (tauri.identifier !== 'com.athena.core') fail('product identity', 'bundle ide
 if (tauri.bundle?.macOS?.minimumSystemVersion !== '13.0') fail('macOS target', 'minimum macOS version must be 13.0')
 if (tauri.bundle?.macOS?.entitlements !== 'entitlements.plist') fail('entitlements', 'production entitlements path is not configured')
 if (!/<dict\s*\/>/.test(entitlements)) fail('entitlements', 'production entitlements must remain empty until a capability is justified')
-const allowedTargets = new Set(['dmg', 'deb', 'appimage', 'nsis'])
+const allowedTargets = new Set(['dmg', 'deb', 'appimage', 'msi'])
 const targets = Array.isArray(tauri.bundle?.targets) ? tauri.bundle.targets : [tauri.bundle?.targets]
 if (
   targets.length === 0 ||

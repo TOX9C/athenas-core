@@ -56,7 +56,7 @@
         "type": "embedBootstrapper"
       }
     },
-    "targets": ["dmg", "deb", "appimage", "nsis"],
+    "targets": ["dmg", "deb", "appimage", "msi"],
     "resources": {
       "../frontend/dist/index.html": "./index.html",
       "../frontend/dist/styles.css": "./styles.css",
