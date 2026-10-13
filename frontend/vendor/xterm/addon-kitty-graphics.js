@@ -198,24 +198,78 @@
         }
       }
 
-      // Pair images to blocks by shape (sentinel run length == image cols),
-      // oldest image to topmost matching block: OMP places images in
-      // document order and blocks come out in buffer order. Raw index pairing
-      // painted an image at another image's block whenever a stray NBSP row
-      // (false block) or an out-of-window image shifted the arrays.
-      var owner = new Array(blocks.length);
-      for (var pi = 0; pi < images.length; pi++) {
-        for (var bi = 0; bi < blocks.length; bi++) {
-          if (owner[bi]) continue;
-          if (blocks[bi].runLen >= images[pi].cols) { owner[bi] = images[pi]; break; }
+      // Pair images to blocks with a STICKY anchor: remember each image's
+      // last-matched block.top (a buffer line, stable under scrolling; only
+      // trim/reflow shifts rows). Without it, a pane holding two same-width
+      // (or older-narrower) images still hits the original vanish+misplace:
+      // once the older image's block scrolls out of the scan window, the
+      // older image still pairs first and claims the newer image's visible
+      // block (F1 in the final review of this fix series).
+      for (var ci = 0; ci < blocks.length; ci++) blocks[ci]._claimedBy = null;
+      var ownBlock = function (img) {
+        // Sticky re-attachment: if we previously matched this block, the
+        // anchor's remembered top row tells us exactly which block is ours.
+        if (img.blockTop !== undefined) {
+          for (var bi = 0; bi < blocks.length; bi++) {
+            var b = blocks[bi];
+            if (!b._claimedBy && b.top === img.blockTop && b.runLen >= img.cols) {
+              b._claimedBy = img;
+              return b;
+            }
+          }
+          // img.paired means we've anchored before; the remembered block is
+          // now out of the scan window (trimmed/scrolled away). Refuse the
+          // fallback so we don't seize another image's visible block.
+          if (img.paired) return null;
         }
-      }
-      // Order fallback for wrapped blocks (runLen != cols after reflow).
-      for (var pi2 = 0; pi2 < images.length; pi2++) {
-        if (owner.indexOf(images[pi2]) !== -1) continue;
+        // Fresh pairing — exact shape match first, then any unused
+        // block at least as wide as the image (an image can't fit in a
+        // narrower slot; a >=2 fallback let a 20-col image steal a 12-col
+        // block — probe-caught just now). Blocks come out in buffer order
+        // (topmost-first), so iteration stays stable for same-shape blocks.
         for (var bi2 = 0; bi2 < blocks.length; bi2++) {
-          if (!owner[bi2] && blocks[bi2].runLen >= 2) { owner[bi2] = images[pi2]; break; }
+          var b2 = blocks[bi2];
+          if (!b2._claimedBy && b2.runLen === img.cols) { b2._claimedBy = img; img.paired = true; return b2; }
         }
+        for (var bi3 = 0; bi3 < blocks.length; bi3++) {
+          var b3 = blocks[bi3];
+          if (!b3._claimedBy && b3.runLen >= img.cols) { b3._claimedBy = img; img.paired = true; return b3; }
+        }
+        return null;
+      };
+
+      // Pre-assignment (separate pass) so fresh pairing runs oldest-first;
+      // paint loop below iterates newest-first and must not let a later
+      // image's fallback claim an older image's block.
+      var pending = [];
+      for (var i = images.length - 1; i >= 0; i--) pending.push(images[i]);
+      pending.reverse();
+      var assigned = [];
+      for (var pi = 0; pi < pending.length; pi++) {
+        var pimg = pending[pi];
+        if (pimg.buffer && pimg.buffer !== term.buffer.active) continue;
+        // Forget sticky memory only when we can PROVE the remembered row
+        // shifted content (the scan window COVERS blockTop but the row there
+        // no longer has this image's sentinel shape: reflow/trim moved it).
+        // A block merely outside the window keeps its memory — scrolling out
+        // of view must not make an image "fresh" again (that's F1).
+        if (pimg.blockTop !== undefined) {
+          var wStart = Math.max(0, vy - maxRows)
+          if (pimg.blockTop >= wStart && pimg.blockTop < scanTo) {
+            var stillThere = false
+            for (var bj = 0; bj < blocks.length; bj++) {
+              if (blocks[bj].top === pimg.blockTop && blocks[bj].runLen >= pimg.cols) { stillThere = true; break }
+            }
+            if (!stillThere) pimg.blockTop = undefined
+          }
+        }
+        var pblock = ownBlock(pimg);
+        // Only remember the row on a match: sticky survives out-of-window
+        // (hidden) refreshes, but a no-match refresh after the block moved
+        // (reflow/trim) inside the window leaves stale memory pointing at a
+        // row that may soon hold a DIFFERENT block.
+        if (pblock) pimg.blockTop = pblock.top;
+        assigned.push({ img: pimg, block: pblock });
       }
 
       for (var i = images.length - 1; i >= 0; i--) {
@@ -224,11 +278,12 @@
         // switch must hide, not repaint, the normal buffer's overlays.
         if (img.buffer && img.buffer !== term.buffer.active) {
           img.el.style.display = "none";
+          img.blockTop = undefined;
           continue;
         }
         var block = null;
-        for (var oi = 0; oi < owner.length; oi++) {
-          if (owner[oi] === img) { block = blocks[oi]; break; }
+        for (var ai = 0; ai < assigned.length; ai++) {
+          if (assigned[ai].img === img) { block = assigned[ai].block; break; }
         }
         if (img.reportSettle) {
           // Anchor at capture (arm) vs first post-parse refresh: armCursor
