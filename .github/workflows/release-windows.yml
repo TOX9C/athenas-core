@@ -109,6 +109,58 @@ jobs:
         run: |
           sha256sum "${{ steps.artifact.outputs.setup_path }}" > "${{ steps.artifact.outputs.setup_path }}.sha256"
 
+      - name: Smoke — install MSI and launch
+        # Real launch evidence on the actual OS: silent-install the MSI
+        # (requires admin, which windows-latest runners have), start the
+        # exe, wait 15 s for Dioxus/WASM mount, then require the process
+        # to still be alive. Kill cleanly; keep the smoke log for failure
+        # diagnostics.
+        shell: pwsh
+        run: |
+          $msi = "${{ steps.artifact.outputs.setup_path }}"
+          Write-Host "Installing: $msi"
+          # msiexec wants a lone path; escape apostrophes for the inline call.
+          $exit = (Start-Process msiexec -ArgumentList "/i", "`"$msi`"", "/qn", "/norestart", "/lvx*", "msi.log" -Wait -PassThru).ExitCode
+          if ($exit -ne 0) {
+            Write-Host "::error::msiexec exit $exit"
+            Get-Content msi.log -Tail 40
+            exit 1
+          }
+          # Program install path: productName in Tauri MSI lands under
+          # Program Files\<ProductName>. Derive from the MSI filename form
+          # "Name_ver_x64_en-US.msi" → install dir keeps the name.
+          $exeCandidates = @(
+            "C:\Program Files\Athena's Core\athenas-core.exe",
+            "C:\Program Files\Athena.s.Core\athenas-core.exe",
+            "C:\Program Files\Athena's Core\athenas-core.exe"
+          )
+          $exe = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { $exe = (Get-ChildItem "C:\Program Files" -Directory | Where-Object { $_.Name -like "Athena*" } | Select-Object -First 1 | ForEach-Object { Join-Path $_.FullName 'athenas-core.exe' }) }
+          if (-not (Test-Path $exe)) { Write-Host "::error::Installed exe not found"; Get-ChildItem "C:\Program Files" | Select-Object Name; exit 1 }
+          Write-Host "Launching: $exe"
+          # GUI subsystem app: no stdio redirection (would fail
+          # Start-Process); rely on the process-alive check plus the
+          # Tauri log dir on failure.
+          $p = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) {
+            Write-Host "::error::athenas-core exited with code $($p.ExitCode) within 15 s of launch"
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "::notice::smoke OK — process alive after 15 s post-MSI install"
+
+      - name: Upload smoke log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-log-windows-${{ github.run_id }}
+          path: |
+            msi.log
+            smoke.out
+            smoke.err
+          if-no-files-found: warn
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

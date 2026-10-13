@@ -38,7 +38,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev build-essential curl wget libssl-dev ripgrep libasound2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev build-essential curl wget libssl-dev ripgrep libasound2-dev xvfb
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -106,6 +106,48 @@ jobs:
         run: |
           shasum -a 256 "${{ steps.artifact.outputs.deb_path }}" > "${{ steps.artifact.outputs.deb_path }}.sha256"
           shasum -a 256 "${{ steps.artifact.outputs.appimage_path }}" > "${{ steps.artifact.outputs.appimage_path }}.sha256"
+
+      - name: Smoke — launch AppImage under Xvfb
+        # Real launch evidence (not just "it compiled"): start the built
+        # AppImage on a virtual X display, give the Dioxus/WASM UI 15 s to
+        # mount, then require the process to still be alive and non-panicked.
+        # A crash/panic/failure to open the window exits here — this is the
+        # same bar a user hits on first launch.
+        run: |
+          set -e
+          APPIMAGE="${{ steps.artifact.outputs.appimage_path }}"
+          chmod +x "$APPIMAGE"
+
+          # Launch under a virtual X server (no FUSE needed with --appimage-extract-and-run).
+          APB="$PWD/appimage-bundle"
+          mkdir -p "$APB"
+          (cd "$APB" && xvfb-run -a --server-args="-screen 0 1400x900x24" "$APPIMAGE" --appimage-extract-and-run > "$PWD/smoke.log" 2>&1 & echo $! > "$PWD/smoke.pid")
+
+          sleep 15
+
+          PID=$(cat "$PWD/smoke.pid")
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "::error::AppImage exited within 15 s of launch:"
+            tail -60 "$PWD/smoke.log"
+            exit 1
+          fi
+          if grep -qiE "panic|segfault|undefined symbol|failed to load" "$PWD/smoke.log"; then
+            echo "::error::AppImage reported a panic or load failure:"
+            grep -iE "panic|segfault|undefined symbol|failed to load" "$PWD/smoke.log"
+            exit 1
+          fi
+
+          echo "::notice::smoke OK — process alive after 15 s under Xvfb"
+          tail -20 "$PWD/smoke.log"
+          kill "$PID" 2>/dev/null || true
+
+      - name: Upload smoke log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-log-linux-${{ github.run_id }}
+          path: smoke.log
+          if-no-files-found: warn
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
