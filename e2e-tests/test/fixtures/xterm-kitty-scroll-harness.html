@@ -84,41 +84,43 @@
         const kitty = window.AthenaKitty.attach(term, () => {})
         term.__athenaKittyFeed = kitty.feed
 
-        // Faithful OMP stream: 60 filler lines, then image 1 + placeholder
-        // rectangle, then filler lines so scrolling past the block in both
-        // directions is possible. Mirrors OMP sizing: c=20,r=4, C=1 so only
-        // placeholders advance the cursor; each grid row is c cells followed
-        // by a real \r\n (that is how OMP reserves rows).
+        // Faithful OMP stream: image 1 after 60 filler lines, then filler,
+        // then image 2, then filler. Written as TWO chunks each ending in a
+        // write()+settle — matching real OMP's per-redraw cadence — so each
+        // image's settle-time cursor lands just below its own block.
         const fill = (from, to) =>
           Array.from({ length: to - from }, (_, i) => `line ${from + i + 1} alpha bravo charlie delta`).join('\r\n')
         const apc = (n, cols, rows) =>
           `${ESC}_Ga=T,f=100,q=2,C=1,i=${n},c=${cols},r=${rows};${PNG_B64}${ESC}\\`
         const cell = '\u{10EEEE}\u0302'
-        let payload = fill(0, 60) + '\r\n' + apc(1, C, R) + '\r\n'
+        let payload1 = fill(0, 60) + '\r\n' + apc(1, C, R) + '\r\n'
         for (let row = 0; row < R; row++) {
-          payload += cell.repeat(C)
-          payload += '\r\n'
+          payload1 += cell.repeat(C)
+          payload1 += '\r\n'
         }
-        payload += 'MARK-AFTER\r\n' + fill(60, 100)
+        payload1 += 'MARK-AFTER\r\n' + fill(60, 100)
+        // One filler line ABOVE image 1 gets a stray NBSP mid-text (col>0,
+        // not part of any placeholder grid): the addon's viewport scan sees
+        // a one-row false sentinel block that can mispair with an image.
+        payload1 = payload1.replace('line 56 alpha bravo', 'line 56 alpha bravo')
+        const filtered1 = kitty.feed(new TextEncoder().encode(payload1))
+        await writeSync(term, filtered1)
+        term.__athenaKittySettle && term.__athenaKittySettle()
+
         // Image 2 sits ~40 rows below image 1 (its sentinel block lands at
         // buffer rows ~107-109): same faithful shape, but c=12,r=3 and i=2
         // so the addon records a separate placement instead of replacing
         // image 1.
-        payload += '\r\n' + apc(2, C2, R2) + '\r\n'
+        let payload2 = '\r\n' + apc(2, C2, R2) + '\r\n'
         for (let row = 0; row < R2; row++) {
-          payload += cell.repeat(C2)
-          payload += '\r\n'
+          payload2 += cell.repeat(C2)
+          payload2 += '\r\n'
         }
-        payload += 'MARK-AFTER-2\r\n' + fill(100, 160)
-
-        // One filler line ABOVE image 1 gets a stray NBSP mid-text (col>0,
-        // not part of any placeholder grid): the addon's viewport scan sees
-        // a one-row false sentinel block that can mispair with an image.
-        payload = payload.replace('line 56 alpha bravo', 'line 56 alpha\u00a0bravo')
-
-        const filtered = kitty.feed(new TextEncoder().encode(payload))
-        await writeSync(term, filtered)
+        payload2 += 'MARK-AFTER-2\r\n' + fill(100, 160)
+        const filtered2 = kitty.feed(new TextEncoder().encode(payload2))
+        await writeSync(term, filtered2)
         term.__athenaKittySettle && term.__athenaKittySettle()
+
         await new Promise((r) => setTimeout(r, 250))
 
         // Cell height in CSS px. The addon sizes each overlay from its

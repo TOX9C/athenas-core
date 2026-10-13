@@ -157,6 +157,12 @@
           sim.armed = false;
           sim.buffer = buf;
           sim.reportSettle = true;
+          // Post-parse anchor row: the sentinel block OMP spliced starts
+          // at-or-above the cursor right now (OMP emits r placeholder rows
+          // plus C=1 so the cursor ends just below the block). This is the
+          // ONLY safe toaster for never-paired exact matching; feed-time
+          // armCursor is the stale pre-parse value and must never gate it.
+          sim.settleRow = buf.cursorY;
         }
       }
       var screen = term.element.querySelector(".xterm-screen");
@@ -207,11 +213,6 @@
       // block (F1 in the final review of this fix series).
       for (var ci = 0; ci < blocks.length; ci++) blocks[ci]._claimedBy = null;
       var ownBlock = function (img) {
-        // Sticky re-attachment: remembered block.top row (stable under pure
-        // scrolling). Also re-detect drifted rows in-window when the exact
-        // remembered row no longer qualifies (reflow can shift a block's
-        // start by reflow-wrapped lines): sticky-pair to the FIRST block
-        // whose top is within ±img.rows of the remembered row.
         if (img.blockTop !== undefined) {
           for (var bi = 0; bi < blocks.length; bi++) {
             var b = blocks[bi];
@@ -228,14 +229,40 @@
           // (emptied by trim); if we can't see the row we stay sticky.
           if (img.paired) return null;
         }
-        // Fresh pairing — exact shape match first. The `>= cols` fallback is
-        // gated on EVER having paired: an image with zero memory (never seen
-        // at its block, e.g. alt-jump or OMP same-pkey splice) must not
-        // claim another image's visibly-correct block (R1) — we're guessing
-        // there, and guessing requires a real anchor hint first.
+        // R1/R3: for NEVER-paired images, runLen alone cannot disambiguate
+        // equal-width images — the older image's block may or may not be
+        // out of window. To avoid stealing a newer image's visible block
+        // (R1(a) fresh-pane first scroll-up, R1(b) alt-jump, R1(c) OMP
+        // same-pkey re-place), a never-paired image may claim only when
+        // it's UNCONTESTED: no older same-shape never-paired image can still
+        // plausibly own a block ABOVE the window. (Blocks are found in
+        // document order; images are pushed in placement order, so the
+        // i-th free same-shape block in document order belongs to the i-th
+        // still-contending same-shape image — unless some older image's
+        // block is hidden above the window.)
+        var candidates = [];
         for (var bi2 = 0; bi2 < blocks.length; bi2++) {
           var b2 = blocks[bi2];
-          if (!b2._claimedBy && b2.runLen === img.cols) { b2._claimedBy = img; img.paired = true; return b2; }
+          if (!b2._claimedBy && b2.runLen === img.cols) candidates.push(b2);
+        }
+        if (candidates.length) {
+          if (!img.paired) {
+            // Count older never-paired same-shape competitors.
+            var myIdx = images.indexOf(img);
+            var olderUnpaired = 0;
+            for (var npi = 0; npi < myIdx; npi++) {
+              var nim = images[npi];
+              if (!nim.paired && nim.cols === img.cols &&
+                  (!nim.buffer || nim.buffer === term.buffer.active)) {
+                olderUnpaired++;
+              }
+            }
+            if (olderUnpaired >= candidates.length) return null;
+            var cb = candidates[olderUnpaired];
+            cb._claimedBy = img; img.paired = true; return cb;
+          }
+          var first2 = candidates[0];
+          first2._claimedBy = img; return first2;
         }
         if (img.paired) {
           for (var bi3 = 0; bi3 < blocks.length; bi3++) {
