@@ -6,9 +6,13 @@ import { readFileSync } from 'node:fs'
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const run = (command, args) => {
-  execFileSync(command, args, {
+  // On Windows, npx is a `npx.cmd` shim — execFileSync cannot resolve
+  // .cmd files without shell:true. Use a string command so the shell
+  // resolves it on every platform.
+  execFileSync(process.platform === 'win32' ? `${command} ${args.join(' ')}` : command, process.platform === 'win32' ? [] : args, {
     cwd: root,
     stdio: 'inherit',
+    ...(process.platform === 'win32' ? { shell: true } : {}),
   })
 }
 
