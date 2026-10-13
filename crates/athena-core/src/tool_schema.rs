@@ -531,14 +531,14 @@ mod tests {
 
     #[test]
     fn cli_agents_still_wrap_the_prompt() {
-        // shell-escape quotes with single quotes on Unix and double quotes
-        // on Windows; both are correct escaping for the platform's shell.
-        let expected = if cfg!(windows) {
-            "claude -p \"hello world\""
-        } else {
+        // shell-escape emits POSIX-style single quotes on every platform:
+        // it is NOT OS-aware. The clipboard paste target is a POSIX shell
+        // (git-bash on Windows has identical semantics). The earlier
+        // "windows expects double quotes" attempt was wrong.
+        assert_eq!(
+            build_agent_command("claude", Some("hello world")),
             "claude -p 'hello world'"
-        };
-        assert_eq!(build_agent_command("claude", Some("hello world")), expected);
+        );
         assert_eq!(build_agent_command("codex", None), "codex");
     }
 }
