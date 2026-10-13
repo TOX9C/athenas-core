@@ -91,7 +91,7 @@ jobs:
         # NSIS bundles the WebView2 bootstrapper (tauri.conf.json
         # windows.webviewInstallMode) so first launch on a clean machine
         # installs the runtime without user downloads.
-        run: cargo tauri build --bundles nsis
+        run: cargo tauri build --bundles nsis --verbose
 
       - name: Locate artifacts
         id: artifact
