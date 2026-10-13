@@ -157,6 +157,12 @@
           sim.armed = false;
           sim.buffer = buf;
           sim.reportSettle = true;
+          // Post-parse cursor row: OMP splices the placeholder grid and the
+          // cursor ends just below it, so anchor = cursorY - img.rows. That's
+          // the ONLY identity signal position-stable across equal shapes —
+          // and unlike feed-time armCursor it's captured AFTER the write
+          // completed, not during async parse.
+          sim.settleRow = buf.cursorY;
         }
       }
       var screen = term.element.querySelector(".xterm-screen");
@@ -226,10 +232,12 @@
         // runLen — claiming on document order ("oldest takes topmost") lets
         // image 1 steal image 2's visible block whenever image 1's own block
         // is out of the scan window (fresh pane first scroll-up, OMP
-        // same-pkey re-place, post-resize). Gate on GLOBAL unambiguity: count
-        // every never-paired same-shape image on this buffer and compare to
-        // the free same-shape blocks in the window. Only when every
-        // contestant has a slot do we assign, in document order.
+        // same-pkey re-place, post-resize). Gate on UNAMBIGUITY: count
+        // same-shape blocks over the WHOLE buffer (not just the window).
+        // When total == contention, every image's document-rank is globally
+        // unique; an image may claim its rank-th block only when that block
+        // is currently in the scan window, otherwise stay hidden — sticky
+        // memory bootstraps as soon as a scroll brings the block into view.
         var candidates = [];
         for (var bi2 = 0; bi2 < blocks.length; bi2++) {
           var b2 = blocks[bi2];
@@ -237,19 +245,55 @@
         }
         if (candidates.length) {
           if (!img.paired) {
-            var contenders = 0;
-            var myRank = -1;
+            var allSameShape = [];
+            var neverPaired = [];
             for (var npi = 0; npi < images.length; npi++) {
               var nim = images[npi];
-              if (!nim.paired && nim.cols === img.cols &&
+              if (nim.cols === img.cols &&
                   (!nim.buffer || nim.buffer === term.buffer.active)) {
-                if (nim === img) myRank = contenders;
-                contenders++;
+                allSameShape.push(nim);
+                if (!nim.paired) neverPaired.push(nim);
               }
             }
-            if (contenders > candidates.length) return null;
-            var cb = candidates[myRank];
-            cb._claimedBy = img; img.paired = true; return cb;
+            var myRank = allSameShape.indexOf(img);
+            // Pair only when the buffer shows exactly as many same-shape
+            // blocks as there are same-shape images — that makes document
+            // rank globally unique.
+            var globalBlocks = [];
+            var gcur = null;
+            for (var bx = 0; bx < buf.length; bx++) {
+              var bl = buf.getLine(bx);
+              var bt = bl ? bl.translateToString(true) : "";
+              var bgcol = bt.indexOf(" ");
+              if (bgcol >= 0) {
+                var gr = 0;
+                for (var gr2 = bgcol; gr2 < bt.length; gr2++) {
+                  if (bt.charCodeAt(gr2) === 0xa0) gr++;
+                }
+                if (gr === img.cols) {
+                  if (gcur && gcur.open) {
+                    gcur.rows++;
+                  } else {
+                    gcur = { top: bx, rows: 1, runLen: gr, open: true };
+                    globalBlocks.push(gcur);
+                  }
+                } else if (gcur) {
+                  gcur.open = false;
+                }
+              } else if (gcur) {
+                gcur.open = false;
+              }
+            }
+            if (globalBlocks.length !== allSameShape.length ||
+                myRank < 0 || myRank >= globalBlocks.length) return null;
+            var targetTop = globalBlocks[myRank].top;
+            for (var bi5 = 0; bi5 < blocks.length; bi5++) {
+              var b5 = blocks[bi5];
+              if (!b5._claimedBy && b5.top === targetTop && b5.runLen >= img.cols) {
+                b5._claimedBy = img; img.paired = true; return b5;
+              }
+            }
+            return null;  // My block is out of window; wait for scroll.
           }
           var first2 = candidates[0];
           first2._claimedBy = img; return first2;
@@ -321,6 +365,9 @@
 
       for (var i = images.length - 1; i >= 0; i--) {
         var img = images[i];
+        // The record can exist with el still null between feed-time arm and
+        // Image#onload — the paint logic below dereferences el.style.
+        if (!img.el) continue;
         // Images belong to the buffer that created them: an alt-screen
         // switch must hide, not repaint, the normal buffer's overlays.
         if (img.buffer && img.buffer !== term.buffer.active) {
@@ -361,7 +408,7 @@
     function clearImages() {
       images.forEach(function (img) {
         if (img.url) URL.revokeObjectURL(img.url);
-        img.el.remove();
+        if (img.el) img.el.remove();
       });
       images = [];
     }
@@ -388,21 +435,31 @@
         for (var ri = images.length - 1; ri >= 0; ri--) {
           if (images[ri].pkey === pkey) {
             if (images[ri].url) URL.revokeObjectURL(images[ri].url);
-            images[ri].el.remove();
+            if (images[ri].el) images[ri].el.remove();
             images.splice(ri, 1);
           }
         }
       }
+      // Push the image record NOW (parse time, before async Image#onload) so
+      // the never-paired contender count sees it during the streaming window
+      // — otherwise image 1 can claim image 2's block while image 2 is still
+      // loading (the 1/6 race the re-review measured).
+      var preArmedCols = params.c ? parseInt(params.c, 10) : 0;
+      var record = { el: null, rows: params.r ? parseInt(params.r, 10) : 1,
+                     cols: preArmedCols, url: null, buffer: null,
+                     armed: true, armBuf: armBuf, armCursor: armCursor, pkey: pkey };
+      images.push(record);
       var finish = function (el, naturalW, naturalH, url) {
         var cell = cellSize(term);
-        var cols = params.c ? parseInt(params.c, 10) : Math.max(1, Math.ceil(naturalW / cell.w));
-        var rows = params.r ? parseInt(params.r, 10) : Math.max(1, Math.ceil(naturalH / cell.h));
+        // Real dims from the image beat the parse-time c/r defaults.
+        record.cols = params.c ? parseInt(params.c, 10) : Math.max(1, Math.ceil(naturalW / cell.w));
+        record.rows = params.r ? parseInt(params.r, 10) : Math.max(1, Math.ceil(naturalH / cell.h));
+        record.el = el;
+        record.url = url;
         el.style.cssText = "position:absolute;object-fit:fill;";
         ensureLayer().appendChild(el);
-        logPlace("arm", "pkey=" + pkey + " c=" + cols + " r=" + rows +
+        logPlace("arm", "pkey=" + pkey + " c=" + record.cols + " r=" + record.rows +
           " buf=" + armBuf + " cur=" + armCursor);
-        images.push({ el: el, rows: rows, cols: cols, url: url, buffer: null,
-                      armed: true, armBuf: armBuf, armCursor: armCursor, pkey: pkey });
         // Deferred: the anchor stays armed until a post-parse refresh.
         scheduleSettle();
       };
