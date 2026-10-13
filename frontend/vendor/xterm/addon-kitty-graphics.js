@@ -228,18 +228,20 @@
           // (emptied by trim); if we can't see the row we stay sticky.
           if (img.paired) return null;
         }
-        // Fresh pairing — exact shape match first, then any unused
-        // block at least as wide as the image (an image can't fit in a
-        // narrower slot; a >=2 fallback let a 20-col image steal a 12-col
-        // block — probe-caught just now). Blocks come out in buffer order
-        // (topmost-first), so iteration stays stable for same-shape blocks.
+        // Fresh pairing — exact shape match first. The `>= cols` fallback is
+        // gated on EVER having paired: an image with zero memory (never seen
+        // at its block, e.g. alt-jump or OMP same-pkey splice) must not
+        // claim another image's visibly-correct block (R1) — we're guessing
+        // there, and guessing requires a real anchor hint first.
         for (var bi2 = 0; bi2 < blocks.length; bi2++) {
           var b2 = blocks[bi2];
           if (!b2._claimedBy && b2.runLen === img.cols) { b2._claimedBy = img; img.paired = true; return b2; }
         }
-        for (var bi3 = 0; bi3 < blocks.length; bi3++) {
-          var b3 = blocks[bi3];
-          if (!b3._claimedBy && b3.runLen >= img.cols) { b3._claimedBy = img; img.paired = true; return b3; }
+        if (img.paired) {
+          for (var bi3 = 0; bi3 < blocks.length; bi3++) {
+            var b3 = blocks[bi3];
+            if (!b3._claimedBy && b3.runLen >= img.cols) { b3._claimedBy = img; return b3; }
+          }
         }
         return null;
       };
@@ -254,28 +256,41 @@
       for (var pi = 0; pi < pending.length; pi++) {
         var pimg = pending[pi];
         if (pimg.buffer && pimg.buffer !== term.buffer.active) continue;
-        // Forget stale memory only when the buffer no longer holds any
-        // shape-compatible block at the remembered row: either (a) that row
-        // is in this refresh's window and fails the shape test (reflow
-        // shifted contents in view), or (b) buffer trim since last match
-        // dropped rows above it and our last-known buffer length proves the
-        // remembered row's contents are gone. A row we can't see keeps
-        // memory — scrolling out of view must not make an image "fresh"
-        // (that was the original F1 steal).
-        if (pimg.blockTop !== undefined && pimg.lastBufLen !== undefined &&
-            buf.length !== pimg.lastBufLen) {
-          // Buffer line count changed since we last matched. Row 61 might
-          // now hold different content. Verify by directly reading it.
-          var remembered = buf.getLine(pimg.blockTop);
-          var rtext = remembered ? remembered.translateToString(true) : "";
-          var rcol = rtext.indexOf("\u00a0");
-          var rlen = 0;
-          if (rcol >= 0) {
-            for (var rr = rcol; rr < rtext.length; rr++) {
-              if (rtext.charCodeAt(rr) === 0xa0) rlen++;
+        // Forget stale memory under two independent evidences (R2 fix —
+        // 8a441b7 regressed this to length-change-only, which misses
+        // constant-length scrollback trim):
+        //  (a) buffer trim: row count changed since last match → directly
+        //      re-read the remembered row, drop anchor if shape fails.
+        //  (b) in-window content shift: the remembered row lies inside the
+        //      current scan window AND no block there matches its shape
+        //      (handles reflow-with-no-trim which never changes buf.length).
+        // A row outside the window with unchanged trim keeps memory — the
+        // block is probably still there, just scrolled out of view (F1).
+        if (pimg.blockTop !== undefined) {
+          var wStart = Math.max(0, vy - maxRows);
+          var covered = pimg.blockTop >= wStart && pimg.blockTop < scanTo;
+          var lenChanged = pimg.lastBufLen !== undefined && buf.length !== pimg.lastBufLen;
+          if (lenChanged) {
+            var remembered = buf.getLine(pimg.blockTop);
+            var rtext = remembered ? remembered.translateToString(true) : "";
+            var rcol = rtext.indexOf("\u00a0");
+            var rlen = 0;
+            if (rcol >= 0) {
+              for (var rr2 = rcol; rr2 < rtext.length; rr2++) {
+                if (rtext.charCodeAt(rr2) === 0xa0) rlen++;
+              }
             }
+            if (rlen < pimg.cols) pimg.blockTop = undefined;
           }
-          if (rlen < pimg.cols) pimg.blockTop = undefined;
+          if (pimg.blockTop !== undefined && covered) {
+            var stillThere = false;
+            for (var bj2 = 0; bj2 < blocks.length; bj2++) {
+              if (blocks[bj2].top === pimg.blockTop && blocks[bj2].runLen >= pimg.cols) {
+                stillThere = true; break;
+              }
+            }
+            if (!stillThere) pimg.blockTop = undefined;
+          }
         }
         pimg.lastBufLen = buf.length;
         var pblock = ownBlock(pimg);
@@ -293,7 +308,11 @@
         // switch must hide, not repaint, the normal buffer's overlays.
         if (img.buffer && img.buffer !== term.buffer.active) {
           img.el.style.display = "none";
-          img.blockTop = undefined;
+          // Keep blockTop AND img.paired: re-entering the normal buffer must
+          // not make a previously-anchored image "fresh" (R1: unanchored
+          // steal of a visible block). Memory is only forgotten inside
+          // ownBlock / pre-assignment when the remembered row provably no
+          // longer holds a shape-compatible block.
           continue;
         }
         var block = null;
