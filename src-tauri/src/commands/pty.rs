@@ -49,9 +49,57 @@ fn validate_shell(shell: &str) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(shell);
 
     // Canonicalize the provided shell for comparison.
+    #[cfg(unix)]
     let canon = p
         .canonicalize()
         .map_err(|e| format!("shell binary not accessible: {}", e))?;
+
+    #[cfg(windows)]
+    let canon = {
+        // Canonicalize an existing absolute path so symlinks/shortcuts
+        // resolve to the physical target.
+        let canon = if p.is_absolute() {
+            p.canonicalize()
+                .map_err(|e| format!("shell binary not accessible: {}", e))?
+        } else {
+            // Bare name ("powershell.exe"): resolve against the known
+            // system shell dirs, not the (untrusted, renderer-supplied)
+            // current directory. The first match wins.
+            let bare = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if bare != shell {
+                // User passed a relative path with directory components —
+                // canonicalize it directly.
+                p.canonicalize()
+                    .map_err(|e| format!("shell binary not accessible: {}", e))?
+            } else {
+                if bare.is_empty() {
+                    return Err("shell path is empty".to_string());
+                }
+                let candidates = [
+                    std::path::PathBuf::from(r"C:\Windows\System32").join(bare),
+                    std::path::PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0").join(bare),
+                    std::path::PathBuf::from(r"C:\Program Files\Git\bin").join(bare),
+                    std::path::PathBuf::from(r"C:\Program Files\Git\usr\bin").join(bare),
+                ];
+                match candidates.into_iter().find(|c| c.exists()) {
+                    Some(found) => found
+                        .canonicalize()
+                        .map_err(|e| format!("shell binary not accessible: {}", e))?,
+                    None => {
+                        return Err(format!(
+                            "bare shell name '{}' not resolvable to a known system shell",
+                            shell
+                        ))
+                    }
+                }
+            }
+        };
+        canon
+    };
+
 
     // Check $SHELL after canonicalization so an attacker can't set
     // SHELL=/tmp/evil and then invoke `pty_spawn` with that path.

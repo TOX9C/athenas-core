@@ -119,8 +119,13 @@ jobs:
         run: |
           $msi = "${{ steps.artifact.outputs.setup_path }}"
           Write-Host "Installing: $msi"
-          # msiexec wants a lone path; escape apostrophes for the inline call.
-          $exit = (Start-Process msiexec -ArgumentList "/i", "`"$msi`"", "/qn", "/norestart", "/lvx*", "msi.log" -Wait -PassThru).ExitCode
+          # msiexec's command parser mis-handles the apostrophe in
+          # "Athena's Core…msi" even when double-quoted via PowerShell
+          # (error 1619: failed to access database). Copy to a plain name
+          # before installing — the artifact the user downloads is
+          # unaffected; this is only the smoke harness.
+          Copy-Item $msi "C:\athena-installer.msi"
+          $exit = (Start-Process msiexec -ArgumentList "/i", "C:\athena-installer.msi", "/qn", "/norestart", "/lvx*", "msi.log" -Wait -PassThru).ExitCode
           if ($exit -ne 0) {
             Write-Host "::error::msiexec exit $exit"
             Get-Content msi.log -Tail 40
@@ -131,8 +136,7 @@ jobs:
           # "Name_ver_x64_en-US.msi" → install dir keeps the name.
           $exeCandidates = @(
             "C:\Program Files\Athena's Core\athenas-core.exe",
-            "C:\Program Files\Athena.s.Core\athenas-core.exe",
-            "C:\Program Files\Athena's Core\athenas-core.exe"
+            "C:\Program Files\Athena.s.Core\athenas-core.exe"
           )
           $exe = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $exe) { $exe = (Get-ChildItem "C:\Program Files" -Directory | Where-Object { $_.Name -like "Athena*" } | Select-Object -First 1 | ForEach-Object { Join-Path $_.FullName 'athenas-core.exe' }) }
