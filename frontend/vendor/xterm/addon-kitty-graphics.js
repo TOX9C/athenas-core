@@ -207,19 +207,25 @@
       // block (F1 in the final review of this fix series).
       for (var ci = 0; ci < blocks.length; ci++) blocks[ci]._claimedBy = null;
       var ownBlock = function (img) {
-        // Sticky re-attachment: if we previously matched this block, the
-        // anchor's remembered top row tells us exactly which block is ours.
+        // Sticky re-attachment: remembered block.top row (stable under pure
+        // scrolling). Also re-detect drifted rows in-window when the exact
+        // remembered row no longer qualifies (reflow can shift a block's
+        // start by reflow-wrapped lines): sticky-pair to the FIRST block
+        // whose top is within ±img.rows of the remembered row.
         if (img.blockTop !== undefined) {
           for (var bi = 0; bi < blocks.length; bi++) {
             var b = blocks[bi];
             if (!b._claimedBy && b.top === img.blockTop && b.runLen >= img.cols) {
               b._claimedBy = img;
+              img.blockTop = b.top;
               return b;
             }
           }
-          // img.paired means we've anchored before; the remembered block is
-          // now out of the scan window (trimmed/scrolled away). Refuse the
-          // fallback so we don't seize another image's visible block.
+          // The remembered row is outside this refresh's scan window.
+          // Keep memory if we last had a match (img.paired) — the block is
+          // probably still there, just scrolled out. Only wipe if the buffer
+          // no longer contains a shape-compatible block at that row at all
+          // (emptied by trim); if we can't see the row we stay sticky.
           if (img.paired) return null;
         }
         // Fresh pairing — exact shape match first, then any unused
@@ -248,21 +254,30 @@
       for (var pi = 0; pi < pending.length; pi++) {
         var pimg = pending[pi];
         if (pimg.buffer && pimg.buffer !== term.buffer.active) continue;
-        // Forget sticky memory only when we can PROVE the remembered row
-        // shifted content (the scan window COVERS blockTop but the row there
-        // no longer has this image's sentinel shape: reflow/trim moved it).
-        // A block merely outside the window keeps its memory — scrolling out
-        // of view must not make an image "fresh" again (that's F1).
-        if (pimg.blockTop !== undefined) {
-          var wStart = Math.max(0, vy - maxRows)
-          if (pimg.blockTop >= wStart && pimg.blockTop < scanTo) {
-            var stillThere = false
-            for (var bj = 0; bj < blocks.length; bj++) {
-              if (blocks[bj].top === pimg.blockTop && blocks[bj].runLen >= pimg.cols) { stillThere = true; break }
+        // Forget stale memory only when the buffer no longer holds any
+        // shape-compatible block at the remembered row: either (a) that row
+        // is in this refresh's window and fails the shape test (reflow
+        // shifted contents in view), or (b) buffer trim since last match
+        // dropped rows above it and our last-known buffer length proves the
+        // remembered row's contents are gone. A row we can't see keeps
+        // memory — scrolling out of view must not make an image "fresh"
+        // (that was the original F1 steal).
+        if (pimg.blockTop !== undefined && pimg.lastBufLen !== undefined &&
+            buf.length !== pimg.lastBufLen) {
+          // Buffer line count changed since we last matched. Row 61 might
+          // now hold different content. Verify by directly reading it.
+          var remembered = buf.getLine(pimg.blockTop);
+          var rtext = remembered ? remembered.translateToString(true) : "";
+          var rcol = rtext.indexOf("\u00a0");
+          var rlen = 0;
+          if (rcol >= 0) {
+            for (var rr = rcol; rr < rtext.length; rr++) {
+              if (rtext.charCodeAt(rr) === 0xa0) rlen++;
             }
-            if (!stillThere) pimg.blockTop = undefined
           }
+          if (rlen < pimg.cols) pimg.blockTop = undefined;
         }
+        pimg.lastBufLen = buf.length;
         var pblock = ownBlock(pimg);
         // Only remember the row on a match: sticky survives out-of-window
         // (hidden) refreshes, but a no-match refresh after the block moved
