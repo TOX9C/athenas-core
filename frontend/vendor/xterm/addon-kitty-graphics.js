@@ -157,12 +157,6 @@
           sim.armed = false;
           sim.buffer = buf;
           sim.reportSettle = true;
-          // Post-parse anchor row: the sentinel block OMP spliced starts
-          // at-or-above the cursor right now (OMP emits r placeholder rows
-          // plus C=1 so the cursor ends just below the block). This is the
-          // ONLY safe toaster for never-paired exact matching; feed-time
-          // armCursor is the stale pre-parse value and must never gate it.
-          sim.settleRow = buf.cursorY;
         }
       }
       var screen = term.element.querySelector(".xterm-screen");
@@ -218,7 +212,6 @@
             var b = blocks[bi];
             if (!b._claimedBy && b.top === img.blockTop && b.runLen >= img.cols) {
               b._claimedBy = img;
-              img.blockTop = b.top;
               return b;
             }
           }
@@ -229,17 +222,14 @@
           // (emptied by trim); if we can't see the row we stay sticky.
           if (img.paired) return null;
         }
-        // R1/R3: for NEVER-paired images, runLen alone cannot disambiguate
-        // equal-width images — the older image's block may or may not be
-        // out of window. To avoid stealing a newer image's visible block
-        // (R1(a) fresh-pane first scroll-up, R1(b) alt-jump, R1(c) OMP
-        // same-pkey re-place), a never-paired image may claim only when
-        // it's UNCONTESTED: no older same-shape never-paired image can still
-        // plausibly own a block ABOVE the window. (Blocks are found in
-        // document order; images are pushed in placement order, so the
-        // i-th free same-shape block in document order belongs to the i-th
-        // still-contending same-shape image — unless some older image's
-        // block is hidden above the window.)
+        // R1/R3: never-paired SAME-SHAPE images are indistinguishable by
+        // runLen — claiming on document order ("oldest takes topmost") lets
+        // image 1 steal image 2's visible block whenever image 1's own block
+        // is out of the scan window (fresh pane first scroll-up, OMP
+        // same-pkey re-place, post-resize). Gate on GLOBAL unambiguity: count
+        // every never-paired same-shape image on this buffer and compare to
+        // the free same-shape blocks in the window. Only when every
+        // contestant has a slot do we assign, in document order.
         var candidates = [];
         for (var bi2 = 0; bi2 < blocks.length; bi2++) {
           var b2 = blocks[bi2];
@@ -247,18 +237,18 @@
         }
         if (candidates.length) {
           if (!img.paired) {
-            // Count older never-paired same-shape competitors.
-            var myIdx = images.indexOf(img);
-            var olderUnpaired = 0;
-            for (var npi = 0; npi < myIdx; npi++) {
+            var contenders = 0;
+            var myRank = -1;
+            for (var npi = 0; npi < images.length; npi++) {
               var nim = images[npi];
               if (!nim.paired && nim.cols === img.cols &&
                   (!nim.buffer || nim.buffer === term.buffer.active)) {
-                olderUnpaired++;
+                if (nim === img) myRank = contenders;
+                contenders++;
               }
             }
-            if (olderUnpaired >= candidates.length) return null;
-            var cb = candidates[olderUnpaired];
+            if (contenders > candidates.length) return null;
+            var cb = candidates[myRank];
             cb._claimedBy = img; img.paired = true; return cb;
           }
           var first2 = candidates[0];
