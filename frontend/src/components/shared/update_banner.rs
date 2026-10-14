@@ -10,6 +10,34 @@ use dioxus::prelude::*;
 /// the resume-banner dismissal idiom in `terminal_grid.rs`.
 const DISMISSED_KEY: &str = "update_dismissed_version";
 
+/// The exact user-facing upgrade path. Plain `brew upgrade` covers formulae
+/// only, so the command must name the cask explicitly; showing it inline
+/// (copyable) prevents the "I upgraded but the app is still old" confusion.
+const UPGRADE_CMD: &str = "brew upgrade --cask athenas-core";
+
+/// Copy the upgrade command via the webview clipboard (same
+/// `navigator.clipboard.writeText` pattern as `chat_message.rs`). Fire and
+/// forget — there is nothing actionable to surface to the user on failure.
+fn copy_upgrade_cmd() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(clipboard) =
+        js_sys::Reflect::get(&window.navigator(), &wasm_bindgen::JsValue::from_str("clipboard"))
+    else {
+        return;
+    };
+    let Ok(write_text) =
+        js_sys::Reflect::get(&clipboard, &wasm_bindgen::JsValue::from_str("writeText"))
+    else {
+        return;
+    };
+    let Ok(function) = wasm_bindgen::JsCast::dyn_into::<js_sys::Function>(write_text) else {
+        return;
+    };
+    let _ = function.call1(&clipboard, &wasm_bindgen::JsValue::from_str(UPGRADE_CMD));
+}
+
 #[component]
 pub fn UpdateBanner() -> Element {
     let mut ui = use_ui_store();
@@ -37,6 +65,15 @@ pub fn UpdateBanner() -> Element {
             }
             span {
                 "{latest} is out — you're on v{env!(\"CARGO_PKG_VERSION\")}."
+            }
+            span {
+                style: "font-family: var(--fontMono); font-size: var(--text-xs); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; user-select: all;",
+                "{UPGRADE_CMD}"
+            }
+            button {
+                class: "btn-ghost btn-sm",
+                onclick: move |_| copy_upgrade_cmd(),
+                "Copy"
             }
             span { style: "flex: 1;" }
             button {

@@ -44,6 +44,14 @@
 brew install --no-quarantine tox9c/tap/athenas-core
 ```
 
+Upgrades are one line too — plain `brew upgrade` covers formulae only, so name the cask:
+
+```bash
+brew upgrade --cask athenas-core
+```
+
+then quit (⌘Q) and relaunch. When a new release lands, the app shows a banner with this command ready to copy.
+
 `--no-quarantine` means Gatekeeper never evaluates the unsigned app — no security-prompt dance at all.
 
 **Prefer the DMG?** Grab the latest build from [Releases](https://github.com/TOX9C/athenas-core/releases), drag it into **Applications**, and launch.
