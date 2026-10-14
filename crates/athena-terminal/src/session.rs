@@ -56,9 +56,22 @@ fn reap_process_group(pid: nix::unistd::Pid, pgid: nix::unistd::Pid) {
         return;
     }
 
-    // Still alive after the grace window — SIGKILL and reap (blocking).
+    // Still alive after the grace window — SIGKILL, then keep POLLING
+    // rather than blocking in waitpid: a child that wedges in uninterruptible
+    // kernel exit (observed for PTY session leaders on macOS) parks a
+    // blocking waitpid forever, while WNOHANG polls keep returning
+    // StillAlive and let us give up. Better to leak one zombie (collected
+    // at process exit) than to deadlock pane close / shutdown_all.
     let _ = killpg(pgid, Signal::SIGKILL);
-    let _ = waitpid(pid, None);
+    for _ in 0..50 {
+        match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::StillAlive) => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            _ => return,
+        }
+    }
+    log::warn!("reap_process_group: pid {pid} still alive 5s after SIGKILL; leaking until process exit");
 }
 
 /// Maximum total bytes queued in `pending_writes` for a session that has not
