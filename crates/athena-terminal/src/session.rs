@@ -1,6 +1,3 @@
-use crate::ansi::handler::{apply_ops_with_responses, AnsiHandler};
-use crate::grid::CellDelta;
-use crate::grid::Grid;
 use log::info;
 use nix::pty::{openpty, Winsize};
 use nix::sys::wait::{waitpid, WaitPidFlag};
@@ -16,7 +13,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
-use vte::Parser;
 
 /// Reap a child process group after signaling it.
 ///
@@ -74,20 +70,9 @@ pub enum PtyStatus {
     Exited,
 }
 
-/// Complete update delta for the frontend.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TerminalUpdate {
-    pub session_id: String,
-    pub deltas: Vec<CellDelta>,
-    pub cursor_row: usize,
-    pub cursor_col: usize,
-    pub rows: usize,
-    pub cols: usize,
-    /// Whether the cursor should be rendered.
-    pub cursor_visible: bool,
-}
-
-/// A PTY session combining a shell process, PTY file descriptor, and terminal grid.
+/// A PTY session wrapping a shell process and its master/slave fd pair.
+/// Rendering is owned by the frontend (xterm.js); this crate only manages
+/// the process, the fd lifecycle, and raw byte streaming.
 static STARTUP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
@@ -130,7 +115,6 @@ impl SpawnParkProbe {
 
 pub struct TerminalSession {
     pub id: String,
-    pub grid: Arc<Mutex<Grid>>,
     /// Atomic FD sentinel. Holds the master PTY fd, or `-1` once the fd has
     /// been closed. PTY operations duplicate this fd into an `OwnedFd` while
     /// holding `fd_lifecycle_lock`, so closing the master cannot recycle the
@@ -233,19 +217,13 @@ pub struct TerminalSession {
     resize_lock: Mutex<()>,
     #[cfg(test)]
     resize_test_probe: std::sync::Mutex<Option<ResizeTestProbe>>,
-    /// Persistent VTE parser state.
-    ///
-    /// VTE's `Parser` is a state machine that tracks partial escape sequences
-    /// (e.g. a CSI sequence split across two `read()` calls: `ESC[` arrives in
-    /// one call, the parameter bytes `38;2;10;10;10m` arrive in the next).
-    ///
-    /// This field MUST persist for the lifetime of the session. Recreating the
-    /// parser on every read — as the previous free-function `read_and_parse`
-    /// did — destroys in-flight state and causes parameter bytes to fall
-    /// through to the `Perform::print` handler, which then renders raw CSI
-    /// digits and semicolons as visible cell text (the "leaking ANSI codes"
-    /// visual glitch).
-    parser: Mutex<Parser>,
+    /// Bytes written to the frontend channel that the frontend has not yet
+    /// acked (parsed). When it exceeds the high-water mark, the read loop
+    /// stops short and lets kernel-side backpressure hold the PTY writer.
+    pub unacked_bytes: AtomicU64,
+    /// Wakes the read loop when the frontend acks bytes and the queue drains
+    /// below the low-water mark.
+    pub ack_notify: tokio::sync::Notify,
 }
 
 impl Drop for TerminalSession {
@@ -300,13 +278,15 @@ impl TerminalSession {
         shell: String,
         cwd: String,
         tty_path: Option<String>,
-        cols: usize,
-        rows: usize,
+        // Dimensions are already set on the PTY via TIOCSWINSZ at spawn; the
+        // backend no longer keeps a cell grid, so these are accepted purely to
+        // keep the existing constructor signature stable.
+        _cols: usize,
+        _rows: usize,
         startup_cleanup_path: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             id,
-            grid: Arc::new(Mutex::new(Grid::new(cols, rows))),
             master_fd: AtomicI32::new(master_fd),
             fd_lifecycle_lock: std::sync::Mutex::new(()),
             shell_pid,
@@ -332,7 +312,8 @@ impl TerminalSession {
             resize_lock: Mutex::new(()),
             #[cfg(test)]
             resize_test_probe: std::sync::Mutex::new(None),
-            parser: Mutex::new(Parser::new()),
+            unacked_bytes: AtomicU64::new(0),
+            ack_notify: tokio::sync::Notify::new(),
         }
     }
 
@@ -906,49 +887,114 @@ fn shell_single_quote(path: &std::path::Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
-/// Preserve the user's normal interactive shell configuration while keeping
-/// Athena's integration script in a private startup file. The private file is
-/// the only file passed to the child shell, so Athena can load hooks silently;
-/// sourcing the real rc file first restores Oh My Zsh, prompts, aliases, and
-/// user PATH setup.
-fn startup_script_with_user_config(shell: &str, integration_script: &str) -> String {
-    let user_home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let user_rcs: Vec<std::path::PathBuf> = match shell_name(shell) {
-        "zsh" => {
-            let dir = std::env::var_os("ZDOTDIR")
-                .map(std::path::PathBuf::from)
-                .or_else(|| user_home.clone());
-            dir.into_iter()
-                .flat_map(|dir| [dir.join(".zshenv"), dir.join(".zshrc")])
-                .collect()
-        }
-        "bash" => user_home
-            .map(|dir| vec![dir.join(".bashrc")])
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
+/// Quote a path for a shell `source` command without allowing path characters
+/// to become shell syntax and emit a readability-guarded `source` line.
+fn source_if_readable(path: &std::path::Path) -> String {
+    let quoted = shell_single_quote(path);
+    format!("[[ -r {q} ]] && source {q}\n", q = quoted)
+}
 
-    let source_user = user_rcs
-        .into_iter()
-        .filter(|path| path.is_file())
-        .map(|path| {
-            let quoted = shell_single_quote(&path);
-            format!("if [[ -r {quoted} ]]; then source {quoted}; fi\n")
-        })
-        .collect::<String>();
-
-    // A user's rc file may assume Oh My Zsh's conventional ZSH variable is
-    // exported by an outer login shell. Athena launches zsh directly with
-    // `-d -i`, so make the well-known install location explicit before
-    // sourcing `.zshrc`. This prevents `source /oh-my-zsh.sh` and the follow-on
-    // `compdef: command not found` cascade without modifying the user's files.
-    let omz_bootstrap = if shell_name(shell) == "zsh" {
-        "if [[ -z \"${ZSH:-}\" || ! -f \"${ZSH}/oh-my-zsh.sh\" ]]; then\n  unset ZSH\n  for __athena_omz in \"$HOME/.oh-my-zsh\" \"$HOME/.config/oh-my-zsh\" \"/opt/homebrew/share/oh-my-zsh\" \"/usr/local/share/oh-my-zsh\"; do\n    if [[ -f \"$__athena_omz/oh-my-zsh.sh\" ]]; then export ZSH=\"$__athena_omz\"; break; fi\n  done\n  unset __athena_omz\nfi\n"
+/// The user's real ZDOTDIR, i.e. its value in the parent process (falling
+/// back to HOME, matching zsh's own default). The spawn overrides ZDOTDIR
+/// with the private startup dir, so generated shim files must reference the
+/// original location explicitly.
+fn orig_zdotdir() -> (std::path::PathBuf, bool) {
+    if let Some(dir) = std::env::var_os("ZDOTDIR").filter(|v| !v.is_empty()) {
+        (std::path::PathBuf::from(dir), true)
+    } else if let Some(home) = std::env::var_os("HOME") {
+        (std::path::PathBuf::from(home), false)
     } else {
-        ""
-    };
+        // Degenerate env: no HOME either. /etc files still run; user rcs
+        // simply won't be found.
+        (std::path::PathBuf::from("/"), false)
+    }
+}
 
-    format!("{omz_bootstrap}{source_user}\n{integration_script}\n")
+/// zsh startup shim files for the private ZDOTDIR. The shell is spawned as a
+/// LOGIN shell (`-l -i`) so global files (/etc/zprofile → path_helper,
+/// /etc/zshrc → macOS history defaults) run. Each shim sources the user's
+/// original file from their REAL ZDOTDIR; the .zshrc additionally restores
+/// ZDOTDIR and fixes HISTFILE first, because /etc/zshrc computes
+/// `$ZDOTDIR/.zsh_history` from the private dir at that point, which would
+/// otherwise be deleted with it on session exit.
+fn zsh_startup_files(
+    private_dir: &std::path::Path,
+    integration_script: &str,
+) -> Vec<(&'static str, String)> {
+    let (orig, zdotdir_was_set) = orig_zdotdir();
+
+    let zshenv = source_if_readable(&orig.join(".zshenv"));
+    let zprofile = source_if_readable(&orig.join(".zprofile"));
+
+    let mut zshrc = String::new();
+    // Restore the original ZDOTDIR (or drop the override entirely) so user
+    // config and the /etc/zlogin + $ZDOTDIR/.zlogin lookups below behave as
+    // they would in Terminal.app. Skip the restore if the user's .zshenv
+    // re-pointed ZDOTDIR elsewhere (dotfile-manager setups).
+    if zdotdir_was_set {
+        zshrc.push_str(&format!(
+            "if [[ \"${{ZDOTDIR:-}}\" == {dir} ]]; then\n  export ZDOTDIR={orig};\nfi\n",
+            dir = shell_single_quote(private_dir),
+            orig = shell_single_quote(&orig),
+        ));
+    } else {
+        zshrc.push_str(&format!(
+            "if [[ \"${{ZDOTDIR:-}}\" == {dir} ]]; then\n  unset ZDOTDIR\nfi\n",
+            dir = shell_single_quote(private_dir),
+        ));
+    }
+    // /etc/zshrc already ran with the private ZDOTDIR and pointed HISTFILE
+    // into the temp dir. Only rewrite a HISTFILE that (a) is unset or (b)
+    // still points into the private dir, so a user-set custom path survives.
+    let hist = orig.join(".zsh_history");
+    zshrc.push_str(&format!(
+        "if [[ -z \"${{HISTFILE:-}}\" || \"$HISTFILE\" == {dir}/* ]]; then\n  export HISTFILE={hist};\nfi\n",
+        dir = shell_single_quote(private_dir),
+        hist = shell_single_quote(&hist),
+    ));
+    // A user's rc file may assume Oh My Zsh's conventional ZSH variable is
+    // exported by an outer login shell. Athena launches zsh directly, so make
+    // the well-known install location explicit before sourcing `.zshrc`. This
+    // prevents `source /oh-my-zsh.sh` and the follow-on `compdef: command not
+    // found` cascade without modifying the user's files.
+    zshrc.push_str(
+        "if [[ -z \"${ZSH:-}\" || ! -f \"${ZSH}/oh-my-zsh.sh\" ]]; then\n  unset ZSH\n  for __athena_omz in \"$HOME/.oh-my-zsh\" \"$HOME/.config/oh-my-zsh\" \"/opt/homebrew/share/oh-my-zsh\" \"/usr/local/share/oh-my-zsh\"; do\n    if [[ -f \"$__athena_omz/oh-my-zsh.sh\" ]]; then export ZSH=\"$__athena_omz\"; break; fi\n  done\n  unset __athena_omz\nfi\n",
+    );
+    zshrc.push_str(&source_if_readable(&orig.join(".zshrc")));
+    zshrc.push_str(integration_script);
+    zshrc.push('\n');
+
+    vec![
+        (".zshenv", zshenv),
+        (".zprofile", zprofile),
+        (".zshrc", zshrc),
+    ]
+}
+
+/// bash startup rcfile for the private `--rcfile`. bash is spawned with
+/// `--noprofile --rcfile <ours> -i`, which reaches NONE of the login files;
+/// reproduce the login-shell startup chain in the right order ourselves so
+/// PATH (path_helper, brew shellenv disease), profiles, and aliases behave
+/// like Terminal.app. `.bashrc` always runs last (legacy Athena behavior)
+/// even on setups where .bash_profile doesn't chain it.
+fn bash_login_startup_script(integration_script: &str) -> String {
+    let mut script = String::new();
+    script.push_str(&source_if_readable(std::path::Path::new("/etc/profile")));
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        // bash login semantics: the FIRST readable profile file wins.
+        script.push_str("for __athena_profile in ");
+        for name in [".bash_profile", ".bash_login", ".profile"] {
+            script.push_str(&shell_single_quote(&home.join(name)));
+            script.push(' ');
+        }
+        script.push_str(
+            "; do\n  [[ -r \"$__athena_profile\" ]] && source \"$__athena_profile\" && break\ndone\nunset __athena_profile\n",
+        );
+        script.push_str(&source_if_readable(&home.join(".bashrc")));
+    }
+    script.push_str(integration_script);
+    script.push('\n');
+    script
 }
 
 fn shell_flags(shell: &str) -> &'static [&'static str] {
@@ -1152,21 +1198,27 @@ impl SessionManager {
                 file.write_all(contents.as_bytes())?;
                 file.flush()
             };
-            let zsh_or_bash_script = startup_script_with_user_config(shell, script);
             let result = match shell_name(shell) {
                 "zsh" => {
                     use std::os::unix::fs::DirBuilderExt;
-                    std::fs::DirBuilder::new()
+                    let files = zsh_startup_files(&base, script);
+                    let created = std::fs::DirBuilder::new()
                         // Create with 0o700 atomically — a create-chmod pair
                         // leaves a window at umask-derived permissions.
                         .mode(0o700)
-                        .create(&base)
-                        .and_then(|_| write_new(&base.join(".zshrc"), &zsh_or_bash_script))
+                        .create(&base);
+                    created
+                        .and_then(|_| {
+                            for (name, contents) in &files {
+                                write_new(&base.join(name), contents)?;
+                            }
+                            Ok(())
+                        })
                         .map(|_| base.clone())
                 }
                 "bash" => {
                     let path = base.with_extension("bashrc");
-                    write_new(&path, &zsh_or_bash_script).map(|_| path)
+                    write_new(&path, &bash_login_startup_script(script)).map(|_| path)
                 }
                 "fish" => {
                     let path = base.with_extension("fish");
@@ -1216,7 +1268,11 @@ impl SessionManager {
         let mut args: Vec<CString> = vec![shell_cstr.clone()];
         match (shell_name(shell), startup_cleanup_path.as_deref()) {
             ("zsh", Some(_)) => args.extend(
-                ["-d", "-i"]
+                // Login + interactive with global rcs ON: /etc/zprofile runs
+                // path_helper (Homebrew PATH), /etc/zshrc sets history. The
+                // temp ZDOTDIR's shim files restore the user's startup chain
+                // and fix HISTFILE, then load Athena's hooks.
+                ["-l", "-i"]
                     .into_iter()
                     .map(|flag| CString::new(flag).expect("static shell flag has no NUL")),
             ),
@@ -1256,6 +1312,21 @@ impl SessionManager {
             _ => None,
         };
         let environment = child_environment_with_startup(startup_env);
+
+        // nix::execve's to_exec_array allocates the argv/envp pointer vectors
+        // after fork in a multithreaded process — a deadlock if the allocator
+        // lock is held. Pre-build both pointer arrays here so the child only
+        // touches preallocated memory before exec.
+        let argv_ptrs: Vec<*const libc::c_char> = args
+            .iter()
+            .map(|c| c.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect();
+        let envp_ptrs: Vec<*const libc::c_char> = environment
+            .iter()
+            .map(|c| c.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect();
 
         match unsafe { fork() } {
             Ok(ForkResult::Child) => {
@@ -1307,13 +1378,19 @@ impl SessionManager {
                 // `cwd_cstr` was allocated before fork; staying on raw
                 // libc::chdir/_exit keeps the child strictly async-signal-safe.
                 unsafe { libc::chdir(cwd_cstr.as_ptr()) };
-                let _ = nix::unistd::execve(&shell_cstr, &args, &environment);
+                unsafe { libc::execve(shell_cstr.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr()) };
                 // execve only returns on failure.
                 let _ = unsafe { libc::write(err_write, [2u8].as_ptr() as *const _, 1) };
                 let _ = close(err_write);
                 unsafe { libc::_exit(1) };
             }
             Ok(ForkResult::Parent { child }) => {
+                // Fork copied the address space; parent must not hold the
+                // `!Send` raw pointer vectors across the `spawn_blocking` await
+                // below, or the async future won't be Send. They only exist
+                // so the child can exec without allocating.
+                drop(argv_ptrs);
+                drop(envp_ptrs);
                 // OMP derives its terminal breadcrumb key from ttyname(0).
                 // Capture the PTY slave path before closing the parent's copy
                 // so the heartbeat can prefer an exact session mapping over
@@ -1504,6 +1581,7 @@ impl SessionManager {
     /// The sessions map is drained first so each `Arc<TerminalSession>` is
     /// reaped exactly here; a later `Drop` (when the read loop releases its
     /// own clone) finds an already-reaped child and no-ops on `ECHILD`.
+    ///
     pub async fn shutdown_all(&self) {
         // Drain the map so Drop's reaping can't race our explicit reaping.
         // The read loop still holds its own Arc clone, so the session isn't
@@ -1520,22 +1598,11 @@ impl SessionManager {
             sessions.len()
         );
 
-        // Phase 1 — graceful, in-band exit. Write `/exit` + Enter so the
-        // foreground agent (claude/codex/…) runs its OWN exit handler, flushes
-        // its session file, and prints its resume line — which the read loop
-        // then emits as `pty:raw` for the frontend scanner AND appends to the
-        // backend OutputBuffer (used by the app-exit capture path). This is
-        // strictly gentler than SIGINT and gives the resume id the best chance
-        // to appear before we tear things down. Best-effort: ignore write
-        // errors (the fd may already be closed, or the child may have exited).
-        for session in &sessions {
-            let _ = session.write(b"/exit\r").await;
-        }
-
-        // Let the agents process `/exit`, flush state, and print their resume
-        // line. ~700 ms covers claude/codex exit handlers; the read loop's
-        // 8 ms flush interval guarantees the bytes reach listeners in time.
-        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        // Phase 1 — the graceful in-band exit for agents runs earlier, in
+        // `capture_resume_ids_on_exit` (resume.rs), which classifies panes and
+        // writes `/exit` only into those. shutdown_all must not re-type it:
+        // that produced a duplicate `/exit` into each agent's stdin (or as
+        // noise into the post-exit shell prompt's buffer).
 
         // Phase 2 — SIGINT fallback. Any agent that ignored `/exit` (or whose
         // shell has already returned to a prompt with no agent running) gets a
@@ -1590,9 +1657,8 @@ impl SessionManager {
         owner: Option<&str>,
     ) -> io::Result<()> {
         if let Some(session) = self.get_session(id).await {
-            // Serialize the complete ioctl + grid update so the dimensions
-            // observed by the backend parser cannot move backward while a
-            // newer resize is being applied.
+            // Serialize the complete ioctl so older resize tasks cannot
+            // clobber newer dimensions.
             let _resize_guard = session.resize_lock.lock().await;
 
             #[cfg(test)]
@@ -1628,11 +1694,7 @@ impl SessionManager {
             })
             .await;
             match result {
-                Ok(0) => {
-                    let mut grid = session.grid.lock().await;
-                    grid.resize(cols as usize, rows as usize);
-                    Ok(())
-                }
+                Ok(0) => Ok(()),
                 Ok(_) => Err(io::Error::last_os_error()),
                 Err(e) => Err(io::Error::other(e)),
             }
@@ -1675,8 +1737,8 @@ impl Default for SessionManager {
     }
 }
 
-/// Read and parse bytes from the PTY, applying updates to the grid.
-/// Returns TerminalUpdate if there were cell changes.
+/// Read raw bytes from the PTY master fd; parsing/rendering live in the
+/// frontend's xterm.js instance.
 impl TerminalSession {
     /// Read raw bytes from the PTY master fd without parsing.
     /// Returns the number of bytes read (`0` means no data was available
@@ -1690,7 +1752,7 @@ impl TerminalSession {
     /// latency is bounded by the kernel wakeup, not the wait window.
     ///
     /// This is the entry point for raw byte consumers (e.g. an xterm.js
-    /// subscriber) that want the bytes *before* the VTE parser rewrites them
+    /// subscriber) that consume raw streams
     /// into cell deltas.
     #[allow(dead_code)] // kept for the F10 poll-semantics tests; the read loop uses spawn_reader
     pub async fn read_bytes(&self, buf: &mut [u8], wait_ms: u64) -> io::Result<usize> {
@@ -1783,6 +1845,35 @@ impl TerminalSession {
     /// - consumer dropped → the next send fails (or a deadline tick sees
     ///   `is_closed`) → thread exits;
     /// - real errors are forwarded once, then the thread exits.
+    /// Frontend acked N bytes as parsed/applied; decrement the pending count.
+    pub fn ack_output_bytes(&self, n: u64) {
+        self.unacked_bytes
+            .fetch_update(Ordering::Release, Ordering::Acquire, |prev| {
+                Some(prev.saturating_sub(n))
+            })
+            .ok();
+        self.ack_notify.notify_waiters();
+    }
+
+    /// Whether the frontend is far enough behind that we should stop reading
+    /// and let the kernel PTY buffer apply backpressure.
+    pub fn output_backpressured(&self, high_water: u64) -> bool {
+        self.unacked_bytes.load(Ordering::Acquire) >= high_water
+    }
+
+    /// Wait until the frontend has drained below `low_water`. Returns
+    /// immediately if already under it. The channel-style watch avoids the
+    /// lost-wakeup against a published-Notify pattern: we watch a sender
+    /// slot and block on `changed()`; acks bump the slot so no wait ever
+    /// misses them.
+    pub async fn wait_output_drain(&self, low_water: u64) {
+        // Simple polling gate rather than a Notify loophole: 8ms tick keeps
+        // it aligned with the flush cadence, no missed-wakeup hazard.
+        while self.unacked_bytes.load(Ordering::Acquire) > low_water {
+            tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+        }
+    }
+
     pub fn spawn_reader(
         self: &std::sync::Arc<Self>,
     ) -> tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>> {
@@ -1868,65 +1959,6 @@ impl TerminalSession {
         }
     }
 
-    /// Most recent OSC 52 clipboard payload written by the shell program,
-    /// if any. Stored on the grid by the ANSI handler; callers that own a
-    /// real clipboard (src-tauri) can poll or wrap `parse_bytes` and then
-    /// read this getter to lift the value to the OS clipboard.
-    pub async fn osc52_clipboard(&self) -> Option<String> {
-        self.grid.lock().await.osc52_clipboard.clone()
-    }
-
-    /// Feed raw bytes through the persistent VTE parser and apply the
-    /// resulting ops to the grid. Returns a `TerminalUpdate` with cell
-    /// deltas only if the grid state actually changed.
-    pub async fn parse_bytes(&self, data: &[u8]) -> io::Result<Option<TerminalUpdate>> {
-        Ok(self.parse_bytes_with_responses(data).await?.0)
-    }
-
-    /// Parse PTY bytes and return any terminal-protocol responses (currently
-    /// DSR cursor-position replies) alongside the optional grid update.
-    pub async fn parse_bytes_with_responses(
-        &self,
-        data: &[u8],
-    ) -> io::Result<(Option<TerminalUpdate>, Vec<Vec<u8>>)> {
-        if data.is_empty() {
-            return Ok((None, Vec::new()));
-        }
-
-        // Feed bytes through the persistent parser; the handler is a local
-        // sink for completed ops — VTE's state lives in the parser.
-        let mut parser_guard = self.parser.lock().await;
-        let mut handler = AnsiHandler::new();
-        parser_guard.advance(&mut handler, data);
-        let ops = handler.ops();
-        drop(parser_guard);
-
-        let mut grid_guard = self.grid.lock().await;
-        let responses = apply_ops_with_responses(&mut grid_guard, ops);
-        let deltas = grid_guard.dirty_deltas();
-        let cursor_row = grid_guard.cursor.row;
-        let cursor_col = grid_guard.cursor.col;
-        let rows = grid_guard.rows_count;
-        let cols = grid_guard.cols;
-
-        let update = if !deltas.is_empty() {
-            let update = TerminalUpdate {
-                session_id: String::new(),
-                deltas,
-                cursor_row,
-                cursor_col,
-                rows,
-                cols,
-                cursor_visible: grid_guard.cursor_visible,
-            };
-            grid_guard.clear_dirty();
-            Some(update)
-        } else {
-            None
-        };
-        drop(grid_guard);
-        Ok((update, responses))
-    }
 }
 
 #[cfg(test)]
@@ -1974,10 +2006,39 @@ mod tests {
     }
 
     #[test]
-    fn zsh_startup_bootstrap_rejects_stale_omz_path() {
-        let script = startup_script_with_user_config("/bin/zsh", "echo athena");
-        assert!(script.contains("${ZSH}/oh-my-zsh.sh"));
-        assert!(script.contains("$HOME/.oh-my-zsh"));
+    fn zsh_startup_shims_restore_zdotdir_and_fix_histfile() {
+        let private = std::path::Path::new("/tmp/athena-shell-test-42");
+        let files = zsh_startup_files(private, "echo athena");
+        let names: Vec<&str> = files.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec![".zshenv", ".zprofile", ".zshrc"]);
+
+        let zshrc = &files[2].1;
+        // Private ZDOTDIR must be released before user config runs, or
+        // /etc/zshrc's `HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history` (macOS)
+        // points into the deleted temp dir and history is lost.
+        assert!(zshrc.contains("HISTFILE"), "zshrc must repair HISTFILE");
+        assert!(zshrc.contains(private.to_string_lossy().as_ref()));
+        // Oh-My-Zsh bootstrap and the integration payload both present.
+        assert!(zshrc.contains("${ZSH}/oh-my-zsh.sh"));
+        assert!(zshrc.contains("$HOME/.oh-my-zsh"));
+        assert!(zshrc.contains("echo athena"));
+        // Every shim sources the user's real counterpart.
+        for (name, body) in &files {
+            assert!(
+                body.contains("source"),
+                "{name} shim must source the user's file"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_startup_sources_login_profile_chain() {
+        let script = bash_login_startup_script("echo athena");
+        // `--noprofile` skips /etc/profile and ~/.bash_profile; the generated
+        // rcfile must replay the login chain so PATH and user setup survive.
+        assert!(script.contains("/etc/profile"));
+        assert!(script.contains(".bash_profile"));
+        assert!(script.contains(".bashrc"));
         assert!(script.contains("echo athena"));
     }
 

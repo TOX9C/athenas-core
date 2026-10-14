@@ -119,12 +119,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arrayvec"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
-
-[[package]]
 name = "assert-json-diff"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -425,14 +419,11 @@ dependencies = [
 name = "athena-terminal"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.11.1",
  "libc",
  "log",
  "nix 0.31.3",
  "serde",
  "tokio",
- "tokio-test",
- "vte",
 ]
 
 [[package]]
@@ -453,6 +444,7 @@ dependencies = [
  "futures-util",
  "hound",
  "keyring",
+ "libc",
  "local-ip-address",
  "log",
  "mdns-sd",
@@ -7955,16 +7947,6 @@ checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
 dependencies = [
  "cc",
  "libc",
-]
-
-[[package]]
-name = "vte"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
-dependencies = [
- "arrayvec",
- "memchr",
 ]
 
 [[package]]

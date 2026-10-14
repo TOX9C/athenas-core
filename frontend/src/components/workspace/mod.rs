@@ -4,8 +4,8 @@ pub mod terminal_controller;
 pub mod terminal_drop;
 pub mod terminal_grid;
 pub mod terminal_input;
+pub mod terminal_instances;
 pub mod workspace_tab;
 pub mod workspace_tabs;
 
-#[cfg(feature = "xterm")]
 pub mod xterm_mount;

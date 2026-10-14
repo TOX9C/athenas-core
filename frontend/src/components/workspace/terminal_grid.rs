@@ -18,20 +18,14 @@ use crate::utils::agent_commands::{
     get_agent_resume_command,
 };
 
-#[path = "terminal_cells.rs"]
-mod terminal_cells;
-use terminal_cells::TerminalPaneBody;
-
 #[path = "terminal_resize.rs"]
 mod terminal_resize;
 use terminal_resize::{
     preserve_row_weights, preserve_weight_shape, ColDivider, DragInfo, DragOverlay, RowDivider,
 };
 
-#[cfg(feature = "xterm")]
 use crate::components::workspace::xterm_mount::XtermMount;
 
-#[cfg(feature = "xterm")]
 fn render_shell_pane(
     pane_id: String,
     cwd: String,
@@ -43,17 +37,8 @@ fn render_shell_pane(
     rsx! { XtermMount { key: "xterm-{pane_id}", pane_id, cwd, agent_type, resume_id, custom_cmd, bypass_mode } }
 }
 
-#[cfg(feature = "xterm")]
 fn focus_pane_terminal(pane_id: &str) {
     crate::components::workspace::xterm_mount::xterm_helpers::focus_live_terminal(pane_id);
-}
-
-#[cfg(not(feature = "xterm"))]
-fn focus_pane_terminal(_pane_id: &str) {}
-
-#[cfg(not(feature = "xterm"))]
-fn render_shell_pane(pane_id: String, _cwd: String) -> Element {
-    rsx! { TerminalPaneBody { key: "terminal-body-{pane_id}", pane_id } }
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,18 +1180,14 @@ fn PaneItem(props: PaneItemProps) -> Element {
             // own padding, so cols/rows stay correct with no clipping.
             div {
                 style: "flex: 1; min-width: 0; min-height: 0; padding: 4px; background: var(--bg); overflow: hidden;",
-                if props.use_xterm {
-                    { render_shell_pane(
-                        props.pane_id.clone(),
-                        props.cwd.clone(),
-                        props.agent_type.clone(),
-                        props.resume_id.clone(),
-                        props.custom_cmd.clone(),
-                        props.bypass_mode,
-                    ) }
-                } else {
-                    TerminalPaneBody { pane_id: props.pane_id.clone() }
-                }
+                { render_shell_pane(
+                    props.pane_id.clone(),
+                    props.cwd.clone(),
+                    props.agent_type.clone(),
+                    props.resume_id.clone(),
+                    props.custom_cmd.clone(),
+                    props.bypass_mode,
+                ) }
             }
         }
     }

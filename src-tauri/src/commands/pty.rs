@@ -157,7 +157,7 @@ pub fn pty_default_shell() -> String {
 
 /// Spawn a new PTY session with the given ID, working directory, and shell.
 /// After spawning, starts a background tokio task that reads PTY output
-/// and emits `terminal:data` events to the frontend.
+/// and streams raw output to its channel/relay listeners.
 #[tauri::command]
 // Keep the PTY lifecycle handshake explicit at this Tauri wire boundary.
 #[allow(clippy::too_many_arguments)]
@@ -279,9 +279,10 @@ pub async fn pty_spawn(
 ///   `Uint8Array` eval below; no base64, no JSON event payload);
 /// - `pty:raw:<id>` — the legacy base64-encoded event stream, emitted only
 ///   while a Mobile Mirror relay phone is subscribed
-///   (`AppState::relay_raw_subscribers`) or no raw channel is attached;
-/// - `terminal:data` — parsed cell deltas for the legacy cell-grid frontend,
-///   emitted only when the grid actually changed.
+///   (`AppState::relay_raw_subscribers`) or no raw channel is attached.
+///
+/// All desktop and mobile rendering is done by xterm.js in the webview —
+/// the backend never parses cell grids or emits `terminal:data`.
 ///
 /// Reads come from the session's dedicated blocking reader thread
 /// (`TerminalSession::spawn_reader`); raw bytes are also appended to a
@@ -340,16 +341,6 @@ pub(crate) async fn pty_read_loop(
     // Reusable JSON event string. Same rationale — avoids a per-flush String
     // + serde_json::Value tree allocation. Cleared (not freed) between flushes.
     let mut raw_event_buf: String = String::with_capacity(64 * 1024);
-    // perf#6: legacy cell-grid coalescing. The non-xterm path used to emit a
-    // `terminal:data` event per read (full delta JSON per 16 KB chunk — the
-    // same per-chunk fan-out perf#1 removed from the raw path). Deltas merge
-    // last-wins per (row, col) cell; cursor/size metadata keeps the latest
-    // parse. The 8 ms flush tick below emits one merged event.
-    let mut grid_deltas: std::collections::BTreeMap<
-        (usize, usize),
-        athena_terminal::grid::CellDelta,
-    > = std::collections::BTreeMap::new();
-    let mut grid_meta: Option<(usize, usize, usize, usize, bool)> = None;
     // Coalesce-flush threshold (32 KB). Above this size we emit immediately to
     // avoid unbounded memory growth; below it we keep coalescing for the next
     // rate-limited flush. (The former separate 1 MB cap was removed: the two
@@ -436,11 +427,11 @@ pub(crate) async fn pty_read_loop(
         app_handle: &tauri::AppHandle,
         session_id: &str,
         escaped_session_id: &str,
+        session: &std::sync::Arc<athena_terminal::session::TerminalSession>,
     ) {
         if coalesce_buf.is_empty() {
             return;
         }
-
         // Keep a bounded raw replay buffer for the Mobile Mirror relay: a
         // reconnecting phone replays these exact bytes to restore VT screen
         // state that ANSI-stripped text history cannot. Unconditional — a
@@ -451,6 +442,23 @@ pub(crate) async fn pty_read_loop(
                 .relay_raw_replay
                 .lock()
                 .append(session_id, coalesce_buf, now_ms());
+        }
+
+        // Flow control: count what we put on the wire to the frontend so the
+        // read loop can stop draining when the renderer falls behind
+        // (kernel PTY buffers fill and write() blocks the producer). Only
+        // the desktop Channel path acks; relay-only (phone) output emits via
+        // base64 events with no acker — counting those would wedge the pane.
+        let channel_attached = state
+            .as_ref()
+            .map(|s| s.raw_output_channels.lock().contains_key(session_id))
+            .unwrap_or(false);
+        if channel_attached {
+            session
+                .unacked_bytes
+                .fetch_add(coalesce_buf.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            session.unacked_bytes.store(0, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Desktop xterm delivery: the mount's `pty_attach_listener` installs
@@ -551,51 +559,6 @@ pub(crate) async fn pty_read_loop(
         coalesce_buf.clear();
     }
 
-    /// Flush merged legacy cell-grid deltas as one `terminal:data` event.
-    ///
-    /// perf#6: the non-xterm path previously emitted per read; this coalesces
-    /// to one event per 8 ms tick (last write per cell wins, latest cursor
-    /// metadata). No-op when nothing is pending.
-    fn flush_grid_deltas(
-        grid_deltas: &mut std::collections::BTreeMap<
-            (usize, usize),
-            athena_terminal::grid::CellDelta,
-        >,
-        grid_meta: &mut Option<(usize, usize, usize, usize, bool)>,
-        app_handle: &tauri::AppHandle,
-        session_id: &str,
-    ) {
-        if grid_deltas.is_empty() {
-            return;
-        }
-        let taken = std::mem::take(grid_deltas);
-        let deltas: Vec<athena_terminal::grid::CellDelta> = taken.into_values().collect();
-        let (cursor_row, cursor_col, rows, cols, cursor_visible) = grid_meta.unwrap_or_default();
-        let event_data = serde_json::json!({
-            "sessionId": session_id,
-            "deltas": deltas,
-            "cursorRow": cursor_row,
-            "cursorCol": cursor_col,
-            "rows": rows,
-            "cols": cols,
-            "cursorVisible": cursor_visible,
-        });
-        match serde_json::to_string(&event_data) {
-            Ok(event_data_str) => {
-                if let Err(e) = app_handle.emit("terminal:data", event_data_str) {
-                    log::warn!("Failed to emit terminal:data event: {}", e);
-                }
-            }
-            Err(e) => {
-                log::error!(
-                    "pty_read_loop[{}]: failed to serialize grid deltas: {}",
-                    session_id,
-                    e
-                );
-            }
-        }
-    }
-
     // Dedicated blocking reader thread per session (`session.spawn_reader`):
     // delivers raw chunks over a channel. An idle pane costs exactly one
     // parked `poll(2)` — no per-wake fd dup / spawned poll / adaptive
@@ -606,7 +569,18 @@ pub(crate) async fn pty_read_loop(
     // restructure of every close/respawn path.
     let mut read_rx = session.spawn_reader();
 
+    // Flow control: when the frontend is behind by > HIGH_WATER bytes, stop
+    // consuming channel messages so the bounded reader-thread channel backs
+    // up, the kernel PTY buffer fills, and the child process is throttled by
+    // write() blocking. `wait_output_drain` returns as soon as the Frontend
+    // acks enough bytes to put us under LOW_WATER.
+    const OUTPUT_HIGH_WATER: u64 = 2 * 1024 * 1024; // 2 MB
+    const OUTPUT_LOW_WATER: u64 = 256 * 1024; // 256 KB
+
     loop {
+        if session.output_backpressured(OUTPUT_HIGH_WATER) {
+            session.wait_output_drain(OUTPUT_LOW_WATER).await;
+        }
         let mut data: Vec<u8> = tokio::select! {
             // `biased` ensures the read branch is preferred when data is
             // available, so we drain the PTY eagerly without dropping
@@ -630,6 +604,7 @@ pub(crate) async fn pty_read_loop(
                                 &app_handle,
                                 &session_id,
                                 &escaped_session_id,
+                                &session,
                             );
                         }
                         log::warn!("PTY read error for {}: {}", session_id, e);
@@ -662,18 +637,8 @@ pub(crate) async fn pty_read_loop(
                                 &app_handle,
                                 &session_id,
                                 &escaped_session_id,
-                            );
-                }
-                // perf#6: flush merged legacy cell deltas on the same tick.
-                if !grid_deltas.is_empty()
-                    && !session.raw_paused.load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    flush_grid_deltas(
-                        &mut grid_deltas,
-                        &mut grid_meta,
-                        &app_handle,
-                        &session_id,
-                    );
+                                &session,
+                            )
                 }
                 continue;
             }
@@ -745,86 +710,36 @@ pub(crate) async fn pty_read_loop(
         }
 
         // xterm.js is the authoritative ANSI/VTE parser for desktop and
-        // mobile mounts. Do not parse the same bytes through the backend VTE
-        // grid in that mode; this removes the largest redundant CPU/allocation
-        // cost on the raw-output hot path. The legacy cell-grid path retains
-        // the parser and its device-response handling.
-        if session.is_xterm.load(std::sync::atomic::Ordering::Relaxed) {
-            if !did_emit_ready {
-                did_emit_ready = true;
-                session.mark_ready().await;
-            }
-        } else {
-            match session.parse_bytes_with_responses(&data).await {
-                Ok((Some(update), responses)) => {
-                    if !did_emit_ready {
-                        did_emit_ready = true;
-                        session.mark_ready().await;
-                    }
-                    // DSR/protocol replies stay latency-sensitive: write
-                    // them immediately, do not wait for the 8 ms tick.
-                    for response in responses {
-                        if let Err(error) = session.write(&response).await {
-                            log::debug!(
-                                "pty_read_loop[{}]: DSR response write failed: {}",
-                                session_id,
-                                error
-                            );
-                        }
-                    }
-                    // perf#6: merge into the pending set (last write per
-                    // cell wins) instead of emitting per read.
-                    for d in update.deltas {
-                        grid_deltas.insert((d.row, d.col), d);
-                    }
-                    grid_meta = Some((
-                        update.cursor_row,
-                        update.cursor_col,
-                        update.rows,
-                        update.cols,
-                        update.cursor_visible,
-                    ));
-                    // Hard cap mirrors the raw path's 32 KB threshold: a
-                    // full-screen scroll rewrites every cell, which can
-                    // exceed 32k pending cells in one parse. Skipped while
-                    // raw_paused — a flush would hit a dead listener; the
-                    // pending set rides the unpause burst instead.
-                    if grid_deltas.len() >= 32 * 1024
-                        && !session
-                            .raw_paused
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        flush_grid_deltas(
-                            &mut grid_deltas,
-                            &mut grid_meta,
-                            &app_handle,
-                            &session_id,
-                        );
-                    }
-                }
-                Ok((None, responses)) => {
-                    if !did_emit_ready {
-                        did_emit_ready = true;
-                        session.mark_ready().await;
-                    }
-                    for response in responses {
-                        if let Err(error) = session.write(&response).await {
-                            log::debug!(
-                                "pty_read_loop[{}]: DSR response write failed: {}",
-                                session_id,
-                                error
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("PTY parse error for {}: {}", session_id, e);
-                }
-            }
+        // mobile mounts; the backend never parses bytes into a cell grid.
+        // Device-status queries (DSR et al.) are answered by xterm.js itself.
+        if !did_emit_ready {
+            did_emit_ready = true;
+            session.mark_ready().await;
         }
 
         // Step 2: accumulate raw bytes into the coalescing buffer.
+        let was_empty = coalesce_buf.is_empty();
         coalesce_buf.extend_from_slice(&data);
+
+        // Latency: if the buffer was empty when this burst arrived (we were
+        // idle), flush immediately instead of waiting for the 8 ms tick —
+        // interactive echo costs at most one rAF-equivalent dispatch, not 8 ms.
+        // Only threshold flushes (>32 KB) skip when paused; a small idle burst
+        // hitting a paused frontend is bounded by the 4 MB backstop.
+        if was_empty
+            && !coalesce_buf.is_empty()
+            && !session.raw_paused.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            flush_pty_raw(
+                &mut coalesce_buf,
+                &mut encode_buf,
+                &mut raw_event_buf,
+                &app_handle,
+                &session_id,
+                &escaped_session_id,
+                &session,
+            );
+        }
 
         // Step 3: size-threshold flush — prevents unbounded growth when
         // commands like `yes` produce continuous output.
@@ -877,10 +792,8 @@ pub(crate) async fn pty_read_loop(
                     &app_handle,
                     &session_id,
                     &escaped_session_id,
-                );
-                // perf#6: the unpause burst carries pending cell deltas so
-                // the legacy grid replays in the same burst as raw bytes.
-                flush_grid_deltas(&mut grid_deltas, &mut grid_meta, &app_handle, &session_id);
+                                &session,
+                )
             }
             if coalesce_buf.len() >= 32 * 1024 {
                 flush_pty_raw(
@@ -890,7 +803,8 @@ pub(crate) async fn pty_read_loop(
                     &app_handle,
                     &session_id,
                     &escaped_session_id,
-                );
+                                &session,
+                )
             }
         }
         was_paused = now_paused;
@@ -915,12 +829,9 @@ pub(crate) async fn pty_read_loop(
             &app_handle,
             &session_id,
             &escaped_session_id,
+            &session,
         );
     }
-    // perf#6: drain pending legacy cell deltas before the exit signal so the
-    // final frame lands before terminal:exit.
-    flush_grid_deltas(&mut grid_deltas, &mut grid_meta, &app_handle, &session_id);
-
     // The read loop is the authoritative PTY lifecycle boundary. Remove the
     // pane from the backend activity tracker before notifying the frontend so
     // a closed session cannot be resurrected by the heartbeat or retain stale
@@ -1146,31 +1057,20 @@ pub async fn pty_resize(
     result.map_err(|e| e.to_string())
 }
 
-/// Get the accumulated output history for a PTY session.
-/// Returns the current grid state as a JSON array of rows with cell characters.
+/// The frontend rendered N bytes of PTY output — release the read loop's
+/// backpressure gate (paired with the writers in `flush_pty_raw`).
 #[tauri::command]
-pub async fn pty_get_history(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    if !state.rate_limiter.check("pty_get_history") {
-        let wait = state.rate_limiter.retry_after_secs("pty_get_history");
-        return Err(format!("Rate limit exceeded. Please wait {wait}s."));
+pub async fn pty_output_ack(
+    state: State<'_, AppState>,
+    id: String,
+    bytes: u64,
+) -> Result<(), String> {
+    if let Some(session) = state.session_manager.get_session(&id).await {
+        session.ack_output_bytes(bytes);
+        Ok(())
+    } else {
+        Err(format!("Session {} not found", id))
     }
-    let session = state.session_manager.get_session(&id).await;
-
-    if let Some(s) = session {
-        let grid = s.grid.lock().await;
-        let mut rows_json = Vec::new();
-        for row in &grid.rows {
-            let chars: Vec<String> = row.iter().map(|c| c.c.to_string()).collect();
-            rows_json.push(serde_json::json!({ "cells": chars }));
-        }
-        return serde_json::to_string(&serde_json::json!({
-            "rows": rows_json,
-            "cursor_row": grid.cursor.row,
-            "cursor_col": grid.cursor.col,
-        }))
-        .map_err(|e| e.to_string());
-    }
-    Ok("null".to_string())
 }
 
 /// Check whether a PTY session with the given ID exists.
@@ -1471,12 +1371,12 @@ pub async fn pty_spawn_agent(
     }
 }
 
-/// Mark a PTY session as being rendered by xterm.js.
+/// Record that a PTY session is rendered by xterm.js.
 ///
-/// When a session is xterm-backed, the backend skips emitting the
-/// `terminal:data` cell-delta events because xterm.js parses raw ANSI
-/// bytes itself.  This eliminates wasted VTE work, JSON serialization,
-/// and IPC for those sessions.
+/// All rendering has moved to xterm.js, so the flag no longer gates any
+/// backend work — its remaining function is as the relay pane-share
+/// handshake: the mobile mirror retries this call while a share approval
+/// is pending.
 #[tauri::command]
 pub async fn pty_set_xterm(
     state: State<'_, AppState>,

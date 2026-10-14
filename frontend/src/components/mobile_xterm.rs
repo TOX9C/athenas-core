@@ -462,10 +462,18 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
 
             let term_for_output = term.clone();
             let active_for_output = active_for_task.clone();
+            let pane_id_for_output_ack = pane_id_for_task.clone();
             let listener =
                 match tauri_bridge::pty_listen_raw(&pane_id_for_task, move |bytes: Vec<u8>| {
                     if *active_for_output.borrow() {
+                        let n = bytes.len() as u64;
                         write_bytes(&term_for_output, &bytes);
+                        // Flow control: ack the rendered bytes so the backend's
+                        // high-water gate can re-arm the read loop.
+                        let id = pane_id_for_output_ack.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ = tauri_bridge::pty_output_ack(&id, n).await;
+                        });
                     }
                 }) {
                     Ok(listener) => listener,

@@ -1,6 +1,6 @@
 use crate::stores::agent_output::{is_stderr_like, use_agent_output_store};
 use crate::stores::agent_status::{use_agent_status_store, AgentRunStatus, AgentStatusUpdate};
-use crate::stores::terminal::{use_terminal_registry, use_terminal_store, TerminalDataEvent};
+use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::use_workspace_store;
 use crate::tauri_bridge;
@@ -314,7 +314,6 @@ pub fn OutputEventBus() -> Element {
                             if old_sid.as_deref() != Some(sid.as_str()) && !sid.is_empty() {
                                 if let Some(mut inner) = terminal_registry.write_session(&pane_id) {
                                     inner.title_state = crate::utils::pane_label::TitleState::Idle;
-                                    inner.generation = inner.generation.wrapping_add(1);
                                 }
                             }
                         }
@@ -371,7 +370,6 @@ pub fn OutputEventBus() -> Element {
                             // is in flight, then Done/Failed).
                             if let Some(mut inner) = terminal_registry.write_session(&pane_id) {
                                 inner.title_state = crate::utils::pane_label::TitleState::Pending;
-                                inner.generation = inner.generation.wrapping_add(1);
                             }
                             let registry_for_spawn = terminal_registry.clone();
                             let raw_prompt = raw.clone();
@@ -420,7 +418,6 @@ pub fn OutputEventBus() -> Element {
                                             crate::utils::pane_label::TitleState::Failed;
                                     }
                                 }
-                                inner.generation = inner.generation.wrapping_add(1);
                             });
                         }
                     }
@@ -467,14 +464,6 @@ pub fn OutputEventBus() -> Element {
                                 last_action: Some("Terminal exited".to_string()),
                             });
                         }
-                    }
-                    OutputBusEvent::TerminalData {
-                        session_id,
-                        event,
-                    } => {
-                        terminal_store
-                            .write()
-                            .on_data(&terminal_registry, &session_id, &event);
                     }
                     OutputBusEvent::AgentConnected { pane_id, now } => {
                         // A generationless connection cannot prove that it is
@@ -661,35 +650,6 @@ pub fn OutputEventBus() -> Element {
             }
         }) {
             exit_unlistens.borrow_mut().push(u);
-        }
-
-        // Listener for terminal:data
-
-        let terminal_unlistens = unlistens_effect.clone();
-        if let Ok(u) = tauri_bridge::listen("terminal:data", move |payload: JsValue| {
-            // The backend emits this event as a JSON-encoded string (see
-            // pty.rs flush_grid_deltas); guard for the object form anyway.
-            let event: TerminalDataEvent = match if payload.is_string() {
-                payload
-                    .as_string()
-                    .ok_or_else(|| <serde_json::Error as serde::de::Error>::custom("empty payload"))
-                    .and_then(|inner| serde_json::from_str(&inner))
-            } else {
-                serde_wasm_bindgen::from_value(payload)
-                    .map_err(|e| <serde_json::Error as serde::de::Error>::custom(e.to_string()))
-            } {
-                Ok(event) => event,
-                Err(_) => return,
-            };
-            if event.sessionId.is_empty() {
-                return;
-            }
-            dispatcher.send(OutputBusEvent::TerminalData {
-                session_id: event.sessionId.clone(),
-                event,
-            });
-        }) {
-            terminal_unlistens.borrow_mut().push(u);
         }
 
         // Listener for agents:connected

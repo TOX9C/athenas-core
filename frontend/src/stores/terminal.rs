@@ -3,105 +3,23 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use serde::{Deserialize, Serialize};
+
 
 use crate::components::workspace::terminal_input::TerminalInputRouter;
 use crate::tauri_bridge;
 
-#[path = "terminal_colors.rs"]
-mod terminal_colors;
-
-pub use terminal_colors::{
-    backend_color_raw_to_terminal, backend_named_color_to_terminal, BackendColorIndexed,
-    BackendColorNamed, BackendColorRaw, BackendColorRgb, BackendNamedColor, TerminalColor,
-};
-
-// ---------------------------------------------------------------------------
-// Terminal cell model (mirrors athena-terminal crate)
-// ---------------------------------------------------------------------------
-
-/// A single terminal cell with text, color, and style info.
-///
-/// `text` is an `Rc<str>` so cloning a cell (fresh grid snapshot per render
-/// in the DOM fallback renderer) is a refcount bump instead of a heap copy.
-/// Serde derives are required by `terminal_events::TerminalUpdateDelta`,
-/// which embeds `Vec<Vec<TerminalCell>>` snapshot rows from the backend.
-/// `text: Rc<str>` relies on serde's `rc` feature (enabled in Cargo.toml).
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct TerminalCell {
-    pub text: Rc<str>,
-    pub fg: TerminalColor,
-    pub bg: TerminalColor,
-    pub bold: bool,
-    pub italic: bool,
-    pub underline: bool,
-    pub blink: bool,
-    pub inverse: bool,
-    pub strikethrough: bool,
-}
-
-impl TerminalCell {
-    /// Convert a backend CellDelta (parsed from JSON) into a TerminalCell.
-    pub fn from_delta(delta: &CellDeltaEvent) -> Self {
-        Self {
-            text: Rc::from(delta.c.as_str()),
-            fg: backend_color_raw_to_terminal(&delta.fg),
-            bg: backend_color_raw_to_terminal(&delta.bg),
-            bold: (delta.flags & FLAGS_BOLD) != 0,
-            italic: (delta.flags & FLAGS_ITALIC) != 0,
-            underline: (delta.flags & FLAGS_UNDERLINE) != 0,
-            blink: (delta.flags & FLAGS_BLINK) != 0,
-            inverse: (delta.flags & FLAGS_INVERSE) != 0,
-            strikethrough: (delta.flags & FLAGS_STRIKEOUT) != 0,
-        }
-    }
-}
-
-#[path = "terminal_events.rs"]
-mod terminal_events;
-
-pub use terminal_events::{
-    CellDeltaEvent, TerminalDataEvent, TerminalUpdateDelta, FLAGS_BLINK, FLAGS_BOLD, FLAGS_INVERSE,
-    FLAGS_ITALIC, FLAGS_STRIKEOUT, FLAGS_UNDERLINE,
-};
-
-/// A single terminal row.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct TerminalRow {
-    pub cells: Vec<TerminalCell>,
-    pub dirty: bool,
-    pub wrapped: bool,
-}
-
 /// State for a single terminal session.
+///
+/// Rendering is owned by the pane's xterm.js instance — this struct tracks
+/// only pane metadata (agent info, title, readiness), not cell content.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TerminalSession {
     pub id: String,
-    pub grid: Vec<Vec<TerminalCell>>,
-    pub cols: u16,
-    pub rows: u16,
-    pub scrollback: Vec<Vec<TerminalCell>>,
-    pub scrollback_offset: usize,
-    pub cursor_x: usize,
-    pub cursor_y: usize,
-    pub cursor_visible: bool,
     pub is_ready: bool,
     pub cwd: String,
-    /// Which of the top rows are dirty (needs redraw).
-    pub dirty_rows: std::collections::HashSet<usize>,
-    /// Per-row version stamp, bumped on every write to that row. Renderers
-    /// clone only rows whose stamp moved (F4) — `dirty_rows` is never
-    /// cleared, so it alone cannot serve as an "unchanged" signal.
-    pub row_version: Vec<u64>,
-    /// Monotonic counter backing `row_version` stamps.
-    version_seq: u64,
-    /// Incremented on every change; triggers use_memo/use_effect in components.
-    pub generation: u64,
-    /// Timestamp of last data received (for dirty streak debouncing).
-    pub last_update_ms: f64,
     /// Whether the session has exited.
     pub exited: bool,
-    /// Whether the session is rendered by xterm.js (skip grid updates).
+    /// Whether the session is rendered by xterm.js.
     pub is_xterm: bool,
     /// Detected foreground process name (e.g., "claude", "codex", "nvim")
     pub foreground_process: Option<String>,
@@ -119,33 +37,17 @@ pub struct TerminalSession {
     /// xterm.js Terminal is disposed on a pane swap / unmount. The next mount's
     /// reuse-session branch writes this back into the fresh Terminal (after
     /// fit()), restoring colors, scrollback, alt-screen state, DEC modes, and
-    /// cursor position. `None` for non-xterm sessions or when no capture ran.
-    /// See xterm_mount.rs `serialize_buffer` / the use_drop capture hook.
+    /// cursor position. See xterm_mount.rs `serialize_buffer` / the drop hook.
     pub serialized_snapshot: Option<String>,
 }
 
 impl TerminalSession {
-    /// Create a blank session with the given dimensions.
-    pub fn new(id: impl Into<String>, cols: u16, rows: u16) -> Self {
-        let id = id.into();
-        let grid = vec![vec![TerminalCell::default(); cols as usize]; rows as usize];
+    /// Create a session registration record for a pane.
+    pub fn new(id: impl Into<String>) -> Self {
         Self {
-            id,
-            grid,
-            cols,
-            rows,
-            scrollback: Vec::new(),
-            scrollback_offset: 0,
-            cursor_x: 0,
-            cursor_y: 0,
-            cursor_visible: true,
+            id: id.into(),
             is_ready: false,
             cwd: String::new(),
-            dirty_rows: std::collections::HashSet::new(),
-            row_version: vec![0; rows as usize],
-            version_seq: 0,
-            generation: 0,
-            last_update_ms: 0.0,
             exited: false,
             is_xterm: false,
             foreground_process: None,
@@ -155,80 +57,6 @@ impl TerminalSession {
             title_state: crate::utils::pane_label::TitleState::default(),
             serialized_snapshot: None,
         }
-    }
-
-    /// Resize the grid while preserving existing content.
-    pub fn resize(&mut self, new_cols: u16, new_rows: u16) {
-        if self.cols == new_cols && self.rows == new_rows {
-            return;
-        }
-        let mut new_grid =
-            vec![vec![TerminalCell::default(); new_cols as usize]; new_rows as usize];
-        for (y, row) in self.grid.iter().enumerate() {
-            if y >= new_rows as usize {
-                break;
-            }
-            for (x, cell) in row.iter().enumerate() {
-                if x >= new_cols as usize {
-                    break;
-                }
-                new_grid[y][x] = cell.clone();
-            }
-        }
-        self.grid = new_grid;
-        self.cols = new_cols;
-        self.rows = new_rows;
-        self.row_version.resize(new_rows as usize, 0);
-        self.mark_grid_dirty();
-    }
-
-    /// Mark all rows dirty.
-    pub fn mark_grid_dirty(&mut self) {
-        self.dirty_rows.clear();
-        self.version_seq = self.version_seq.wrapping_add(1);
-        for y in 0..self.rows as usize {
-            self.dirty_rows.insert(y);
-            if let Some(v) = self.row_version.get_mut(y) {
-                *v = self.version_seq;
-            }
-        }
-    }
-
-    /// Mark a single row dirty with a fresh version stamp.
-    pub fn mark_row_dirty(&mut self, y: usize) {
-        self.version_seq = self.version_seq.wrapping_add(1);
-        if let Some(v) = self.row_version.get_mut(y) {
-            *v = self.version_seq;
-        }
-        self.dirty_rows.insert(y);
-    }
-
-    /// Clear dirty flags after a render cycle.
-    pub fn clear_dirty(&mut self) {
-        self.dirty_rows.clear();
-    }
-
-    /// Update cells from a backend delta.
-    pub fn apply_delta(&mut self, delta: TerminalUpdateDelta) {
-        for (y, row) in delta.rows.into_iter().enumerate() {
-            let grid_y = delta.start_y + y;
-            if grid_y >= self.grid.len() {
-                continue;
-            }
-            for (x, cell) in row.into_iter().enumerate() {
-                if x >= self.grid[grid_y].len() {
-                    break;
-                }
-                self.grid[grid_y][x] = cell;
-            }
-            self.mark_row_dirty(grid_y);
-        }
-        if let Some((cx, cy)) = delta.cursor_pos {
-            self.cursor_x = cx;
-            self.cursor_y = cy;
-        }
-        self.generation = self.generation.wrapping_add(1);
-        self.last_update_ms = js_sys::Date::now();
     }
 }
 
@@ -264,15 +92,9 @@ impl TerminalStore {
     /// registry's inner signal; this store records the pane id in
     /// `known_pane_ids` (membership, O(1)) and bumps `generation` for
     /// cross-session invalidation, and sets the active id if none is set.
-    pub fn ensure_session(
-        &mut self,
-        registry: &TerminalRegistry,
-        id: impl Into<String>,
-        cols: u16,
-        rows: u16,
-    ) -> bool {
+    pub fn ensure_session(&mut self, registry: &TerminalRegistry, id: impl Into<String>) -> bool {
         let id_str: String = id.into();
-        let was_new = registry.ensure_session(id_str.clone(), cols, rows);
+        let was_new = registry.ensure_session(id_str.clone());
         if was_new {
             self.known_pane_ids.insert(id_str.clone());
             if self.active_session_id.is_none() {
@@ -341,76 +163,10 @@ impl TerminalStore {
     /// `tauri_bridge::pty_resize`); pass `None` only for non-mount resizes.
     /// Phase 4: per-pane grid resize lives on the inner signal only;
     /// the backend `pty_resize` IPC call is unchanged.
-    pub async fn resize(
-        &mut self,
-        registry: &TerminalRegistry,
-        id: &str,
-        cols: u16,
-        rows: u16,
-        owner: Option<&str>,
-    ) {
-        if let Some(mut inner) = registry.write_session(id) {
-            inner.resize(cols, rows);
-        }
+    pub async fn resize(&mut self, id: &str, cols: u16, rows: u16, owner: Option<&str>) {
         if let Err(e) = tauri_bridge::pty_resize(id, cols, rows, owner).await {
             web_sys::console::error_1(&format!("pty_resize failed: {:?}", e).into());
         }
-    }
-
-    /// Handle incoming data from the backend.
-    ///
-    /// Phase 3 (Item 3): the per-pane state lives in the registry's inner
-    /// `Signal<TerminalSession>`. `on_data` writes that inner signal ONLY — no
-    /// whole-store `generation` bump — so a `terminal:data` event for pane A
-    /// re-renders only pane A's subscribers (the hot path, up to ~125/sec/pane).
-    /// The legacy `self.sessions` map is no longer touched here. (Phase 4 will
-    /// remove `self.sessions` entirely.)
-    pub fn on_data(&mut self, registry: &TerminalRegistry, id: &str, event: &TerminalDataEvent) {
-        let Some(mut inner) = registry.write_session(id) else {
-            // Pane not registered (e.g. closed between the PTY event and this
-            // write). Nothing to update — no fallback store read either, since
-            // the registry is now the source of truth for per-pane data.
-            return;
-        };
-
-        // For xterm-managed sessions, skip grid updates and the generation bump.
-        // Cursor position and visibility are still updated in case other UI reads
-        // them (e.g. restore_term_from_session).
-        if inner.is_xterm {
-            inner.cursor_x = event.cursorCol;
-            inner.cursor_y = event.cursorRow;
-            if let Some(visible) = event.cursorVisible {
-                inner.cursor_visible = visible;
-            }
-            return;
-        }
-
-        // Resize grid if the backend reports different dimensions.
-        if event.rows as u16 != inner.rows || event.cols as u16 != inner.cols {
-            inner.resize(event.cols as u16, event.rows as u16);
-        }
-
-        // Apply each cell delta to the grid.
-        for delta in &event.deltas {
-            let row = delta.row;
-            let col = delta.col;
-            if row < inner.grid.len() && col < inner.grid[row].len() {
-                inner.grid[row][col] = TerminalCell::from_delta(delta);
-                inner.mark_row_dirty(row);
-            }
-        }
-
-        // Update cursor position and visibility.
-        inner.cursor_x = event.cursorCol;
-        inner.cursor_y = event.cursorRow;
-        if let Some(visible) = event.cursorVisible {
-            inner.cursor_visible = visible;
-        }
-
-        inner.generation = inner.generation.wrapping_add(1);
-        inner.last_update_ms = js_sys::Date::now();
-        // No whole-store `self.generation` bump: pane subscribers already
-        // invalidated by the inner-signal write above; other panes stay idle.
     }
 
     /// Handle session exit from the backend.
@@ -471,10 +227,6 @@ impl TerminalStore {
             if fg_changed || title_changed {
                 inner.foreground_process = fg_process;
                 inner.task_title = task_title;
-                // Inner `generation` is bump-only/never-read; the signal write
-                // itself invalidates the pill memo, but keep the bump for parity
-                // with the legacy field's documented semantics.
-                inner.generation = inner.generation.wrapping_add(1);
             }
             if let Some(sid) = session_id {
                 inner.session_id = Some(sid);
@@ -559,7 +311,7 @@ impl TerminalRegistry {
     /// which component created or later unmounted it. (Same root-cause family
     /// as the prior panel-switch ValueDropped panic; fix per dioxus-core's own
     /// `ScopeId::APP` guidance for long-lived dynamic state.)
-    pub fn ensure_session(&self, id: impl Into<String>, cols: u16, rows: u16) -> bool {
+    pub fn ensure_session(&self, id: impl Into<String>) -> bool {
         let id_str: String = id.into();
         let mut map = self.sessions.borrow_mut();
         if map.contains_key(&id_str) {
@@ -567,7 +319,7 @@ impl TerminalRegistry {
         }
         map.insert(
             id_str.clone(),
-            Signal::new_in_scope(TerminalSession::new(id_str, cols, rows), ScopeId::APP),
+            Signal::new_in_scope(TerminalSession::new(id_str), ScopeId::APP),
         );
         true
     }
@@ -698,8 +450,8 @@ mod tests {
     #[test]
     fn ensure_session_inserts_once_and_reports_new() {
         run_in_dom(|r| {
-            assert!(r.ensure_session("pane-a", 80, 24), "first insert is new");
-            assert!(!r.ensure_session("pane-a", 80, 24), "second insert not new");
+            assert!(r.ensure_session("pane-a"), "first insert is new");
+            assert!(!r.ensure_session("pane-a"), "second insert not new");
             assert!(r.contains("pane-a"));
             assert!(!r.contains("pane-b"));
         });
@@ -709,12 +461,10 @@ mod tests {
     fn session_signal_round_trips_after_ensure() {
         run_in_dom(|r| {
             assert!(r.session_signal("pane-x").is_none(), "absent before ensure");
-            r.ensure_session("pane-x", 80, 24);
+            r.ensure_session("pane-x");
             let sig = r.session_signal("pane-x").expect("present after ensure");
-            // Non-subscribing peek returns the seeded dimensions.
-            let snap = r.peek_field("pane-x", |s| (s.id.clone(), s.cols, s.rows)).unwrap();
-            assert_eq!(snap, ("pane-x".to_string(), 80, 24));
-            // The signal reads back the same id.
+            let snap = r.peek_field("pane-x", |s| s.id.clone()).unwrap();
+            assert_eq!(snap, "pane-x");
             assert_eq!(sig.read().id, "pane-x");
         });
     }
@@ -722,8 +472,8 @@ mod tests {
     #[test]
     fn write_session_mutates_only_this_pane() {
         run_in_dom(|r| {
-            r.ensure_session("pane-a", 80, 24);
-            r.ensure_session("pane-b", 80, 24);
+            r.ensure_session("pane-a");
+            r.ensure_session("pane-b");
             if let Some(mut a) = r.write_session("pane-a") {
                 a.is_xterm = true;
                 a.foreground_process = Some("claude".to_string());
@@ -744,7 +494,7 @@ mod tests {
     #[test]
     fn closing_marker_survives_until_drop_cleanup() {
         run_in_dom(|r| {
-            r.ensure_session("pane-a", 80, 24);
+            r.ensure_session("pane-a");
             r.mark_closing("pane-a");
             assert!(r.is_closing("pane-a"));
             // A remount path can cancel a close before resources are dropped.
@@ -760,8 +510,8 @@ mod tests {
     #[test]
     fn remove_drops_session_and_known_ids() {
         run_in_dom(|r| {
-            r.ensure_session("pane-a", 80, 24);
-            r.ensure_session("pane-b", 80, 24);
+            r.ensure_session("pane-a");
+            r.ensure_session("pane-b");
             assert_eq!(r.known_ids().len(), 2);
             r.remove("pane-a");
             assert!(!r.contains("pane-a"));

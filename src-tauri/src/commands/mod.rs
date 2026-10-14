@@ -32,6 +32,7 @@ mod resume;
 mod routines;
 mod search;
 mod os_permissions;
+mod resources;
 mod session;
 pub(crate) mod store;
 mod swarm;
@@ -68,6 +69,7 @@ pub use git::{git_apply_file, git_apply_hunk, git_checkpoint_create, git_checkpo
 pub use kanban::{kanban_create_task, kanban_delete_task, kanban_get_tasks, kanban_update_task};
 pub use license::{license_activate, license_deactivate, license_status};
 pub use mcp::mcp_tools;
+pub use resources::resource_stats;
 pub use notification::{
     notification_clear_all, notification_count, notification_counts, notification_dismiss,
     notification_history, notification_mark_all_read, notification_mark_read, notification_push,
@@ -96,7 +98,7 @@ pub(crate) use pty::{
 };
 pub use pty::{
     agent_activity_acknowledge, pty_agent_info, pty_attach_listener, pty_default_shell, pty_detach_listener,
-    pty_foreground_process, pty_get_cwd, pty_get_history, pty_has_session, pty_is_ready, pty_kill,
+    pty_foreground_process, pty_get_cwd, pty_has_session, pty_is_ready, pty_kill, pty_output_ack,
     pty_raw_replay, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write,
     read_clipboard_text,
 };
@@ -106,7 +108,9 @@ pub use relay::{
     relay_set_pane_shared, relay_start, relay_status, relay_stop,
 };
 pub use relay::{relay_token, RELAY_ENABLED_KEY};
-pub(crate) use resume::{merge_resume_ids_into_workspaces, scan_pane_for_resume_id};
+pub(crate) use resume::{
+    classify_agent_panes, merge_resume_ids_into_workspaces, scan_pane_for_resume_id,
+};
 pub use resume::capture_resume_ids_on_exit;
 pub(crate) use workspace::WORKSPACE_CHANGED_EVENT;
 pub use search::{search_code, search_ripgrep};

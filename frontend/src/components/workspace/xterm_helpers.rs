@@ -1,6 +1,5 @@
 //! Browser and xterm.js helpers shared by the mount lifecycle.
 
-use crate::stores::terminal::TerminalSession;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -89,6 +88,66 @@ pub(crate) fn reset_glyph_atlas_by_id(mount_id: &str) -> bool {
     };
     reset_glyph_atlas(&term);
     true
+}
+
+/// Minimum interval between occlusion heals. Every mounted pane installs its
+/// own focus/visibility listener, so a resume fires N handlers at once; the
+/// window also collapses the double-focus-and-visibilitychange fire that a
+/// WKWebView raise produces.
+const OCCLUSION_HEAL_DEBOUNCE_MS: f64 = 500.0;
+
+/// Pure debounce predicate, split out for unit tests: a heal is due when the
+/// previous heal is at least OCCLUSION_HEAL_DEBOUNCE_MS old (or never ran).
+fn occlusion_heal_due(prev_ms: f64, now_ms: f64) -> bool {
+    now_ms - prev_ms >= OCCLUSION_HEAL_DEBOUNCE_MS
+}
+
+/// Shared glyph-atlas heal after the page returns from OS occlusion.
+///
+/// On macOS, moving the window to another Space marks the NSWindow occluded;
+/// WKWebView suspends the page without firing `webglcontextlost`, and the
+/// debounced PTY writes flush in one burst on return. That burst runs the
+/// WebGL renderer's `_updateModel` over a large dirty range — historically
+/// the exact state in which the atlas page-merge bugs (xterm.js #5847, fixed
+/// upstream in #5883 but incomplete per the 2026-08 report; and not covered
+/// by any context-loss wiring) leave panes painting glyph fragments from
+/// stale atlas coordinates until a full remount. Rebuilding the shared atlas
+/// here — before the first post-return frame — resets every pane's render
+/// model via the existing sibling broadcast in `reset_glyph_atlas`.
+///
+/// Cheap on a healthy renderer and debounced to at most one rebuild per
+/// OCCLUSION_HEAL_DEBOUNCE_MS, so it is safe to call from every pane's
+/// focus/visibility handler.
+pub(crate) fn heal_after_occlusion() {
+    thread_local! {
+        static LAST_HEAL_MS: Cell<f64> = Cell::new(0.0);
+    }
+    let now = js_sys::Date::now();
+    // Intake order edge: two handlers may interleave on the same task turn;
+    // CAS-style read-then-set inside one borrow keeps only the first alive.
+    let already_ran = LAST_HEAL_MS.with(|last| {
+        let prev = last.get();
+        if occlusion_heal_due(prev, now) {
+            last.set(now);
+            false
+        } else {
+            true
+        }
+    });
+    if already_ran {
+        return;
+    }
+    // Any single terminal heals every same-font sibling (reset_glyph_atlas's
+    // broadcast), including clearTextureAtlas on the shared cache entry.
+    let any_term = LIVE_TERMINALS.with(|live| live.borrow().values().next().cloned());
+    let Some(term) = any_term else {
+        return;
+    };
+    crate::tauri_bridge::log_to_backend(
+        "info",
+        "[xterm] occlusion resume: rebuilding shared glyph atlas (space-switch heal)",
+    );
+    reset_glyph_atlas(&term);
 }
 
 /// Focus a pane's live xterm terminal via `term.focus()` — the same API the
@@ -359,7 +418,7 @@ pub(crate) fn try_activate_webgl_addon(
     }
     crate::tauri_bridge::log_to_backend(
         "info",
-        "[xterm] WebGL renderer active (vendored @xterm/addon-webgl 0.19.0, includes atlas page-merge fix)",
+        "[xterm] WebGL renderer active (vendored @xterm/addon-webgl 0.19.0, stock upstream — atlas merge fix #5883 NOT included; see xterm.js #5847)",
     );
     Some(instance)
 }
@@ -927,30 +986,6 @@ pub(crate) fn serialize_buffer(serialize_addon: &JsValue) -> Option<String> {
     result.as_string()
 }
 
-pub(crate) fn restore_term_from_session(term_val: &JsValue, session: &TerminalSession) {
-    let mut snapshot = String::from("\u{1b}[2J\u{1b}[H");
-
-    for (row_idx, row) in session.grid.iter().enumerate() {
-        let mut line = String::new();
-        for cell in row.iter() {
-            line.push_str(&cell.text);
-        }
-        while line.ends_with(' ') {
-            line.pop();
-        }
-        snapshot.push_str(&line);
-        if row_idx + 1 < session.grid.len() {
-            snapshot.push_str("\r\n");
-        }
-    }
-
-    let cursor_row = session.cursor_y.saturating_add(1);
-    let cursor_col = session.cursor_x.saturating_add(1);
-    snapshot.push_str(&format!("\u{1b}[{};{}H", cursor_row, cursor_col));
-
-    write_str_to_term(term_val, &snapshot);
-}
-
 /// Viewport intent captured before a geometry change. `at_bottom` means the
 /// user was following the newest output; otherwise we preserve the distance
 /// from the bottom instead of unexpectedly forcing the terminal to the prompt.
@@ -1437,10 +1472,13 @@ pub(crate) fn reset_glyph_atlas(term_val: &JsValue) {
     refresh_full(term_val);
     render_visible_rows_sync(term_val);
 
-    // Sibling repair (xterm.js #6014, fixed upstream only in
-    // @xterm/addon-webgl 0.20.0-beta): the glyph atlas is SHARED across all
+    // Sibling repair (xterm.js #6014): the glyph atlas is SHARED across all
     // same-config terminals (CharAtlasCache), but the render-model reset
-    // above ran only for THIS terminal. Every other live pane keeps per-cell
+    // above ran only for THIS terminal. (Upstream's 0.20.0-beta line contains
+    // both this class's fix and the page-merge fix #5883 — unshipped here
+    // because that beta regressed WKWebView canvas readback in our ink
+    // probes, so the loop below stays.)
+    // Every other live pane keeps per-cell
     // UVs into the wiped atlas and would paint mis-sliced glyph fragments
     // until its rows happen to be rewritten. Each sibling must therefore run
     // ITS OWN clearTextureAtlas(): that clears the sibling renderer's model
@@ -1628,9 +1666,21 @@ pub(crate) async fn wait_for_container_size(container: &web_sys::Element) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_container_sized, is_valid_terminal_dimensions, poll_container_size, strip_kitty_placeholder_bytes, strip_kitty_placeholders,
-        ContainerSizePoll, CONTAINER_SIZE_RETRIES,
+        is_container_sized, is_valid_terminal_dimensions, occlusion_heal_due, poll_container_size,
+        strip_kitty_placeholder_bytes, strip_kitty_placeholders, ContainerSizePoll,
+        CONTAINER_SIZE_RETRIES, OCCLUSION_HEAL_DEBOUNCE_MS,
     };
+
+    #[test]
+    fn occlusion_heal_debounce_gates_within_window_allows_after() {
+        // Never ran before → due, even at "now == 0" distance.
+        assert!(occlusion_heal_due(0.0, OCCLUSION_HEAL_DEBOUNCE_MS));
+        // Inside the window → suppressed.
+        assert!(!occlusion_heal_due(1000.0, 1000.0 + OCCLUSION_HEAL_DEBOUNCE_MS - 1.0));
+        // At/after the window → allowed again (a later space switch must heal).
+        assert!(occlusion_heal_due(1000.0, 1000.0 + OCCLUSION_HEAL_DEBOUNCE_MS));
+        assert!(occlusion_heal_due(1000.0, 1000.0 + OCCLUSION_HEAL_DEBOUNCE_MS * 10.0));
+    }
 
     #[test]
     fn kitty_placeholders_become_nbsp_sentinels() {

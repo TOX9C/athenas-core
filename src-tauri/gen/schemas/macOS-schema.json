@@ -987,12 +987,6 @@
           "markdownDescription": "Enables the pty_get_cwd command without any pre-configured scope."
         },
         {
-          "description": "Enables the pty_get_history command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-pty-get-history",
-          "markdownDescription": "Enables the pty_get_history command without any pre-configured scope."
-        },
-        {
           "description": "Enables the pty_has_session command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pty-has-session",
@@ -1009,6 +1003,12 @@
           "type": "string",
           "const": "allow-pty-kill",
           "markdownDescription": "Enables the pty_kill command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pty_output_ack command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pty-output-ack",
+          "markdownDescription": "Enables the pty_output_ack command without any pre-configured scope."
         },
         {
           "description": "Enables the pty_raw_replay command without any pre-configured scope.",
@@ -1093,6 +1093,12 @@
           "type": "string",
           "const": "allow-relay-stop",
           "markdownDescription": "Enables the relay_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the resource_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-resource-stats",
+          "markdownDescription": "Enables the resource_stats command without any pre-configured scope."
         },
         {
           "description": "Enables the routines_delete command without any pre-configured scope.",
@@ -1953,12 +1959,6 @@
           "markdownDescription": "Denies the pty_get_cwd command without any pre-configured scope."
         },
         {
-          "description": "Denies the pty_get_history command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-pty-get-history",
-          "markdownDescription": "Denies the pty_get_history command without any pre-configured scope."
-        },
-        {
           "description": "Denies the pty_has_session command without any pre-configured scope.",
           "type": "string",
           "const": "deny-pty-has-session",
@@ -1975,6 +1975,12 @@
           "type": "string",
           "const": "deny-pty-kill",
           "markdownDescription": "Denies the pty_kill command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pty_output_ack command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pty-output-ack",
+          "markdownDescription": "Denies the pty_output_ack command without any pre-configured scope."
         },
         {
           "description": "Denies the pty_raw_replay command without any pre-configured scope.",
@@ -2059,6 +2065,12 @@
           "type": "string",
           "const": "deny-relay-stop",
           "markdownDescription": "Denies the relay_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the resource_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-resource-stats",
+          "markdownDescription": "Denies the resource_stats command without any pre-configured scope."
         },
         {
           "description": "Denies the routines_delete command without any pre-configured scope.",

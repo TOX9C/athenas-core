@@ -98,6 +98,12 @@ pub async fn dispatch(ctx: &RelayCtx, cmd: &str, args: Value) -> Result<Value, S
             commands::pty_write(state, id, data).await?;
             Ok(Value::Null)
         }
+        "pty_output_ack" => {
+            let id = opts.req::<String>("id")?;
+            let bytes = opts.req::<u64>("bytes")?;
+            commands::pty_output_ack(state, id, bytes).await?;
+            Ok(Value::Null)
+        }
         "pty_kill" => {
             let id = opts.req::<String>("id")?;
             commands::pty_kill(state, id).await?;
@@ -291,6 +297,7 @@ pub fn command_allowed(cmd: &str) -> bool {
             | "pty_set_xterm"
             | "pty_attach_listener"
             | "pty_detach_listener"
+            | "pty_output_ack"
             | "store_set"
             | "agent_comms_sessions"
             | "kanban_get_tasks"
@@ -332,7 +339,7 @@ pub fn command_allowed(cmd: &str) -> bool {
 /// `pty_foreground_process`) remain ungated: they expose existence/process
 /// metadata but no terminal content, and the mobile attach flow prechecks them.
 pub fn pane_scoped_command(cmd: &str) -> bool {
-    matches!(
+        matches!(
         cmd,
         "pty_write"
             | "pty_resize"
@@ -340,6 +347,7 @@ pub fn pane_scoped_command(cmd: &str) -> bool {
             | "pty_set_xterm"
             | "pty_attach_listener"
             | "pty_detach_listener"
+            | "pty_output_ack"
             | "output_buffer_get"
             | "get_pane_history"
             | "pty_raw_replay"

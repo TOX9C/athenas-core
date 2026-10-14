@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -40,6 +42,32 @@ const PAIRING_PROMPT_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) const CLOSE_PAIRING_DENIED: u16 = 4403;
 pub(crate) const CLOSE_PAIRING_TIMEOUT: u16 = 4408;
 static ACTIVE_RELAY_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+/// Track one remote peer per active relay session so a second device cannot
+/// hijack the mirror while a phone is connected. Token rotates per relay
+/// session, so binding to the current client id covers the multi-phone case.
+static BOUND_PEER: Mutex<Option<IpAddr>> = Mutex::new(None);
+
+/// Snapshot consumed by the `relay_client_status` command so the desktop can
+/// show whether a phone is currently attached.
+#[derive(Clone, Serialize)]
+pub struct RelayClientStatus {
+    pub connected: bool,
+    pub peer: Option<String>,
+}
+
+pub(crate) fn current_client_status() -> RelayClientStatus {
+    let bound = BOUND_PEER.lock();
+    RelayClientStatus {
+        connected: bound.is_some(),
+        peer: bound.map(|p| p.to_string()),
+    }
+}
+
+/// Disconnect every active/pending phone — desktop-side revoke used by the
+/// client panel.
+pub(crate) fn disconnect_all_clients() {
+    *BOUND_PEER.lock() = None;
+}
 /// Track relay `pty:raw:<pane>` subscriptions in shared state so the PTY read
 /// loop only pays for the base64 event path while a phone is listening.
 /// `delta` is +1 (listen) or -1 (unlisten/disconnect cleanup).
@@ -123,6 +151,8 @@ pub async fn handle_upgrade(
     // before the command/event surface is granted. The upgrade future awaits
     // a oneshot that the desktop resolves via `relay_pairing_respond`.
     let request_id = uuid::Uuid::new_v4().simple().to_string();
+    // Stash the peer IP before `peer_description` shadowing.
+    let peer_ip = peer.ip();
     let peer = peer_description(&headers);
     let (approve_tx, approve_rx) = tokio::sync::oneshot::channel::<bool>();
     {
@@ -167,8 +197,13 @@ pub async fn handle_upgrade(
                         let _ = socket.send(Message::Close(None)).await;
                         return;
                     };
+                    // Bind the single approved peer for the session's lifetime:
+                    // another LAN device can't take over the mirror while a
+                    // phone is attached.
+                    *BOUND_PEER.lock() = Some(peer_ip);
                     log::info!("[relay] pairing approved ({request_id_for_cleanup})");
                     session_loop(socket, ctx_for_session, connection_guard).await;
+                    *BOUND_PEER.lock() = None;
                 }
                 Ok(Ok(false)) => {
                     log::warn!("[relay] pairing denied ({request_id_for_cleanup})");

@@ -936,6 +936,16 @@ pub fn log_to_backend(level: &str, message: &str) {
     });
 }
 
+/// Acknowledge N output bytes parsed by xterm so the backend's read loop can
+/// release its flow-control gate (pairs with `flush_pty_raw`'s counter).
+pub async fn pty_output_ack(pane_id: &str, bytes: u64) -> TauriResult<()> {
+    invoke(
+        "pty_output_ack",
+        &serde_json::json!({ "id": pane_id, "bytes": bytes }).to_string(),
+    )
+    .await
+}
+
 /// Write data to a PTY session.
 pub async fn pty_write(id: &str, data: &str) -> TauriResult<()> {
     invoke(

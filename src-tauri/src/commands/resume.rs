@@ -204,6 +204,36 @@ pub(crate) async fn merge_captured_and_flush(
 /// `RunEvent::Exit`, while the shared runtime's `pty_read_loop` tasks keep
 /// feeding the output buffer with the agents' exit output (see
 /// `capture_resume_on_exit` in main.rs).
+/// Return the pane ids whose current foreground process is a recognized
+/// agent CLI. Shared between the exit-time resume capture (which only nudges
+/// agents with `/exit`) and `shutdown_all`, which filters its in-band exit
+/// the same way — typing `/exit` into vim is a search, into a shell a
+/// nonexistent command.
+pub(crate) async fn classify_agent_panes(state: &AppState, all_sessions: &[String]) -> Vec<String> {
+    let mut agents = Vec::new();
+    for id in all_sessions {
+        match state.session_manager.get_session(id).await {
+            Some(s) => {
+                let label = session_foreground_label(&s).await;
+                let is_agent = AGENT_FG_NAMES.contains(&label.as_str());
+                log::info!(
+                    "classify pane={} foreground={} is_agent={}",
+                    id,
+                    label,
+                    is_agent
+                );
+                if is_agent {
+                    agents.push(id.clone());
+                }
+            }
+            None => {
+                log::warn!("classify pane={} missing from session manager", id);
+            }
+        }
+    }
+    agents
+}
+
 pub async fn capture_resume_ids_on_exit(state: &AppState, wait_ms: u64) -> (usize, Vec<String>) {
     // Stall-guard budget: wait_ms is the inner POLL deadline (clock starts at
     // inner entry, before classification). Classification (`ps` per session)
@@ -245,34 +275,7 @@ async fn capture_resume_ids_on_exit_inner(state: &AppState, wait_ms: u64) -> (us
     // with `/exit`. Plain shells never produce a resume id, so sending to
     // them would waste the entire wait budget. The classification costs a `ps`
     // per session, but that is fast compared to the 4 s wait budget.
-    let agent_sessions: Vec<String> = {
-        let mut agents = Vec::new();
-        for id in &all_sessions {
-            match state.session_manager.get_session(id).await {
-                Some(s) => {
-                    let label = session_foreground_label(&s).await;
-                    let is_agent = AGENT_FG_NAMES.contains(&label.as_str());
-                    log::info!(
-                        "classify pane={} foreground={} is_agent={}",
-                        id,
-                        label,
-                        is_agent
-                    );
-                    if is_agent {
-                        agents.push(id.clone());
-                    }
-                }
-                None => {
-                    log::warn!(
-                        "classify pane={} missing from session manager",
-                        id
-                    );
-                    continue;
-                }
-            }
-        }
-        agents
-    };
+    let agent_sessions: Vec<String> = classify_agent_panes(state, &all_sessions).await;
 
     if agent_sessions.is_empty() {
         log::info!(

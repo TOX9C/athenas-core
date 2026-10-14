@@ -1,18 +1,5 @@
-pub mod ansi;
-pub mod grid;
-pub mod input;
+//! PTY process management for Athena. The terminal emulator (cell grid, ANSI
+//! parsing) is owned by the frontend's xterm.js instance; this crate manages
+//! spawning, fd lifecycle, raw byte streaming, and shutdown.
+
 pub mod session;
-
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SessionConfig {
-    pub shell: String,
-    pub cwd: String,
-    pub cols: u16,
-    pub rows: u16,
-}
-
-pub type GridRef = Arc<Mutex<grid::Grid>>;

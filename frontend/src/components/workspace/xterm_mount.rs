@@ -20,13 +20,14 @@ use wasm_bindgen::JsCast;
 
 #[path = "xterm_helpers.rs"]
 pub(crate) mod xterm_helpers;
+use super::terminal_instances as instances;
 use xterm_helpers::{
     attach_kitty_graphics, call_fit, capture_screen_canvas, filter_graphics_for_term,
     capture_viewport, force_redraw, freeze_screen, is_valid_terminal_dimensions, read_css_var,
     register_live_terminal, render_visible_rows_sync, reset_glyph_atlas, reset_glyph_atlas_by_id,
     reset_glyph_atlas_for_mount,
     evict_stale_live_terminal, pane_was_evicted,
-    restore_term_from_session, unfreeze_screen_now, unregister_live_terminal,
+    unfreeze_screen_now, unregister_live_terminal,
     schedule_fit, scroll_to_bottom, serialize_buffer,
     try_activate_addon, try_activate_canvas_addon, try_activate_web_links_addon,
     try_activate_webgl_addon,
@@ -84,11 +85,9 @@ fn install_remount_cover(container: &web_sys::Element, pane_id: &str) {
     // pane background fills the rest).
     let _ = cover_el.set_attribute(
         "style",
-        &format!(
-            "position: absolute; inset: 0; z-index: 5; pointer-events: none; \
-             background-color: var(--terminalBg, var(--bg)); \
-             transition: opacity 140ms ease-out;"
-        ),
+        "position: absolute; inset: 0; z-index: 5; pointer-events: none; \
+         background-color: var(--terminalBg, var(--bg)); \
+         transition: opacity 140ms ease-out;",
     );
     // The canvas keeps its device-px backing; pinning its inline CSS size to
     // the capture-time box prevents the stretch-blur without any encode.
@@ -153,15 +152,35 @@ const XTERM_SCROLLBACK: f64 = 10000.0;
 /// EOLs is intended for text streams and corrupts Unix PTY redraw sequences.
 const XTERM_CONVERT_EOL: bool = false;
 
+/// Strip bytes that can end a bracketed paste early (ESC lets a pasted
+/// `\x1b[201~` escape the bracket and execute the tail as typed input) or
+/// smuggle CSI through the C1 encoding. Newlines survive — multi-line paste
+/// is the whole point; xterm.js's paste() normalizes line endings.
+pub(crate) fn sanitize_paste(text: &str) -> String {
+    text.chars()
+        .filter(|&c| c != '\u{1b}' && c != '\u{9b}')
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::active_pane_matches;
+    use super::{active_pane_matches, sanitize_paste};
 
     #[test]
     fn active_focus_only_targets_the_selected_pane() {
         assert!(active_pane_matches(Some("pane-1"), "pane-1"));
         assert!(!active_pane_matches(Some("pane-2"), "pane-1"));
         assert!(!active_pane_matches(None, "pane-1"));
+    }
+
+    #[test]
+    fn sanitize_paste_strips_escape_and_c1_csi_keeps_newlines() {
+        let hostile = "safe\x1b[201~rm -rf ~\r\nnext\u{9b}6n";
+        let clean = sanitize_paste(hostile);
+        assert_eq!(clean, "safe[201~rm -rf ~\r\nnext6n");
+        assert!(!clean.contains('\u{1b}'));
+        assert!(!clean.contains('\u{9b}'));
+        assert_eq!(sanitize_paste(""), "");
     }
 }
 
@@ -550,7 +569,7 @@ fn enqueue_pty_resize(
 }
 
 /// Holds the resources needed to tear down an xterm.js mount on unmount.
-struct XtermCleanup {
+pub(crate) struct XtermCleanup {
     /// The Terminal instance; calling .dispose() releases internal
     /// DOM nodes, WebGL contexts, and event listeners.
     term: JsValue,
@@ -612,6 +631,9 @@ struct XtermCleanup {
     /// canvas and WebGL context outlive the mount; dropping after
     /// `term.dispose()` releases the GL context with the terminal.
     _webgl_addon: Option<JsValue>,
+    /// FitAddon handle kept across parking; the reattach path refits
+    /// with it. Not torn down in the drop — dies with the component scope.
+    pub(crate) _fit_addon: Option<JsValue>,
     /// Rooted `onContextLoss` closure — disposes the WebGL addon on context
     /// loss so xterm falls back to the DOM renderer.
     _webgl_ctx_loss_closure: Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>>,
@@ -626,6 +648,17 @@ struct XtermCleanup {
     _scroll_intent_wheel: Option<JsValue>,
     _scroll_intent_touchmove: Option<JsValue>,
 }
+
+impl XtermCleanup {
+    /// The `.xterm` root element owned by the Terminal. Used to move the
+    /// terminal between Dioxus-owned containers without disposing it.
+    pub(crate) fn term_element(&self) -> Option<web_sys::Element> {
+        js_sys::Reflect::get(&self.term, &JsValue::from_str("element"))
+            .ok()
+            .and_then(|v| v.dyn_into::<web_sys::Element>().ok())
+    }
+}
+
 
 /// Mount an xterm.js Terminal into a div with id `pane_id`.
 ///
@@ -740,6 +773,236 @@ pub fn XtermMount(
             );
             return;
         };
+
+        // ── Primary: reuse a parked live instance (remount without dispose) ──
+        // If this pane has a parked XtermCleanup bundle (from a space switch /
+        // pane retile / tab swap), reattach its .xterm element to this fresh
+        // container and skip spawn + open() + listener setup entirely.
+        //
+        // Two jobs here:
+        //   1. Re-wire everything container-scoped. The bundle's closures
+        //      survive parking because they are world-rooted, but the RO/IO
+        //      were observing the OLD container node (destroyed by Dioxus on
+        //      unmount) and their closures captured it — so observers and the
+        //      stale-container fit must be rebuilt against the new node.
+        //      Handler JsValues that capture no container (keydown, wheel,
+        //      touchmove, pointerdown) are re-registered onto the new node
+        //      untouched.
+        //   2. Restore component-scope Signals (term_ref / fit_ref / cleanup)
+        //      so rsx pointerdown focus, the active-pane focus effect, the
+        //      theme effect, and the real-close teardown all work identically
+        //      to a fresh mount.
+        if let Some(mut c) = instances::take(&mount_id) {
+            *is_initialized.borrow_mut() = true;
+            *raw_ready_for_effect.borrow_mut() = true;
+            *kitty_ready_for_effect.borrow_mut() = true;
+
+            let Some(el) = c.term_element() else {
+                // No element → cannot reattach cleanly; hand the bundle back
+                // and fall through to the normal spawn path below.
+                instances::stash(mount_id.clone(), c);
+                return;
+            };
+            let _ = container.append_child(&el);
+
+            // ── Re-register container-scoped handlers on the new node ─────
+            // The old registrations die with the old container; the closure
+            // JsValues are the same functions, so re-adding them to the new
+            // node restores shortcuts / scroll-cancel / click-to-focus.
+            if let Some(h) = c._keydown_handler.as_ref() {
+                let _ = container.add_event_listener_with_callback_and_bool(
+                    "keydown",
+                    h.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+            if let (Some(w), Some(t)) = (
+                c._scroll_intent_wheel.as_ref(),
+                c._scroll_intent_touchmove.as_ref(),
+            ) {
+                let _ = container.add_event_listener_with_callback_and_bool(
+                    "wheel",
+                    w.as_ref().unchecked_ref(),
+                    true,
+                );
+                let _ = container.add_event_listener_with_callback_and_bool(
+                    "touchmove",
+                    t.as_ref().unchecked_ref(),
+                    true,
+                );
+                c._scroll_intent_container = Some(container.clone());
+            }
+            if let Some(h) = c._pointerdown_handler.as_ref() {
+                let _ = container.add_event_listener_with_callback_and_bool(
+                    "pointerdown",
+                    h.as_ref().unchecked_ref(),
+                    true,
+                );
+                c._pointerdown_container = Some(container.clone());
+            }
+
+            // ── Rebuild ResizeObserver + IntersectionObserver ─────────────
+            // The old closures captured the destroyed container (and the dead
+            // fit_ref Signal of the previous mount), so they cannot be reused.
+            // Disconnect the old observers, then observe the new node with
+            // fresh closures. Note the fresh follow/fit cells: the scroll-
+            // cancel wheel/touchmove handlers above still set the ORIGINAL
+            // follow cell, so during a reattach the "user took over the
+            // viewport" bit does not gate the new RO's refit — a small
+            // accepted regression versus a permanently dead fit; the next
+            // real interaction re-syncs the state.
+            if let Some(obs) = c._resize_observer.take() {
+                if let Some(f) = js_sys::Reflect::get(&obs, &JsValue::from_str("disconnect"))
+                    .ok()
+                    .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+                {
+                    let _ = f.call0(&obs);
+                }
+            }
+            if let Some(obs) = c._visibility_observer.take() {
+                if let Some(f) = js_sys::Reflect::get(&obs, &JsValue::from_str("disconnect"))
+                    .ok()
+                    .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+                {
+                    let _ = f.call0(&obs);
+                }
+            }
+            c._ro_closure = None;
+            c._vis_callback = None;
+
+            if let Some(fit) = c._fit_addon.clone() {
+                // ResizeObserver: debounced fit + repaint on layout changes.
+                let term_for_ro = c.term.clone();
+                let container_for_ro = container.clone();
+                let fit_for_ro = fit.clone();
+                let timer_cell: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
+                let timer_for_cb = timer_cell.clone();
+                let active_for_ro = mount_active.clone();
+                let ro_closure =
+                    wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                        if !*active_for_ro.borrow() {
+                            return;
+                        }
+                        let Some(w) = web_sys::window() else { return };
+                        if let Some(id) = timer_for_cb.borrow_mut().take() {
+                            w.clear_timeout_with_handle(id);
+                        }
+                        let fit2 = fit_for_ro.clone();
+                        let cont2 = container_for_ro.clone();
+                        let term2 = term_for_ro.clone();
+                        let once = wasm_bindgen::closure::Closure::once_into_js(move || {
+                            call_fit(&fit2, &cont2, &term2);
+                            render_visible_rows_sync(&term2);
+                        });
+                        if let Ok(h) = w
+                            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                                once.as_ref().unchecked_ref(),
+                                50,
+                            )
+                        {
+                            *timer_for_cb.borrow_mut() = Some(h);
+                        }
+                    })
+                        as Box<dyn FnMut()>);
+                let new_ro =
+                    js_sys::Reflect::get(&window, &JsValue::from_str("ResizeObserver"))
+                        .ok()
+                        .and_then(|ctor| ctor.dyn_into::<js_sys::Function>().ok())
+                        .and_then(|ctor| {
+                            js_sys::Reflect::construct(
+                                &ctor,
+                                &js_sys::Array::of1(ro_closure.as_ref()),
+                            )
+                            .ok()
+                        });
+                if let Some(observer) = new_ro {
+                    if let Some(observe_fn) =
+                        js_sys::Reflect::get(&observer, &JsValue::from_str("observe"))
+                            .ok()
+                            .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+                    {
+                        let _ = observe_fn.call1(&observer, container.as_ref());
+                    }
+                    c._resize_observer = Some(observer);
+                    c._ro_closure = Some(ro_closure);
+                    c._ro_timer = Some(timer_cell);
+                }
+
+                // IntersectionObserver: heal the canvas when the container
+                // becomes visible again (hidden subtree discarded backing).
+                let term_for_vis = c.term.clone();
+                let fit_for_vis = fit.clone();
+                let container_for_vis = container.clone();
+                let active_for_vis = mount_active.clone();
+                let was_visible = Rc::new(Cell::new(true));
+                let vis_closure =
+                    wasm_bindgen::closure::Closure::wrap(Box::new(move |entries: JsValue| {
+                        if !*active_for_vis.borrow() {
+                            return;
+                        }
+                        let Ok(arr) = entries.dyn_into::<js_sys::Array>() else {
+                            return;
+                        };
+                        for entry in arr.iter() {
+                            let is_intersecting =
+                                js_sys::Reflect::get(&entry, &JsValue::from_str("isIntersecting"))
+                                    .ok()
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                            if is_intersecting && !was_visible.replace(is_intersecting) {
+                                reset_glyph_atlas(&term_for_vis);
+                                call_fit(&fit_for_vis, &container_for_vis, &term_for_vis);
+                                render_visible_rows_sync(&term_for_vis);
+                                break;
+                            }
+                        }
+                    })
+                        as Box<dyn FnMut(JsValue)>);
+                let new_io = js_sys::Reflect::get(
+                    &window,
+                    &JsValue::from_str("IntersectionObserver"),
+                )
+                .ok()
+                .and_then(|ctor| ctor.dyn_into::<js_sys::Function>().ok())
+                .and_then(|ctor| {
+                    js_sys::Reflect::construct(&ctor, &js_sys::Array::of1(vis_closure.as_ref()))
+                        .ok()
+                });
+                if let Some(observer) = new_io {
+                    if let Some(observe_fn) =
+                        js_sys::Reflect::get(&observer, &JsValue::from_str("observe"))
+                            .ok()
+                            .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+                    {
+                        let _ = observe_fn.call1(&observer, container.as_ref());
+                    }
+                    c._visibility_observer = Some(observer);
+                    c._vis_callback = Some(vis_closure);
+                }
+            }
+
+            // ── Immediate refit + repaint at current geometry ─────────────
+            render_visible_rows_sync(&c.term);
+            if let Some(f) = c._fit_addon.as_ref() {
+                call_fit(f, &container, &c.term);
+            }
+
+            // ── Restore component-scope Signals, focus, then done ─────────
+            {
+                let mut term_ref = term_ref;
+                term_ref.set(Some(c.term.clone()));
+            }
+            if let Some(f) = c._fit_addon.as_ref() {
+                let mut fit_ref = fit_ref;
+                fit_ref.set(Some(f.clone()));
+            }
+            schedule_xterm_focus(&window, &c.term, &mount_active, &mount_id, terminal_store);
+            {
+                let mut cleanup = cleanup;
+                cleanup.set(Some(c));
+            }
+            return;
+        }
 
         // Guard: if container already has .xterm children, clear stale DOM first
         if let Some(_existing) = container.query_selector(".xterm").ok().flatten() {
@@ -921,9 +1184,7 @@ pub fn XtermMount(
                         .into(),
                     );
                 }
-                store
-                    .write()
-                    .ensure_session(&terminal_registry, &mount_id_for_spawn, 80, 24);
+                store.write().ensure_session(&terminal_registry, &mount_id_for_spawn);
 
                 // NOTE: We intentionally do NOT auto-run `claude --resume <id>`
                 // here. A stored `resume_id` is surfaced to the user as a
@@ -1176,6 +1437,9 @@ pub fn XtermMount(
             let input_router_generation = input_router.activate(&mount_id);
             let pane_id_keydown = mount_id.clone();
             let input_router_for_keydown = input_router.clone();
+            let term_for_paste = term_val.clone();
+            let term_pane_fallback = pane_id_keydown.clone();
+            let term_router_fallback = input_router_for_keydown.clone();
             let keydown_handler = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
                 let is_mac = web_sys::window()
                     .and_then(|w| w.navigator().platform().ok())
@@ -1191,7 +1455,12 @@ pub fn XtermMount(
                 let alt = event.alt_key();
                 let key = event.key();
 
-                // Cmd+V (macOS) / Ctrl+V (others) → paste via Tauri clipboard with bracketed paste sequences
+                // Cmd+V (macOS) / Ctrl+V (others) → paste via Tauri clipboard.
+                // Clipboard text may itself contain ESC/C1 bytes; a pasted
+                // `\x1b[201~` would end the bracketed paste early and type the
+                // remainder as live input (paste injection). Strip every ESC
+                // and C1 CSI; bracket wrapping is left to xterm.js, which only
+                // adds it when the application enabled mode 2004.
                 if key == "v"
                     && ((is_mac && meta && !ctrl) || (!is_mac && ctrl && !meta))
                     && !shift
@@ -1199,13 +1468,30 @@ pub fn XtermMount(
                 {
                     event.prevent_default();
                     event.stop_propagation();
-                    let pane_id = pane_id_keydown.clone();
-                    let router = input_router_for_keydown.clone();
+                    let term = term_for_paste.clone();
+                    // Fallback path bindings cloned now: cloning inside the
+                    // async block would move these out of this closure and
+                    // demote it to FnOnce, which the event handler cast
+                    // forbids. Rc clones are pointer bumps.
+                    let fallback_pane = term_pane_fallback.clone();
+                    let fallback_router = term_router_fallback.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         match read_clipboard_text().await {
                             Ok(text) => {
-                                let bracketed = format!("\x1b[200~{}\x1b[201~", text);
-                                enqueue_pty_input(&router, &pane_id, bracketed);
+                                // term.paste wraps in \x1b[200~…\x1b[201~ ONLY
+                                // when mode 2004 is active and funnels through
+                                // onData, i.e. the same per-pane ordered input
+                                // queue as typing — no IPC reordering risk.
+                                let clean = sanitize_paste(&text);
+                                let paste = js_sys::Reflect::get(&term, &JsValue::from_str("paste"))
+                                    .ok()
+                                    .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
+                                let called = paste
+                                    .map(|f| f.call1(&term, &JsValue::from_str(&clean)))
+                                    .is_some();
+                                if !called {
+                                    enqueue_pty_input(&fallback_router, &fallback_pane, clean);
+                                }
                             }
                             Err(e) => {
                                 web_sys::console::error_1(
@@ -1633,15 +1919,6 @@ pub fn XtermMount(
             let (unlisten,) = raw_listener;
 
             if reusing_existing_session {
-                // One-shot peek via the registry (no subscription): restore
-                // runs inside the peek guard so no session clone is made.
-                registry.peek_field(&mount_id, |session| {
-                    // Xterm grid is never populated (on_data skips it), so the
-                    // legacy grid-based restore would only clear the terminal.
-                    if !session.is_xterm {
-                        restore_term_from_session(&term_val, session);
-                    }
-                });
                 // Replay the serialized VT snapshot captured by use_drop
                 // before the previous terminal was disposed. The serialized
                 // string re-enters the alt buffer / DEC modes and rewrites
@@ -2402,7 +2679,15 @@ pub fn XtermMount(
                 let Some(document) = window.document() else {
                     return;
                 };
-                if !document_is_visible(&document) || !focus_recovery_allowed(&document) {
+                if !document_is_visible(&document) {
+                    return;
+                }
+                // WKWebView marks the page hidden while its window sits on
+                // an inactive macOS Space and resumes it on return — see
+                // xterm_helpers::heal_after_occlusion. Runs before the
+                // focus-target gate and is debounced across all panes.
+                xterm_helpers::heal_after_occlusion();
+                if !focus_recovery_allowed(&document) {
                     return;
                 }
                 schedule_xterm_focus(
@@ -2492,6 +2777,7 @@ pub fn XtermMount(
                 _web_links_handler: Some(web_links_handler_js),
                 _web_links_addon: web_links_addon,
                 _webgl_addon: webgl_addon_holder,
+                _fit_addon: fit_ref(),
                 _webgl_ctx_loss_closure: webgl_ctx_loss_closure,
                 _canvas_addon: canvas_addon_holder,
                 _canvas_ctx_loss_closure: canvas_ctx_loss_closure,
@@ -2752,6 +3038,23 @@ pub fn XtermMount(
             )
             .into(),
         );
+        // Persistent-instance short-circuit: a transient unmount (space swap,
+        // pane retile) parks the terminal instead of disposing it. The raw
+        // listener, input-router lease, and every rooted closure stay alive;
+        // the .xterm element moves offscreen (not display:none — WKWebView
+        // can discard a hidden canvas' GL backing). The next mount takes the
+        // cleanup back and reattaches; teardown only runs when closing=true.
+        if !registry_for_drop.is_closing(&mount_id_for_drop) {
+            if let Some(c) = cleanup.take() {
+                if let Some(el) = c.term_element() {
+                    if let Some(holder) = instances::parking_lot() {
+                        let _ = holder.append_child(&el);
+                    }
+                }
+                instances::stash(mount_id_for_drop.clone(), c);
+            }
+            return;
+        }
         *mount_active_for_drop.borrow_mut() = false;
         *raw_ready.borrow_mut() = false;
         // Stop sibling atlas resets from repainting this terminal once it's
