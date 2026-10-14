@@ -84,11 +84,9 @@ fn install_remount_cover(container: &web_sys::Element, pane_id: &str) {
     // pane background fills the rest).
     let _ = cover_el.set_attribute(
         "style",
-        &format!(
-            "position: absolute; inset: 0; z-index: 5; pointer-events: none; \
-             background-color: var(--terminalBg, var(--bg)); \
-             transition: opacity 140ms ease-out;"
-        ),
+        "position: absolute; inset: 0; z-index: 5; pointer-events: none; \
+         background-color: var(--terminalBg, var(--bg)); \
+         transition: opacity 140ms ease-out;",
     );
     // The canvas keeps its device-px backing; pinning its inline CSS size to
     // the capture-time box prevents the stretch-blur without any encode.
