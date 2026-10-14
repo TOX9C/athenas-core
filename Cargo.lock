@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "athena-frontend"
-version = "3.4.2"
+version = "3.4.3"
 dependencies = [
  "athena-resume-scanner",
  "base64 0.22.1",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "athenas-core"
-version = "3.4.2"
+version = "3.4.3"
 dependencies = [
  "athena-browser",
  "athena-core",
@@ -453,6 +453,7 @@ dependencies = [
  "futures-util",
  "hound",
  "keyring",
+ "libc",
  "local-ip-address",
  "log",
  "mdns-sd",

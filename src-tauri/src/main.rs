@@ -76,7 +76,6 @@ fn main() {
             // Diagnostics
             diagnostics_export,
             frontend_log,
-            resource_stats,
             // Window
             window_minimize,
             window_maximize,
