@@ -186,7 +186,6 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
         if *mounted.borrow() {
             return;
         }
-        *mounted.borrow_mut() = true;
         // Re-clone per effect run: the async task below moves these, and the
         // effect closure is FnMut (re-runnable).
         let input_queue_for_effect = input_queue_for_effect.clone();
@@ -208,12 +207,23 @@ pub fn MobileXtermMount(props: MobileXtermMountProps) -> Element {
             container.set_inner_html("");
         }
 
+        // Same invariant as XtermMount: an empty cwd cannot spawn (the backend
+        // rejects it, and "/tmp" is a forbidden root), so bail before the
+        // doomed invoke and before claiming `mounted` — that flag is
+        // consulted on every effect re-entry, so it must only be set by a run
+        // that actually spawns. NOTE: `cwd` is a plain prop and this closure
+        // reads no Signal, so there is no in-place retry on cwd change; a
+        // rejected pane needs a remount with a real dir.
+        if cwd.trim().is_empty() {
+            web_sys::console::error_1(
+                &format!("[mobile xterm] refusing spawn: cwd is empty for pane {pane_id}").into(),
+            );
+            return;
+        }
+        *mounted.borrow_mut() = true;
+
         let pane_id_for_task = pane_id.clone();
-        let cwd_for_task = if cwd.trim().is_empty() {
-            "/tmp".to_string()
-        } else {
-            cwd.clone()
-        };
+        let cwd_for_task = cwd.clone();
         let active_for_task = active.clone();
         let window_for_task = window.clone();
         let container_for_task = container.clone();

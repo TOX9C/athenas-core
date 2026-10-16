@@ -791,6 +791,23 @@ pub fn XtermMount(
             container.set_inner_html(""); // clear any stale xterm DOM
         }
 
+        // An empty cwd cannot spawn: `validate_cwd` (pty.rs) rejects it
+        // outright, and the old "/tmp" fallback was itself rejected as a
+        // forbidden root (workspace.rs FORBIDDEN_PREFIXES). Bail before
+        // installing the remount cover and before claiming `is_initialized`,
+        // so the pane is not left painted with a frame it will never replace.
+        // NOTE: `cwd` is a plain prop captured by this closure, which reads no
+        // Signal, so this effect does NOT re-run when cwd changes. There is no
+        // in-place retry: a rejected pane needs a remount (pane id / mount key
+        // change) with a real dir. Fix the caller, not this branch.
+        if cwd.trim().is_empty() {
+            web_sys::console::error_1(
+                &format!("[XtermMount] refusing spawn: cwd is empty for pane {mount_id}").into(),
+            );
+            return;
+        }
+        let spawn_cwd = cwd.clone();
+
         // Paint the captured last frame over this container immediately so a
         // remount (workspace switch, pane swap) shows the previous terminal
         // content instead of an empty background until the new xterm paints.
@@ -807,11 +824,6 @@ pub fn XtermMount(
             bypass_mode.unwrap_or(false),
         );
         let mount_id_for_spawn = mount_id.clone();
-        let spawn_cwd = if cwd.trim().is_empty() {
-            "/tmp".to_string()
-        } else {
-            cwd.clone()
-        };
         let mut cleanup = cleanup;
         let mut term_ref = term_ref;
         let mut fit_ref = fit_ref;
