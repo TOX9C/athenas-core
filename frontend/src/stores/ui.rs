@@ -64,6 +64,12 @@ pub struct UIState {
     /// (avoiding a default-page flash). Harmless if left stale: `browser_show`
     /// ignores it whenever a panel model already exists.
     pub pending_browser_url: Option<String>,
+    /// A URL awaiting the open-location chooser (terminal link click). Unlike
+    /// `pending_browser_url` this does NOT mutate the layout — it only makes
+    /// the chooser modal render, so the user decides between the in-app
+    /// browser and the external default browser. Cleared when the chooser
+    /// closes, whether by choice or dismissal.
+    pub pending_link_request: Option<String>,
 }
 
 impl Default for UIState {
@@ -87,6 +93,7 @@ impl Default for UIState {
             pending_swarm_goal: None,
             pending_update: None,
             pending_browser_url: None,
+            pending_link_request: None,
             custom_agents: Vec::new(),
         }
     }

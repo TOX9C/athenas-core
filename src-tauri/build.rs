@@ -147,6 +147,7 @@ const COMMANDS: &[&str] = &[
     "license_status",
     "update_check",
     "update_open_release",
+    "open_external",
     "kanban_get_tasks",
     "kanban_create_task",
     "kanban_update_task",

@@ -15,6 +15,7 @@ mod browser;
 pub mod caps;
 mod diagnostics;
 mod drop;
+pub mod external;
 mod filesystem;
 mod git;
 mod kanban;
@@ -115,6 +116,7 @@ pub use session::{
 };
 pub use store::{store_delete, store_get, store_has, store_set, test_llm_api_key};
 pub use update::{update_check, update_open_release};
+pub use external::open_external;
 pub use swarm::{
     swarm_create, swarm_create_task, swarm_read_mailbox, swarm_read_state, swarm_send_message,
     swarm_set_status, swarm_start_watch, swarm_stop_watch, swarm_update_agent, swarm_update_task,

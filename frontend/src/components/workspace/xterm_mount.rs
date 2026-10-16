@@ -1,15 +1,13 @@
-use crate::components::right_sidebar::browser_surface::BROWSER_ID;
-use crate::stores::panel_manager::use_panel_manager_store;
 use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
-    browser_navigate, pty_attach_listener, pty_default_shell_cached, pty_detach_listener,
+    pty_attach_listener, pty_default_shell_cached, pty_detach_listener,
     pty_has_session, pty_listen_raw, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent,
     read_clipboard_text,
 };
 use crate::utils::agent_commands::get_agent_command;
-use crate::utils::open_link::open_link_in_browser;
+use crate::utils::open_link::request_link_open;
 use crate::utils::resume_scanner::ResumeScanner;
 use dioxus::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -711,7 +709,6 @@ pub fn XtermMount(
     // into its own closure (the effect re-binds `terminal_registry` internally).
     let registry_for_drop = terminal_registry.clone();
     let ui_state = use_ui_store();
-    let panel_state = use_panel_manager_store();
     let workspace_store = use_workspace_store();
     let workspace_for_effect = workspace_store;
     let mount_active_for_drop = mount_active.clone();
@@ -1941,24 +1938,17 @@ pub fn XtermMount(
                 );
             }
 
-            // ── Clickable links → embedded browser panel ────────────────────
+            // ── Clickable links → chooser → embedded browser ────────────────
             // The vendored WebLinksAddon's default handler calls window.open()
             // (a popup / new native window). Replace it with a handler that
-            // opens the shared embedded browser in the right sidebar and
-            // navigates to the link. This closure runs inside xterm's raw
-            // linkifier callback — outside any Dioxus scope — so async work
-            // must use wasm_bindgen_futures::spawn_local, never Dioxus `spawn`.
+            // stages the link for the chooser, which is the only place the
+            // user picks between the in-app browser and the system browser.
+            // This closure runs inside xterm's raw linkifier callback — outside
+            // any Dioxus scope — so async work must use
+            // wasm_bindgen_futures::spawn_local, never Dioxus `spawn`.
             let mut link_ui_state = ui_state;
-            let mut link_panel_state = panel_state;
             let web_links_handler = Closure::wrap(Box::new(move |_event: JsValue, uri: String| {
-                open_link_in_browser(
-                    &mut link_ui_state.write(),
-                    &mut link_panel_state.write(),
-                    &uri,
-                );
-                wasm_bindgen_futures::spawn_local(async move {
-                    let _ = browser_navigate(BROWSER_ID, &uri).await;
-                });
+                request_link_open(&mut link_ui_state.write(), &uri);
             })
                 as Box<dyn FnMut(JsValue, String)>);
 

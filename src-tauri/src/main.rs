@@ -255,6 +255,8 @@ fn main() {
             // Update check (GitHub releases; opens the release page in a browser)
             update_check,
             update_open_release,
+            // Open a link in the OS default browser (link chooser destination)
+            open_external,
             // Mobile mirror relay
             relay_start,
             relay_stop,

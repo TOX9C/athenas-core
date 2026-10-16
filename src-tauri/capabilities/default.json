@@ -166,6 +166,7 @@
     "allow-license-status",
     "allow-update-check",
     "allow-update-open-release",
+    "allow-open-external",
     "allow-test-llm-api-key",
     "allow-llm-list-models",
     "allow-workspace-add-trusted-root",

@@ -360,6 +360,18 @@ pub async fn update_open_release() -> TauriResult<()> {
     invoke("update_open_release", "{}").await
 }
 
+/// Open a URL in the OS default browser (the "External Browser" destination of
+/// the terminal link chooser). The backend validates the URL as http/https
+/// before handing it to the OS, so non-HTTP schemes are rejected rather than
+/// opened.
+pub async fn open_external(url: &str) -> TauriResult<()> {
+    invoke(
+        "open_external",
+        &serde_json::json!({ "url": url }).to_string(),
+    )
+    .await
+}
+
 /// Export a redacted diagnostic bundle assembled by the native backend.
 /// `frontend_logs` and `frontend_metrics` are supplied by the bounded browser
 /// diagnostics ring in `frontend/index.html`.

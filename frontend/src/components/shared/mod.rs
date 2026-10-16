@@ -3,6 +3,7 @@ pub mod context_menu;
 pub mod error_boundary;
 pub mod icon;
 pub mod illustration;
+pub mod link_chooser;
 pub mod metrics_badge;
 pub mod modal;
 pub mod toast;

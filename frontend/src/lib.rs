@@ -36,6 +36,7 @@ use components::shared::icon::{
     IconWindowRestore,
 };
 use components::shared::illustration::CoreMark;
+use components::shared::link_chooser::LinkChooser;
 use components::shared::metrics_badge::MetricsBadge;
 use components::shared::modal::provide_modal_overlay_store;
 use components::shared::toast::{provide_toast_store, ToastContainer};
@@ -1099,6 +1100,14 @@ pub fn App() -> Element {
             ErrorBoundary {
                 fallback_message: "The pane-share prompt could not be rendered.".to_string(),
                 RelayPaneSharePrompt {}
+            }
+
+            // Terminal link clicks stage a URL here instead of navigating
+            // straight into the in-app browser; the only place the user picks
+            // that destination outside the terminal itself.
+            ErrorBoundary {
+                fallback_message: "The link chooser could not be rendered.".to_string(),
+                LinkChooser {}
             }
 
             // Keep terminal coordination outside the root's reactive shell.
