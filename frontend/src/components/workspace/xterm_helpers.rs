@@ -144,6 +144,49 @@ pub(crate) fn viewport_at_bottom(term_val: &JsValue) -> bool {
     viewport_y >= base_y
 }
 
+/// Classic scrollbar width for the selected pane's terminal, in CSS pixels.
+/// Mirrors `.pane-content.is-active .xterm-viewport::-webkit-scrollbar { width }`
+/// in `public/styles.css` — keep the two in sync.
+pub(crate) const SCROLLBAR_WIDTH: f64 = 8.0;
+
+/// Override xterm's cached viewport scrollbar width to match the CSS.
+///
+/// The viewport caches `scrollBarWidth` **once**, at construction:
+/// `offsetWidth - scrollArea.offsetWidth || 15`. With the app-wide scrollbar
+/// hide (`::-webkit-scrollbar { width: 0 }`, `styles.css:260`) measured at
+/// `open()`, that difference is 0 — falsy — so xterm caches **15** and every
+/// FitAddon fit reserves ~2 columns for a scrollbar that never rendered. Once
+/// the active pane's CSS turns classic scrollbars back on, the real rendered
+/// width is [`SCROLLBAR_WIDTH`]; pinning the cache to it keeps fit column math
+/// exact (and reclaims the phantom gutter on active panes).
+///
+/// No-op if xterm's internal layout changes shape — xterm then keeps its own
+/// cached value and only loses the gutter correction.
+pub(crate) fn pin_scrollbar_width(term_val: &JsValue) {
+    let Ok(core) = js_sys::Reflect::get(term_val, &JsValue::from_str("_core")) else {
+        return;
+    };
+    let ok = js_sys::Reflect::get(&core, &JsValue::from_str("viewport"))
+        .ok()
+        .and_then(|viewport| {
+            js_sys::Reflect::set(
+                &viewport,
+                &JsValue::from_str("scrollBarWidth"),
+                &JsValue::from_f64(SCROLLBAR_WIDTH),
+            )
+            .ok()
+        })
+        .unwrap_or(false);
+    if !ok {
+        js_sys::Reflect::set(
+            &core,
+            &JsValue::from_str("scrollBarWidth"),
+            &JsValue::from_f64(SCROLLBAR_WIDTH),
+        )
+        .ok();
+    }
+}
+
 /// Scroll the terminal viewport to the bottom of the active buffer.
 /// No-op when the method is unavailable or the pane is already pinned.
 pub(crate) fn scroll_to_bottom(term_val: &JsValue) {
@@ -1629,8 +1672,16 @@ pub(crate) async fn wait_for_container_size(container: &web_sys::Element) {
 mod tests {
     use super::{
         is_container_sized, is_valid_terminal_dimensions, poll_container_size, strip_kitty_placeholder_bytes, strip_kitty_placeholders,
-        ContainerSizePoll, CONTAINER_SIZE_RETRIES,
+        ContainerSizePoll, CONTAINER_SIZE_RETRIES, SCROLLBAR_WIDTH,
     };
+
+    #[test]
+    fn scrollbar_width_matches_active_pane_css() {
+        // The pinned value must equal the CSS
+        // `.pane-content.is-active .xterm-viewport::-webkit-scrollbar { width }`
+        // in public/styles.css, or FitAddon reserves the wrong gutter.
+        assert_eq!(SCROLLBAR_WIDTH, 8.0);
+    }
 
     #[test]
     fn kitty_placeholders_become_nbsp_sentinels() {

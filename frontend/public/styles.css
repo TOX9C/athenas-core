@@ -2479,6 +2479,41 @@ button:disabled {
   overscroll-behavior: contain;
 }
 
+/* Selected pane's terminal scrollbar. xterm's .xterm-viewport is a real
+   scroll element, so classic WebKit scrollbars render on its right edge with
+   zero DOM changes. Scoped to .pane-content.is-active — inactive panes keep
+   the app-wide scrollbar hide (width 0 / scrollbar-width: none). xterm caches
+   viewport.scrollBarWidth at open() and FitAddon reserves it on every fit, so
+   the width here is mirrored by the pin in
+   xterm_helpers::pin_scrollbar_width (SCROLLBAR_WIDTH). Keep the two in sync.
+   CSS variables do not inherit into ::-webkit-scrollbar pseudo-elements in
+   WebKit/Chromium (var() resolves empty there), so the pseudo rules below use
+   literal values from the token defaults: --border #1f2024, --bg #0d0e10,
+   --accentHover #e2c26c, radius-pill 999px. */
+.pane-content.is-active .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: #1f2024 #0d0e10;
+}
+.pane-content.is-active .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.pane-content.is-active .xterm-viewport::-webkit-scrollbar-track,
+.pane-content.is-active .xterm-viewport::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.pane-content.is-active .xterm-viewport::-webkit-scrollbar-thumb {
+  background: #1f2024;
+  border-radius: 999px;
+  /* Transparent border + content-clip insets the thumb inside the 8px rail,
+     keeping the visible grip compact and off the terminal's last column. */
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.pane-content.is-active .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: #e2c26c;
+}
+
 /* ── Pane-pill drag-and-drop swap ────────────────────────────────────────── */
 
 /* Highlighted drop target — gold inset ring around the pane wrapper

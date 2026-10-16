@@ -34,6 +34,7 @@ use xterm_helpers::{
     wire_webgl_context_recovery,
     strip_kitty_placeholders, wait_for_container_size, wait_for_font_ready, write_bytes_to_term,
     write_str_to_term, ViewportState,
+    pin_scrollbar_width,
 };
 
 // Last painted frame per pane, captured in `use_drop` before `dispose()`.
@@ -1969,6 +1970,10 @@ pub fn XtermMount(
             let mut ro_closure_holder: Option<wasm_bindgen::closure::Closure<dyn FnMut()>> = None;
             let mut ro_timer_holder: Option<Rc<RefCell<Option<i32>>>> = None;
             if let Some(fit_instance) = try_activate_addon(&window, "FitAddon", &term_val) {
+                // Teach FitAddon the real scrollbar gutter before the first
+                // fit measures columns: xterm caches a stale 15px fallback at
+                // open() because the app-wide scrollbar hide measured 0.
+                pin_scrollbar_width(&term_val);
                 // Initial fit so the terminal has correct cols/rows before any data arrives.
                 // Commit one synchronous fit before the PTY is released. The
                 // delayed schedule_fit call below handles the renderer repaint;
