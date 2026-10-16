@@ -181,6 +181,14 @@ jobs:
           done
 
       - name: cargo test
+        # TODO(terminal-rework): re-enable athena-terminal tests on Ubuntu —
+        # drop `--exclude athena-terminal` from the command below and remove
+        # "(Ubuntu, terminal excluded)" from the job name — once the xterm
+        # rework branch merges. The exclusion exists because the old terminal
+        # test binary reliably kills the GitHub Ubuntu runner; the rework
+        # replaces that stack, so the exclusion must be re-validated, not
+        # carried forward silently. Do NOT remove this TODO without running
+        # the full suite on a PR first.
         # Exclude athena-terminal: its test binary — even with the fork-based
         # session tests skipped — reproducibly triggers a GitHub-hosted
         # Ubuntu VM shutdown ("The runner has received a shutdown signal",
