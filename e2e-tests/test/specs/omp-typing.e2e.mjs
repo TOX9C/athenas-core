@@ -1,5 +1,7 @@
 import { expect } from '@wdio/globals'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 async function clickButtonByText(text, { partial = false } = {}) {
   return browser.execute(
     ({ text, partial }) => {
@@ -30,8 +32,14 @@ describe('OMP terminal input regression', () => {
   it('mounts OMP through xterm and forwards keyboard input to the PTY', async function () {
     this.timeout(120000)
 
-    await browser.execute(() => {
-      window.__athenaE2E = true
+    // A permitted dir: the backend rejects /tmp (workspace.rs:31). Seed the
+    // persisted root list first so the add below is a no-op that skips the
+    // backend's blocking native dialog. It also has a `.catch`, so a rejection
+    // settles instead of blocking the spec.
+    const trustDir = e2eTrustRoot('omp-typing')
+    await seedTrustedRoots(browser, [trustDir])
+    await setE2E()
+    await browser.execute((dir) => {
       window.__ompLogs = []
       window.__ompOriginalConsole = {}
       for (const level of ['log', 'warn', 'error']) {
@@ -44,17 +52,21 @@ describe('OMP terminal input regression', () => {
       }
       window.__athenaTrust = 'pending'
       window.__TAURI__.core
-        .invoke('workspace_add_trusted_root', { dir: '/tmp' })
+        .invoke('workspace_add_trusted_root', { dir })
         .then(() => {
           window.__athenaTrust = 'ok'
         })
         .catch((error) => {
           window.__athenaTrust = 'ERR:' + String(error)
         })
-    })
+    }, trustDir)
     await browser.waitUntil(
       async () => browser.execute(() => window.__athenaTrust === 'ok'),
-      { timeout: 10000, interval: 250, timeoutMsg: 'Could not authorize /tmp for PTY spawn' },
+      {
+        timeout: 10000,
+        interval: 250,
+        timeoutMsg: 'Could not authorize the e2e sandbox dir for PTY spawn',
+      },
     )
 
     expect((await clickButtonByText('New Workspace', { partial: true })).ok).toBe(true)
@@ -74,6 +86,7 @@ describe('OMP terminal input regression', () => {
     // this flow aligned with the proven workspace specs; synthetic input
     // events in WKWebView can otherwise race the modal's Dioxus signals.
     await browser.pause(250)
+    await fillSpaceDir(browser, trustDir)
     expect((await clickButtonByText('Next >')).ok).toBe(true)
 
     await browser.waitUntil(

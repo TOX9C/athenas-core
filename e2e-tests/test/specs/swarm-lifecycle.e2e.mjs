@@ -1,3 +1,5 @@
+import { e2eTrustRoot, seedTrustedRoots } from '../helpers/trust.mjs'
+
 async function clickButton(text, partial = false) {
   return browser.execute(({ text, partial }) => {
     for (const btn of document.querySelectorAll('button')) {
@@ -27,6 +29,15 @@ describe('Swarm lifecycle', () => {
   it('launches a persisted swarm mission and renders its board', async () => {
     await browser.execute(() => { window.__athenaE2E = true })
 
+    // `swarm_read_state` gates through `validate_dir` -> `validate_path_exists`
+    // -> `is_within_any_root` (mod.rs:400). `/tmp` passes only when
+    // `/private/tmp` happens to sit in the persisted trusted_roots — which
+    // `onPrepare`'s store clear removes, so it cannot be relied on. Seed a
+    // permitted dir under the app root instead (see helpers/trust.mjs).
+    const swarmDir = e2eTrustRoot('swarm-lifecycle')
+    await seedTrustedRoots(browser, [swarmDir])
+
+
     expect((await clickButton('New Workspace', true)).ok).toBe(true)
     await browser.waitUntil(
       async () => browser.execute(() => document.body.textContent.includes('Swarm Mission')),
@@ -34,7 +45,7 @@ describe('Swarm lifecycle', () => {
     )
 
     expect((await clickButton('Swarm Mission', true)).ok).toBe(true)
-    expect(await setField('input[placeholder="/path/to/project"]', '/tmp')).toBe(true)
+    expect(await setField('input[placeholder="/path/to/project"]', swarmDir)).toBe(true)
     expect(await setField('textarea[placeholder="Describe what the swarm should accomplish..."]', 'Validate the swarm lifecycle')).toBe(true)
     expect((await clickButton('Next >')).ok).toBe(true)
     await browser.waitUntil(
@@ -51,11 +62,11 @@ describe('Swarm lifecycle', () => {
       { timeout: 15000, interval: 500, timeoutMsg: 'swarm board did not render after launch' },
     )
 
-    const persisted = await browser.execute(async () => {
-      const raw = await window.__TAURI__.core.invoke('swarm_read_state', { dir: '/tmp' })
+    const persisted = await browser.execute(async (dir) => {
+      const raw = await window.__TAURI__.core.invoke('swarm_read_state', { dir })
       return JSON.parse(raw)
-    })
-    expect(persisted.workspaceDir).toBe('/tmp')
+    }, swarmDir)
+    expect(persisted.workspaceDir).toBe(swarmDir)
     expect(persisted.goal).toBe('Validate the swarm lifecycle')
     expect(persisted.status).toBe('active')
     expect(persisted.agents).toHaveLength(3)

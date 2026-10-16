@@ -1,6 +1,8 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
 
@@ -40,21 +42,31 @@ describe('Terminal pane drag/swap regression', () => {
   it('swaps two panes through the fullscreen pill drag overlay', async function () {
     this.timeout(90000)
 
-    await browser.execute(() => {
-      window.__athenaE2E = true
+    // A permitted dir: the backend rejects /tmp (workspace.rs:31). Seed the
+    // persisted root list first so the add below is a no-op that skips the
+    // backend's blocking native dialog. It also has a `.catch`, so a rejection
+    // settles instead of blocking the spec.
+    const trustDir = e2eTrustRoot('pane-swap')
+    await seedTrustedRoots(browser, [trustDir])
+    await setE2E()
+    await browser.execute((dir) => {
       window.__paneSwapTrustRoot = 'pending'
       window.__TAURI__.core
-        .invoke('workspace_add_trusted_root', { dir: '/tmp' })
+        .invoke('workspace_add_trusted_root', { dir })
         .then(() => {
           window.__paneSwapTrustRoot = 'ok'
         })
         .catch((error) => {
           window.__paneSwapTrustRoot = 'error:' + String(error)
         })
-    })
+    }, trustDir)
     await browser.waitUntil(
       async () => browser.execute(() => window.__paneSwapTrustRoot === 'ok'),
-      { timeout: 10000, interval: 100, timeoutMsg: 'Could not register /tmp as a trusted root' },
+      {
+        timeout: 10000,
+        interval: 100,
+        timeoutMsg: 'Could not register the e2e sandbox dir as a trusted root',
+      },
     )
 
     expect((await clickButtonByText('New Workspace', { partial: true })).ok).toBe(true)
@@ -68,6 +80,7 @@ describe('Terminal pane drag/swap regression', () => {
     )
 
     expect((await clickButtonByText('Terminal Workspace', { partial: true })).ok).toBe(true)
+    await fillSpaceDir(browser, trustDir)
     expect((await clickButtonByText('Next >')).ok).toBe(true)
 
     await browser.waitUntil(

@@ -6,9 +6,11 @@
 //     -> kanban_create_task -> KanbanBackend::create_task
 //       -> store key `kanban.<workspace_id>` (store.json on disk)
 //     -> move menu ("In Progress" -> "Done") -> kanban_update_task
-//       -> panel unmount/remount (kanban -> workspace -> kanban)
+//     -> panel unmount/remount (kanban -> workspace -> kanban)
 //         -> KanbanBoard on-mount kanban_get_tasks reload
-//     -> store_get('kanban.<id>') still lists the task as Complete.
+//     -> kanban_get_tasks still lists the task as Complete. (The store key
+//        holds a JSON array, so it cannot be read through `store_get`, which
+//        is typed `get::<String>` on the backend.)
 //
 // A workspace ("worksheet") is required because the backend scopes tasks to
 // the active space (`get_active_workspace_id`); the bootstrap mirrors
@@ -26,6 +28,8 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs';
 
 const STORE_JSON = join(homedir(), 'Library', 'Application Support', 'athena-core', 'store.json');
 const TASK_TITLE = `KB_E2E_${Date.now()}`;
@@ -120,10 +124,14 @@ const waitForMount = () => browser.waitUntil(
 // Workspace. A worksheet is required because the kanban backend scopes tasks
 // to the active space (`get_active_workspace_id`).
 async function ensureWorkspace() {
-  await browser.execute(() => {
-    window.__athenaE2E = true;
-    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir: '/tmp' }).catch(() => {});
-  });
+  await setE2E();
+  // A permitted dir (the backend rejects /tmp); seeded so the add is a no-op
+  // that skips the blocking confirmation dialog.
+  const trustDir = e2eTrustRoot('kanban-persistence');
+  await seedTrustedRoots(browser, [trustDir]);
+  await browser.execute((dir) => {
+    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {});
+  }, trustDir);
   const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));
   if (!(await hasPill())) {
     if (await clickButton('Space 1')) {
@@ -138,6 +146,7 @@ async function ensureWorkspace() {
     );
     expect(await clickButton('Terminal Workspace')).toBe(true);
     await browser.pause(400);
+    await fillSpaceDir(browser, trustDir);
     expect(await clickButton('Next >')).toBe(true);
     try {
       await browser.waitUntil(
@@ -232,11 +241,20 @@ describe('Kanban worksheet persistence', () => {
     );
 
     // --- Persisted in the store contract already ---------------------------
+    // `store_get` is typed `get::<String>` on the backend: it deserializes the
+    // raw store value as a String, so it only works for keys whose value is a
+    // JSON string. `workspaces` is such a key (written as a stringified blob),
+    // so it is the only correct way to resolve the active space id — which the
+    // second `it` needs to build the on-disk key name. The kanban key holds a
+    // task ARRAY, not a string, and must be read through the typed command.
     const workspacesJson = await invoke('store_get', { key: 'workspaces' });
     activeSpaceId = JSON.parse(workspacesJson).active_space_id;
     expect(activeSpaceId).toBeTruthy();
-    const kanbanJson = await invoke('store_get', { key: `kanban.${activeSpaceId}` });
+    const kanbanJson = await invoke('kanban_get_tasks');
     const persisted = JSON.parse(kanbanJson);
+    if (!Array.isArray(persisted)) {
+      throw new Error('kanban_get_tasks did not return a task array');
+    }
     const mine = persisted.find(t => t.title === TASK_TITLE);
     expect(mine).toBeTruthy();
     expect(mine.status).toBe('Complete');

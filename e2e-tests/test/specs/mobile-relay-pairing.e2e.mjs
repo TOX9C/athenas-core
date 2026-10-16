@@ -175,7 +175,11 @@ describe('Mobile Mirror relay pairing (stubbed phone)', () => {
     expect(status.running).toBe(true);
     expect(status.url).toContain('token=');
     const url = new URL(status.url);
-    const token = url.searchParams.get('token');
+    // The relay deliberately carries the token in the URL *fragment* so it
+    // never reaches server logs or query-string telemetry (pairing_url() in
+    // src-tauri/src/relay/mod.rs builds "...?mobile=1#token=<token>"). It is
+    // therefore NOT a query parameter — read it from the hash.
+    const token = decodeURIComponent((url.hash.match(/token=([^&]*)/) || [])[1] || '');
     const port = status.port;
     expect(token).toBeTruthy();
     expect(port).toBeGreaterThan(0);

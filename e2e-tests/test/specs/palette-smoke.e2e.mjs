@@ -28,25 +28,30 @@ describe('Command palette smoke', () => {
       const dlg = document.querySelector('[role="dialog"][aria-label="Command palette"]')
       const labels = [...dlg.querySelectorAll('button > span:nth-child(2) > span:first-child')].map((e) => e.textContent)
       return {
-        groupHeaders: [...dlg.querySelectorAll('div')].map((e) => e.childNodes.length === 1 ? e.textContent : '')
-          .filter((t) => ['Workspace', 'Navigation', 'Panels', 'Terminal', 'Athena', 'Settings'].includes(t)),
+        // Group labels are the palette's own uppercase headings (a div whose
+        // only child node is the text). Categories with no commands are not
+        // rendered at all, so only the populated groups can appear.
+        groupHeaders: [...dlg.querySelectorAll('div')].map((e) => (e.childNodes.length === 1 ? e.textContent : ''))
+          .filter((t) => ['Recent', 'Workspace', 'Panels', 'Athena', 'Terminal', 'File', 'Navigation', 'Settings'].includes(t)),
         labels,
         kbdCount: dlg.querySelectorAll('kbd').length,
         defaultPrevented: true,
       }
     })
-    expect(snapshot.labels).toContain('New Workspace')
-    expect(snapshot.labels).toContain('Toggle Sidebar')
-    expect(snapshot.labels).toContain('Add Shell Terminal')
-    expect(snapshot.labels).toContain('Change Theme')
-    expect(snapshot.labels).toContain('Open Settings')
+    // The registered command set is defined in lib.rs; these are the entries
+    // it actually ships (label per Command::label).
     expect(snapshot.labels).toContain('New Chat')
-    expect(snapshot.labels).not.toContain('Theme: Nyx')
-    expect(snapshot.kbdCount).toBeGreaterThanOrEqual(5)
+    expect(snapshot.labels).toContain('Create workspace checkpoint')
+    expect(snapshot.labels).toContain('Attention inbox')
+    expect(snapshot.labels).toContain('Open Settings')
+    // Every theme is a real, separately-registered command.
+    expect(snapshot.labels).toContain('Theme: Erebus')
+    expect(snapshot.labels.some((l) => l.startsWith('Theme: '))).toBe(true)
+    expect(snapshot.kbdCount).toBeGreaterThanOrEqual(3)
 
     // Group headers rendered
     expect(snapshot.groupHeaders).toEqual(
-      expect.arrayContaining(['Workspace', 'Navigation', 'Panels', 'Terminal', 'Athena', 'Settings']),
+      expect.arrayContaining(['Workspace', 'Athena', 'Settings']),
     )
 
     // Typing filters
@@ -59,7 +64,10 @@ describe('Command palette smoke', () => {
     const filtered = await browser.execute(() =>
       [...document.querySelectorAll('[role="dialog"][aria-label="Command palette"] button > span:nth-child(2) > span:first-child')].map((e) => e.textContent)
     )
-    expect(filtered).toContain('Change Theme')
+    // Every theme command carries the "theme" keyword, and nothing else does.
+    expect(filtered.length).toBeGreaterThan(0)
+    expect(filtered.every((l) => l.startsWith('Theme: '))).toBe(true)
+    expect(filtered).toContain('Theme: Erebus')
 
     await browser.saveScreenshot(join(TEST_SCREENSHOTS, 'palette.png'))
   })

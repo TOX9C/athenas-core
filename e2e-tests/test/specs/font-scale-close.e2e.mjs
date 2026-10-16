@@ -1,6 +1,8 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
 
@@ -69,12 +71,17 @@ function probePanes() {
 const GRID_JS = "const grids = Array.from(document.querySelectorAll('.workspace-grid-root')); const grid = grids[grids.length - 1];"
 
 async function makeSpaceWithShells(count) {
-  await browser.execute(() => {
-    window.__athenaE2E = true
-    // Best-effort, as in all other specs: /tmp roots are rejected by the
-    // trust gate, but __athenaE2E bypasses it for the New Space flow.
-    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir: '/tmp' }).catch(() => {})
-  })
+  await setE2E()
+  // Trust a permitted root: the backend's `is_forbidden_root` rejects /tmp
+  // (workspace.rs:31), and `__athenaE2E` is a FRONTEND-ONLY bypass — it skips
+  // the modal's empty-dir validation, not the backend trust gate. Seed the
+  // persisted root list first so the add below is a no-op that skips the
+  // backend's blocking native confirmation dialog.
+  const trustDir = e2eTrustRoot('font-scale-close')
+  await seedTrustedRoots(browser, [trustDir])
+  await browser.execute((dir) => {
+    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {})
+  }, trustDir)
 
   expect((await clickButtonByText('New Workspace', { partial: true })).ok).toBe(true)
   await browser.waitUntil(
@@ -86,6 +93,7 @@ async function makeSpaceWithShells(count) {
     { timeout: 10000, interval: 250, timeoutMsg: 'New Workspace modal did not open' },
   )
   expect((await clickButtonByText('Terminal Workspace', { partial: true })).ok).toBe(true)
+  await fillSpaceDir(browser, trustDir)
   expect((await clickButtonByText('Next >')).ok).toBe(true)
   await browser.waitUntil(
     () => browser.execute(() => !!document.getElementById('add-shell')),

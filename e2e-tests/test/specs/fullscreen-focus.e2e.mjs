@@ -1,6 +1,7 @@
-import { mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
 
@@ -57,18 +58,25 @@ describe('Fullscreen button focuses the terminal', () => {
   it('entering and exiting fullscreen keeps keyboard focus on the pane', async function () {
     this.timeout(90000)
 
-    // Trusted root: a dedicated /tmp subdir (not /tmp itself —
-    // `is_forbidden_root` rejects /tmp and /private). mkdirSync because the
-    // tauri API has no dir-creation command the webview can invoke.
-    mkdirSync('/tmp/e2e-fs-focus', { recursive: true })
-    await browser.execute(() => {
-      window.__athenaE2E = true
+    // Trusted root: a dedicated dir under the repo root, which is not a
+    // forbidden prefix and is implicitly trusted by the app's own project
+    // root. `/tmp` is rejected by `is_forbidden_root` (workspace.rs:31) and
+    // `__athenaE2E` is a frontend-only bypass, so a /tmp root can never
+    // authorize a PTY spawn. The helper creates the dir (the tauri API has no
+    // dir-creation command the webview can invoke). Seeding the persisted
+    // root list first makes the add a no-op that skips the backend's blocking
+    // native confirmation dialog, and the `.catch` keeps a rejection from
+    // hanging the spec.
+    const trustDir = e2eTrustRoot('fullscreen-focus')
+    await seedTrustedRoots(browser, [trustDir])
+    await setE2E()
+    await browser.execute((dir) => {
       window.__fsTrustRoot = 'pending'
       window.__TAURI__.core
-        .invoke('workspace_add_trusted_root', { dir: '/tmp/e2e-fs-focus' })
+        .invoke('workspace_add_trusted_root', { dir })
         .then(() => { window.__fsTrustRoot = 'ok' })
         .catch((error) => { window.__fsTrustRoot = 'error:' + String(error) })
-    })
+    }, trustDir)
     // Open the sidebar if the app booted with it collapsed (default is
     // hidden; the rail's Expand button restores it).
     expect(await browser.execute(() => {
@@ -86,6 +94,7 @@ describe('Fullscreen button focuses the terminal', () => {
       { timeout: 10000, interval: 250, timeoutMsg: 'New Workspace modal did not open' },
     )
     expect((await clickButtonByText('Terminal Workspace', { partial: true })).ok).toBe(true)
+    await fillSpaceDir(browser, trustDir)
     expect((await clickButtonByText('Next >')).ok).toBe(true)
 
     await browser.waitUntil(

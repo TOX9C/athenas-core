@@ -45,7 +45,7 @@ ships for Apple Silicon and the PTY harness is macOS-specific).
 From the repo root:
 
 ```bash
-npm run test:e2e          # all specs (21 specs, serial — maxInstances: 1)
+npm run test:e2e          # all specs (31 specs, serial — maxInstances: 1)
 ```
 
 Or from `e2e-tests/`:
@@ -58,6 +58,46 @@ npm run test:metrics                    # perf metrics spec only
 wdio run wdio.conf.mjs --spec test/specs/<name>.e2e.mjs   # single spec
 ```
 
+**Capturing results.** `bail: 0` means one whole-suite run already reports
+every failing spec in a single app session. Capture it with `tee` rather than
+eyeballing scrollback:
+
+```bash
+cd e2e-tests && npx wdio run wdio.conf.mjs 2>&1 | tee /tmp/e2e-head.txt
+```
+
+Per-spec runs (`--spec` × N) are for debugging one spec, not for comparison:
+they cost N app boots, and a hard app crash mid-suite refuses the next run's
+store clear on a live `pgrep` match, cascading failures.
+
+A **baseline comparison run is not possible** against a pre-harness commit:
+`reset-store.mjs` and `helpers/trust.mjs` are untracked additions, so an older
+checkout has no store reset at all. Copying them in makes it a current-harness
+run, not a baseline. Compare per-spec results against the untouched control
+specs (`pty-broadcast`, `resume-*-capture`,
+`verify-confirm-and-palette`, `zsh-zle-replay`) instead: they exercise identical
+code in every run, so a failure there is environmental, not a regression.
+
+## Store reset protocol
+
+`wdio.conf.mjs` resets the persisted store around every run:
+
+- `onPrepare` runs `test/reset-store.mjs clear` **before the app launches**.
+  `clear` refuses while any `athenas-core` process is alive — the app holds
+  `store.json` open and re-persists on shutdown, resurrecting anything you
+  change. So the app must be **fully quit** before a run (a `before`-hook reset
+  is too late: the hook runs after launch).
+- `onComplete` runs `restore`, putting the newest backup back after teardown.
+
+Two consequences for authors:
+
+- **Never use `clear` as a recovery step.** It *moves* the store aside (a
+  timestamped backup, never overwritten). `backup` is the non-destructive
+  snapshot; `restore` picks the newest backup — so take a `backup` before a
+  session and run suites strictly sequentially, or `restore` returns the
+  previous run's state rather than the user's original.
+- Specs must not depend on user-persisted state; start from the cleared store.
+
 ## Notes for authors
 
 - **Serial only.** `maxInstances: 1` is deliberate: parallel workers would share
@@ -67,6 +107,11 @@ wdio run wdio.conf.mjs --spec test/specs/<name>.e2e.mjs   # single spec
 - **No skipping.** The suite is kept green — no `it.skip`/`describe.skip` in
   specs; quarantine a flaky test by fixing it, not by disabling it (the release
   roadmap tracks e2e gaps).
+- **Trusted roots.** A permitted launch dir is required: the backend rejects
+  `/tmp` and `$TMPDIR` (`is_forbidden_root`). Use `e2eTrustRoot(label)` +
+  `seedTrustedRoots(browser, [dir])` from `test/helpers/trust.mjs`, then
+  `fillSpaceDir(browser, dir)` — see `swarm-lifecycle.e2e.mjs` for the full
+  pattern. `__athenaE2E` is a frontend-only bypass and never authorizes a spawn.
 - Screenshots land in `test/screenshots/`.
 
 If you add a new spec, prefer an existing spec's boot helpers (e.g.

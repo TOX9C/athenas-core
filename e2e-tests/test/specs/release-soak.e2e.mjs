@@ -17,11 +17,50 @@ async function clickText(text, { partial = false } = {}) {
   }, { text, partial })
 }
 
+// Workspaces persist in the store across app launches, so restored workspaces
+// make `active_space` Some and the empty-state button never renders; the tab
+// plus button is also gated on a non-empty list. The sidebar's bottom
+// "New Workspace" button renders either way, but the sidebar starts collapsed
+// and UI state is not persisted — expand it once so each cycle has a trigger.
+async function ensureSidebarOpen() {
+  return browser.execute(() => {
+    if (document.querySelector('.sidebar')) return 'already-open'
+    const expand = document.querySelector('button[title="Expand sidebar"]')
+    if (!expand) return 'no-expand-button'
+    expand.click()
+    return 'expanded'
+  })
+}
+
+// Open the workspace modal from the trigger that is present regardless of how
+// many workspaces the store restored, keeping 10 open→close cycles real.
+async function openNewWorkspaceModal(label) {
+  await ensureSidebarOpen()
+  const opened = await browser.execute(() => {
+    const sidebar = document.querySelector('.sidebar')
+    const button = Array.from(sidebar?.querySelectorAll('button') || []).find(
+      (candidate) => (candidate.textContent || '').trim() === 'New Workspace',
+    )
+    if (!button) return false
+    button.click()
+    return true
+  })
+  if (!opened) throw new Error(`New Workspace missing at ${label}`)
+}
+
 async function closeTransientUi() {
   return browser.execute(() => {
+    // Step 0 of the New Workspace modal closes via an icon-only button
+    // (aria-label="Close dialog"), so also match the label attribute.
     const button = Array.from(document.querySelectorAll('button')).find((candidate) => {
       const text = (candidate.textContent || '').trim().toLowerCase()
-      return text === 'cancel' || text === 'close' || text === 'back'
+      const label = (candidate.getAttribute('aria-label') || '').toLowerCase()
+      return (
+        text === 'cancel' ||
+        text === 'close' ||
+        text === 'back' ||
+        label === 'close dialog'
+      )
     })
     if (!button) return false
     button.click()
@@ -65,8 +104,7 @@ describe('Release candidate renderer soak', () => {
     })
 
     for (let i = 0; i < iterations; i += 1) {
-      const opened = await clickText('New Workspace', { partial: true })
-      if (!opened) throw new Error(`New Workspace missing at iteration ${i + 1}`)
+      await openNewWorkspaceModal(`iteration ${i + 1}`)
       await browser.pause(150)
 
       // Exercise the modal path without launching a destructive workspace on

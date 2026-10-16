@@ -51,6 +51,9 @@ frontend/target/
 # E2E test artifacts
 e2e-tests/test/screenshots/
 
+# Per-spec e2e sandbox dirs trusted as workspace roots (e2e-tests/test/helpers/trust.mjs)
+.e2e-sandbox/
+
 # Local AI-harness design review state (screenshot stubs) — never commit
 .impeccable/
 .hyperframes/
@@ -60,6 +63,11 @@ e2e-tests/test/screenshots/
 
 # Local agent / assistant runtime state
 .ade/
+# Agent worktrees (<root>/.athena/worktrees/<role>-<pane>; athena-git WORKTREE_PREFIX).
+# MUST stay ignored: each entry holds a `.git` FILE pointing at the parent repo,
+# so tracking it would break the main repo's worktree bookkeeping. A swarm
+# launch whose dir is inside this repo creates these (swarm-lifecycle.e2e.mjs).
+.athena/
 .freebuff/
 .agents/
 .codex/

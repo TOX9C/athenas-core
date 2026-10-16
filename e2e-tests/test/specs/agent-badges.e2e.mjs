@@ -1,6 +1,8 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
 
@@ -17,6 +19,31 @@ async function clickButtonByText(text, { partial = false } = {}) {
       return { ok: false, text }
     },
     { text, partial },
+  )
+}
+
+// The 'New Workspace' entry point depends on app state this spec must not
+// depend on (store.json is shared by every serial spec): with persisted
+// spaces the empty-state button is gone and the only trigger is the
+// WorkspaceTabs icon button, which has aria-label but no text. Match either
+// and wait for it to render instead of clicking blind.
+async function openWorkspaceModal() {
+  return browser.waitUntil(
+    () =>
+      browser.execute(() => {
+        for (const el of document.querySelectorAll('[aria-label="New Workspace"]')) {
+          el.click()
+          return true
+        }
+        for (const btn of document.querySelectorAll('button')) {
+          if ((btn.textContent || '').includes('New Workspace')) {
+            btn.click()
+            return true
+          }
+        }
+        return false
+      }),
+    { timeout: 15000, interval: 250, timeoutMsg: 'no New Workspace entry point rendered' },
   )
 }
 
@@ -58,25 +85,28 @@ describe('Agent activity detection UI', () => {
     // default mocha window.
     this.timeout(150000)
 
-    await browser.execute(() => {
-      window.__athenaE2E = true
-    })
+    await setE2E()
 
-    // The modal defaults every shell pane's cwd to /tmp, and pty_spawn
-    // rejects cwds outside the workspace's trusted roots — with a clean
-    // store there are no roots, so ALL panes would fail to spawn ("session
-    // not found" on write). Ensure /tmp is trusted so sessions actually
-    // start. Fire-and-forget: it takes effect before the spawn below.
-    await browser.execute(() => {
+    // The modal defaults a blank directory to /tmp, and pty_spawn rejects
+    // cwds outside the workspace's trusted roots — so a root INSIDE the
+    // launch dir has to be authorized or panes fail to spawn. /tmp itself is
+    // rejected by the backend's `is_forbidden_root` (workspace.rs:31) and
+    // `__athenaE2E` is a frontend-only bypass, so trust a dir under the repo
+    // root instead: it is not a forbidden prefix and the app's own project
+    // root is implicitly trusted. Seeding the persisted root list makes the
+    // add a no-op that skips the backend's blocking confirmation dialog.
+    // Fire-and-forget: it takes effect before the spawn below.
+    const trustDir = e2eTrustRoot('agent-badges')
+    await seedTrustedRoots(browser, [trustDir])
+    await browser.execute((dir) => {
       window.__TAURI__.core
-        .invoke('workspace_add_trusted_root', { dir: '/tmp' })
+        .invoke('workspace_add_trusted_root', { dir })
         .catch((e) => console.error('[agent-badges] trust-root failed:', String(e)))
       return true
-    })
+    }, trustDir)
 
     // ── 1. Launch a space with 3 shell panes (proven flow) ─────────────
-    const openResult = await clickButtonByText('New Workspace', { partial: true })
-    expect(openResult.ok).toBe(true)
+    await openWorkspaceModal()
 
     await browser.waitUntil(
       async () =>
@@ -91,6 +121,7 @@ describe('Agent activity detection UI', () => {
     const terminalModeResult = await clickButtonByText('Terminal Workspace', { partial: true })
     expect(terminalModeResult.ok).toBe(true)
 
+    await fillSpaceDir(browser, trustDir)
     const nextResult = await clickButtonByText('Next >')
     expect(nextResult.ok).toBe(true)
 
@@ -153,7 +184,7 @@ describe('Agent activity detection UI', () => {
     //       → frontend store → badges/dot. The write itself (with retry) is
     //       in step 3b — the only writer, so the fake agent runs exactly once.
     const cmd =
-      "bash -c \"exec -a claude sh -c 'echo one; sleep 0.3; echo two; sleep 0.3; echo three; sleep 8'\"\n"
+      'bash -c "exec -a claude sh -c \'echo one; sleep 0.3; echo two; sleep 0.3; echo three; sleep 8\'"\n'
     // writeToPane resolves to the execute's bare `true` (fire-and-forget);
     // the badge/dot waitUntil below is the real assertion that the write
     // landed and the backend detection loop responded.
@@ -196,10 +227,13 @@ describe('Agent activity detection UI', () => {
         const s = await browser.execute(() => ({ write: window.__athenaWrite }))
         return s.write === 'ok'
       },
-      { timeout: 20000, interval: 700, timeoutMsg: 'pty_write never accepted (session never ready)' },
+      {
+        timeout: 20000,
+        interval: 700,
+        timeoutMsg: 'pty_write never accepted (session never ready)',
+      },
     )
     console.log('[agent-badges] pty_write accepted by backend')
-
 
     // ── 4. The agent appears: a working/thinking dot in the pane and a
     //       non-zero working badge in the workspace row.
@@ -207,7 +241,9 @@ describe('Agent activity detection UI', () => {
       async () => {
         const s = await lastSpaceState()
         const labels = s.badges.map((b) => b.label)
-        const liveDot = s.dotClasses.some((c) => c.includes('is-working') || c.includes('is-thinking'))
+        const liveDot = s.dotClasses.some(
+          (c) => c.includes('is-working') || c.includes('is-thinking'),
+        )
         return liveDot && labels.includes('Agents working')
       },
       {

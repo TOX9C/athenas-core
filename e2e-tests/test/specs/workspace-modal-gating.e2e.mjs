@@ -16,6 +16,31 @@ const clickFirst = (predicate) => {
   return false
 }
 
+// The 'New Workspace' entry point depends on app state this spec must not
+// depend on (store.json is shared by every serial spec): with persisted
+// spaces the empty-state button is gone and the only trigger is the
+// WorkspaceTabs icon button, which has aria-label but no text. Match either
+// and wait for it to render instead of clicking blind.
+async function openWorkspaceModal() {
+  return browser.waitUntil(
+    () =>
+      browser.execute(() => {
+        for (const el of document.querySelectorAll('[aria-label="New Workspace"]')) {
+          el.click()
+          return true
+        }
+        for (const btn of document.querySelectorAll('button')) {
+          if ((btn.textContent || '').includes('New Workspace')) {
+            btn.click()
+            return true
+          }
+        }
+        return false
+      }),
+    { timeout: 15000, interval: 250, timeoutMsg: 'no New Workspace entry point rendered' },
+  )
+}
+
 describe('workspace modal gating', () => {
   before(async () => {
     // Wait for app + Dioxus mount.
@@ -25,18 +50,23 @@ describe('workspace modal gating', () => {
       window.__athenaE2E = true
     })
     // Open modal and pick the Terminal Workspace card (not "Launch Space").
-    const opened = await browser.execute(() => {
-      for (const btn of document.querySelectorAll('button')) {
-        if (btn.textContent.includes('New Workspace')) btn.click()
-      }
-      for (const btn of document.querySelectorAll('button')) {
-        if (btn.textContent.includes('Terminal Workspace') && !btn.textContent.includes('Launch')) {
-          btn.click()
-          return true
-        }
-      }
-      return false
-    })
+    // The card is rendered by the modal, so wait for it instead of probing
+    // the same tick as the click (the modal does not mount synchronously).
+    await openWorkspaceModal()
+    const opened = await browser.waitUntil(
+      () =>
+        browser.execute(() => {
+          for (const btn of document.querySelectorAll('button')) {
+            const text = btn.textContent || ''
+            if (text.includes('Terminal Workspace') && !text.includes('Launch')) {
+              btn.click()
+              return true
+            }
+          }
+          return false
+        }),
+      { timeout: 15000, interval: 250, timeoutMsg: 'Terminal Workspace card never rendered' },
+    )
     expect(opened).toBe(true)
     await browser.pause(1200)
   })

@@ -1,6 +1,8 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
 
@@ -23,9 +25,12 @@ async function clickButtonByText(text, { partial = false } = {}) {
 
 describe('New space terminal regression', () => {
   it('launches a new space with 3 shell panes and mounts xterm in each pane', async () => {
-    await browser.execute(() => {
-      window.__athenaE2E = true
-    })
+    await setE2E()
+
+    // Permitted launch dir: the modal's blank-dir fallback is "/tmp", which
+    // pty_spawn rejects as a forbidden root.
+    const trustDir = e2eTrustRoot('new-space-3-shells')
+    await seedTrustedRoots(browser, [trustDir])
 
     const openResult = await clickButtonByText('New Workspace', { partial: true })
     expect(openResult.ok).toBe(true)
@@ -45,6 +50,7 @@ describe('New space terminal regression', () => {
     const terminalModeResult = await clickButtonByText('Terminal Workspace', { partial: true })
     expect(terminalModeResult.ok).toBe(true)
 
+    await fillSpaceDir(browser, trustDir)
     const nextResult = await clickButtonByText('Next >')
     expect(nextResult.ok).toBe(true)
 

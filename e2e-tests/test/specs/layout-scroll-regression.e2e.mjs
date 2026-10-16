@@ -13,12 +13,16 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
-// Same persisted root font-size-shortcuts.e2e.mjs trusts: the e2e runner
-// always starts from the repo, so this is already in the persisted trusted
-// roots and the invoke is a no-op that skips the native dialog.
-const repoRoot = join(__dirname, '..', '..', '..')
+// Trusted root this spec uses. A dir under the repo root is permitted: it is
+// not a forbidden prefix (`is_forbidden_root`, workspace.rs:31) and the app's
+// own project root is implicitly trusted, so descendants pass the sandbox
+// check. /tmp is rejected by that gate, and `__athenaE2E` is a frontend-only
+// bypass, so a /tmp root can never authorize a PTY spawn.
+const repoRoot = e2eTrustRoot('layout-scroll-regression')
 
 // The app may restore a previous session's workspace (specs share the
 // persisted store), so terminal panes can already be mounted before a test's
@@ -169,14 +173,14 @@ describe('Layout change viewport regression', () => {
   it('keeps existing panes pinned to bottom when a third shell is added', async function () {
     this.timeout(180000)
 
-    // Authorize PTY spawn against the persisted repo root (the e2e runner
-    // always launches from the repo, and the repo dir is already in the
-    // persisted trusted roots, so this is a no-op that skips the native
-    // dialog — same convention as font-size-shortcuts.e2e.mjs). A dir that
-    // is not already persisted hits `blocking_show()` with no window to
-    // click, and the invoke never returns.
+    // Authorize PTY spawn against the repo-root sandbox dir. Seeding the
+    // persisted trusted-root list first makes the add below a no-op that
+    // skips the backend's native confirmation dialog — a root that is not
+    // already persisted hits `blocking_show()` with no window to click, and
+    // the invoke never returns (workspace.rs:79-100).
+    await seedTrustedRoots(browser, [repoRoot])
+    await setE2E()
     await browser.execute((dir) => {
-      window.__athenaE2E = true
       window.__athenaTrust = 'pending'
       if (!window.__TAURI__) {
         window.__athenaTrust = 'ERR:no __TAURI__ bridge on window'
@@ -241,6 +245,7 @@ describe('Layout change viewport regression', () => {
       )
       expect((await clickButtonByText('Terminal Workspace', { partial: true })).ok).toBe(true)
       await browser.pause(250)
+      await fillSpaceDir(browser, repoRoot)
       expect((await clickButtonByText('Next >')).ok).toBe(true)
       await browser.waitUntil(
         async () => browser.execute(() => !!document.getElementById('add-shell')),
@@ -654,6 +659,7 @@ describe('Layout change viewport regression', () => {
       )
       expect((await clickButtonByText('Terminal Workspace', { partial: true })).ok).toBe(true)
       await browser.pause(250)
+      await fillSpaceDir(browser, repoRoot)
       expect((await clickButtonByText('Next >')).ok).toBe(true)
       await browser.waitUntil(
         async () => browser.execute(() => !!document.getElementById('add-shell')),

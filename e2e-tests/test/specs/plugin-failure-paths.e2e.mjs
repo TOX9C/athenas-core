@@ -29,8 +29,9 @@
 // root is removed, and the temp manifest dir is deleted.
 
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import { e2eTrustRoot, seedTrustedRoots, setE2E } from '../helpers/trust.mjs';
 
 // `browser.execute` is a synchronous WebDriver script — a pending Promise
 // serializes as `{}` — so promises are settled on `window.__e2eBridge` inside
@@ -77,13 +78,17 @@ describe('Plugin failure paths (stub harness)', () => {
   const GOOD_ID = `e2e-good-${Date.now()}`;
 
   before(async () => {
-    await browser.execute(() => {
-      window.__athenaE2E = true;
-    });
+    await setE2E();
 
     // Stub plugin directory: one malformed manifest (invalid JSON) beside one
     // valid manifest. Discovery scans *.json in the directory.
-    pluginDir = mkdtempSync(join(tmpdir(), 'athena-e2e-plugins-'));
+    //
+    // It lives under the e2e sandbox (a repo-root subdir) rather than under
+    // the OS temp dir: `workspace_add_trusted_root` rejects the canonical
+    // macOS temp path (`$TMPDIR` -> /private/var/folders/...) because both
+    // `/private` and `/var` are forbidden prefixes (workspace.rs:31), so a
+    // temp-dir manifest root could never be trusted for plugin discovery.
+    pluginDir = mkdtempSync(join(e2eTrustRoot('plugin-failure-paths'), 'plugins-'));
     writeFileSync(join(pluginDir, 'broken.plugin.json'), '{ "id": "e2e-broken", not-json ');
     writeFileSync(
       join(pluginDir, 'good.plugin.json'),
@@ -97,6 +102,13 @@ describe('Plugin failure paths (stub harness)', () => {
     );
 
     // Discover requires the dir to live under a trusted root.
+    //
+    // Seed the persisted root list first: `workspace_add_trusted_root` for a
+    // dir that is not already persisted opens the backend's blocking native
+    // confirmation dialog (workspace.rs:79-100), which no window can service
+    // here, so the add would hang the spec forever. Seeded, the add below is
+    // an early-returning no-op that skips the dialog.
+    await seedTrustedRoots(browser, [pluginDir]);
     await invoke('workspace_add_trusted_root', { dir: pluginDir });
     addedRoot = pluginDir;
   });

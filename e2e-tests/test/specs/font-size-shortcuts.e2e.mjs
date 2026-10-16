@@ -1,6 +1,8 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
 describe('Shared font-size shortcuts', () => {
@@ -82,17 +84,21 @@ describe('Shared font-size shortcuts', () => {
 
     // Authorize PTY spawn, then open a one-shell Terminal Workspace (same
     // modal flow as layout-scroll-regression).
-    // Trust a guaranteed-present, non-forbidden dir. The e2e runner always
-    // executes from the repo, and the repo dir is already in the persisted
-    // trusted roots, so this is a no-op that skips the native dialog.
-    await browser.execute((repoRoot) => {
-      window.__athenaE2E = true
+    // Trust a dir under the repo root: not a forbidden prefix, and the app's
+    // own project root is implicitly trusted so descendants pass the sandbox
+    // check. /tmp itself is rejected by `is_forbidden_root` (workspace.rs:31).
+    // Seeding the persisted root list makes the add below a no-op that skips
+    // the backend's blocking native confirmation dialog.
+    const trustDir = e2eTrustRoot('font-size-shortcuts')
+    await seedTrustedRoots(browser, [trustDir])
+    await setE2E()
+    await browser.execute((dir) => {
       window.__athenaTrust = 'pending'
       window.__TAURI__.core
-        .invoke('workspace_add_trusted_root', { dir: repoRoot })
+        .invoke('workspace_add_trusted_root', { dir })
         .then(() => { window.__athenaTrust = 'ok' })
         .catch((error) => { window.__athenaTrust = 'ERR:' + String(error) })
-    }, repoRoot)
+    }, trustDir)
     const trusted = await browser
       .waitUntil(
         async () => browser.execute(() => window.__athenaTrust === 'ok'),
@@ -102,7 +108,7 @@ describe('Shared font-size shortcuts', () => {
       .catch(() => false)
     if (!trusted) {
       const flag = await browser.execute(() => String(window.__athenaTrust))
-      throw new Error(`trusted root not authorized (flag=${flag})`)
+      throw new Error(`trusted root not authorized (flag=${flag}, dir=${trustDir})`)
     }
 
     const clickButtonByText = (text, partial = true) => browser.execute(
@@ -136,6 +142,7 @@ describe('Shared font-size shortcuts', () => {
       )
       expect(await clickButtonByText('Terminal Workspace')).toBe(true)
       await browser.pause(250)
+      await fillSpaceDir(browser, trustDir)
       expect(await clickButtonByText('Next >', false)).toBe(true)
       expect(await clickButtonByText('Launch Space')).toBe(true)
     }

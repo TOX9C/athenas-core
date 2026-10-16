@@ -1,6 +1,8 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
 
@@ -20,28 +22,59 @@ async function clickButton(text, partial = false) {
   )
 }
 
+// The 'New Workspace' entry point depends on app state this spec must not
+// depend on (store.json is shared by every serial spec): with persisted
+// spaces the empty-state button is gone and the only trigger is the
+// WorkspaceTabs icon button, which has aria-label but no text. Match either
+// and wait for it to render instead of clicking blind.
+async function openWorkspaceModal() {
+  return browser.waitUntil(
+    () =>
+      browser.execute(() => {
+        for (const el of document.querySelectorAll('[aria-label="New Workspace"]')) {
+          el.click()
+          return true
+        }
+        for (const button of document.querySelectorAll('button')) {
+          if ((button.textContent || '').includes('New Workspace')) {
+            button.click()
+            return true
+          }
+        }
+        return false
+      }),
+    { timeout: 15000, interval: 250, timeoutMsg: 'no New Workspace entry point rendered' },
+  )
+}
+
 describe('Athena agent references', () => {
   it('accepts an agent drop through the closed-sidebar fallback and deduplicates repeats', async function () {
     this.timeout(90000)
 
-    await browser.execute(() => {
-      window.__athenaE2E = true
-      window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir: '/tmp' })
-    })
+    await setE2E()
+    // A permitted dir (the backend rejects /tmp); seeded so the add is a
+    // no-op that skips the blocking confirmation dialog. `.catch` keeps a
+    // rejection from hanging the sync browser script.
+    const trustDir = e2eTrustRoot('agent-athena-reference')
+    await seedTrustedRoots(browser, [trustDir])
+    await browser.execute((dir) => {
+      window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {})
+    }, trustDir)
 
-    expect(await clickButton('New Workspace', true)).toBe(true)
+    await openWorkspaceModal()
     await browser.waitUntil(
       async () => browser.execute(() => document.body.textContent.includes('Terminal Workspace')),
       { timeout: 10000, interval: 250, timeoutMsg: 'New Workspace modal did not open' },
     )
     expect(await clickButton('Terminal Workspace', true)).toBe(true)
+    await fillSpaceDir(browser, trustDir)
     expect(await clickButton('Next >')).toBe(true)
 
     await browser.waitUntil(
-      async () => browser.execute(() => !!document.getElementById('add-claude-code')),
+      async () => browser.execute(() => !!document.getElementById('add-claude')),
       { timeout: 10000, interval: 250, timeoutMsg: 'Agent configuration step did not appear' },
     )
-    await browser.execute(() => document.getElementById('add-claude-code')?.click())
+    await browser.execute(() => document.getElementById('add-claude')?.click())
     expect(await clickButton('Launch Space')).toBe(true)
 
     await browser.waitUntil(

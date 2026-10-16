@@ -2,6 +2,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync, writeFileSync } from 'node:fs'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const shotDir = join(__dirname, '..', 'screenshots', 'ad')
 mkdirSync(shotDir, { recursive: true })
@@ -33,11 +35,37 @@ async function clickBySelector(selector) {
   }, selector)
 }
 
-async function waitFor(desc, fn, timeout = 20000) {
-  await browser.waitUntil(
-    async () => browser.execute(fn),
-    { timeout, interval: 250, timeoutMsg: `Timeout waiting for ${desc}` },
+// The 'New Workspace' entry point depends on app state this spec must not
+// depend on (store.json is shared by every serial spec): with persisted
+// spaces the empty-state button is gone and the only trigger is the
+// WorkspaceTabs icon button, which has aria-label but no text. Match either
+// and wait for it to render instead of clicking blind.
+async function openWorkspaceModal() {
+  return browser.waitUntil(
+    () =>
+      browser.execute(() => {
+        for (const el of document.querySelectorAll('[aria-label="New Workspace"]')) {
+          el.click()
+          return true
+        }
+        for (const btn of document.querySelectorAll('button')) {
+          if ((btn.textContent || '').includes('New Workspace')) {
+            btn.click()
+            return true
+          }
+        }
+        return false
+      }),
+    { timeout: 15000, interval: 250, timeoutMsg: 'no New Workspace entry point rendered' },
   )
+}
+
+async function waitFor(desc, fn, timeout = 20000) {
+  await browser.waitUntil(async () => browser.execute(fn), {
+    timeout,
+    interval: 250,
+    timeoutMsg: `Timeout waiting for ${desc}`,
+  })
 }
 
 async function setField(selector, value) {
@@ -45,10 +73,7 @@ async function setField(selector, value) {
     ({ selector, value }) => {
       const field = document.querySelector(selector)
       if (!field) return false
-      const setter = Object.getOwnPropertyDescriptor(
-        field.constructor.prototype,
-        'value',
-      )?.set
+      const setter = Object.getOwnPropertyDescriptor(field.constructor.prototype, 'value')?.set
       setter?.call(field, value)
       field.dispatchEvent(new Event('input', { bubbles: true }))
       field.dispatchEvent(new Event('change', { bubbles: true }))
@@ -128,14 +153,8 @@ async function capturePage(name) {
       }
 
       const xml = new XMLSerializer().serializeToString(clone)
-      const w = Math.max(
-        liveDoc.documentElement.scrollWidth,
-        liveDoc.documentElement.clientWidth,
-      )
-      const h = Math.max(
-        liveDoc.documentElement.scrollHeight,
-        liveDoc.documentElement.clientHeight,
-      )
+      const w = Math.max(liveDoc.documentElement.scrollWidth, liveDoc.documentElement.clientWidth)
+      const h = Math.max(liveDoc.documentElement.scrollHeight, liveDoc.documentElement.clientHeight)
       const svg =
         '<svg xmlns="http://www.w3.org/2000/svg" width="' +
         w +
@@ -265,10 +284,7 @@ async function addKanbanTasks(columnIndex, titles) {
         // query picks the first card's edit field/button once cards exist.
         const input = colEl.querySelector('input[placeholder="Add task..."]')
         if (!input) return { ok: false, why: 'no add input' }
-        const setter = Object.getOwnPropertyDescriptor(
-          input.constructor.prototype,
-          'value',
-        )?.set
+        const setter = Object.getOwnPropertyDescriptor(input.constructor.prototype, 'value')?.set
         setter?.call(input, title)
         input.dispatchEvent(new Event('input', { bubbles: true }))
         const addBtn = colEl.querySelector('button[title="Add task"]')
@@ -308,18 +324,19 @@ describe('Ad capture — richer real app state', () => {
   it('captures a 5-pane workspace, live swarm mission and populated kanban', async function () {
     this.timeout(300000)
 
-    // E2E flag bypasses the modal's required-directory validation.
-    await browser.execute(() => {
-      window.__athenaE2E = true
-    })
+    await setE2E()
+
+    // Permitted launch dir: the modal's blank-dir fallback is "/tmp", which
+    // pty_spawn rejects as a forbidden root.
+    const trustDir = e2eTrustRoot('capture-ad')
+    await seedTrustedRoots(browser, [trustDir])
     await browser.pause(2500)
 
     // 01 — Welcome / empty state.
     await capturePage('01-welcome.png')
 
     // ---------- Terminal workspace ----------
-    const openResult = await clickButtonByText('New Workspace', { partial: true })
-    expect(openResult.ok).toBe(true)
+    await openWorkspaceModal()
     await waitFor('new space modal', () =>
       Array.from(document.querySelectorAll('button')).some((b) =>
         (b.textContent || '').includes('Terminal Workspace'),
@@ -327,7 +344,10 @@ describe('Ad capture — richer real app state', () => {
     )
     await clickButtonByText('Terminal Workspace', { partial: true })
 
-    await waitFor('directory input', () => !!document.querySelector('input[placeholder="/path/to/project"]'))
+    await waitFor(
+      'directory input',
+      () => !!document.querySelector('input[placeholder="/path/to/project"]'),
+    )
     const filled = await browser.execute(
       ({ name, dir }) => {
         const nameInput = document.querySelector('input[placeholder="my-project"]')
@@ -347,6 +367,8 @@ describe('Ad capture — richer real app state', () => {
     )
     expect(filled.ok).toBe(true)
     await browser.pause(400)
+
+    await fillSpaceDir(browser, trustDir)
 
     // 02 — Workspace setup dialog (name + working directory).
     await capturePage('02-new-space-dialog.png')
@@ -424,8 +446,12 @@ describe('Ad capture — richer real app state', () => {
       const chat = document.querySelector('[data-panel="athena"], .athena-panel, .chat-panel')
       const cands = Array.from(document.querySelectorAll('*')).filter((el) => {
         const r = el.getBoundingClientRect()
-        return r.width > 250 && r.height > 500 && el.className &&
+        return (
+          r.width > 250 &&
+          r.height > 500 &&
+          el.className &&
           /(chat|athena|panel)/i.test(el.className.toString())
+        )
       })
       const pick = chat || cands.slice(-1)[0]
       if (!pick) return { found: false, cands: cands.length }
@@ -451,7 +477,10 @@ describe('Ad capture — richer real app state', () => {
       title: 'Browser e2e for new-workspace modal',
       description: null,
     })
-    console.log('[CAPTURE] seeded kanban task:', typeof seeded === 'string' ? seeded.slice(0, 80) : seeded)
+    console.log(
+      '[CAPTURE] seeded kanban task:',
+      typeof seeded === 'string' ? seeded.slice(0, 80) : seeded,
+    )
     await browser.pause(500)
     await clickButtonByText('workspace')
     await browser.pause(700)
@@ -460,12 +489,10 @@ describe('Ad capture — richer real app state', () => {
     // Wait for the board's mount-time task reload to settle — its (slow)
     // kanban_get_tasks invoke can return AFTER the first add's reload and
     // clobber the fresh task store. The seeded task rendering is the signal.
-    await waitFor(
-      'seeded kanban card rendered',
-      () =>
-        Array.from(document.querySelectorAll('.kanban-card')).some((c) =>
-          (c.textContent || '').includes('Browser e2e'),
-        ),
+    await waitFor('seeded kanban card rendered', () =>
+      Array.from(document.querySelectorAll('.kanban-card')).some((c) =>
+        (c.textContent || '').includes('Browser e2e'),
+      ),
     )
     await browser.pause(300)
 
@@ -488,13 +515,14 @@ describe('Ad capture — richer real app state', () => {
     )
     await clickButtonByText('Swarm Mission', { partial: true })
 
-    await waitFor('swarm dir input', () => !!document.querySelector('input[placeholder="/path/to/project"]'))
+    await waitFor(
+      'swarm dir input',
+      () => !!document.querySelector('input[placeholder="/path/to/project"]'),
+    )
     // Name the mission space so its workspace tab is findable (distinct from
     // the panel labels 'workspace'/'kanban'/'swarm').
     expect(await setField('input[placeholder="my-project"]', 'mission')).toBe(true)
-    expect(
-      await setField('input[placeholder="/path/to/project"]', REPO_DIR),
-    ).toBe(true)
+    expect(await setField('input[placeholder="/path/to/project"]', REPO_DIR)).toBe(true)
     expect(
       await setField(
         'textarea[placeholder="Describe what the swarm should accomplish..."]',
@@ -621,7 +649,9 @@ describe('Ad capture — richer real app state', () => {
           rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
         }
       })
-      const feed = Array.from(document.querySelectorAll('.activity-feed *, .feed *, [class*=activity] *'))
+      const feed = Array.from(
+        document.querySelectorAll('.activity-feed *, .feed *, [class*=activity] *'),
+      )
         .filter((el) => el.children.length === 0 && el.textContent.trim().length > 4)
         .map((el) => el.textContent.trim().slice(0, 40))
         .slice(0, 6)

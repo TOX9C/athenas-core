@@ -4,15 +4,20 @@
 // grid stretches to the viewport (>= 80% width) and every pane child has
 // non-zero area; xterm surfaces are mounted inside the grid.
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 describe('workspace resize geometry', () => {
   it('stretches the pane grid to the viewport with non-zero-area panes', async () => {
     // Wait for app + Dioxus mount.
     await browser.pause(5000)
 
     // Skip modal validation (E2E flag honored by the app).
-    await browser.execute(() => {
-      window.__athenaE2E = true
-    })
+    await setE2E()
+
+    // Permitted launch dir: the modal's blank-dir fallback is "/tmp", which
+    // pty_spawn rejects as a forbidden root.
+    const trustDir = e2eTrustRoot('workspace-resize-geometry')
+    await seedTrustedRoots(browser, [trustDir])
 
     // Open the workspace modal.
     const opened = await browser.execute(() => {
@@ -42,6 +47,7 @@ describe('workspace resize geometry', () => {
 
     // Advance Step 1 (E2E flag lets Next pass with an empty dir), then add
     // one pane — launch stays disabled while total panes is 0 — and launch.
+    await fillSpaceDir(browser, trustDir)
     await browser.execute(() => {
       for (const btn of document.querySelectorAll('button')) {
         if (btn.textContent.trim() === 'Next >') {

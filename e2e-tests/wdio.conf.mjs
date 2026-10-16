@@ -1,6 +1,7 @@
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
@@ -39,6 +40,17 @@ export const config = {
     timeout: 60000,
   },
 
+  // Runs in the launcher process BEFORE the app is started. `reset-store.mjs`
+  // refuses to touch the store while the app runs (it holds the store open and
+  // re-persists on shutdown), so the snapshot has to happen here, not in
+  // `before` — which only runs once the app is already up. A run then starts
+  // from a known empty state and `onComplete` puts the user's store back.
+  onPrepare: () => {
+    execFileSync('node', [join(__dirname, 'test', 'reset-store.mjs'), 'clear'], {
+      stdio: 'inherit',
+    });
+  },
+
   before: async () => {
     mkdirSync(join(__dirname, 'test', 'screenshots'), { recursive: true });
 
@@ -60,5 +72,19 @@ export const config = {
       },
       { timeout: 25000, interval: 500, timeoutMsg: 'Dioxus WASM did not mount within 25s' },
     );
+  },
+
+  // Restore the user's persisted store after the app has been shut down by the
+  // runner. `onComplete` runs after the worker/app teardown, so reset-store's
+  // "app must not be running" guard is satisfied. Best-effort: a missing backup
+  // (first-ever run) logs and exits non-zero without failing the suite.
+  onComplete: () => {
+    try {
+      execFileSync('node', [join(__dirname, 'test', 'reset-store.mjs'), 'restore'], {
+        stdio: 'inherit',
+      });
+    } catch (err) {
+      console.warn(`[wdio] store restore skipped: ${err.message ?? err}`);
+    }
   },
 };

@@ -114,15 +114,19 @@ describe('Settings round-trip persistence', () => {
     await openSettings();
 
     // --- Walk the entire settings tree via the floating index -------------
-    const numerals = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'];
+    // The index buttons are labelled "Jump to <section title>" (the section
+    // title, not the roman numeral) — see the codex-index loop in
+    // settings_modal.rs. The roman numeral is a separate span, so select on
+    // the title and assert the corresponding section element rendered.
+    const titles = ['General', 'Athena', 'Agents', 'Themes', 'Shortcuts', 'Mobile Mirror', 'About'];
     const sectionIds = ['s-i', 's-ii', 's-iii', 's-iv', 's-v', 's-vi', 's-vii'];
-    for (const [i, numeral] of numerals.entries()) {
-      const clicked = await browser.execute(n => {
-        const btn = document.querySelector(`button[aria-label="Jump to section ${n}"]`);
+    for (const [i, title] of titles.entries()) {
+      const clicked = await browser.execute(t => {
+        const btn = document.querySelector(`button[aria-label="Jump to ${t}"]`);
         if (!btn) return false;
         setTimeout(() => btn.click(), 0);
         return true;
-      }, numeral);
+      }, title);
       expect(clicked).toBe(true);
       await browser.pause(300);
       const sectionExists = await browser.execute(

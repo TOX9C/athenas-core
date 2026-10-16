@@ -17,6 +17,8 @@
 
 import { writeFileSync } from 'node:fs'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const DUMP = '/tmp/xterm-glyph-coherence.json'
 
 const PANE_WRAP_JS = `Array.from((() => { const g = Array.from(document.querySelectorAll('.workspace-grid-root')).pop(); return g ? g.querySelectorAll('.pane-wrap') : [] })())`
@@ -184,10 +186,14 @@ async function measureInk(paneId, topFrac, bottomFrac) {
 }
 
 async function ensureSpaceWithShell() {
-  await browser.execute(() => {
-    window.__athenaE2E = true
-    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir: '/tmp' }).catch(() => {})
-  })
+  await setE2E()
+  // A permitted dir (the backend rejects /tmp); seeded so the add is a no-op
+  // that skips the blocking confirmation dialog.
+  const trustDir = e2eTrustRoot('xterm-glyph-coherence')
+  await seedTrustedRoots(browser, [trustDir])
+  await browser.execute((dir) => {
+    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {})
+  }, trustDir)
   await browser.pause(1500)
   const state = await browser.execute(`return ${APP_STATE_JS}`)
   console.log('[glyph] app state:', JSON.stringify(state))
@@ -220,6 +226,7 @@ async function ensureSpaceWithShell() {
       .find((b) => (b.textContent || '').includes('Terminal Workspace'))
       ?.click()
   })
+  await fillSpaceDir(browser, trustDir)
   await browser.waitUntil(() => browser.execute(() => !!document.getElementById('add-shell')), {
     timeout: 10000,
     interval: 250,

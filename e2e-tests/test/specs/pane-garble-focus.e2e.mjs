@@ -2,10 +2,17 @@ import { writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
 
 const PROBE_DUMP = '/tmp/garble-probes.json'
+
+// A permitted dir for every launch in this spec: the backend rejects /tmp
+// (workspace.rs:31) and the modal's blank-dir fallback is /tmp. Module scope
+// so both the seeding helper and the modal flow can reach it.
+const trustDir = e2eTrustRoot('pane-garble-focus')
 
 async function clickButtonByText(text, { partial = false } = {}) {
   return browser.execute(
@@ -226,10 +233,12 @@ const APP_STATE_JS = `(() => {
 // the toolbar "Add Shell" button; fall back to the modal flow when there is
 // no active space at all.
 async function ensureSpaceWithShells(count) {
-  await browser.execute(() => {
-    window.__athenaE2E = true
-    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir: '/tmp' }).catch(() => {})
-  })
+  await setE2E()
+  // Seeded so the add is a no-op that skips the blocking dialog.
+  await seedTrustedRoots(browser, [trustDir])
+  await browser.execute((dir) => {
+    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {})
+  }, trustDir)
   await browser.pause(1500)
   let state = await browser.execute(`return ${APP_STATE_JS}`)
   console.log('[garble] initial app state:', JSON.stringify(state))
@@ -289,6 +298,7 @@ async function makeSpaceViaModal(count) {
     { timeout: 10000, interval: 250, timeoutMsg: 'New Workspace modal did not open' },
   )
   expect((await clickButtonByText('Terminal Workspace', { partial: true })).ok).toBe(true)
+  await fillSpaceDir(browser, trustDir)
   expect((await clickButtonByText('Next >')).ok).toBe(true)
   await browser.waitUntil(
     () => browser.execute(() => !!document.getElementById('add-shell')),

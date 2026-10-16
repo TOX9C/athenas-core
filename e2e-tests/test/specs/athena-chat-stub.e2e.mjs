@@ -25,6 +25,8 @@
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs';
+
 const KEYRING_SERVICE = 'athena';
 const KEYRING_ACCOUNT = 'api_key';
 const STUB_KEY = `sk-e2e-stub-${Date.now()}`;
@@ -163,10 +165,14 @@ describe('Athena chat against a stubbed OpenAI provider', () => {
     // workspace with an agent. Prior e2e runs persist `store.json`, so a
     // previous space may already exist — reuse it when possible, create one
     // otherwise (creation flow mirrors agent-athena-reference.e2e.mjs).
-    await browser.execute(() => {
-      window.__athenaE2E = true;
-      window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir: '/tmp' });
-    });
+    await setE2E();
+    // A permitted dir (the backend rejects /tmp); seeded so the add is a
+    // no-op that skips the blocking confirmation dialog.
+    const trustDir = e2eTrustRoot('athena-chat-stub');
+    await seedTrustedRoots(browser, [trustDir]);
+    await browser.execute((dir) => {
+      window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {});
+    }, trustDir);
     const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));
     if (!(await hasPill())) {
       // Try entering an existing space from the sidebar first.
@@ -182,6 +188,7 @@ describe('Athena chat against a stubbed OpenAI provider', () => {
       );
       expect(await clickButton('Terminal Workspace')).toBe(true);
       await browser.pause(400);
+      await fillSpaceDir(browser, trustDir);
       expect(await clickButton('Next >')).toBe(true);
       await browser.waitUntil(
         async () => browser.execute(() => !!document.getElementById('add-claude')),
