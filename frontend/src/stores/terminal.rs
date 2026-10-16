@@ -122,6 +122,16 @@ pub struct TerminalSession {
     /// cursor position. `None` for non-xterm sessions or when no capture ran.
     /// See xterm_mount.rs `serialize_buffer` / the use_drop capture hook.
     pub serialized_snapshot: Option<String>,
+    /// Viewport position captured while the pane was LIVE (bottom-follow
+    /// updates in the write path + user scroll gestures), persisted on drop
+    /// next to `serialized_snapshot`. The next mount's reuse-session branch
+    /// restores it after the snapshot write, so a remounted pane resumes at
+    /// its scroll position instead of the top of scrollback. Never measured
+    /// at drop time — teardown-time reads cannot distinguish "user scrolled
+    /// up" from "mid-teardown". Plain fields (not `ViewportState`) so this
+    /// compiles without the `xterm` feature, like `serialized_snapshot`.
+    pub serialized_viewport_at_bottom: Option<bool>,
+    pub serialized_viewport_distance: Option<i32>,
 }
 
 impl TerminalSession {
@@ -154,6 +164,8 @@ impl TerminalSession {
             raw_prompt: None,
             title_state: crate::utils::pane_label::TitleState::default(),
             serialized_snapshot: None,
+            serialized_viewport_at_bottom: None,
+            serialized_viewport_distance: None,
         }
     }
 

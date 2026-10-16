@@ -24,7 +24,7 @@ use xterm_helpers::{
     register_live_terminal, render_visible_rows_sync, reset_glyph_atlas, reset_glyph_atlas_by_id,
     reset_glyph_atlas_for_mount,
     evict_stale_live_terminal, pane_was_evicted,
-    restore_term_from_session, unfreeze_screen_now, unregister_live_terminal,
+    restore_term_from_session, restore_viewport, unfreeze_screen_now, unregister_live_terminal,
     schedule_fit, scroll_to_bottom, serialize_buffer,
     try_activate_addon, try_activate_canvas_addon, try_activate_web_links_addon,
     try_activate_webgl_addon,
@@ -294,6 +294,10 @@ fn schedule_xterm_focus(
     let _ = window.request_animation_frame(frame.as_ref().unchecked_ref());
 }
 
+// 8 refs is one past clippy's default limit; the repo convention (see
+// xterm_helpers.rs and settings_sections.rs) is the targeted allow rather
+// than a one-field struct carried purely to dodge the lint.
+#[allow(clippy::too_many_arguments)]
 fn schedule_raw_flush(
     queue: &Rc<RefCell<std::collections::VecDeque<Vec<u8>>>>,
     scheduled: &Rc<RefCell<bool>>,
@@ -301,6 +305,7 @@ fn schedule_raw_flush(
     ready: &Rc<RefCell<bool>>,
     follow_until: &Rc<Cell<f64>>,
     last_bottom_at: &Rc<Cell<f64>>,
+    live_viewport: &Rc<RefCell<ViewportState>>,
     kitty_ready: &Rc<RefCell<bool>>,
 ) {
     if *scheduled.borrow() {
@@ -314,6 +319,7 @@ fn schedule_raw_flush(
     let ready_for_task = ready.clone();
     let follow_for_task = follow_until.clone();
     let last_bottom_for_task = last_bottom_at.clone();
+    let live_viewport_for_task = live_viewport.clone();
     let kitty_for_task = kitty_ready.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let q_for_closure = q.clone();
@@ -322,6 +328,7 @@ fn schedule_raw_flush(
         let ready_for_closure = ready_for_task.clone();
         let follow_for_closure = follow_for_task.clone();
         let last_bottom_for_closure = last_bottom_for_task.clone();
+        let live_viewport_for_closure = live_viewport_for_task.clone();
         let kitty_for_closure = kitty_for_task.clone();
         let closure = Closure::once_into_js(Box::new(move || {
             if !*ready_for_closure.borrow() {
@@ -340,6 +347,7 @@ fn schedule_raw_flush(
                 let retry_ready = ready_for_closure.clone();
                 let retry_follow = follow_for_closure.clone();
                 let retry_bottom = last_bottom_for_closure.clone();
+                let retry_viewport = live_viewport_for_closure.clone();
                 let retry_kitty = kitty_for_closure.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     gloo::timers::future::TimeoutFuture::new(50).await;
@@ -350,6 +358,7 @@ fn schedule_raw_flush(
                         &retry_ready,
                         &retry_follow,
                         &retry_bottom,
+                        &retry_viewport,
                         &retry_kitty,
                     );
                 });
@@ -361,6 +370,7 @@ fn schedule_raw_flush(
                 chunks,
                 &follow_for_closure,
                 &last_bottom_for_closure,
+                &live_viewport_for_closure,
             );
             *s_for_closure.borrow_mut() = false;
         }) as Box<dyn FnOnce()>);
@@ -390,7 +400,13 @@ fn schedule_raw_flush(
         if raf_failed {
             if *ready_for_task.borrow() && *kitty_for_task.borrow() {
                 let chunks = q.borrow_mut().drain(..).collect::<Vec<_>>();
-                flush_chunks(&t, chunks, &follow_for_task, &last_bottom_for_task);
+                flush_chunks(
+                    &t,
+                    chunks,
+                    &follow_for_task,
+                    &last_bottom_for_task,
+                    &live_viewport_for_task,
+                );
             } else if *ready_for_task.borrow() {
                 // Same kitty-filter gate as the rAF path.
                 let retry_q = q.clone();
@@ -399,6 +415,7 @@ fn schedule_raw_flush(
                 let retry_ready = ready_for_task.clone();
                 let retry_follow = follow_for_task.clone();
                 let retry_bottom = last_bottom_for_task.clone();
+                let retry_viewport = live_viewport_for_task.clone();
                 let retry_kitty = kitty_for_task.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     gloo::timers::future::TimeoutFuture::new(50).await;
@@ -409,6 +426,7 @@ fn schedule_raw_flush(
                         &retry_ready,
                         &retry_follow,
                         &retry_bottom,
+                        &retry_viewport,
                         &retry_kitty,
                     );
                 });
@@ -425,12 +443,14 @@ fn schedule_raw_flush(
 /// restore runs before the burst lands and the viewport sticks mid-buffer
 /// ("scrolled up" after a layout change). Every burst also records when the
 /// viewport was last observed at the bottom, which lets a later fit's capture
-/// treat a transient mid-burst off-bottom frame as still-following.
+/// treat a transient mid-burst off-bottom frame as still-following, and stores
+/// the live viewport state that `use_drop` persists for the remount replay.
 fn flush_chunks(
     term: &JsValue,
     chunks: Vec<Vec<u8>>,
     follow_until: &Rc<Cell<f64>>,
     last_bottom_at: &Rc<Cell<f64>>,
+    live_viewport: &Rc<RefCell<ViewportState>>,
 ) {
     if chunks.is_empty() {
         return;
@@ -464,6 +484,12 @@ fn flush_chunks(
     if now < follow_until.get() {
         scroll_to_bottom(term);
     }
+    // Live reading while the pane is actually painted, updated on EVERY burst
+    // (not just bottom-following ones): a user-scrolled pane must also record
+    // where it sits, or `use_drop` would persist a stale at-bottom state and
+    // the remount would yank the pane back down. Order after the repin so the
+    // recorded position is the post-write, user-visible one.
+    *live_viewport.borrow_mut() = capture_viewport(term);
     if viewport_at_bottom(term) {
         last_bottom_at.set(now);
     }
@@ -622,6 +648,9 @@ struct XtermCleanup {
     _scroll_intent_container: Option<web_sys::Element>,
     _scroll_intent_wheel: Option<JsValue>,
     _scroll_intent_touchmove: Option<JsValue>,
+    /// Same intent for the native `scroll` event, which covers scrollbar drag
+    /// and keyboard scrolling (neither emits wheel/touchmove).
+    _scroll_intent_scroll: Option<JsValue>,
 }
 
 /// Mount an xterm.js Terminal into a div with id `pane_id`.
@@ -683,6 +712,18 @@ pub fn XtermMount(
     let last_bottom_at: Rc<Cell<f64>> = use_hook(|| Rc::new(Cell::new(0.0)));
     let follow_for_effect = follow_until.clone();
     let last_bottom_for_effect = last_bottom_at.clone();
+    // Last viewport position observed while the pane was LIVE: refreshed on
+    // every bottom-following write burst and on user scroll gestures, then
+    // persisted next to `serialized_snapshot` in use_drop. Never measured at
+    // drop time — a teardown read cannot distinguish "user scrolled up" from
+    // "container is being torn down". The next mount replays this after its
+    // snapshot write so a remount lands at the saved scroll position.
+    let live_viewport: Rc<RefCell<ViewportState>> =
+        use_hook(|| Rc::new(RefCell::new(ViewportState { at_bottom: true, distance_from_bottom: 0 })));
+    // Transient handoff: the replay path stashes the persisted position here
+    // and the write-callback consumes it after the snapshot parses. Fresh per
+    // mount (use_hook), so a remount never inherits a stale restore.
+    let replay_restore: Rc<RefCell<Option<ViewportState>>> = use_hook(|| Rc::new(RefCell::new(None)));
     // Raw bytes may arrive as soon as the native listener is installed, but
     // xterm must not paint them until its initial fit and matching PTY resize
     // have completed. This closes the startup/remount paint-order race.
@@ -708,6 +749,7 @@ pub fn XtermMount(
     // Clone for use_drop BEFORE use_effect moves the original terminal_registry
     // into its own closure (the effect re-binds `terminal_registry` internally).
     let registry_for_drop = terminal_registry.clone();
+    let live_viewport_for_drop = live_viewport.clone();
     let ui_state = use_ui_store();
     let workspace_store = use_workspace_store();
     let workspace_for_effect = workspace_store;
@@ -778,6 +820,12 @@ pub fn XtermMount(
         let kitty_ready_for_task = kitty_ready_for_effect.clone();
         let follow_until_for_task = follow_for_effect.clone();
         let last_bottom_for_task = last_bottom_for_effect.clone();
+        // Clone for the mount task: the task is a `move` async block that uses
+        // this in several scopes (listener, kitty retry, initial flush), so a
+        // single hoist keeps every use a borrow-free `.clone()` of this cell
+        // instead of moving the outer hook variable.
+        let live_viewport_for_task = live_viewport.clone();
+        let replay_restore_for_task = replay_restore.clone();
         let workspace_for_task = workspace_for_effect;
         let window = window.clone();
         let container = container.clone();
@@ -1254,22 +1302,55 @@ pub fn XtermMount(
             // the user took over the viewport — cancel follow-bottom so we do
             // not pin back to the bottom mid-gesture. Passive so scrolling
             // stays on the compositor thread.
-            let scroll_cancel_make = |follow_cell: Rc<Cell<f64>>| {
+            let scroll_cancel_make = |follow_cell: Rc<Cell<f64>>,
+                                      live_viewport_cell: Rc<RefCell<ViewportState>>,
+                                      term_for_scroll: JsValue| {
                 Closure::wrap(Box::new(move |_event: web_sys::Event| {
                     follow_cell.set(0.0);
+                    // Gesture time is the only moment the pane is demonstrably
+                    // user-driven; record where the viewport sits so a later
+                    // unmount restores the scrolled position instead of
+                    // snapping to the bottom. Mirrors flush_chunks' capture.
+                    *live_viewport_cell.borrow_mut() = capture_viewport(&term_for_scroll);
                 }) as Box<dyn FnMut(web_sys::Event)>)
                 .into_js_value()
             };
-            let scroll_wheel_js = scroll_cancel_make(follow_until_for_task.clone());
+            let scroll_wheel_js = scroll_cancel_make(
+                follow_until_for_task.clone(),
+                live_viewport_for_task.clone(),
+                term_val.clone(),
+            );
             let _ = container.add_event_listener_with_callback_and_bool(
                 "wheel",
                 scroll_wheel_js.as_ref().unchecked_ref(),
                 true,
             );
-            let scroll_touch_js = scroll_cancel_make(follow_until_for_task.clone());
+            let scroll_touch_js = scroll_cancel_make(
+                follow_until_for_task.clone(),
+                live_viewport_for_task.clone(),
+                term_val.clone(),
+            );
             let _ = container.add_event_listener_with_callback_and_bool(
                 "touchmove",
                 scroll_touch_js.as_ref().unchecked_ref(),
+                true,
+            );
+            // Scrollbar drag and keyboard scrolling (PageUp/arrows) never emit
+            // wheel or touchmove — xterm routes them through its own viewport
+            // `scroll` listener and mutates .xterm-viewport.scrollTop directly.
+            // Without this listener `live_viewport` (and therefore the persisted
+            // remount position) stays frozen at the last write burst, so the
+            // next remount would wipe the user's scrollback position. The
+            // .xterm-viewport keeps overflow-y: scroll so its scroll events
+            // fire even when a custom scrollbar is styled over it.
+            let scroll_viewport_js = scroll_cancel_make(
+                follow_until_for_task.clone(),
+                live_viewport_for_task.clone(),
+                term_val.clone(),
+            );
+            let _ = container.add_event_listener_with_callback_and_bool(
+                "scroll",
+                scroll_viewport_js.as_ref().unchecked_ref(),
                 true,
             );
 
@@ -1343,6 +1424,11 @@ pub fn XtermMount(
             let wq_term_for_ready = wq_term.clone();
             let follow_for_listener = follow_until_for_task.clone();
             let last_bottom_for_listener = last_bottom_for_task.clone();
+            let live_viewport_for_listener = live_viewport_for_task.clone();
+            // The listener closure below moves its captures, so any binding
+            // reused after that point needs its own clone (same pattern as
+            // wq_*/raw_ready_* here).
+            let live_viewport_for_kitty = live_viewport_for_task.clone();
             // Clones handed to the kitty-attach block so it can lift the
             // flush gate (and drain any gated chunks) the moment the feed
             // filter is installed.
@@ -1496,6 +1582,7 @@ pub fn XtermMount(
                     &raw_ready_for_listener,
                     &follow_for_listener,
                     &last_bottom_for_listener,
+                    &live_viewport_for_listener,
                     &kitty_ready_for_listener,
                 );
             }) {
@@ -1651,6 +1738,33 @@ pub fn XtermMount(
                     .peek_field(&mount_id, |s| s.serialized_snapshot.clone())
                     .flatten();
                 if let Some(snapshot) = snapshot {
+                    // Pair the replay with the scroll position this pane held
+                    // when it was last mounted (top-of-scrollback restore is
+                    // what the user reads as "jumped to the top"). The write
+                    // callback below consumes the stash AFTER the snapshot
+                    // parses, when xterm's buffer actually holds the lines and
+                    // scrollToLine/scrollToBottom can land correctly.
+                    let saved_viewport = registry
+                        .peek_field(&mount_id, |s| {
+                            match (s.serialized_viewport_at_bottom, s.serialized_viewport_distance) {
+                                (Some(at_bottom), Some(distance)) => {
+                                    Some(ViewportState { at_bottom, distance_from_bottom: distance })
+                                }
+                                _ => None,
+                            }
+                        })
+                        .flatten();
+                    if let Some(saved) = saved_viewport {
+                        // Default for a pane that was following output: keep
+                        // following through the post-replay SIGWINCH burst,
+                        // which reprints after the fit above and would
+                        // otherwise strand the viewport mid-buffer.
+                        let push = js_sys::Date::now() + 2000.0;
+                        if saved.at_bottom {
+                            follow_until_for_task.set(push);
+                        }
+                        *replay_restore_for_task.borrow_mut() = Some(saved);
+                    }
                     // Terminal.write defers parsing to a timer — a paint right
                     // after the call would draw the PRE-snapshot buffer. Paint
                     // in the write callback instead, which fires once this data
@@ -1660,8 +1774,17 @@ pub fn XtermMount(
                     // runes; strip them before the direct write.
                     let snapshot = strip_kitty_placeholders(&snapshot);
                     let term_for_paint = term_val.clone();
+                    let restore_for_paint = replay_restore_for_task.clone();
                     let paint_cb = wasm_bindgen::closure::Closure::once_into_js(move || {
                         render_visible_rows_sync(&term_for_paint);
+                        // Consume the stashed position now: xterm's buffer
+                        // holds the snapshot at this point, so the restore
+                        // targets the correct line. Taking it out keeps the
+                        // restore one-shot per replay.
+                        if let Some(state) = restore_for_paint.borrow_mut().take() {
+                            restore_viewport(&term_for_paint, state);
+                            render_visible_rows_sync(&term_for_paint);
+                        }
                     });
                     let painted = js_sys::Reflect::get(&term_val, &JsValue::from_str("write"))
                         .ok()
@@ -1670,10 +1793,15 @@ pub fn XtermMount(
                         .is_some();
                     if !painted {
                         write_str_to_term(&term_val, &snapshot);
+                        if let Some(state) = replay_restore_for_task.borrow_mut().take() {
+                            restore_viewport(&term_val, state);
+                        }
                         render_visible_rows_sync(&term_val);
                     }
                     if let Some(mut session) = registry.write_session(&mount_id) {
                         session.serialized_snapshot = None;
+                        session.serialized_viewport_at_bottom = None;
+                        session.serialized_viewport_distance = None;
                     }
                 }
                 // Clear-without-snapshot reuses still need an immediate frame:
@@ -1746,6 +1874,7 @@ pub fn XtermMount(
                         &raw_ready_for_kitty,
                         &follow_for_kitty,
                         &last_bottom_for_kitty,
+                        &live_viewport_for_kitty,
                         &kitty_ready_for_attach,
                     );
                 } else {
@@ -1759,6 +1888,7 @@ pub fn XtermMount(
                     let retry_raw_ready = raw_ready_for_kitty.clone();
                     let retry_follow = follow_for_kitty.clone();
                     let retry_bottom = last_bottom_for_kitty.clone();
+                    let retry_viewport = live_viewport_for_kitty.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         for _ in 0..40 {
                             gloo::timers::future::TimeoutFuture::new(50).await;
@@ -1776,6 +1906,7 @@ pub fn XtermMount(
                                     &retry_raw_ready,
                                     &retry_follow,
                                     &retry_bottom,
+                                    &retry_viewport,
                                     &kitty_ready_for_retry,
                                 );
                                 return;
@@ -1800,6 +1931,7 @@ pub fn XtermMount(
                             &retry_raw_ready,
                             &retry_follow,
                             &retry_bottom,
+                            &retry_viewport,
                             &kitty_ready_for_retry,
                         );
                     });
@@ -1991,6 +2123,7 @@ pub fn XtermMount(
                 let initial_owner = listener_owner_for_task.clone();
                 let initial_follow = follow_for_ready_a.clone();
                 let initial_last_bottom = last_bottom_for_ready_a.clone();
+                let initial_viewport = live_viewport_for_task.clone();
                 let initial_kitty = kitty_ready_for_ready_a.clone();
                 // Font/atlas settle, part of the SAME handshake that releases
                 // raw output (`raw_ready`).
@@ -2106,6 +2239,7 @@ pub fn XtermMount(
                         &initial_ready,
                         &initial_follow,
                         &initial_last_bottom,
+                        &initial_viewport,
                         &initial_kitty,
                     );
                     // (6) Deferred settle pass: fit + refresh + viewport
@@ -2254,6 +2388,7 @@ pub fn XtermMount(
                 let initial_owner = listener_owner_for_task.clone();
                 let initial_follow = follow_for_ready_b.clone();
                 let initial_last_bottom = last_bottom_for_ready_b.clone();
+                let initial_viewport = live_viewport_for_task.clone();
                 let initial_kitty = kitty_ready_for_ready_b.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if !*initial_active.borrow() {
@@ -2268,6 +2403,7 @@ pub fn XtermMount(
                         &initial_ready,
                         &initial_follow,
                         &initial_last_bottom,
+                        &initial_viewport,
                         &initial_kitty,
                     );
                 });
@@ -2491,6 +2627,7 @@ pub fn XtermMount(
                 _scroll_intent_container: Some(container.clone()),
                 _scroll_intent_wheel: Some(scroll_wheel_js),
                 _scroll_intent_touchmove: Some(scroll_touch_js),
+                _scroll_intent_scroll: Some(scroll_viewport_js),
             }));
         });
     });
@@ -2586,8 +2723,47 @@ pub fn XtermMount(
         if new_family.is_empty() && new_size.is_empty() {
             return;
         }
+        let parsed_size = new_size
+            .trim_end_matches("px")
+            .parse::<f64>()
+            .unwrap_or(14.0);
 
-        if let Ok(options) = js_sys::Reflect::get(&term, &JsValue::from_str("options")) {
+        // Change detection BEFORE anything below. `UIState` is a single
+        // `Signal<UIState>`: reading it inside this effect subscribes to the
+        // whole struct, so a write to any unrelated field (panel, sidebar,
+        // modal …) re-fires this effect for every mounted pane. Without this
+        // guard each re-fire ran the atlas reset (O(panes) sibling repaint)
+        // plus a full fit/reflow — the lag storm on every layout tick.
+        // Read the term's CURRENT options here, not after the push below:
+        // after the push `same_font_config` would trivially match itself and
+        // genuine font changes would never rebuild the atlas.
+        let current_options =
+            js_sys::Reflect::get(&term, &JsValue::from_str("options")).ok();
+        let term_family = current_options
+            .as_ref()
+            .and_then(|o| js_sys::Reflect::get(o, &JsValue::from_str("fontFamily")).ok())
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let term_size = current_options
+            .as_ref()
+            .and_then(|o| js_sys::Reflect::get(o, &JsValue::from_str("fontSize")).ok())
+            .and_then(|v| v.as_f64())
+            .unwrap_or_default();
+        let family_differs = !new_family.is_empty() && new_family != term_family;
+        let size_differs = (term_size - parsed_size).abs() > f64::EPSILON;
+        if !family_differs && !size_differs {
+            // Font config already applied (spurious effect re-fire). The push
+            // below is idempotent, so skip the whole expensive tail — freeze,
+            // font-ready wait, atlas reset, and refit. Skipping also avoids
+            // stranding the pane behind `freeze_screen`: nothing froze it
+            // this run, and schedule_fit's delayed-reveal tail is the only
+            // other unfreeze.
+            return;
+        }
+
+        if let Some(options) = current_options {
+            // Idempotent config push; the guard above already decided
+            // whether the expensive tail below is needed.
             if !new_family.is_empty() {
                 let _ = js_sys::Reflect::set(
                     &options,
@@ -2787,6 +2963,15 @@ pub fn XtermMount(
                 if let Some(snapshot) = serialize_buffer(serialize_addon) {
                     if let Some(mut session) = registry_for_drop.write_session(&mount_id_for_drop) {
                         session.serialized_snapshot = Some(snapshot);
+                        // Pair the snapshot with the scroll position last
+                        // observed while this pane was live (write path +
+                        // gestures). The replay path restores it after the
+                        // snapshot lands; without it a remounted pane parks
+                        // at the top of scrollback with nothing scheduled to
+                        // move it (the "jumps to top then scrolls down" bug).
+                        let saved = *live_viewport_for_drop.borrow();
+                        session.serialized_viewport_at_bottom = Some(saved.at_bottom);
+                        session.serialized_viewport_distance = Some(saved.distance_from_bottom);
                     }
                 }
             }
@@ -2854,6 +3039,13 @@ pub fn XtermMount(
                     let _ = scroll_container.remove_event_listener_with_callback_and_bool(
                         "touchmove",
                         touchmove.as_ref().unchecked_ref(),
+                        true,
+                    );
+                }
+                if let Some(scroll) = c._scroll_intent_scroll.take() {
+                    let _ = scroll_container.remove_event_listener_with_callback_and_bool(
+                        "scroll",
+                        scroll.as_ref().unchecked_ref(),
                         true,
                     );
                 }
