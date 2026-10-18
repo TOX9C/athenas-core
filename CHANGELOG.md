@@ -73,9 +73,11 @@ All notable changes to Athena's Core. Format: grouped conventional-commit entrie
 - chore: delete dead ported-from-TS modules, unwired terminal-blocks store, orphan components, vestigial lib.rs, design mockup (02f4355)
 - docs(roadmap): mark M5 capability toggles as planned-not-shipped; correct O2 claim and stale toolchain note (4bbc3a7)
 - docs: truth-up release gates, signing-gate description, version/theme claims (91e875a)
-- chore(logging): drop leftover console breadcrumbs, gate pill-drag log, route athena-store warnings through the log crate (7079a97)
 - ci(clippy): count all compiler warnings, not just clippy::*; prune stale await_holding_lock baseline entry (8b5932f)
-- ci: refresh terminal-exclusion TODO with re-enable path; fix stale workflow_dispatch version default
+- ci: refresh terminal-exclusion TODO with re-enable path; fix stale workflow_dispatch version default (8b3ccee)
+- docs: add CHANGELOG.md seeded from the 2026-10-01 → HEAD window (76b479e)
+- fix(athena): fail fast with a busy error when a second turn queues behind ask_user's conversation lock (5f6e6f8)
+- chore(release): bump version to 3.5.0 (2340aa8)
 
 ### Prior releases
 - v3.4.4 — see ROADMAP.md dated sections (tap mirror fc8d37d; release shipped 2026-10-15).

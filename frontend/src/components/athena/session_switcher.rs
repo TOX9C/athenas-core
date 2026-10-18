@@ -231,11 +231,8 @@ pub fn SessionSwitcher() -> Element {
                             let sid = pending_id.clone();
                             let mut athena = athena_state;
                             spawn(async move {
-                                match tauri_bridge::session_delete(&sid).await {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        web_sys::console::error_1(&format!("[SessionSwitcher] Failed to delete session: {:?}", e).into());
-                                    }
+                                if let Err(e) = tauri_bridge::session_delete(&sid).await {
+                                    web_sys::console::error_1(&format!("[SessionSwitcher] Failed to delete session: {:?}", e).into());
                                 }
                                 if athena.read().session_id.as_deref() == Some(&sid) {
                                     // Cancel the in-flight turn before
