@@ -1,5 +1,7 @@
-# Reviewed baseline as of 2026-08-08. Format: clippy-code|primary-file.
+# Reviewed baseline as of 2026-10-18. Format: lint-code|primary-file (rustc
+# lints included — the gate counts every compiler warning with a code).
 # Each line permits exactly ONE warning instance; a second occurrence of the
 # same lint in the same file needs its own duplicated line after review.
-clippy::await_holding_lock|src-tauri/src/commands/relay.rs
+# non_snake_case in athena-plugins reviewed 2026-10-18: test fn name deliberately mirrors the camelCase wire key pluginId; harmless
+non_snake_case|crates/athena-plugins/src/lib.rs
 

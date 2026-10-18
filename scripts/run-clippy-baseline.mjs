@@ -56,7 +56,7 @@ for (const line of result.stdout.split('\n')) {
     const code = event.message.code?.code
     const file = event.message.spans?.find(span => span.is_primary)?.file_name
       ?? event.message.spans?.[0]?.file_name
-    if (code?.startsWith('clippy::') && file) {
+    if (code && file) {
       const key = `${code}|${file}`
       warningCounts.set(key, (warningCounts.get(key) ?? 0) + 1)
     }
