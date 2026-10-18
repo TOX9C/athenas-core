@@ -29,7 +29,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs';
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs';
 
 const STORE_JSON = join(homedir(), 'Library', 'Application Support', 'athena-core', 'store.json');
 const TASK_TITLE = `KB_E2E_${Date.now()}`;
@@ -129,9 +129,7 @@ async function ensureWorkspace() {
   // that skips the blocking confirmation dialog.
   const trustDir = e2eTrustRoot('kanban-persistence');
   await seedTrustedRoots(browser, [trustDir]);
-  await browser.execute((dir) => {
-    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {});
-  }, trustDir);
+  await trustViaProjectRoot(browser);
   const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));
   if (!(await hasPill())) {
     if (await clickButton('Space 1')) {

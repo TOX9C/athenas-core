@@ -1,7 +1,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -96,14 +96,8 @@ describe('Agent activity detection UI', () => {
     // root is implicitly trusted. Seeding the persisted root list makes the
     // add a no-op that skips the backend's blocking confirmation dialog.
     // Fire-and-forget: it takes effect before the spawn below.
-    const trustDir = e2eTrustRoot('agent-badges')
     await seedTrustedRoots(browser, [trustDir])
-    await browser.execute((dir) => {
-      window.__TAURI__.core
-        .invoke('workspace_add_trusted_root', { dir })
-        .catch((e) => console.error('[agent-badges] trust-root failed:', String(e)))
-      return true
-    }, trustDir)
+    await trustViaProjectRoot(browser)
 
     // ── 1. Launch a space with 3 shell panes (proven flow) ─────────────
     await openWorkspaceModal()

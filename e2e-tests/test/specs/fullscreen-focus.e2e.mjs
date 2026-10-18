@@ -1,7 +1,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
 
@@ -70,13 +70,7 @@ describe('Fullscreen button focuses the terminal', () => {
     const trustDir = e2eTrustRoot('fullscreen-focus')
     await seedTrustedRoots(browser, [trustDir])
     await setE2E()
-    await browser.execute((dir) => {
-      window.__fsTrustRoot = 'pending'
-      window.__TAURI__.core
-        .invoke('workspace_add_trusted_root', { dir })
-        .then(() => { window.__fsTrustRoot = 'ok' })
-        .catch((error) => { window.__fsTrustRoot = 'error:' + String(error) })
-    }, trustDir)
+    await trustViaProjectRoot(browser)
     // Open the sidebar if the app booted with it collapsed (default is
     // hidden; the rail's Expand button restores it).
     expect(await browser.execute(() => {

@@ -27,7 +27,7 @@ ships for Apple Silicon and the PTY harness is macOS-specific).
 
    ```bash
    bash frontend/build-dist.sh
-   cargo build --manifest-path src-tauri/Cargo.toml
+   cargo build --manifest-path src-tauri/Cargo.toml --features webdriver
    ```
 
 4. **Start the driver** (listens on port 4444; `wdio.conf.mjs` targets it):
@@ -39,6 +39,12 @@ ships for Apple Silicon and the PTY harness is macOS-specific).
    Without this step `npm run test:e2e` fails with
    `Unable to connect to localhost:4444` — that is an environment setup issue,
    not a test failure.
+
+   The driver binary must also be built with `--features webdriver` (step 3).
+   Without it the app registers no WebDriver endpoint, and every spec fails
+   with `WebDriverError: ... POST http://localhost:4444/session` timing out
+   after 30s. The `web content process terminated` line in the app log is
+   unrelated Wry teardown noise.
 
 ## Running
 

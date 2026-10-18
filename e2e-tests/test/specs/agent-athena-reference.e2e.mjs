@@ -1,7 +1,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -57,9 +57,7 @@ describe('Athena agent references', () => {
     // rejection from hanging the sync browser script.
     const trustDir = e2eTrustRoot('agent-athena-reference')
     await seedTrustedRoots(browser, [trustDir])
-    await browser.execute((dir) => {
-      window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {})
-    }, trustDir)
+    await trustViaProjectRoot(browser)
 
     await openWorkspaceModal()
     await browser.waitUntil(

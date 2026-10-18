@@ -13,7 +13,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -180,17 +180,7 @@ describe('Layout change viewport regression', () => {
     // the invoke never returns (workspace.rs:79-100).
     await seedTrustedRoots(browser, [repoRoot])
     await setE2E()
-    await browser.execute((dir) => {
-      window.__athenaTrust = 'pending'
-      if (!window.__TAURI__) {
-        window.__athenaTrust = 'ERR:no __TAURI__ bridge on window'
-        return
-      }
-      window.__TAURI__.core
-        .invoke('workspace_add_trusted_root', { dir })
-        .then(() => { window.__athenaTrust = 'ok' })
-        .catch((error) => { window.__athenaTrust = 'ERR:' + String(error) })
-    }, repoRoot)
+    await trustViaProjectRoot(browser)
     const trusted = await browser
       .waitUntil(
         async () => browser.execute(() => window.__athenaTrust === 'ok'),

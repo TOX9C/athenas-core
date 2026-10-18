@@ -1,6 +1,6 @@
 import { expect } from '@wdio/globals'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 async function clickButtonByText(text, { partial = false } = {}) {
   return browser.execute(
@@ -44,17 +44,7 @@ describe('OMP turn-finished notification', () => {
     const trustDir = e2eTrustRoot('omp-finish-notification')
     await seedTrustedRoots(browser, [trustDir])
     await setE2E()
-    await browser.execute((dir) => {
-      window.__athenaTrust = 'pending'
-      window.__TAURI__.core
-        .invoke('workspace_add_trusted_root', { dir })
-        .then(() => {
-          window.__athenaTrust = 'ok'
-        })
-        .catch((error) => {
-          window.__athenaTrust = 'ERR:' + String(error)
-        })
-    }, trustDir)
+    await trustViaProjectRoot(browser)
     await browser.waitUntil(
       async () => browser.execute(() => window.__athenaTrust === 'ok'),
       {

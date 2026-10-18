@@ -17,7 +17,7 @@
 
 import { writeFileSync } from 'node:fs'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const DUMP = '/tmp/xterm-glyph-coherence.json'
 
@@ -191,9 +191,7 @@ async function ensureSpaceWithShell() {
   // that skips the blocking confirmation dialog.
   const trustDir = e2eTrustRoot('xterm-glyph-coherence')
   await seedTrustedRoots(browser, [trustDir])
-  await browser.execute((dir) => {
-    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {})
-  }, trustDir)
+  await trustViaProjectRoot(browser)
   await browser.pause(1500)
   const state = await browser.execute(`return ${APP_STATE_JS}`)
   console.log('[glyph] app state:', JSON.stringify(state))
@@ -227,11 +225,23 @@ async function ensureSpaceWithShell() {
       ?.click()
   })
   await fillSpaceDir(browser, trustDir)
+  // Advance Step 1 -> Step 2: filling the field does NOT auto-advance, and
+  // the agent rows (incl. `add-shell`) only render on step 2.
+  await browser.execute(() => {
+    Array.from(document.querySelectorAll('button'))
+      .find((b) => (b.textContent || '').trim() === 'Next >')
+      ?.click()
+  })
   await browser.waitUntil(() => browser.execute(() => !!document.getElementById('add-shell')), {
     timeout: 10000,
     interval: 250,
     timeoutMsg: 'Terminal configuration step did not appear',
   })
+  // One pane minimum: the modal refuses Launch while total panes is 0.
+  await browser.execute(() => {
+    document.getElementById('add-shell')?.click()
+  })
+  await browser.pause(400)
   await browser.execute(() => {
     Array.from(document.querySelectorAll('button'))
       .find((b) => (b.textContent || '').trim() === 'Launch Space')

@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -234,11 +234,8 @@ const APP_STATE_JS = `(() => {
 // no active space at all.
 async function ensureSpaceWithShells(count) {
   await setE2E()
-  // Seeded so the add is a no-op that skips the blocking dialog.
   await seedTrustedRoots(browser, [trustDir])
-  await browser.execute((dir) => {
-    window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {})
-  }, trustDir)
+  await trustViaProjectRoot(browser)
   await browser.pause(1500)
   let state = await browser.execute(`return ${APP_STATE_JS}`)
   console.log('[garble] initial app state:', JSON.stringify(state))

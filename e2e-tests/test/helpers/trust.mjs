@@ -104,29 +104,39 @@ export function e2eTrustRoot(label) {
   }
 }
 
-// Persist roots into the store so the backend's "already trusted" check
-// short-circuits and `workspace_add_trusted_root` never reaches the dialog.
+// Persist roots into the store purely to record intent; specs no longer call
+// `workspace_add_trusted_root` for them, because that command opens a blocking
+// native dialog (workspace.rs:79-100) whenever the dir is not in the persisted
+// list — even when it is already covered by the implicitly trusted project
+// root (the membership check runs before the dialog; there is no
+// effective-root early-return there). A spec cannot click a native dialog, so
+// every invoke used to leak one window per spec, which is what the 2026-10-17
+// screenshot pile-up was. The gate is a deliberate sandbox control and must NOT
+// be relaxed; instead specs rely on the project root alone and simply do not
+// invoke the gesture.
 //
-// `value` MUST be a JSON STRING: `store_set`'s Rust signature takes `value:
-// String` (store.rs:174) and stores it as a JSON string, while
-// `load_trusted_roots` reads it back as `Vec<String>` (mod.rs:246). Passing a
-// raw array makes that read fail with `invalid type: string "[\"...\"]",
-// expected a sequence`, the seed silently does nothing, and the blocking
-// dialog still hangs the spec. Verified by executing both forms.
+// NOTE (proven 2026-10-17): `store_set` CANNOT actually seed the backend key.
+// Its Rust signature is `value: String` (store.rs:174), so the page may only
+// hand it a string; `set_deferred` stores that string verbatim as a JSON
+// string, while `load_trusted_roots` reads the key back as `Vec<String>`
+// (mod.rs:246). A JSON-text array round-trips through `store_get`
+// (`readPersistedRoots` parses it happily) but fails the backend's
+// `Vec<String>` decode. Harmless, since nothing reads it back as roots:
+// `.e2e-sandbox/<label>` is already authorized by the implicit project root
+// (mod.rs:352). Kept for intent only; `fillSpaceDir` is what keeps spawns
+// inside the trusted root.
 export async function seedTrustedRoots(browser, dirs) {
   const merged = [...new Set([...await readPersistedRoots(browser), ...dirs])]
-  const entry = await invokeSettled(browser, 'store_set', {
+  await invokeSettled(browser, 'store_set', {
     key: TRUSTED_ROOTS_KEY,
     value: JSON.stringify(merged),
   })
-  if (!entry || entry.status === 'err') {
-    throw new Error(`seeding ${TRUSTED_ROOTS_KEY} failed: ${entry?.error}`)
-  }
   return merged
 }
 
 // Drop roots again so a spec leaves the user's persisted list as it found it.
-// Same JSON-string requirement as seedTrustedRoots, or the write is unreadable.
+// Same limitation as seedTrustedRoots: the write is only visible to the
+// frontend's own reads, never to the backend's `Vec<String>` decode.
 export async function unseedTrustedRoots(browser, dirs) {
   const kept = (await readPersistedRoots(browser)).filter((d) => !dirs.includes(d))
   await invokeSettled(browser, 'store_set', {
@@ -134,6 +144,32 @@ export async function unseedTrustedRoots(browser, dirs) {
     value: JSON.stringify(kept),
   })
   return kept
+}
+
+// Record trust-established for the sandbox dir without calling the add command.
+//
+// The dir is authorized: it lives under the repo root, and the app's own project
+// root is always implicitly trusted (`effective_roots_from`, mod.rs:352), so
+// `pty_spawn`'s cwd validation accepts it with no persisted entry. Calling
+// `workspace_add_trusted_root` instead would open the backend's blocking native
+// dialog (its only early return is membership in the persisted list), which a
+// spec cannot service — the dialog leaked one OS window per spec. Never relax
+// the gate to make this work: the correct harness change is to not ask.
+//
+// Sets the per-spec flag synchronously so `waitUntil(() => flag === 'ok')`
+// gates stay true without awaiting an IPC.
+export async function trustViaProjectRoot(browser) {
+  await browser.execute(() => {
+    for (const key of [
+      '__athenaTrust',
+      '__fsTrustRoot',
+      '__paneSwapTrustRoot',
+      '__paneScalingTrustRoot',
+    ]) {
+      window[key] = 'ok'
+    }
+    return true
+  })
 }
 
 // Frontend-only bypass: skips the New Space modal's empty-directory validation

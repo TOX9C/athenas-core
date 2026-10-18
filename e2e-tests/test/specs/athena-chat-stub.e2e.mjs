@@ -25,7 +25,7 @@
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs';
+import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs';
 
 const KEYRING_SERVICE = 'athena';
 const KEYRING_ACCOUNT = 'api_key';
@@ -170,9 +170,7 @@ describe('Athena chat against a stubbed OpenAI provider', () => {
     // no-op that skips the blocking confirmation dialog.
     const trustDir = e2eTrustRoot('athena-chat-stub');
     await seedTrustedRoots(browser, [trustDir]);
-    await browser.execute((dir) => {
-      window.__TAURI__.core.invoke('workspace_add_trusted_root', { dir }).catch(() => {});
-    }, trustDir);
+    await trustViaProjectRoot(browser);
     const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));
     if (!(await hasPill())) {
       // Try entering an existing space from the sidebar first.
