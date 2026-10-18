@@ -181,22 +181,22 @@ jobs:
           done
 
       - name: cargo test
-        # TODO(terminal-rework): re-enable athena-terminal tests on Ubuntu —
-        # drop `--exclude athena-terminal` from the command below and remove
-        # "(Ubuntu, terminal excluded)" from the job name — once the xterm
-        # rework branch merges. The exclusion exists because the old terminal
-        # test binary reliably kills the GitHub Ubuntu runner; the rework
-        # replaces that stack, so the exclusion must be re-validated, not
-        # carried forward silently. Do NOT remove this TODO without running
-        # the full suite on a PR first.
-        # Exclude athena-terminal: its test binary — even with the fork-based
-        # session tests skipped — reproducibly triggers a GitHub-hosted
-        # Ubuntu VM shutdown ("The runner has received a shutdown signal",
-        # step cancelled) as it runs; every other crate's tests pass, and the
-        # isolated athena-terminal step reproduces the cancellation alone.
-        # The terminal crate still runs its full test suite locally and in
-        # the macOS release workflow (runs-on: macos-14), where the trigger
-        # does not occur.
+        # athena-terminal is excluded from GitHub-hosted Ubuntu: its test
+        # binary reproducibly triggers a runner-VM shutdown ("The runner has
+        # received a shutdown signal", step cancelled) even with the
+        # fork-based session tests skipped — chase history 2026-08-15:
+        # 9513db9 own job + capped parallelism → 81764bf cap build
+        # parallelism → cf717e5 isolate athena-terminal → 8150e82 skip PTY
+        # fork tests on GH Linux → a7881cd full exclusion. The suite is
+        # macOS-green and runs in full in the release workflow
+        # (release-macos.yml, runs-on: macos-14; v3.4.4 shipped through it
+        # 2026-10-15). Re-enable ONLY via a PR that drops --exclude, renames
+        # this job, and runs the full suite on ubuntu-latest first — the
+        # trigger is not reproducible on macOS. State 2026-10-18: the local
+        # wip/terminal-xterm-rewrite branch is stale (one commit, 2026-10-15;
+        # main has since shipped 12+ terminal fixes) and does not unblock
+        # this; a fresh terminal-rework PR would need its own Ubuntu
+        # validation run.
         run: cargo test --workspace --exclude athena-terminal --locked
 
   security:
