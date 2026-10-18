@@ -14,15 +14,17 @@ Kanban cards whose owner is an agent (`assigned_agent` or `plan_step_id` set) ca
 
 ## 🚀 2026-10-01 — O2: Swarm presets
 
-Mission templates: three built-ins ("Feature build", "Bug hunt", "Refactor + tests") ship in `utils/swarm_presets.rs`; each records per-slot role / agent CLI / `--model` flag / capability profile. The swarm modal gains a PRESET strip: select-to-apply, name+Save-preset persistence (KV `swarm_presets`, capped at 32 custom), and Delete. Applying a preset replaces the slot list; per-slot CLI model (`--model '<name>'`, shell-quoted) now flows through pane spawn thanks to `get_agent_command`'s new `model` parameter, consumed per-pane from `PaneConfig.model_name` in `render_shell_pane` → `XtermMount`.
+Mission templates were built 2026-10-01 (`a4d031e`: three built-ins in `utils/swarm_presets.rs`, a PRESET strip in the launch modal's swarm step with KV `swarm_presets` persistence, and per-slot CLI `--model` via a `model` parameter on `get_agent_command`), but the 2026-10-03 finish-work overhaul (`762a006`) removed all of it and no tagged release ever carried the feature; nothing exists in code today — the model-parameter variant of `get_agent_command` was not shipped, and `utils/swarm_presets.rs` was later deleted as dead code.
 
 ## 🚀 2026-10-01 — O1: Plan gate before swarm launch
 
 Swarm missions default to drafting-first: "Draft plan & review" calls Athena (hidden scratch session, plan-gate prompt, `create_execution_plan` only, no dispatch) and shows the resulting plan as an editable card inline in the modal (steps editable, add/remove), with explicit "Approve & run" — only approval persists the plan into the plan manager (plan state then flows to the UI as `athena:stream`/`athena:planUpdate` events — the old `plan_create`/`plan_update_step` polling CRUD is deleted) and merges its steps into the mission goal every agent receives. Cancel while generating aborts the stream. The gate is a checkbox (`Review plan before launching`, default on; unchecking skip-launches immediately).
 
-## 🚀 2026-10-01 — M5: Per-agent capability scoping for swarm
+## 🚀 2026-10-01 — M5: Per-slot capability toggles (PLANNED — not shipped)
 
-Swarm slot rows gain capability toggles cycling on click: **sh✓/sh−/sh⌀** (shell: full → read-only-cwd → no-exec via additive `sandbox-exec` profiles `(deny file-write* (subpath "<cwd>"))` / `deny process-exec process-fork`), **net✓/net⌀** (best-effort: strips HTTP(S) proxy env + `deny network*`), **mcp✓/mcp⌀** (best-effort: `ATHENA_NO_MCP=1` + MCP_CONFIG_PATH=/dev/null markers; agent CLIs with their own config paths may ignore these — documented limit). Policies persist per role under `swarm_role_caps` in the KV store, are hydrated when the modal opens, and ride on every pane's `capabilities` field into the PTY spawn (`wrap_with_capabilities`). Tests cover pass-through, proxy strip, read-only, no-exec, quoting.
+Status: **Planned, not implemented.** The 2026-10-01 work plan recorded this as done; none of it exists in code (no toggle state machine, no `swarm_role_caps` persistence, no `wrap_with_capabilities`, no `capabilities` field on `PaneConfig`, no tests). Design notes retained below for whenever this ships:
+
+- Swarm slot rows would gain capability toggles cycling on click: **sh✓/sh−/sh⌀** (shell: full → read-only-cwd → no-exec via additive `sandbox-exec` profiles `(deny file-write* (subpath "<cwd>"))` / `deny process-exec process-fork`), **net✓/net⌀** (best-effort: strips HTTP(S) proxy env + `deny network*`), **mcp✓/mcp⌀** (best-effort: `ATHENA_NO_MCP=1` + `MCP_CONFIG_PATH=/dev/null` markers; agent CLIs with their own config paths may ignore these — documented limit). Policies would persist per role under `swarm_role_caps` and ride pane `capabilities` into PTY spawn.
 
 ## 🚀 2026-10-01 — M4: Web tools (opt-in)
 
@@ -96,7 +98,7 @@ Version bumped from 0.3.0 → **3.3.0** across `package.json`, `package-lock.jso
 
 **Still open (needs user action):**
 
-- [x] **Apple signing** — decision (2026-09-02): ship **unsigned**. **Release published 2026-09-02**: tag `v3.3.0` → `a2371ca`, CI `macOS Release` run 33573856164 succeeded; public (non-draft) GitHub release carries `Athena.s.Core_3.3.0_aarch64.dmg` (~10 MB) + sha256. Post-ship fix landed in that tag: `byte_char_slices` (clippy 1.98, CI stable is newer than local 1.95 gate — toolchain drift remains a risk; consider pinning `rust-toolchain.toml`). The
+- [x] **Apple signing** — decision (2026-09-02): ship **unsigned**. **Release published 2026-09-02**: tag `v3.3.0` → `a2371ca`, CI `macOS Release` run 33573856164 succeeded; public (non-draft) GitHub release carries `Athena.s.Core_3.3.0_aarch64.dmg` (~10 MB) + sha256. Toolchain is pinned via rust-toolchain.toml (1.98.0) — verified 2026-10-18. The
   release workflow now publishes an unsigned DMG on tag push (signing-gate
   hard-fail removed, publish step no longer conditioned on
   `APPLE_SIGNING_IDENTITY`); users bypass Gatekeeper via System Settings →
