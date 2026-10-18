@@ -1202,16 +1202,33 @@ impl AppState {
                     };
                     #[cfg(target_os = "macos")]
                     {
-                        use tauri_plugin_notification::NotificationExt;
-                        if let Err(e) = handle
-                            .notification()
-                            .builder()
-                            .title(title)
-                            .body(body)
-                            .sound(sound)
-                            .show()
-                        {
-                            log::warn!("failed to show macOS notification: {e}");
+                        // `.show()` reaches UNUserNotificationCenter through
+                        // notify-rust, which ABORTS the whole process when it
+                        // has no application bundle
+                        // (NSInternalInconsistencyException -> objc_terminate
+                        // -> SIGABRT) — i.e. every bare
+                        // `target/debug/athenas-core` launch: `cargo tauri dev`
+                        // and the wdio e2e runner. Both 2026-10-17 e2e crash
+                        // reports fault exactly here, and each abort also
+                        // orphaned every pane shell. `request_permission`
+                        // above needs no guard: its desktop impl is a no-op
+                        // that returns Granted.
+                        if process_is_bundled_macos_app() {
+                            use tauri_plugin_notification::NotificationExt;
+                            if let Err(e) = handle
+                                .notification()
+                                .builder()
+                                .title(title)
+                                .body(body)
+                                .sound(sound)
+                                .show()
+                            {
+                                log::warn!("failed to show macOS notification: {e}");
+                            }
+                        } else {
+                            log::debug!(
+                                "skipping macOS notification mirror: process is not a bundled .app (dev/e2e binary)"
+                            );
                         }
                     }
                 }
@@ -1846,5 +1863,63 @@ async fn capture_resume_on_agent_exit(
         }
         Ok(None) => {}
         Err(e) => log::error!("heartbeat merge failed pane={pane_id}: {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// macOS bundle check for the OS notification mirror
+// ---------------------------------------------------------------------------
+
+/// True when the given executable path points inside a macOS .app bundle.
+///
+/// Pure string predicate, split out so the unit tests below can cover both
+/// real-world layouts without spawning processes.
+#[cfg(target_os = "macos")]
+fn exe_path_is_bundled(exe: &str) -> bool {
+    exe.contains(".app/Contents/MacOS/")
+}
+
+/// True when this process runs from inside a macOS .app bundle.
+///
+/// `UNUserNotificationCenter` — underneath `notify-rust` in the notification
+/// plugin — throws an `NSInternalInconsistencyException` (raised through
+/// `NSAssertionHandler`) and ABORTS the whole process when the caller has no
+/// application bundle: every bare `target/debug/athenas-core` launch, i.e.
+/// `cargo tauri dev` and the wdio e2e runner. Both 2026-10-17 e2e SIGABRT
+/// crash reports fault exactly there. The agent-notification mirror must
+/// check this before `.show()`. A path test rather than
+/// `NSBundle::mainBundle().bundleIdentifier()` because `objc2-foundation`
+/// only exists behind the `voice` feature, and the mirror must be guarded in
+/// minimal builds too.
+#[cfg(target_os = "macos")]
+fn process_is_bundled_macos_app() -> bool {
+    std::env::current_exe()
+        .map(|exe| exe_path_is_bundled(&exe.to_string_lossy()))
+        .unwrap_or(false)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_bundled_install_layouts() {
+        assert!(exe_path_is_bundled(
+            "/Applications/Athena's Core.app/Contents/MacOS/athenas-core"
+        ));
+    }
+
+    #[test]
+    fn rejects_dev_and_system_paths() {
+        assert!(!exe_path_is_bundled(
+            "/Users/dev/athenas-core/target/debug/athenas-core"
+        ));
+        assert!(!exe_path_is_bundled("/bin/zsh"));
+        assert!(!exe_path_is_bundled(""));
+    }
+
+    #[test]
+    fn the_test_binary_is_never_bundled() {
+        assert!(!process_is_bundled_macos_app());
     }
 }
