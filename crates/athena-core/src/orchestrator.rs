@@ -353,7 +353,7 @@ impl AthenaOrchestrator {
         text: String,
         images: Option<Vec<ImageData>>,
     ) -> Result<String, OrchestratorError> {
-        let _conversation_guard = self.conversation_lock.lock().await;
+        let _conversation_guard = self.acquire_conversation_lock().await?;
         self.send_message_locked(text, images).await
     }
 
@@ -366,9 +366,28 @@ impl AthenaOrchestrator {
         text: String,
         images: Option<Vec<ImageData>>,
     ) -> Result<String, OrchestratorError> {
-        let _conversation_guard = self.conversation_lock.lock().await;
+        let _conversation_guard = self.acquire_conversation_lock().await?;
         self.set_current_session_id(session_id);
         self.send_message_locked(text, images).await
+    }
+
+    /// Take the conversation lock with a bounded wait. A turn holding it is
+    /// normally stuck in `ask_user` waiting on a human (up to 300s); failing
+    /// fast beats making every other caller queue behind it silently.
+    async fn acquire_conversation_lock(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, OrchestratorError> {
+        match tokio::time::timeout(
+            orchestrator_stream::CONVERSATION_LOCK_GRACE,
+            self.conversation_lock.lock(),
+        )
+        .await
+        {
+            Ok(guard) => Ok(guard),
+            Err(_elapsed) => Err(OrchestratorError::Generic(
+                orchestrator_stream::CONVERSATION_LOCK_BUSY_MESSAGE.to_string(),
+            )),
+        }
     }
 
     async fn send_message_locked(

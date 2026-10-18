@@ -17,6 +17,15 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_TOOL_ROUNDS: usize = 12;
 
+/// How long an incoming turn waits for the conversation lock before giving up.
+/// A turn holding it is usually blocked on `ask_user` waiting for a human
+/// (up to 300s); queueing behind it silently is the bug this bounds.
+pub(super) const CONVERSATION_LOCK_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Emitted/returned when the conversation lock stays busy past the grace window.
+pub(super) const CONVERSATION_LOCK_BUSY_MESSAGE: &str =
+    "busy: another turn is waiting on a user answer — answer or cancel it, then retry";
+
 /// Upper bound on tool calls from one assistant turn executing at once.
 /// Models rarely exceed 5 independent calls per turn; 4 keeps fan-out
 /// predictable without starving the blocking pool.
@@ -79,7 +88,32 @@ impl AthenaOrchestrator {
         images: Option<Vec<ImageData>>,
         cancel: CancellationToken,
     ) -> Result<String, OrchestratorError> {
-        let _conversation_guard = self.conversation_lock.lock().await;
+        let _conversation_guard = match tokio::time::timeout(
+            CONVERSATION_LOCK_GRACE,
+            self.conversation_lock.lock(),
+        )
+        .await
+        {
+            Ok(guard) => guard,
+            Err(_elapsed) => {
+                // Another turn (waiting on ask_user, up to 300s) holds the lock.
+                // Fail fast so desktop chat, mobile relay, and routine ticks
+                // don't queue silently behind an unanswered question.
+                self.emit_stream(AthenaStreamEvent::Error {
+                    request_id: request_id.clone(),
+                    message: CONVERSATION_LOCK_BUSY_MESSAGE.to_string(),
+                    cancelled: false,
+                    model_unavailable: false,
+                });
+                self.finish_request(&request_id);
+                if let Some(sender) = self.tool_event_sender.lock().clone() {
+                    sender.finish_request(&request_id);
+                }
+                return Err(OrchestratorError::Generic(
+                    CONVERSATION_LOCK_BUSY_MESSAGE.to_string(),
+                ));
+            }
+        };
         self.emit_stream(AthenaStreamEvent::Started {
             request_id: request_id.clone(),
             session_id: session_id.clone(),
@@ -1811,6 +1845,108 @@ mod tests {
         // Serialized, not overlapped: total wall time covers both 150 ms
         // delays. (A weak check on its own, but combined with the
         // single-message history assertion above it pins the contract.)
+    }
+
+    /// A turn stuck in ask_user holds the conversation lock for as long as the
+    /// human takes to answer (up to 300s). A second turn arriving meanwhile
+    /// must fail fast with an explicit busy Error instead of queueing
+    /// silently behind it (desktop chat / mobile relay / routine ticks all
+    /// look dead otherwise).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn busy_error_when_lock_held_across_ask_user() {
+        let server = MockServer::start().await;
+        // One ask_user round, then text — the ask_user tool blocks far longer
+        // than the second turn's 2s lock grace, so the lock stays held.
+        mount_tool_then_text(&server, openai_tool_call_sse(), "answered").await;
+
+        let (orch, invocations) = blocking_orchestrator(server.uri(), 2_500);
+        orch.set_provider_config(openai_config(server.uri()));
+        let events: Arc<parking_lot::Mutex<Vec<AthenaStreamEvent>>> = Arc::default();
+        {
+            let sink = Arc::clone(&events);
+            orch.set_stream_emitter(Some(Arc::new(move |event| {
+                sink.lock().push(event);
+            })));
+        }
+
+        // Turn A reaches ask_user and parks inside it (lock held).
+        let token_a = orch.register_request("busy-a").expect("register a");
+        let orch_a = Arc::clone(&orch);
+        let turn_a = tokio::spawn(async move {
+            orch_a
+                .stream_message(
+                    "busy-a".to_string(),
+                    "sess-busy".to_string(),
+                    "ask me".to_string(),
+                    None,
+                    token_a,
+                )
+                .await
+        });
+        wait_until(
+            || invocations.load(std::sync::atomic::Ordering::SeqCst) == 1,
+            5_000,
+            "turn A parked inside ask_user",
+        )
+        .await;
+
+        // Turn B arrives while the lock is held: it must fail fast.
+        let started = std::time::Instant::now();
+        let token_b = orch.register_request("busy-b").expect("register b");
+        let result = orch
+            .stream_message(
+                "busy-b".to_string(),
+                "sess-other".to_string(),
+                "quick question".to_string(),
+                None,
+                token_b,
+            )
+            .await;
+        let elapsed = started.elapsed();
+
+        let error = result.expect_err("second turn must fail while the lock is busy");
+        let message = error.to_string();
+        assert!(
+            message.contains("busy"),
+            "error must be the busy error, got: {message}"
+        );
+        // Fail fast, not after the sender's 2.5s ask_user block.
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "second turn must not queue behind the blocked ask_user; took {elapsed:?}"
+        );
+        // The frontend learns the same way as every other stream failure.
+        let events = events.lock();
+        let busy = events
+            .iter()
+            .find(|event| {
+                matches!(
+                    event,
+                    AthenaStreamEvent::Error { message, .. } if message.contains("busy")
+                )
+            })
+            .unwrap_or_else(|| panic!("no busy Error event in {events:?}"));
+        match busy {
+            AthenaStreamEvent::Error {
+                request_id,
+                cancelled,
+                model_unavailable,
+                ..
+            } => {
+                assert_eq!(request_id, "busy-b");
+                assert!(!cancelled, "a busy turn is not a user cancellation");
+                assert!(!model_unavailable, "not a model availability failure");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // Turn A is untouched: same request id still active, still parked.
+        assert!(
+            !turn_a.is_finished(),
+            "rejecting turn B must not disturb the in-flight turn"
+        );
+        orch.cancel_request("busy-a");
+        turn_a.abort();
     }
 }
 
