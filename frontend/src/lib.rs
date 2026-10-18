@@ -11,6 +11,7 @@ use components::agents::output_event_bus::OutputEventBus;
 use components::kanban::kanban_board::KanbanBoard;
 use components::command_palette::CommandPalette;
 use components::settings::theme_picker::apply_theme_and_persist;
+#[cfg(feature = "xterm")]
 use components::mobile::{should_render_mobile_app, MobileApp};
 use components::notifications::notification_bell::{
     provide_notification_overlay_store, use_notification_overlay_store, NotificationBell,
@@ -142,13 +143,16 @@ pub fn App() -> Element {
         })
     });
 
-    if should_render_mobile_app() {
-        return rsx! {
-            ErrorBoundary {
-                fallback_message: "The mobile interface could not be rendered.".to_string(),
-                MobileApp {}
-            }
-        };
+    #[cfg(feature = "xterm")]
+    {
+        if should_render_mobile_app() {
+            return rsx! {
+                ErrorBoundary {
+                    fallback_message: "The mobile interface could not be rendered.".to_string(),
+                    MobileApp {}
+                }
+            };
+        }
     }
 
     // Provide all 14 stores

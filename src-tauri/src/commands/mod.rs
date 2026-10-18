@@ -28,6 +28,7 @@ mod plugin;
 pub(crate) mod plugin_callbacks;
 mod provider_config;
 mod pty;
+#[cfg(feature = "relay")]
 pub(crate) mod relay;
 mod resume;
 mod routines;
@@ -36,6 +37,7 @@ mod os_permissions;
 mod session;
 pub(crate) mod store;
 mod swarm;
+#[cfg(feature = "voice")]
 pub(crate) mod voice;
 mod window;
 mod update;
@@ -102,10 +104,12 @@ pub use pty::{
     read_clipboard_text,
 };
 pub use os_permissions::{os_permissions_open_settings, os_permissions_status};
+#[cfg(feature = "relay")]
 pub use relay::{
     relay_list_shared_panes, relay_pairing_respond, relay_request_pane_share,
     relay_set_pane_shared, relay_start, relay_status, relay_stop,
 };
+#[cfg(feature = "relay")]
 pub use relay::{relay_token, RELAY_ENABLED_KEY};
 pub(crate) use resume::{merge_resume_ids_into_workspaces, scan_pane_for_resume_id};
 pub use resume::capture_resume_ids_on_exit;
@@ -121,6 +125,7 @@ pub use swarm::{
     swarm_create, swarm_create_task, swarm_read_mailbox, swarm_read_state, swarm_send_message,
     swarm_set_status, swarm_start_watch, swarm_stop_watch, swarm_update_agent, swarm_update_task,
 };
+#[cfg(feature = "voice")]
 pub use voice::{voice_record_start, voice_record_stop};
 pub use window::{
     window_close, window_is_maximized, window_maximize, window_minimize, window_platform,

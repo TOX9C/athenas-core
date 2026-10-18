@@ -2,7 +2,9 @@ pub mod agents;
 pub mod athena;
 pub mod command_palette;
 pub mod kanban;
+#[cfg(feature = "xterm")]
 pub mod mobile;
+#[cfg(feature = "xterm")]
 pub mod mobile_xterm;
 pub mod notifications;
 pub mod plugin;

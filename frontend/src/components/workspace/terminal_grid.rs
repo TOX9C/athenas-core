@@ -52,7 +52,14 @@ fn focus_pane_terminal(pane_id: &str) {
 fn focus_pane_terminal(_pane_id: &str) {}
 
 #[cfg(not(feature = "xterm"))]
-fn render_shell_pane(pane_id: String, _cwd: String) -> Element {
+fn render_shell_pane(
+    pane_id: String,
+    _cwd: String,
+    _agent_type: AgentType,
+    _resume_id: Option<String>,
+    _custom_cmd: Option<String>,
+    _bypass_mode: Option<bool>,
+) -> Element {
     rsx! { TerminalPaneBody { key: "terminal-body-{pane_id}", pane_id } }
 }
 

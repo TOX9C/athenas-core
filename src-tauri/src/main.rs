@@ -4,19 +4,20 @@
 )]
 
 mod commands;
+#[cfg(feature = "relay")]
 mod relay;
 mod state;
 use commands::*;
 use tauri::Manager;
 
-#[cfg(debug_assertions)]
+#[cfg(all(feature = "relay", debug_assertions))]
 fn relay_autostart_requested() -> bool {
     std::env::var("ATHENA_RELAY_AUTOSTART")
         .map(|v| v == "1")
         .unwrap_or(false)
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(feature = "relay", not(debug_assertions)))]
 fn relay_autostart_requested() -> bool {
     false
 }
@@ -139,7 +140,9 @@ fn main() {
             pty_agent_info,
             agent_activity_acknowledge,
             // Voice input (mic → on-device transcription)
+            #[cfg(feature = "voice")]
             voice_record_start,
+            #[cfg(feature = "voice")]
             voice_record_stop,
             // OS permission status (read-only TCC report)
             os_permissions_status,
@@ -258,11 +261,17 @@ fn main() {
             // Open a link in the OS default browser (link chooser destination)
             open_external,
             // Mobile mirror relay
+            #[cfg(feature = "relay")]
             relay_start,
+            #[cfg(feature = "relay")]
             relay_stop,
+            #[cfg(feature = "relay")]
             relay_status,
+            #[cfg(feature = "relay")]
             relay_set_pane_shared,
+            #[cfg(feature = "relay")]
             relay_list_shared_panes,
+            #[cfg(feature = "relay")]
             relay_pairing_respond,
         ])
         .setup(|app| {
@@ -339,44 +348,47 @@ fn main() {
         #[cfg(target_os = "macos")]
         commands::log_macos_permission_diagnostics(&state.store);
 
-        // Mobile Mirror is an experimental plaintext LAN service and must
-        // never silently reopen merely because it was enabled in an earlier
-        // session. Settings activation remains explicit per process launch.
-        // An operator may opt into boot auto-start for a trusted development
-        // environment with ATHENA_RELAY_AUTOSTART=1; public builds leave this
-        // unset, so the relay is fail-closed by default.
-        let persisted_enabled = state
-            .store
-            .get::<String>(crate::commands::RELAY_ENABLED_KEY)
-            .ok()
-            .flatten()
-            .map(|v| v == "true")
-            .unwrap_or(false);
-        let explicit_autostart = relay_autostart_requested();
-        let enabled = persisted_enabled && explicit_autostart;
-        if enabled {
-            let resource = app
-                .path()
-                .resource_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::new());
-            let exe_dir = std::env::current_exe()
+        #[cfg(feature = "relay")]
+        {
+            // Mobile Mirror is an experimental plaintext LAN service and must
+            // never silently reopen merely because it was enabled in an earlier
+            // session. Settings activation remains explicit per process launch.
+            // An operator may opt into boot auto-start for a trusted development
+            // environment with ATHENA_RELAY_AUTOSTART=1; public builds leave this
+            // unset, so the relay is fail-closed by default.
+            let persisted_enabled = state
+                .store
+                .get::<String>(crate::commands::RELAY_ENABLED_KEY)
                 .ok()
-                .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-                .unwrap_or_default();
-            let dist_dir = relay::resolve_dist_dir(&resource, &exe_dir);
-            match relay_token() {
-                Ok(token) => {
-                    log::info!("[relay] relay.enabled=true — auto-starting on boot");
-                    if let Err(e) = relay::start(app.handle().clone(), dist_dir, token) {
-                        log::error!("[relay] auto-start failed: {e}");
+                .flatten()
+                .map(|v| v == "true")
+                .unwrap_or(false);
+            let explicit_autostart = relay_autostart_requested();
+            let enabled = persisted_enabled && explicit_autostart;
+            if enabled {
+                let resource = app
+                    .path()
+                    .resource_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::new());
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+                    .unwrap_or_default();
+                let dist_dir = relay::resolve_dist_dir(&resource, &exe_dir);
+                match relay_token() {
+                    Ok(token) => {
+                        log::info!("[relay] relay.enabled=true — auto-starting on boot");
+                        if let Err(e) = relay::start(app.handle().clone(), dist_dir, token) {
+                            log::error!("[relay] auto-start failed: {e}");
+                        }
                     }
+                    Err(e) => log::error!("[relay] failed to load relay token: {e}"),
                 }
-                Err(e) => log::error!("[relay] failed to load relay token: {e}"),
+            } else if persisted_enabled {
+                log::info!("[relay] persisted enable found, but explicit ATHENA_RELAY_AUTOSTART=1 is required; skipping auto-start");
+            } else {
+                log::debug!("[relay] relay.enabled not set — skipping auto-start");
             }
-        } else if persisted_enabled {
-            log::info!("[relay] persisted enable found, but explicit ATHENA_RELAY_AUTOSTART=1 is required; skipping auto-start");
-        } else {
-            log::debug!("[relay] relay.enabled not set — skipping auto-start");
         }
     }
 
@@ -420,6 +432,7 @@ fn main() {
 
                 // Stop UI-owned services immediately; these operations are
                 // non-blocking/try-lock based and do not touch the PTY mutex.
+                #[cfg(feature = "relay")]
                 relay::stop();
                 let state = app_handle.state::<state::AppState>();
                 shutdown_browser_children(&state);
@@ -454,6 +467,7 @@ fn main() {
                     // Exit. There is no way to defer this late event, so keep
                     // this best-effort and non-blocking.
                     log::warn!("RunEvent::Exit arrived without ExitRequested; using best-effort fallback");
+                    #[cfg(feature = "relay")]
                     relay::stop();
                     let state = app_handle.state::<state::AppState>();
                     shutdown_browser_children(&state);
