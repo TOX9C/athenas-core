@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{Manager, Runtime};
 
-use crate::{window_by_label, WebDriverState};
+use crate::WebDriverState;
 
 // --- Server state ---
 
@@ -89,7 +89,8 @@ async fn eval_js<R: Runtime>(
         .lock()
         .expect("lock poisoned")
         .clone();
-    let window = window_by_label(&state.app, label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, label.as_deref())
+        .await
         .ok_or_else(|| ApiError::NotFound("no such window".into()))?;
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -336,7 +337,8 @@ async fn window_handle<R: Runtime>(
         .lock()
         .expect("lock poisoned")
         .clone();
-    let window = window_by_label(&state.app, label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, label.as_deref())
+        .await
         .ok_or(ApiError::NotFound("no window".into()))?;
     Ok(Json(json!(window.label())))
 }
@@ -374,7 +376,8 @@ async fn window_rect<R: Runtime>(
     AxumState(state): AxumState<SharedState<R>>,
     Json(body): Json<LabelReq>,
 ) -> ApiResult {
-    let window = window_by_label(&state.app, body.label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, body.label.as_deref())
+        .await
         .ok_or(ApiError::NotFound("no window".into()))?;
 
     let scale = window
@@ -399,7 +402,8 @@ async fn window_set_rect<R: Runtime>(
     AxumState(state): AxumState<SharedState<R>>,
     Json(body): Json<SetRectReq>,
 ) -> ApiResult {
-    let window = window_by_label(&state.app, body.label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, body.label.as_deref())
+        .await
         .ok_or(ApiError::NotFound("no window".into()))?;
 
     if let (Some(x), Some(y)) = (body.x, body.y) {
@@ -420,7 +424,8 @@ async fn window_fullscreen<R: Runtime>(
     AxumState(state): AxumState<SharedState<R>>,
     Json(body): Json<LabelReq>,
 ) -> ApiResult {
-    let window = window_by_label(&state.app, body.label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, body.label.as_deref())
+        .await
         .ok_or(ApiError::NotFound("no window".into()))?;
     window
         .set_fullscreen(true)
@@ -432,7 +437,8 @@ async fn window_minimize<R: Runtime>(
     AxumState(state): AxumState<SharedState<R>>,
     Json(body): Json<LabelReq>,
 ) -> ApiResult {
-    let window = window_by_label(&state.app, body.label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, body.label.as_deref())
+        .await
         .ok_or(ApiError::NotFound("no window".into()))?;
     window
         .minimize()
@@ -444,7 +450,8 @@ async fn window_maximize<R: Runtime>(
     AxumState(state): AxumState<SharedState<R>>,
     Json(body): Json<LabelReq>,
 ) -> ApiResult {
-    let window = window_by_label(&state.app, body.label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, body.label.as_deref())
+        .await
         .ok_or(ApiError::NotFound("no window".into()))?;
     window
         .maximize()
@@ -456,7 +463,8 @@ async fn window_insets<R: Runtime>(
     AxumState(state): AxumState<SharedState<R>>,
     Json(body): Json<LabelReq>,
 ) -> ApiResult {
-    let window = window_by_label(&state.app, body.label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, body.label.as_deref())
+        .await
         .ok_or(ApiError::NotFound("no window".into()))?;
 
     let scale = window
@@ -776,7 +784,8 @@ async fn script_execute_async<R: Runtime>(
         .lock()
         .expect("lock poisoned")
         .clone();
-    let window = window_by_label(&state.app, label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, label.as_deref())
+        .await
         .ok_or(ApiError::NotFound("no window".into()))?;
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -973,7 +982,8 @@ async fn eval_js_callback<R: Runtime>(
         .lock()
         .expect("lock poisoned")
         .clone();
-    let window = window_by_label(&state.app, label.as_deref())
+    let window = crate::window_by_label_wait(&state.app, label.as_deref())
+        .await
         .ok_or_else(|| ApiError::NotFound("no such window".into()))?;
 
     let id = uuid::Uuid::new_v4().to_string();

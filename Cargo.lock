@@ -7074,8 +7074,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-webdriver-automation"
 version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ff685620f11d61c691d03190feae66d2d729f46d21bea38986ff1bbd3f97650"
 dependencies = [
  "axum 0.8.9",
  "serde",

@@ -68,3 +68,13 @@ opt-level = 3
 # "z" sizing throttles the 8ms flush pipeline.
 [profile.release.package.athenas-core]
 opt-level = 3
+
+# Local patch of tauri-plugin-webdriver-automation (patches/ holds the
+# vendored 0.1.3 with two fixes): the child-webview registration guard in
+# lib.rs, and a bounded 8s wait-for-window in the window endpoints' no-label
+# fallback — a tauri-wd session spawn reaches GET /window ~0.5s after
+# posix_spawn while the app's first window registers ~2-3s later (WKWebView
+# web-content respawn on cold spawn), so the instant "no window" answer made
+# every e2e session creation racy.
+[patch.crates-io]
+tauri-plugin-webdriver-automation = { path = "patches/tauri-plugin-webdriver-automation" }

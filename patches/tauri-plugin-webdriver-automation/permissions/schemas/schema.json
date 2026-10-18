@@ -305,6 +305,12 @@
           "type": "string",
           "const": "deny-resolve",
           "markdownDescription": "Denies the resolve command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the WebDriver plugin\n#### This default permission set includes:\n\n- `allow-resolve`",
+          "type": "string",
+          "const": "default",
+          "markdownDescription": "Default permissions for the WebDriver plugin\n#### This default permission set includes:\n\n- `allow-resolve`"
         }
       ]
     }

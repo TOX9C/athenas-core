@@ -94,3 +94,31 @@ pub(crate) fn window_by_label<R: Runtime>(
     }
 }
 
+/// Resolve a window by label, waiting up to `WINDOW_WAIT_MS` for it to
+/// register. A tauri-wd session spawn reaches GET /window ~0.5s after
+/// posix_spawn while the app's first window registers ~2-3s later (the
+/// WKWebView web-content process respawns once on cold spawn); answering
+/// "no window" instantly makes every e2e session creation racy. Only the
+/// no-label fallback waits: an explicit missing label is a genuine 404.
+pub(crate) async fn window_by_label_wait<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: Option<&str>,
+) -> Option<tauri::WebviewWindow<R>> {
+    const WINDOW_WAIT_MS: u64 = 8_000;
+    if label.is_some() {
+        return window_by_label(app, label);
+    }
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(WINDOW_WAIT_MS);
+    loop {
+        if let Some(window) = window_by_label(app, label) {
+            return Some(window);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+
