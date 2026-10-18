@@ -94,7 +94,7 @@ fn load_data_or_quarantine(path: &Path) -> Result<StoreMap, StoreError> {
                 .unwrap_or_else(|| std::borrow::Cow::Borrowed("store.json"));
             let quarantined = path.with_file_name(format!("{name}.corrupt-{}", now_millis()));
             std::fs::rename(path, &quarantined)?;
-            eprintln!(
+            log::warn!(
                 "KeyValueStore: CORRUPT store file {} quarantined to {} (parse error: {err}). \
                  Starting with an empty store; inspect the quarantined file to recover data.",
                 path.display(),
@@ -487,7 +487,7 @@ impl Drop for KeyValueStore {
         }
         let handle = self.clone_for_persistence();
         if let Err(e) = handle.persist_snapshot() {
-            eprintln!("KeyValueStore drop: durable flush failed: {e}");
+            log::warn!("KeyValueStore drop: durable flush failed: {e}");
         }
     }
 }

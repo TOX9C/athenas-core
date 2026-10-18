@@ -169,7 +169,6 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                     class: "btn-primary",
                                     disabled: launch_disabled,
                                     onclick: move |_| {
-                                        web_sys::console::log_1(&"[NewSpaceModal] Launch Space clicked (sync)".into());
                                         let dir = space_dir.read().trim().to_string();
                                         if dir.is_empty() && !is_e2e { return; }
                                         let dir = if dir.is_empty() { "/tmp".to_string() } else { dir };

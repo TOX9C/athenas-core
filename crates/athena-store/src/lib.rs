@@ -45,7 +45,7 @@ pub(crate) fn sweep_orphaned_temp_files(dir: &std::path::Path, name_prefix: Opti
             .map(|age| age >= std::time::Duration::from_secs(60))
             .unwrap_or(false);
         if is_stale && std::fs::remove_file(entry.path()).is_ok() {
-            eprintln!(
+            log::info!(
                 "athena-store: removed orphaned temp file {}",
                 entry.path().display()
             );

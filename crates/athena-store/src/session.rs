@@ -71,7 +71,7 @@ fn quarantine_file(path: &Path) -> PathBuf {
     let quarantined = path.with_file_name(format!("{name}.corrupt-{}", now_millis()));
     match std::fs::rename(path, &quarantined) {
         Ok(()) => {
-            eprintln!(
+            log::warn!(
                 "SessionStore: CORRUPT session file {} quarantined to {}",
                 path.display(),
                 quarantined.display()
@@ -208,7 +208,7 @@ fn read_messages_log(
             Ok(msg) => out.push(msg),
             Err(err) if lines.peek().is_none() => {
                 // Torn tail from an interrupted append — drop just this line.
-                eprintln!(
+                log::warn!(
                     "SessionStore: dropping torn final message line in {} ({err})",
                     path.display()
                 );

@@ -376,13 +376,15 @@ pub fn PillDragOverlay(props: PillDragOverlayProps) -> Element {
                     .write()
                     .open_right_panel(crate::stores::panel_manager::RightPanel::Assistant);
                 ui_store.write().right_sidebar_open = true;
-                web_sys::console::log_1(
-                    &format!(
-                        "[athena-dnd] reference {}",
-                        if added { "added" } else { "already present" }
-                    )
-                    .into(),
-                );
+                if cfg!(debug_assertions) {
+                    web_sys::console::log_1(
+                        &format!(
+                            "[athena-dnd] reference {}",
+                            if added { "added" } else { "already present" }
+                        )
+                        .into(),
+                    );
+                }
             }
             _ => {}
         }

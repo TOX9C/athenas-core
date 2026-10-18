@@ -903,7 +903,6 @@ pub fn App() -> Element {
                                     button {
                                         class: "btn-primary",
                                         onclick: move |_| {
-                                            web_sys::console::log_1(&"[EmptyState] New Workspace clicked".into());
                                             notification_overlay.set(false);
                                             ui_state.write().show_new_space_modal = true;
                                         },

@@ -232,9 +232,7 @@ pub fn SessionSwitcher() -> Element {
                             let mut athena = athena_state;
                             spawn(async move {
                                 match tauri_bridge::session_delete(&sid).await {
-                                    Ok(_) => {
-                                        web_sys::console::log_1(&format!("[SessionSwitcher] Deleted session {}", sid).into());
-                                    }
+                                    Ok(_) => {}
                                     Err(e) => {
                                         web_sys::console::error_1(&format!("[SessionSwitcher] Failed to delete session: {:?}", e).into());
                                     }
