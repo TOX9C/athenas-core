@@ -1,5 +1,4 @@
 use crate::grid::cell::Cell;
-// use unicode_width::UnicodeWidthChar;
 
 /// A row of terminal cells with occupancy tracking.
 #[derive(Clone, Debug)]
