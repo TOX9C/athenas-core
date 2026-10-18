@@ -19,7 +19,8 @@ export const config = {
 
   capabilities: [{
     'tauri:options': {
-      // Binary is at workspace root target/ (not src-tauri/target/)
+      // Binary is at workspace root target/ (not src-tauri/target/).
+      // Name has the "s": the Tauri app package produces `athenas-core`.
       binary: join(projectRoot, 'target', 'debug', 'athenas-core'),
     },
   }],
@@ -46,6 +47,18 @@ export const config = {
   // `before` — which only runs once the app is already up. A run then starts
   // from a known empty state and `onComplete` puts the user's store back.
   onPrepare: () => {
+    // A previous run may have been interrupted (Ctrl+C, crash, runner kill)
+    // before its own onComplete sweep ran — clean its orphans first so the
+    // new run starts at zero and the app spawn doesn't race a wedged app.
+    // Best-effort like the onComplete sweep: cleanup must never be able to
+    // abort the run it is preparing for.
+    try {
+      execFileSync('node', [join(__dirname, 'test', 'sweep-orphans.mjs')], {
+        stdio: 'inherit',
+      });
+    } catch (err) {
+      console.warn(`[wdio] pre-run orphan sweep skipped: ${err.message ?? err}`);
+    }
     execFileSync('node', [join(__dirname, 'test', 'reset-store.mjs'), 'clear'], {
       stdio: 'inherit',
     });
@@ -74,11 +87,21 @@ export const config = {
     );
   },
 
-  // Restore the user's persisted store after the app has been shut down by the
-  // runner. `onComplete` runs after the worker/app teardown, so reset-store's
+  // Restore the user's persisted store after the app has been shut down by
+  // the runner. `onComplete` runs after the worker/app teardown, so reset-store's
   // "app must not be running" guard is satisfied. Best-effort: a missing backup
   // (first-ever run) logs and exits non-zero without failing the suite.
   onComplete: () => {
+    // The runner tears the app down with SIGTERM/SIGKILL rather than a
+    // graceful quit, so pane shells can survive teardown. Sweep them (and
+    // any omp agents they were running) before restoring the store.
+    try {
+      execFileSync('node', [join(__dirname, 'test', 'sweep-orphans.mjs')], {
+        stdio: 'inherit',
+      });
+    } catch (err) {
+      console.warn(`[wdio] orphan sweep skipped: ${err.message ?? err}`);
+    }
     try {
       execFileSync('node', [join(__dirname, 'test', 'reset-store.mjs'), 'restore'], {
         stdio: 'inherit',
