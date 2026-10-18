@@ -59,7 +59,7 @@ Swarm missions launched inside a git repository now isolate every agent: `git wo
 New crate `crates/athena-git` (git2, `vendored-libgit2`, no network transports): repo discovery, branch + per-file staged/unstaged status, and staged/unstaged unified diffs with per-hunk parsing (capped at 4 MB, reports truncation). New IPC commands `git_discover` / `git_status` / `git_diff` validate the input path **and the discovered repo root** against the existing path sandbox, so a parent repository above a trusted root cannot leak repo state. Frontend gains a bounded git store (`stores/git.rs`, max 16 tracked repos) plus typed bridge wrappers. 7 unit tests run against real temp repos.
 
 > Comprehensive tracking of bugs, issues, and fixes discovered during deep-dive audit and refactoring sessions.
-> Last updated: 2026-09-01 (v3.3.0 release + CI/release hardening pass)
+> Last updated: 2026-10-18 (release-readiness pass: minimal-build gating, dead-code purge, doc truth-up, v3.5.0 prep)
 
 ---
 
@@ -104,7 +104,7 @@ Version bumped from 0.3.0 → **3.3.0** across `package.json`, `package-lock.jso
   `APPLE_SIGNING_IDENTITY`); users bypass Gatekeeper via System Settings →
   Privacy & Security → Open Anyway (macOS 15+; right-click → Open no longer
   works on Sequoia).
-  Restore signing + notarization when secrets are configured.
+  Signing/notarization: workflow paths fully built (`release-macos.yml:165-206`); exercised only after Apple secrets are set — see the open Apple-signing gate below.
 - [x] **Deprecation UX** — provider responses classified centrally (`orchestrator_support::classify_api_error`): HTTP 410, or 404 with a model-scoped body, now return `OrchestratorError::ModelUnavailable`, which emits `AthenaStreamEvent::Error{ model_unavailable: true }` with guidance text; the desktop Athena panel (`athena_panel.rs`) detects the flag and opens the Settings modal so the user picks another model. Covered by `model_gone_yields_model_unavailable_error_event` (stream contract) + three classifier unit tests (2026-09-02).
 
 ---
@@ -215,7 +215,7 @@ These are nice-to-have improvements, cleanup items, or architectural notes that 
 - [x] Plugin API contract — reconciled the current manifest, capability, config, lifecycle, and MCP contracts
 - [x] Performance audit of large workspace grids (10+ panes) — deterministic 12-pane mount/relayout stress coverage added
 - [x] macOS release evidence automation — local release-check orchestration plus unsigned DMG `.app` structure and arm64 verification added
-- [ ] Native window chrome/menu polish review — remains a manual macOS UX gate
+- [ ] Native window chrome/menu polish review — remains a manual macOS UX gate — still open as of 2026-10-18
 
 ---
 
@@ -226,7 +226,7 @@ These are nice-to-have improvements, cleanup items, or architectural notes that 
 3. ✅ **Dead code cleanup complete** — Removed unused types, components, stores, and dead functions (August 2026 refactor)
 4. ✅ **Context menu wired** — `ContextMenu` component wired into `WorkspaceTab` for right-click "Close workspace" (2026-08-06)
 5. ✅ **Local backlog implementation pass complete** — plugin hardening/docs, 12-pane geometry coverage, and macOS release-evidence automation are implemented and locally validated
-6. **Remaining release-owner gates** — clean-machine macOS UX review, signing/notarization, Finder install/launch, packaged stability soak, supply-chain disposition, and named approvals
+6. **Remaining release-owner gates** — clean-machine macOS UX review, signing/notarization, Finder install/launch, packaged stability soak, supply-chain disposition, and named approvals — open as of 2026-10-18
 ---
 
 ## 🔁 2026-08-30 Verification Pass (full test + tooling audit)
@@ -322,7 +322,7 @@ paths, with the exceptions below.
 ### 🟢 Process / release gates confirmed still open
 
 - [x] Native window chrome/menu polish — window `title` is now `Athena's Core` with `hiddenTitle: true` (correct Window-menu/Mission Control name, no native text over the custom titlebar); an explicit macOS app menu (App/Edit/View/Window) is built in `src-tauri/src/main.rs` `setup` — the missing Edit menu (copy/paste/undo shortcuts) and Window menu entries are now guaranteed. Custom titlebar already had the 80px traffic-light spacer and correct drag/no-drag regions. Code verified via `cargo check` + `cargo tauri build --debug --no-bundle`; visual menu/text confirmation remains a manual macOS UX gate (2026-08-28).
-- [ ] Apple signing secrets not exercised — `release-macos.yml` fully supports signing/notarization/stapling, but tag pushes hard-fail without `APPLE_SIGNING_IDENTITY`; the gate is verifying this works end-to-end on a real tag.
+- [ ] Apple signing secrets not exercised — `release-macos.yml` fully supports signing/notarization/stapling; without the secrets a tag push takes the ad-hoc branch and publishes unsigned (`release-macos.yml:139,270`); the hard-fail fires only when `APPLE_SIGNING_IDENTITY` is set but its four sibling secrets are missing (`:172-176`). The gate is exercising this end-to-end on a real tag.
 - [x] E2E coverage healthy — 18 specs in `e2e-tests/test/specs/`, zero `it.skip`/`describe.skip`; includes 12-pane scaling, pane swap, and `release-soak.e2e.mjs`.
 - [x] CI note — `athena-terminal` tests are intentionally excluded from GitHub-hosted Ubuntu (PTY fork kills the runner VM); they run locally. Acceptable, but document in contributor docs.
 

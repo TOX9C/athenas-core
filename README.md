@@ -109,7 +109,7 @@ End-to-end coverage lives in WebdriverIO specs that drive the real app through `
 Athena's Core is source-available under the [Business Source License 1.1](LICENSE).
 
 - **Free** for non-commercial use — personal projects, learning, and uncompensated open-source contributions.
-- **Commercial use** (at work, for an employer or client, or in any for-profit context) requires a commercial license — $39 one-time per seat, includes a year of updates. Building from source does not remove this requirement. **[Buy a license](https://lemonsqueezy.com/)** _(store link coming once checkout is set up)_.
+- **Commercial use** (at work, for an employer or client, or in any for-profit context) requires a commercial license — $39 one-time per seat, includes a year of updates. Building from source does not remove this requirement. **[Buy a license](https://lemonsqueezy.com/)** _(checkout not set up yet; store link coming — email or open a Discussion until it's live)_.
 - Every release converts to the **Apache License 2.0** three years after it ships.
 
 ---
