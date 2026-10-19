@@ -1079,6 +1079,26 @@ pub fn XtermMount(
                 return;
             }
 
+            // Terminal vendor scripts load on demand (index.html's loader):
+            // on a fresh boot they are not in the DOM until the first pane
+            // mount asks for them. Await the loader before reading the
+            // Terminal/addon globals; later mounts share the in-flight
+            // promise. A missing loader (older shell html, plain-browser
+            // dev) falls through — the eager <script defer> era is gone but
+            // the check costs one Reflect read.
+            let loader_val = js_sys::Reflect::get(&window, &JsValue::from_str("__xtermAddonsReady"))
+                .unwrap_or(JsValue::UNDEFINED);
+            if let Ok(loader) = loader_val.dyn_into::<js_sys::Function>() {
+                if let Ok(ready_promise) = loader.call0(&window) {
+                    if let Ok(promise) = ready_promise.dyn_into::<js_sys::Promise>() {
+                        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                    }
+                }
+                if !*mount_active_for_task.borrow() {
+                    return;
+                }
+            }
+
             let term_ctor_val = js_sys::Reflect::get(&window, &JsValue::from_str("Terminal"))
                 .unwrap_or(JsValue::UNDEFINED);
             let Ok(term_ctor) = term_ctor_val.dyn_into::<js_sys::Function>() else {

@@ -92,10 +92,11 @@ rm -f "$DIST_DIR"/assets/athena-frontend_bg.wasm \
 
 # Cache-bust the kitty addon: WKWebView caches subresources by URL across
 # app restarts, so without a fresh token the pane keeps running a stale
-# addon build after every frontend rebuild.
-KITTY_V="v$(date +%s)"
-perl -pi -e "s|\./vendor/xterm/addon-kitty-graphics\.js(\?v=\w+)?|./vendor/xterm/addon-kitty-graphics.js?v=$KITTY_V|g" "$DIST_DIR/index.html"
-echo "Kitty addon cache token: $KITTY_V"
+# addon build after every frontend rebuild. (Historical note: this pass used
+# to run BEFORE the custom index.html copy below, which overwrote the file
+# it had just tokenized — the token only ever applied to the Dioxus-generated
+# document that was then replaced. It now runs after the copy, and also fills
+# the __XTERM_KITTY_TOKEN__ placeholder consumed by the lazy vendor loader.)
 
 # Replace Dioxus-generated entry documents with our custom ones.
 # index.html keeps the desktop diagnostics; mobile.html mounts the same WASM
@@ -124,6 +125,16 @@ if [ -f "$CUSTOM_HTML" ]; then
     perl -pi -e "s|__FRONTEND_ENTRY__|$ENTRY_PATH|g" "$DIST_DIR/mobile.html"
   fi
   echo "Replaced entry documents with custom desktop + mobile versions"
+
+  # Kitty addon cache token, applied AFTER the custom index.html copy (see
+  # the historical note above): fills both the loader placeholder and any
+  # literal script-src form.
+  KITTY_V="v$(date +%s)"
+  perl -pi -e "s|__XTERM_KITTY_TOKEN__|$KITTY_V|g; s|\./vendor/xterm/addon-kitty-graphics\.js(\?v=\w+)?|./vendor/xterm/addon-kitty-graphics.js?v=$KITTY_V|g" "$DIST_DIR/index.html"
+  if [ -f "$DIST_DIR/mobile.html" ]; then
+    perl -pi -e "s|__XTERM_KITTY_TOKEN__|$KITTY_V|g; s|\./vendor/xterm/addon-kitty-graphics\.js(\?v=\w+)?|./vendor/xterm/addon-kitty-graphics.js?v=$KITTY_V|g" "$DIST_DIR/mobile.html"
+  fi
+  echo "Kitty addon cache token: $KITTY_V"
 fi
 
 # Fix /./ paths that Dioxus generates — Tauri's custom protocol can't resolve
