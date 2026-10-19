@@ -31,7 +31,18 @@ fn main() {
     let builder = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::default()
-                .level(log::LevelFilter::Debug)
+                // Release builds log at Info: Debug in release filled the
+                // rotated 5MB files with per-spawn/resize/store noise and
+                // made post-freeze forensics harder, while serving no one —
+                // dev builds keep Debug. Debug-level detail is still
+                // reachable in release via RUST_LOG if a field report ever
+                // needs it (tauri-plugin-log honors the env override when
+                // a level filter is set from the environment).
+                .level(if cfg!(debug_assertions) {
+                    log::LevelFilter::Debug
+                } else {
+                    log::LevelFilter::Info
+                })
                 // Keep both the terminal-visible stream and the rotated
                 // per-user file explicit. Relying on plugin defaults made it
                 // too easy for a future upgrade to silently drop the disk
