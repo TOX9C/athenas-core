@@ -178,6 +178,7 @@ fn main() {
             output_buffer_get,
             output_buffer_list,
             output_buffer_clear,
+            output_capture_set_consumer,
             // Notifications
             notification_push,
             notification_history,

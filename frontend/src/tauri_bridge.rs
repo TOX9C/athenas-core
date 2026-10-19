@@ -473,6 +473,17 @@ pub async fn output_buffer_list() -> TauriResult<String> {
     invoke("output_buffer_list", "{}").await
 }
 
+/// Register/unregister a `output-capture:batch` consumer with the backend.
+/// Called on Agent Inspector open/close so the backend can skip the per-line
+/// JSON batch + emit (a webview JS eval each) while nobody listens.
+pub async fn output_capture_set_consumer(active: bool) -> TauriResult<()> {
+    invoke(
+        "output_capture_set_consumer",
+        &serde_json::json!({ "active": active }).to_string(),
+    )
+    .await
+}
+
 fn output_buffer_clear_args(pane_id: &str) -> String {
     // The relay dispatcher consumes this command's raw JSON and expects the
     // Rust parameter name; unlike Tauri's desktop invoke path it does not

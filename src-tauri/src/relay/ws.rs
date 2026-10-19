@@ -43,7 +43,21 @@ static ACTIVE_RELAY_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 /// Track relay `pty:raw:<pane>` subscriptions in shared state so the PTY read
 /// loop only pays for the base64 event path while a phone is listening.
 /// `delta` is +1 (listen) or -1 (unlisten/disconnect cleanup).
+///
+/// A relay listen on `output-capture:batch` also registers a capture
+/// consumer on the OutputBuffer: the batch emit is skipped while nobody
+/// wants it (desktop Inspector closed AND no relay phone subscribed), so
+/// the relay side must count or a subscribed phone would starve.
 fn note_raw_listener_event(app: &tauri::AppHandle, event_name: &str, delta: isize) {
+    if event_name == "output-capture:batch" {
+        if let Some(state) = app.try_state::<crate::state::AppState>() {
+            state
+                .output_buffer
+                .set_capture_consumer_with_delta(delta);
+        }
+        // Not a pty:raw event; raw-subscriber accounting doesn't apply.
+        return;
+    }
     let Some(pane_id) = event_name.strip_prefix("pty:raw:") else {
         return;
     };

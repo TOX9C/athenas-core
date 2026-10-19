@@ -277,7 +277,17 @@ impl AgentOutputStore {
     }
 
     pub fn set_inspector_open(&self, open: bool) {
+        let was_open = *self.inspector_open.read_unchecked();
         *self.inspector_open.write_unchecked() = open;
+        // Tell the backend on real transitions only: while no consumer is
+        // registered it skips the per-line capture-batch JSON + emit (a
+        // webview JS eval per PTY read burst). Fire-and-forget — the flag
+        // is a hint, and a dropped transition self-heals on the next one.
+        if was_open != open {
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = crate::tauri_bridge::output_capture_set_consumer(open).await;
+            });
+        }
     }
 
     /// True when any consumer reads captured agent output — currently the

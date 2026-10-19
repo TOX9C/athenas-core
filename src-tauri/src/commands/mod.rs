@@ -78,7 +78,7 @@ pub use notification::{
 };
 pub use output::{
     output_buffer_append, output_buffer_clear, output_buffer_get,
-    output_buffer_list,
+    output_buffer_list, output_capture_set_consumer,
 };
 pub use plan::plan_get;
 pub(crate) use routines::{start as routines_timer_start, RoutineTimerDeps};
