@@ -21,14 +21,15 @@ pub(crate) mod xterm_helpers;
 use xterm_helpers::{
     attach_kitty_graphics, call_fit, capture_screen_canvas, filter_graphics_for_term,
     capture_viewport, force_redraw, freeze_screen, is_valid_terminal_dimensions, read_css_var,
-    register_live_terminal, render_visible_rows_sync, reset_glyph_atlas, reset_glyph_atlas_by_id,
+    register_live_terminal, render_dirty_rows_sync, render_visible_rows_sync,
+    reset_glyph_atlas, reset_glyph_atlas_by_id,
     reset_glyph_atlas_for_mount,
     evict_stale_live_terminal, pane_was_evicted,
     restore_term_from_session, restore_viewport, unfreeze_screen_now, unregister_live_terminal,
     schedule_fit, scroll_to_bottom, serialize_buffer,
     try_activate_addon, try_activate_canvas_addon, try_activate_web_links_addon,
     try_activate_webgl_addon,
-    viewport_at_bottom, watch_dpr_change, wire_canvas_context_loss_logging,
+    watch_dpr_change, wire_canvas_context_loss_logging,
     wire_webgl_context_recovery,
     strip_kitty_placeholders, wait_for_container_size, wait_for_font_ready, write_bytes_to_term,
     write_str_to_term, ViewportState,
@@ -458,14 +459,16 @@ fn flush_chunks(
     // term.write() defers parsing to a timer, so a paint right after writing
     // draws the PRE-burst buffer (which a dropped debounced frame can leave on
     // screen indefinitely). Paint in the LAST chunk's write callback: it fires
-    // after the whole burst has been parsed, then bypasses the debouncer with a
-    // direct synchronous render.
+    // after the whole burst has been parsed, then bypasses the debouncer —
+    // restricted to the rows the debouncer has pending, so a burst paints
+    // O(dirty rows), not the whole viewport, while keeping the same-task
+    // guarantee (see render_dirty_rows_sync for the fallback contract).
     for chunk in &chunks[..chunks.len() - 1] {
         write_bytes_to_term(term, chunk);
     }
     let term_for_paint = term.clone();
     let paint_cb = wasm_bindgen::closure::Closure::once_into_js(move || {
-        render_visible_rows_sync(&term_for_paint);
+        render_dirty_rows_sync(&term_for_paint);
     });
     let last = &chunks[chunks.len() - 1];
     let wrote = filter_graphics_for_term(term, last)
@@ -478,21 +481,28 @@ fn flush_chunks(
         .is_some();
     if !wrote {
         write_bytes_to_term(term, last);
-        render_visible_rows_sync(term);
+        render_dirty_rows_sync(term);
     }
     let now = js_sys::Date::now();
     if now < follow_until.get() {
         scroll_to_bottom(term);
     }
-    // Live reading while the pane is actually painted, updated on EVERY burst
-    // (not just bottom-following ones): a user-scrolled pane must also record
-    // where it sits, or `use_drop` would persist a stale at-bottom state and
-    // the remount would yank the pane back down. Order after the repin so the
-    // recorded position is the post-write, user-visible one.
-    *live_viewport.borrow_mut() = capture_viewport(term);
-    if viewport_at_bottom(term) {
+    // Viewport reading, de-duplicated: one capture, two uses. The old code
+    // ran capture_viewport AND viewport_at_bottom — two full buffer walks
+    // (~8 Reflect reads) returning the same viewportY/baseY the capture
+    // already holds. `at_bottom` derives from the captured value instead,
+    // halving the per-burst interop cost while keeping both consumers
+    // honest: `live_viewport` (use_drop's persisted remount position — a
+    // user-scrolled pane's drift under output is only observable here, so
+    // the capture must run on every burst) and `last_bottom_at`
+    // (note_fit_viewport_intent's transient window — a mid-burst fit whose
+    // own capture lands not-at-bottom re-arms follow from this freshness,
+    // so it too must run on every burst).
+    let captured = capture_viewport(term);
+    if captured.at_bottom {
         last_bottom_at.set(now);
     }
+    *live_viewport.borrow_mut() = captured;
 }
 
 fn enqueue_pty_input(
