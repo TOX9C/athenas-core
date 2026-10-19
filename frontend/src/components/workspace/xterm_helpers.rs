@@ -134,16 +134,6 @@ pub(crate) const FOLLOW_BOTTOM_WINDOW_MS: f64 = 3200.0;
 /// `viewportY < baseY` for a frame or two; those panes must still follow.
 pub(crate) const RECENT_BOTTOM_WINDOW_MS: f64 = 1500.0;
 
-/// True when xterm's active buffer viewport is pinned to the bottom.
-pub(crate) fn viewport_at_bottom(term_val: &JsValue) -> bool {
-    let Some(active) = active_buffer(term_val) else {
-        return true;
-    };
-    let viewport_y = read_number(&active, "viewportY").unwrap_or(0);
-    let base_y = read_number(&active, "baseY").unwrap_or(viewport_y);
-    viewport_y >= base_y
-}
-
 /// Classic scrollbar width for the selected pane's terminal, in CSS pixels.
 /// Mirrors `.pane-content.is-active .xterm-viewport::-webkit-scrollbar { width }`
 /// in `public/styles.css` — keep the two in sync.
@@ -1123,6 +1113,66 @@ pub(crate) fn render_visible_rows_sync(term_val: &JsValue) {
         &JsValue::from_f64(0.0),
         &JsValue::from_f64((rows - 1) as f64),
     );
+}
+
+/// Same-task paint after an output burst, restricted to the rows the
+/// debouncer actually has pending — the same anti-starvation guarantee as
+/// [`render_visible_rows_sync`] (WKWebView can drop the debounced frame
+/// during a write burst, leaving stale pixels until the next paint), but
+/// O(dirty rows) instead of O(viewport) per flush.
+///
+/// Drives the vendored RenderDebouncer's own `_innerRefresh()` rather than
+/// calling `_renderRows` directly: it clamps the accumulated
+/// `_rowStart/_rowEnd` window to the row count, clears the pending window,
+/// invokes the render callback for exactly the dirty range, and — because
+/// the window is cleared — the debouncer's already-scheduled rAF later
+/// finds nothing pending and runs only its refresh callbacks (no second
+/// paint). Falls back to a full-viewport sync paint when the debouncer or
+/// its pending window is unavailable (non-xterm renderers, internal
+/// refactor), never skipping the paint entirely.
+pub(crate) fn render_dirty_rows_sync(term_val: &JsValue) {
+    let rows = js_sys::Reflect::get(term_val, &JsValue::from_str("rows"))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|v| v as i32)
+        .unwrap_or(24);
+    if rows <= 0 {
+        return;
+    }
+    let Ok(core) = js_sys::Reflect::get(term_val, &JsValue::from_str("_core")) else {
+        return;
+    };
+    let Ok(service) = js_sys::Reflect::get(&core, &JsValue::from_str("_renderService")) else {
+        return;
+    };
+    let paused = js_sys::Reflect::get(&service, &JsValue::from_str("_isPaused"))
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if paused {
+        return;
+    }
+    let debouncer = js_sys::Reflect::get(&service, &JsValue::from_str("_renderDebouncer")).ok();
+    if let Some(deb) = debouncer {
+        let row_start = js_sys::Reflect::get(&deb, &JsValue::from_str("_rowStart"))
+            .ok()
+            .and_then(|v| v.as_f64());
+        let row_end = js_sys::Reflect::get(&deb, &JsValue::from_str("_rowEnd"))
+            .ok()
+            .and_then(|v| v.as_f64());
+        if let (Some(_start), Some(_end)) = (row_start, row_end) {
+            let inner = js_sys::Reflect::get(&deb, &JsValue::from_str("_innerRefresh"))
+                .ok()
+                .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+            if inner.is_some_and(|f| f.call0(&deb).is_ok()) {
+                return;
+            }
+        }
+    }
+    // No pending window / debouncer unavailable: the burst still needs its
+    // same-task paint (the dropped-debounced-frame hazard is real), so pay
+    // the full-viewport paint rather than risk stale pixels.
+    render_visible_rows_sync(term_val);
 }
 
 fn call0_2(target: &JsValue, name: &str, a: &JsValue, b: &JsValue) -> Result<JsValue, JsValue> {
