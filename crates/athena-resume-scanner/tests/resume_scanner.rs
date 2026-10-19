@@ -161,3 +161,33 @@ fn redraw_alternating_ids_are_each_reported_once() {
     assert!(scanner.feed(&a).is_none());
     assert!(scanner.feed(&b).is_none());
 }
+
+#[test]
+fn needle_gate_skips_search_but_not_reassembly() {
+    // Ordinary output chunks (no resume/continue word anywhere in the
+    // scan window) must not break later hint detection: the strip and
+    // rolling-buffer append always run, so a prefix that arrives in one
+    // chunk pairs with its id arriving in a LATER, needle-less chunk.
+    let mut scanner = ResumeScanner::new();
+    // Noise before the hint — gate must skip the search but keep state.
+    assert!(scanner.feed("cargo build --release\nFinished in 12.3s\n").is_none());
+    // Prefix chunk: contains the needle, id not yet arrived.
+    assert!(scanner.feed("\nclaude --resume ").is_none());
+    // Id chunk: contains NO needle — only the carried window does.
+    let (prefix, id) = scanner
+        .feed("01d0e4c9-a7c1-4f1e-b2d3-9f8e7d6c5b4a\n")
+        .expect("id in needle-less chunk reassembles with buffered prefix");
+    assert_eq!(prefix, "claude --resume");
+    assert_eq!(id, "01d0e4c9-a7c1-4f1e-b2d3-9f8e7d6c5b4a");
+}
+
+#[test]
+fn needle_gate_is_case_insensitive_for_headings() {
+    // Harnesses print a capitalized heading above the command; the gate
+    // must let it through to the matcher just like the lowercase form.
+    let mut scanner = ResumeScanner::new();
+    let text = format!("\nResume this session with:\nclaude --resume {CLAUDE_ID}\n");
+    let (prefix, id) = scanner.feed(&text).expect("capitalized heading passes the gate");
+    assert_eq!(prefix, "claude --resume");
+    assert_eq!(id, CLAUDE_ID);
+}
