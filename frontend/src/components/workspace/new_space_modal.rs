@@ -164,6 +164,10 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                     if step() == 2 && mode() == "terminal" {
                         {
         let launch_disabled = total_panes == 0;
+        // Cloned before the closures below: the onclick moves it into its
+        // spawn (the modal only closes on a successful launch), while the
+        // Modal footer's on_close still owns the original.
+        let props_for_launch = props.clone();
                             rsx! {
                                 button {
                                     class: "btn-primary",
@@ -230,29 +234,50 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                                         // Wrap in spawn to avoid synchronous signal writes
                                         // in onclick. Dioxus 0.7 has known wasm panics when
                                         // large closures write multiple signals.
-                                        workspace_state.write().add_space(space);
-                                        // Authorize the Space's directory so PTY spawns and
-                                        // agent file tools aren't rejected by the sandbox.
-                                        // Best-effort: a failure only means the backend will
-                                        // reject the dir later with a clear "outside the
-                                        // workspace" message, it doesn't break Space creation.
+                                        //
+                                        // Trust MUST be awaited BEFORE add_space: panes
+                                        // mount the moment the space is added and XtermMount
+                                        // spawns PTYs immediately, whose cwd validation
+                                        // reads the trusted-roots store. Firing trust
+                                        // after (the old order) made the very first launch
+                                        // of a release bundle fail deterministically — the
+                                        // backend trust command blocks on a native "Trust
+                                        // Folder" dialog click, while pty_spawn round-trips
+                                        // in milliseconds and there is no src-tauri marker
+                                        // in a bundle, so nothing ever authorizes the dir
+                                        // in time. Same order as the swarm handler below.
+                                        let mut launch_error = launch_error;
+                                        // FnMut closure: each click must leave the captured
+                                        // copy intact, so the spawn takes a per-click clone.
+                                        let props = props_for_launch.clone();
                                         spawn(async move {
+                                            // Authorize the Space's directory so PTY
+                                            // spawns and agent file tools aren't rejected
+                                            // by the sandbox. On failure the space is NOT
+                                            // added: its panes could never spawn, and a
+                                            // persisted ghost would re-fail every boot.
                                             if let Err(e) =
                                                 crate::tauri_bridge::workspace_add_trusted_root(
                                                     &trust_dir,
                                                 )
                                                 .await
                                             {
-                                                web_sys::console::warn_1(
+                                                web_sys::console::error_1(
                                                     &format!(
                                                         "[NewSpaceModal] trust-on-launch failed for '{}': {:?}",
                                                         trust_dir, e
                                                     )
                                                     .into(),
                                                 );
+                                                launch_error.set(Some(
+                                                    "Couldn't grant access to this folder. Athena's trust dialog was declined or the folder was rejected — retry and confirm the Trust Folder dialog."
+                                                        .to_string(),
+                                                ));
+                                                return;
                                             }
+                                            workspace_state.write().add_space(space);
+                                            props.on_close.call(());
                                         });
-                                        props.on_close.call(());
                                     },
                                     "Launch Space"
                                 }
@@ -837,6 +862,13 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
                             style: "font-size: var(--text-2xs); color: var(--textDim);",
                             {space_dir.read().clone()}
                         }
+                    }
+
+                    // Launch-blocking error (e.g. the Trust Folder dialog was
+                    // declined): without this the modal closed over panes
+                    // that could never spawn.
+                    if let Some(error) = launch_error.read().as_ref() {
+                        p { style: "font-size: var(--text-xs); color: var(--error); margin: 2px 0 0 0;", "{error}" }
                     }
                 }
             }

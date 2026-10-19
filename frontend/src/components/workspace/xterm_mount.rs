@@ -685,6 +685,12 @@ pub fn XtermMount(
     // `use_drop` has already run.
     let mount_active = use_hook(|| Rc::new(RefCell::new(true)));
     let is_initialized = use_hook(|| Rc::new(RefCell::new(false)));
+    // Set when the initial pty_spawn is rejected (e.g. the Space dir is
+    // outside the sandbox's trusted roots). The mount cannot retry itself
+    // — `is_initialized` keeps the effect from re-running — so the pane
+    // renders a "Trust folder & retry" affordance driven by this signal.
+    let spawn_error: Signal<Option<String>> = use_signal(|| None);
+    let spawn_error_for_effect = spawn_error;
     let term_ref: Signal<Option<JsValue>> = use_signal(|| None);
     let fit_ref: Signal<Option<JsValue>> = use_signal(|| None);
     // Coalesce fit requests across ResizeObserver, visibility restoration,
@@ -754,6 +760,11 @@ pub fn XtermMount(
     let workspace_store = use_workspace_store();
     let workspace_for_effect = workspace_store;
     let mount_active_for_drop = mount_active.clone();
+    // Render-side bindings for the spawn-error overlay: the retry button
+    // re-trusts the cwd and clears the error, which re-runs the spawn effect.
+    let spawn_error_for_view = spawn_error;
+    let is_initialized_for_view = is_initialized.clone();
+    let cwd_for_overlay = cwd.clone();
 
     use_effect(move || {
         let agent_status = agent_status_for_effect.clone();
@@ -761,6 +772,14 @@ pub fn XtermMount(
         let fit_dirty_for_task = fit_dirty_for_effect.clone();
         let viewport_for_task = viewport_for_effect.clone();
         let mount_instance_for_task = mount_instance_for_effect.clone();
+        // Reactive read: the trust-retry button clears `spawn_error` after a
+        // successful re-trust, which re-runs this effect. The is_initialized
+        // guard below is what the retry path resets to admit the re-run.
+        if spawn_error_for_effect.read().is_some() {
+            // A denied spawn is showing its overlay; the retry button owns
+            // re-arming. Don't run the init body while the error stands.
+            return;
+        }
         let already_init = *is_initialized.borrow();
         if already_init {
             return;
@@ -828,6 +847,7 @@ pub fn XtermMount(
         let mut term_ref = term_ref;
         let mut fit_ref = fit_ref;
         let mount_active_for_task = mount_active.clone();
+        let spawn_error_for_task = spawn_error_for_effect;
         let raw_ready_for_task = raw_ready_for_effect.clone();
         let kitty_ready_for_task = kitty_ready_for_effect.clone();
         let follow_until_for_task = follow_for_effect.clone();
@@ -957,6 +977,7 @@ pub fn XtermMount(
                         .await
                     };
                     if let Err(e) = spawn_result {
+                        let msg = format!("{e:?}");
                         web_sys::console::error_1(
                             &format!(
                                 "XtermMount: PTY spawn failed for id={} cwd={} shell={} agent={:?}: {e:?}",
@@ -964,6 +985,18 @@ pub fn XtermMount(
                             )
                             .into(),
                         );
+                        // A sandbox trust failure is recoverable by the user:
+                        // surface it on the pane instead of leaving a silent
+                        // dead mount. The effect cannot re-run itself
+                        // (is_initialized), so the retry affordance rendered
+                        // from this signal drives the re-spawn.
+                        if msg.contains("outside the workspace") {
+                            let mut spawn_error = spawn_error_for_task;
+                            spawn_error.set(Some(
+                                "This folder isn't trusted yet. Trust it to open a terminal here."
+                                    .to_string(),
+                            ));
+                        }
                         return;
                     }
                     if !*mount_active_for_task.borrow() {
@@ -3170,6 +3203,55 @@ pub fn XtermMount(
                     );
                 }
             },
+            // Spawn-denied overlay (attributes must precede children, hence
+            // placement after onpointerdown). Shown when the initial
+            // pty_spawn was rejected by the path sandbox; the retry button
+            // re-trusts the cwd and re-arms the mount effect.
+            if let Some(error) = spawn_error_for_view.read().as_ref() {
+                div {
+                    class: "xterm-spawn-error",
+                    style: "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: var(--bgSecondary); z-index: 5; padding: 16px; text-align: center;",
+                    span { style: "font-size: var(--text-sm); color: var(--text); max-width: 400px;", "{error}" }
+                    button {
+                        class: "btn-primary",
+                        "data-testid": "trust-retry",
+                        onclick: move |_| {
+                            let mut spawn_error = spawn_error_for_view;
+                            let is_initialized = is_initialized_for_view.clone();
+                            let cwd_for_retry = cwd_for_overlay.clone();
+                            spawn(async move {
+                                if let Err(e) =
+                                    crate::tauri_bridge::workspace_add_trusted_root(
+                                        &cwd_for_retry,
+                                    )
+                                    .await
+                                {
+                                    web_sys::console::error_1(
+                                        &format!(
+                                            "[XtermMount] trust-retry failed for '{}': {:?}",
+                                            cwd_for_retry, e
+                                        )
+                                        .into(),
+                                    );
+                                    spawn_error.set(Some(
+                                        "Trust failed — confirm the Trust Folder dialog and try again."
+                                            .to_string(),
+                                    ));
+                                    return;
+                                }
+                                // Trust landed. Re-arm the mount: clearing the
+                                // error re-runs the spawn effect (it reads
+                                // this signal), and resetting is_initialized
+                                // admits the full init against the trusted
+                                // cwd.
+                                *is_initialized.borrow_mut() = false;
+                                spawn_error.set(None);
+                            });
+                        },
+                        "Trust Folder & Retry"
+                    }
+                }
+            }
         }
     }
 }
