@@ -237,6 +237,33 @@ pub fn scan_text_for_resume_id(text: &str) -> Option<(String, String)> {
 /// [`ResumeScanner::feed`], and obtain newly detected resume ids. Each
 /// distinct id is returned at most once (deduplicated across feeds).
 ///
+/// Byte-level needle gate for [`ResumeScanner::feed`]: true when the bytes
+/// contain `resume` or `continue` (ASCII case-insensitive).
+///
+/// Every PREFIX contains one of these literal words. ANSI codes wrap the
+/// hint line but never split the word itself (a split word would break the
+/// copy-pasteable command the harness is printing); the scanner's test
+/// corpus exercises every wrapped shape. Case-insensitive because the
+/// matcher lowercases and hints may print capitalized ("Resume this
+/// session with:").
+fn chunk_could_contain_hint(bytes: &[u8]) -> bool {
+    fn contains_folded(haystack: &[u8], needle: &[u8]) -> bool {
+        if haystack.len() < needle.len() {
+            return false;
+        }
+        'windows: for start in 0..=haystack.len() - needle.len() {
+            for (i, b) in haystack[start..start + needle.len()].iter().enumerate() {
+                if b.to_ascii_lowercase() != needle[i] {
+                    continue 'windows;
+                }
+            }
+            return true;
+        }
+        false
+    }
+    contains_folded(bytes, b"resume") || contains_folded(bytes, b"continue")
+}
+
 /// This is the single shared owner of the rolling-buffer/dedup logic used by
 /// both the backend (app-exit capture) and the frontend (live xterm stream).
 pub struct ResumeScanner {
@@ -275,7 +302,26 @@ impl ResumeScanner {
     ///
     /// Incoming text is ANSI-stripped first; color/bold codes interleaved
     /// between the words do not break matching.
+    ///
+    /// Needle gate: every PREFIX contains the literal word `resume` or
+    /// `continue`, so when the scan window (the new tail plus the maximum
+    /// straddle span) contains neither word, the lowercase pass and the
+    /// prefix searches are skipped — the per-chunk steady state for
+    /// ordinary terminal output (builds, TUI redraws, shell noise) is the
+    /// strip plus one case-insensitive byte scan of the window. The strip
+    /// and rolling-buffer append always run, preserving all cross-feed
+    /// reassembly invariants (see the split-boundary corpus tests).
     pub fn feed(&mut self, text: &str) -> Option<(String, String)> {
+        // Strip and buffer-append ALWAYS run: the AnsiStripper's escape
+        // state and the rolling buffer's reassembly window both carry
+        // across feeds (a prefix in chunk N pairs with an id in chunk N+1;
+        // the corpus exercises exactly this). The pre-filter gates only
+        // the SEARCH: a match requires the literal word "resume" or
+        // "continue" inside the scan window, so a window containing
+        // neither can be skipped without running the lowercase pass and
+        // the six prefix searches. On the overwhelmingly common miss
+        // (shells, builds, TUI redraws), the per-chunk cost is the strip
+        // plus one byte scan of the window.
         let stripped = self.ansi.feed(text);
         let tail_len = stripped.len();
         self.buf.push_str(&stripped);
@@ -305,6 +351,13 @@ impl ResumeScanner {
             .saturating_sub(tail_len + MAX_PREFIX_LEN + MAX_ID_LEN);
         while scan_from < self.buf.len() && !self.buf.is_char_boundary(scan_from) {
             scan_from += 1;
+        }
+        // Needle gate on the exact bytes the search would read: every
+        // PREFIX contains the literal word "resume" or "continue", so a
+        // window without either word cannot match and the search below is
+        // dead work — skip it.
+        if !chunk_could_contain_hint(&self.buf.as_bytes()[scan_from..]) {
+            return None;
         }
         let matched = extract_resume_id(&self.buf[scan_from..]);
         match matched {
