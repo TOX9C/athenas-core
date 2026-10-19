@@ -417,15 +417,58 @@ document.addEventListener('click', function(event) {
 <div id="wasm-watchdog-error"></div>
 <button id="wasm-watchdog-reload" type="button" onclick="try { sessionStorage.removeItem('athena-wasm-watchdog-reloaded'); sessionStorage.removeItem('athena-wasm-watchdog-stabilizing'); } catch (e) {} window.location.reload();">Reload interface</button>
 <div id="console-log"></div>
-<script defer src="./vendor/xterm/xterm.js"></script>
-<script defer src="./vendor/xterm/addon-fit.js"></script>
-<script defer src="./vendor/xterm/addon-web-links.js"></script>
-<script defer src="./vendor/xterm/addon-unicode11.js"></script>
-<script defer src="./vendor/xterm/addon-search.js"></script>
-<script defer src="./vendor/xterm/addon-serialize.js"></script>
-<script defer src="./vendor/xterm/addon-canvas.js"></script>
-<script defer src="./vendor/xterm/addon-webgl.js"></script>
-<script defer src="./vendor/xterm/addon-kitty-graphics.js?v=v1791116555"></script>
+<script>
+// Terminal vendor scripts load ON DEMAND, not at boot: ~710KB of xterm.js +
+// addons (xterm 289K, webgl 248K, canvas 95K, kitty 36K, serialize 26K, …)
+// parsed/compiled by WKWebView on the cold-boot critical path used to
+// compete with the ~3MB WASM compile even on the welcome screen, where no
+// terminal exists. The Dioxus mount awaits window.__xtermAddonsReady before
+// constructing a Terminal; the first pane mount calls the loader, later
+// mounts share the same in-flight promise. Core xterm.js loads first (the
+// Terminal constructor comes from it), addons load in parallel behind it.
+// tauri:// subresources arrive from the local bundle — no network latency —
+// so the cost is parse/compile, paid once, at first terminal use.
+(function() {
+  var KITTY_TOKEN = '__XTERM_KITTY_TOKEN__';
+  var CORE = ['./vendor/xterm/xterm.js'];
+  var ADDONS = [
+    './vendor/xterm/addon-fit.js',
+    './vendor/xterm/addon-web-links.js',
+    './vendor/xterm/addon-unicode11.js',
+    './vendor/xterm/addon-search.js',
+    './vendor/xterm/addon-serialize.js',
+    './vendor/xterm/addon-canvas.js',
+    './vendor/xterm/addon-webgl.js',
+    './vendor/xterm/addon-kitty-graphics.js?v=' + KITTY_TOKEN
+  ];
+  function loadScript(src) {
+    return new Promise(function(resolve, reject) {
+      var el = document.createElement('script');
+      el.src = src;
+      el.onload = resolve;
+      el.onerror = function() { reject(new Error('failed to load ' + src)); };
+      document.head.appendChild(el);
+    });
+  }
+  var ready = null;
+  function loadAll() {
+    if (ready) return ready;
+    ready = Promise.all(CORE.map(loadScript))
+      .then(function() { return Promise.all(ADDONS.map(loadScript)); })
+      .then(function() {
+        console.info('[XTERM-VENDOR] terminal vendor scripts loaded');
+      })
+      .catch(function(err) {
+        console.error('[XTERM-VENDOR] vendor load failed:', err);
+        ready = null; // allow a retry on the next mount
+        throw err;
+      });
+    return ready;
+  }
+  window.__athenaLoadXterm = loadAll;
+  window.__xtermAddonsReady = function() { return loadAll(); };
+})();
+</script>
 <script type="module" async src="__FRONTEND_ENTRY__"></script>
 </body>
 </html>
