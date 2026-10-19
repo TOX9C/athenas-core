@@ -154,6 +154,23 @@ pub use workspace::{
 /// the signed bundle's `Contents/Resources` directory is the only packaged
 /// fallback accepted. Any other unknown layout fails closed.
 fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
+    // The resolved root is process-immutable (cwd and exe cannot meaningfully
+    // change for a running app; the marker walk and canonicalize land on the
+    // same directory every time), but it cost two syscalls plus an upward
+    // exists()-stat walk per ancestor — paid on EVERY sandboxed command via
+    // effective_roots, and in a release bundle the walk stat-fails every
+    // ancestor before the Contents/Resources fallback. Cache after first
+    // resolution. The Err side is NOT cached: a transient failure (cwd
+    // unavailable during early startup) must retry.
+    static CACHE: std::sync::OnceLock<Result<std::path::PathBuf, String>> =
+        std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| get_workspace_root_uncached().map_err(|e| e.to_string()))
+        .clone()
+        .map_err(CommandError::Internal)
+}
+
+fn get_workspace_root_uncached() -> Result<std::path::PathBuf, CommandError> {
     let raw = std::env::current_dir()
         .map_err(|e| CommandError::Internal(format!("Failed to get workspace root: {}", e)))?;
 
