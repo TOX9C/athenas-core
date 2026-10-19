@@ -57,7 +57,7 @@ panic = "unwind"
 # The terminal grid/parser and the core orchestrator are hot per-keystroke
 # paths, not size-constrained; the global "z" leaves them at a fraction of
 # their achievable speed. Per-package overrides restore speed while the
-# WASM frontend keeps the workspace-wide "z" sizing.
+# remaining WASM payload keeps the workspace-wide "z" sizing.
 [profile.release.package.athena-terminal]
 opt-level = 3
 
@@ -67,6 +67,18 @@ opt-level = 3
 # The PTY read-loop/flush glue in src-tauri is a hot per-output-chunk path;
 # "z" sizing throttles the 8ms flush pipeline.
 [profile.release.package.athenas-core]
+opt-level = 3
+
+# The Dioxus frontend itself: every render pass, signal read/write, rsx
+# diff, and JS interop shim lives here. "z" trades inlining, unrolling,
+# and vectorization for size on the single hottest user-facing crate in
+# the app (the "release UI feels slow" root cause): its cost multiplies
+# every per-chunk and per-frame path. Speed wins over a modest WASM size
+# increase; the binary ships inside a DMG where ~1MB is irrelevant.
+[profile.release.package.athena-frontend]
+# Measured (2026-10-19, post-wasm-opt -Oz): "z" → 3,012,796 B; 2 → 4,645,667 B;
+# 3 → 4,539,991 B. Level 3 is both faster and smaller than 2 (LTO's stronger
+# inlining at 3 leaves less call-overhead code than 2's partial inlining).
 opt-level = 3
 
 # Local patch of tauri-plugin-webdriver-automation (patches/ holds the
