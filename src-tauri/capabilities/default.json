@@ -90,6 +90,7 @@
     "allow-output-buffer-get",
     "allow-output-buffer-list",
     "allow-output-buffer-clear",
+    "allow-output-capture-set-consumer",
     "allow-agent-activity-acknowledge",
     "allow-notification-push",
     "allow-notification-history",

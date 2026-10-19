@@ -54,3 +54,24 @@ pub fn output_buffer_list(state: State<'_, AppState>) -> Result<String, String> 
 pub fn output_buffer_clear(state: State<'_, AppState>, pane_id: String) -> Result<bool, String> {
     Ok(state.output_buffer.clear_pane_buffer(&pane_id))
 }
+
+/// Register/unregister a `output-capture:batch` consumer with the backend.
+///
+/// The frontend calls this when the Agent Inspector opens/closes. While no
+/// consumer is registered, `OutputBuffer::append_output_carried` skips the
+/// per-line JSON batch construction and the `emit` — `Emitter::emit`
+/// evaluates webview JS per event even when the listener's own handler
+/// drops the payload (the same cost class the relay path gates behind
+/// `relay_raw_subscribers`, pty.rs). Buffer maintenance (ANSI strip, line
+/// storage) always runs: heartbeat resume capture, `output_get`, and the
+/// Inspector's on-open backfill read the buffer directly.
+///
+/// Refcounted, not a bool, so overlapping consumers cannot unregister
+/// each other. Idempotence is the caller's job: the frontend store's
+/// `set_inspector_open` is the single choke point and only calls this on
+/// actual state transitions.
+#[tauri::command]
+pub fn output_capture_set_consumer(state: State<'_, AppState>, active: bool) -> Result<(), String> {
+    state.output_buffer.set_capture_consumer(active);
+    Ok(())
+}

@@ -114,6 +114,15 @@ pub struct OutputBuffer {
     event_emitter:
         Arc<parking_lot::Mutex<Option<Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>>,
     exit_snapshots: Arc<RwLock<HashMap<String, Vec<OutputLine>>>>,
+    /// True while a frontend consumer reads `output-capture:batch` (the
+    /// Agent Inspector being open). The per-read batch-JSON construction
+    /// and the emit are dead work otherwise — `Emitter::emit` evaluates
+    /// webview JS per event even when the listener's own handler drops the
+    /// payload — so `append_output_carried` skips them at zero consumers.
+    /// The ANSI strip and buffer maintenance always run: heartbeat resume
+    /// capture, `output_get`, and the Inspector's on-open backfill read
+    /// this buffer directly.
+    capture_consumers: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl std::fmt::Debug for OutputBuffer {
@@ -131,6 +140,7 @@ impl Clone for OutputBuffer {
             buffers: Arc::clone(&self.buffers),
             event_emitter: Arc::clone(&self.event_emitter),
             exit_snapshots: Arc::clone(&self.exit_snapshots),
+            capture_consumers: Arc::clone(&self.capture_consumers),
         }
     }
 }
@@ -147,7 +157,50 @@ impl OutputBuffer {
             buffers: Arc::new(RwLock::new(HashMap::new())),
             event_emitter: Arc::new(parking_lot::Mutex::new(None)),
             exit_snapshots: Arc::new(RwLock::new(HashMap::new())),
+            capture_consumers: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    /// Register/unregister a `output-capture:batch` consumer (the frontend
+    /// calls this when the Agent Inspector opens/closes). The count is a
+    /// refcount, not a bool, so overlapping consumers (desktop inspector,
+    /// relay phone) cannot unregister each other.
+    pub fn set_capture_consumer(&self, active: bool) {
+        self.set_capture_consumer_with_delta(if active { 1 } else { -1 });
+    }
+
+    /// Refcount form used by the relay, whose listener bookkeeping is
+    /// already delta-based (+1 listen / -1 unlisten). Saturates at zero so
+    /// a misordered disconnect cannot underflow into a permanently-open
+    /// gate.
+    pub fn set_capture_consumer_with_delta(&self, delta: isize) {
+        use std::sync::atomic::Ordering;
+        if delta >= 0 {
+            self.capture_consumers.fetch_add(delta.max(0) as usize, Ordering::Release);
+        } else {
+            let mut current = self.capture_consumers.load(Ordering::Acquire);
+            loop {
+                let next = current.saturating_sub(delta.unsigned_abs());
+                match self.capture_consumers.compare_exchange_weak(
+                    current,
+                    next,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(observed) => current = observed,
+                }
+            }
+        }
+    }
+
+    /// True when at least one consumer wants `output-capture:batch` events.
+    /// Relaxed load: the flag only gates whether dead work is skipped — a
+    /// stale read for one chunk worst-case emits one unneeded batch.
+    pub fn capture_wanted(&self) -> bool {
+        self.capture_consumers
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
     }
 
     /// Set an event emitter callback for forwarding events to the frontend.
@@ -438,7 +491,16 @@ impl OutputBuffer {
         // burst that overflows the cap still emits every pushed line (trim
         // drains from the front and would otherwise drop just-pushed lines
         // from the event, leaving a silent gap).
-        let mut batch = Vec::new();
+        //
+        // The per-line JSON Value batch and the emit are built ONLY while a
+        // consumer is registered: the frontend's listener gate runs after
+        // the wire, so an unconditional build pays serialization + a
+        // webview JS eval per read burst even when nobody listens (the
+        // same cost class the relay path already gates behind
+        // `relay_raw_subscribers`, pty.rs). Buffer maintenance below is
+        // never skipped — backend consumers read it directly.
+        let wanted = self.capture_wanted();
+        let mut batch = if wanted { Some(Vec::new()) } else { None };
 
         let last_idx = raw_lines.len().saturating_sub(1);
         for (i, raw_line) in raw_lines.iter().enumerate() {
@@ -456,11 +518,13 @@ impl OutputBuffer {
                 timestamp: now,
                 text: raw_line.to_string(),
             };
-            batch.push(serde_json::json!({
-                "lineNum": line.line_num,
-                "text": raw_line,
-                "timestamp": line.timestamp,
-            }));
+            if let Some(batch) = batch.as_mut() {
+                batch.push(serde_json::json!({
+                    "lineNum": line.line_num,
+                    "text": raw_line,
+                    "timestamp": line.timestamp,
+                }));
+            }
             buf.total_bytes += raw_line.len();
             buf.lines.push(line);
         }
@@ -469,7 +533,7 @@ impl OutputBuffer {
 
         drop(buffers);
 
-        if !batch.is_empty() {
+        if let Some(batch) = batch.filter(|b| !b.is_empty()) {
             self.emit_event(
                 "output-capture:batch",
                 &serde_json::json!({
@@ -713,6 +777,27 @@ mod tests {
         ob.append_output("p", &apc, None);
         let text = glued(&ob, "p");
         assert_eq!(text, "beforeafter");
+    }
+
+    #[test]
+    fn capture_gate_stops_at_zero_and_saturates_on_over_release() {
+        let ob = OutputBuffer::new();
+        // No consumers registered: capture_wanted is false.
+        assert!(!ob.capture_wanted());
+        // Two consumers register, one releases: still wanted.
+        ob.set_capture_consumer(true);
+        ob.set_capture_consumer(true);
+        ob.set_capture_consumer(false);
+        assert!(ob.capture_wanted());
+        // Final release flips the gate off.
+        ob.set_capture_consumer(false);
+        assert!(!ob.capture_wanted());
+        // A misordered/extra unlisten cannot underflow into a permanently
+        // open gate: the count saturates at zero.
+        ob.set_capture_consumer_with_delta(-1);
+        assert!(!ob.capture_wanted());
+        ob.set_capture_consumer(true);
+        assert!(ob.capture_wanted());
     }
 
     #[test]
