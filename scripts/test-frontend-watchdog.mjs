@@ -27,8 +27,8 @@ assert.match(appSource, /fallback_message: "A background interface component cou
 // The experimental plaintext LAN relay must not reopen from persisted state
 // during a normal public launch.
 assert.match(mainSource, /ATHENA_RELAY_AUTOSTART/)
-assert.match(mainSource, /#\[cfg\(debug_assertions\)\][\s\S]*ATHENA_RELAY_AUTOSTART/)
-assert.match(mainSource, /#\[cfg\(not\(debug_assertions\)\)\][\s\S]*fn relay_autostart_requested\(\) -> bool \{\s*false/)
+assert.match(mainSource, /#\[cfg\(all\(feature = "relay", debug_assertions\)\)\][\s\S]*ATHENA_RELAY_AUTOSTART/)
+assert.match(mainSource, /#\[cfg\(all\(feature = "relay", not\(debug_assertions\)\)\)\][\s\S]*fn relay_autostart_requested\(\) -> bool \{\s*false/)
 assert.match(mainSource, /persisted_enabled && explicit_autostart/)
 assert.match(mainSource, /explicit ATHENA_RELAY_AUTOSTART=1 is required/)
 

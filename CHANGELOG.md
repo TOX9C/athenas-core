@@ -2,7 +2,7 @@
 
 All notable changes to Athena's Core. Format: grouped conventional-commit entries per release window; newest first. Release windows are seeded from git history; a release lands as a new `## [vX.Y.Z] — <date>` heading.
 
-## [Unreleased] — v3.5.0 window (2026-10-01 → HEAD)
+## [v3.5.0] — 2026-10-19
 
 ### feat
 - feat: license activation (Lemon Squeezy), plugin message drain, terminal charset/OSC52/OSC8, dead-command purge (6b8fe0a)
