@@ -75,6 +75,7 @@ const COMMANDS: &[&str] = &[
     "output_buffer_get",
     "output_buffer_list",
     "output_buffer_clear",
+    "output_capture_set_consumer",
     "agent_activity_acknowledge",
     "notification_push",
     "notification_history",
