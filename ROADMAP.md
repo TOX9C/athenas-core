@@ -1,5 +1,9 @@
 # Athenas-Core Roadmap
 
+## Versioning policy (2026-10-21)
+
+Releases are strictly incremental patch bumps: `3.5.1`, `3.5.2`, `3.5.3`, … — never skip a patch number and never jump minor/major versions (the 3.4.4 → 3.5.0 jump was the last allowed). Every release ships the next patch version, including CI-only or dependency-only changes.
+
 ## 🚀 2026-10-01 — O5: Attention inbox
 
 Right-sidebar **Inbox** tab lists every pane whose agent has an unanswered request (OSC 6337 → `WaitingForInput`), with Dismiss (and Clear all) hooks; badges show only the unseen count. Cmd+Shift+U opens the panel directly. Detection → inbox → dismiss is the same lifecycle the agent status stream already produces; without dismissing, panes surface again on their next waiting event.
