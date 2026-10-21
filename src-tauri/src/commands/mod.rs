@@ -10,9 +10,9 @@ fn html_escape(s: &str) -> String {
 mod agent_notify;
 mod agents;
 mod athena;
-pub(crate) mod context;
 mod browser;
 pub mod caps;
+pub(crate) mod context;
 mod diagnostics;
 mod drop;
 pub mod external;
@@ -22,6 +22,7 @@ mod kanban;
 mod license;
 mod mcp;
 mod notification;
+mod os_permissions;
 mod output;
 mod plan;
 mod plugin;
@@ -33,14 +34,13 @@ pub(crate) mod relay;
 mod resume;
 mod routines;
 mod search;
-mod os_permissions;
 mod session;
 pub(crate) mod store;
 mod swarm;
+mod update;
 #[cfg(feature = "voice")]
 pub(crate) mod voice;
 mod window;
-mod update;
 mod workspace;
 
 pub use agent_notify::agent_notify_install;
@@ -60,14 +60,19 @@ pub use browser::{
     browser_back, browser_forward, browser_hide, browser_navigate, browser_reload,
     browser_set_bounds, browser_show, shutdown_browser_children,
 };
+pub use context::{project_context_apply, project_context_list};
 pub use diagnostics::{diagnostics_export, frontend_log};
 pub use drop::pty_stage_drop_file;
-pub use context::{project_context_apply, project_context_list};
+pub use external::open_external;
 pub use filesystem::{
     fs_exists, fs_list_dir, fs_read_file, fs_read_file_as_base64, fs_search_files,
     fs_show_image_dialog, fs_show_open_dialog, fs_write_file,
 };
-pub use git::{git_apply_file, git_apply_hunk, git_checkpoint_create, git_checkpoint_list, git_checkpoint_restore, git_diff, git_diff_file, git_discover, git_status, git_worktree_add, git_worktree_remove};
+pub use git::{
+    git_apply_file, git_apply_hunk, git_checkpoint_create, git_checkpoint_list,
+    git_checkpoint_restore, git_diff, git_diff_file, git_discover, git_status, git_worktree_add,
+    git_worktree_remove,
+};
 pub use kanban::{kanban_create_task, kanban_delete_task, kanban_get_tasks, kanban_update_task};
 pub use license::{license_activate, license_deactivate, license_status};
 pub use mcp::mcp_tools;
@@ -76,16 +81,12 @@ pub use notification::{
     notification_history, notification_mark_all_read, notification_mark_read, notification_push,
     notification_resolve,
 };
+pub use os_permissions::{os_permissions_open_settings, os_permissions_status};
 pub use output::{
-    output_buffer_append, output_buffer_clear, output_buffer_get,
-    output_buffer_list, output_capture_set_consumer,
+    output_buffer_append, output_buffer_clear, output_buffer_get, output_buffer_list,
+    output_capture_set_consumer,
 };
 pub use plan::plan_get;
-pub(crate) use routines::{start as routines_timer_start, RoutineTimerDeps};
-pub use routines::{
-    routines_delete, routines_list, routines_run_now, routines_set_enabled, routines_tick,
-    routines_upsert,
-};
 pub use plugin::{
     plugin_disable, plugin_enable, plugin_get, plugin_get_config, plugin_host_discover_plugins,
     plugin_host_emit_event, plugin_host_get_session, plugin_host_list_sessions,
@@ -94,16 +95,15 @@ pub use plugin::{
     plugin_set_config, plugin_set_error, plugin_unregister,
 };
 pub use provider_config::llm_list_models;
+pub use pty::{
+    agent_activity_acknowledge, pty_agent_info, pty_attach_listener, pty_default_shell,
+    pty_detach_listener, pty_foreground_process, pty_get_cwd, pty_get_history, pty_has_session,
+    pty_is_ready, pty_kill, pty_raw_replay, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent,
+    pty_write, read_clipboard_text,
+};
 pub(crate) use pty::{
     now_ms, pty_attach_listener_relay, pty_read_loop, session_foreground_label, RelayReplayStore,
 };
-pub use pty::{
-    agent_activity_acknowledge, pty_agent_info, pty_attach_listener, pty_default_shell, pty_detach_listener,
-    pty_foreground_process, pty_get_cwd, pty_get_history, pty_has_session, pty_is_ready, pty_kill,
-    pty_raw_replay, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, pty_write,
-    read_clipboard_text,
-};
-pub use os_permissions::{os_permissions_open_settings, os_permissions_status};
 #[cfg(feature = "relay")]
 pub use relay::{
     relay_list_shared_panes, relay_pairing_respond, relay_request_pane_share,
@@ -111,25 +111,29 @@ pub use relay::{
 };
 #[cfg(feature = "relay")]
 pub use relay::{relay_token, RELAY_ENABLED_KEY};
-pub(crate) use resume::{merge_resume_ids_into_workspaces, scan_pane_for_resume_id};
 pub use resume::capture_resume_ids_on_exit;
-pub(crate) use workspace::WORKSPACE_CHANGED_EVENT;
+pub(crate) use resume::{merge_resume_ids_into_workspaces, scan_pane_for_resume_id};
+pub use routines::{
+    routines_delete, routines_list, routines_run_now, routines_set_enabled, routines_tick,
+    routines_upsert,
+};
+pub(crate) use routines::{start as routines_timer_start, RoutineTimerDeps};
 pub use search::{search_code, search_ripgrep};
 pub use session::{
     session_add_message, session_create, session_delete, session_get, session_list, session_update,
 };
 pub use store::{store_delete, store_get, store_has, store_set, test_llm_api_key};
-pub use update::{update_check, update_open_release};
-pub use external::open_external;
 pub use swarm::{
     swarm_create, swarm_create_task, swarm_read_mailbox, swarm_read_state, swarm_send_message,
     swarm_set_status, swarm_start_watch, swarm_stop_watch, swarm_update_agent, swarm_update_task,
 };
+pub use update::{update_check, update_open_release};
 #[cfg(feature = "voice")]
 pub use voice::{voice_record_start, voice_record_stop};
 pub use window::{
     window_close, window_is_maximized, window_maximize, window_minimize, window_platform,
 };
+pub(crate) use workspace::WORKSPACE_CHANGED_EVENT;
 pub use workspace::{
     workspace_add_trusted_root, workspace_list_trusted_roots, workspace_remove_trusted_root,
 };
@@ -153,7 +157,7 @@ pub use workspace::{
 /// path. Finder-launched production apps do not contain that source marker, so
 /// the signed bundle's `Contents/Resources` directory is the only packaged
 /// fallback accepted. Any other unknown layout fails closed.
-fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
+pub(crate) fn get_workspace_root() -> Result<std::path::PathBuf, CommandError> {
     // The resolved root is process-immutable (cwd and exe cannot meaningfully
     // change for a running app; the marker walk and canonicalize land on the
     // same directory every time), but it cost two syscalls plus an upward
@@ -368,7 +372,7 @@ fn effective_roots(
     effective_roots_from(store, get_workspace_root())
 }
 
-fn effective_roots_from(
+pub(crate) fn effective_roots_from(
     store: &athena_store::KeyValueStore,
     workspace_root: Result<std::path::PathBuf, CommandError>,
 ) -> Result<Vec<std::path::PathBuf>, CommandError> {
@@ -384,7 +388,10 @@ fn effective_roots_from(
 /// feed it. This preserves the existing traversal/symlink-escape guarantees;
 /// we only widen the *set* of acceptable top-level directories, never the
 /// canonicalization discipline. Exposed for unit testing.
-fn is_within_any_root(canonical: &std::path::Path, roots: &[std::path::PathBuf]) -> bool {
+pub(crate) fn is_within_any_root(
+    canonical: &std::path::Path,
+    roots: &[std::path::PathBuf],
+) -> bool {
     roots.iter().any(|r| canonical.starts_with(r))
 }
 

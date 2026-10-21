@@ -96,6 +96,7 @@ describe('Agent activity detection UI', () => {
     // root is implicitly trusted. Seeding the persisted root list makes the
     // add a no-op that skips the backend's blocking confirmation dialog.
     // Fire-and-forget: it takes effect before the spawn below.
+    const trustDir = e2eTrustRoot('agent-badges')
     await seedTrustedRoots(browser, [trustDir])
     await trustViaProjectRoot(browser)
 
