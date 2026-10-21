@@ -631,6 +631,53 @@ mod tests {
         std::fs::remove_dir_all(&temp).ok();
     }
 
+    /// The first-run ordering contract from the 2026-10-19 plan (§1): a PTY
+    /// spawn that validates its cwd BEFORE the user-picked workspace root is
+    /// trusted is denied deterministically — while the same path is accepted
+    /// immediately after the root lands in the store. This is the
+    /// deterministic-in-release failure PR #8 fixed by reordering the
+    /// Launch handler (trust await before add_space/mount); the test pins
+    /// the validation layer's half of that contract so a future regression
+    /// in either half fails loudly.
+    #[test]
+    fn spawn_before_trust_denies_and_trust_then_spawn_passes() {
+        let store = athena_store::KeyValueStore::new_empty();
+        // A temp dir stands in for the user-picked workspace. It must be
+        // outside the project root for the test to mean anything; if the
+        // test happens to physically run inside the project tree (unusual),
+        // skip rather than assert a vacuous contract.
+        let temp = std::env::temp_dir().join("athena_ordering_contract");
+        std::fs::create_dir_all(&temp).unwrap();
+        let canon = temp.canonicalize().unwrap();
+        let project_root = get_workspace_root().ok();
+        if project_root.as_ref().is_some_and(|r| canon.starts_with(r)) {
+            std::fs::remove_dir_all(&temp).ok();
+            return; // vacuous on this machine — CI's Ubuntu runner is the prover
+        }
+
+        // 1. Spawn-before-trust: the exact first-run state — the store has
+        //    NO trusted roots yet (validate_cwd hits this path with a fresh
+        //    store, before workspace_add_trusted_root persists anything).
+        let pre = validate_path_exists(&store, &canon);
+        assert!(
+            matches!(&pre, Err(CommandError::PermissionDenied(msg)) if msg == "Path is outside the workspace"),
+            "spawn before trust must deny deterministically, got: {pre:?}"
+        );
+
+        // 2. Trust-then-spawn: persist the root exactly as
+        //    workspace_add_trusted_root does, then the same spawn validates.
+        let mut roots = load_trusted_roots(&store);
+        roots.push(canon.clone());
+        let strs: Vec<String> = roots
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        store.set_sync(TRUSTED_ROOTS_KEY, &strs).unwrap();
+        assert!(validate_path_exists(&store, &canon).is_ok());
+
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
     #[test]
     fn validate_path_exists_accepts_trusted_root_outside_project() {
         // Simulates the bug report: a Space dir outside the app's project root
