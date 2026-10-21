@@ -2,6 +2,26 @@
 
 All notable changes to Athena's Core. Format: grouped conventional-commit entries per release window; newest first. Release windows are seeded from git history; a release lands as a new `## [vX.Y.Z] — <date>` heading.
 
+## [v3.5.1] — 2026-10-21
+
+### fix
+- fix(workspace): await trust before mounting terminal panes on first launch (6137ec3)
+- fix(terminal): keep panes pinned across resize; no-op trust for already-trusted dirs (2295e15)
+- fix(ci): register output_capture_set_consumer in build.rs; silence Linux-only cfg orphans (198656e)
+- fix(ci): patch rustls-webpki 0.103.16 and webpki-roots 1.0.10 (RUSTSEC-2026-0381/0382) (0cb6efe)
+
+### perf
+- perf(build): compile the Dioxus frontend crate at opt-level 3; release logs at Info (e13a42a)
+- perf(capture): gate output-capture:batch emission on registered consumers (bba3581)
+- perf(scanner): needle-gate the resume-id search on the scan window (c9b6f42)
+- perf(xterm): paint only dirty rows per output flush; dedup the viewport read (22fb460)
+- perf(sandbox): cache the resolved workspace root after first lookup (8bfdbc5)
+- perf(boot): load terminal vendor scripts on first pane mount (5f5012c)
+
+### test
+- test(e2e): new-terminal blackout regression spec (93b1744)
+- test(e2e): restore trustDir definition dropped by 810238a (0e889e2)
+
 ## [v3.5.0] — 2026-10-19
 
 ### feat

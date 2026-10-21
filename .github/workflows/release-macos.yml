@@ -14,7 +14,7 @@ on:
       version:
         description: 'Version to build for a manual dispatch (for example 0.3.0)'
         required: true
-        default: '3.5.0'
+        default: '3.5.1'
         type: string
 
 permissions:
