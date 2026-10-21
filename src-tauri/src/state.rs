@@ -1134,6 +1134,9 @@ impl AppState {
     /// targets (the badge path falls back to a harmless no-op elsewhere).
     fn wire_notification_events(&self) {
         let service = Arc::clone(&self.notification_service);
+        // Read only by the macOS dock-badge block below; the Arc clone is
+        // cheap and the binding stays for the macOS path.
+        #[cfg(target_os = "macos")]
         let service_for_closure = Arc::clone(&service);
         let handle = match self.app_handle.lock().clone() {
             Some(h) => h,
@@ -1180,26 +1183,6 @@ impl AppState {
                         }
                     }
 
-                    let title = data
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Agent")
-                        .to_string();
-                    let body = data
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let ntype = data
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("info")
-                        .to_string();
-                    let sound = match ntype.as_str() {
-                        "needs_input" => "Sosumi",
-                        "task_error" | "error" => "Basso",
-                        _ => "Glass",
-                    };
                     #[cfg(target_os = "macos")]
                     {
                         // `.show()` reaches UNUserNotificationCenter through
@@ -1213,6 +1196,26 @@ impl AppState {
                         // orphaned every pane shell. `request_permission`
                         // above needs no guard: its desktop impl is a no-op
                         // that returns Granted.
+                        let title = data
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Agent")
+                            .to_string();
+                        let body = data
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let ntype = data
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("info")
+                            .to_string();
+                        let sound = match ntype.as_str() {
+                            "needs_input" => "Sosumi",
+                            "task_error" | "error" => "Basso",
+                            _ => "Glass",
+                        };
                         if process_is_bundled_macos_app() {
                             use tauri_plugin_notification::NotificationExt;
                             if let Err(e) = handle

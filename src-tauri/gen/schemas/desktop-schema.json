@@ -831,6 +831,12 @@
           "markdownDescription": "Enables the output_buffer_list command without any pre-configured scope."
         },
         {
+          "description": "Enables the output_capture_set_consumer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-output-capture-set-consumer",
+          "markdownDescription": "Enables the output_capture_set_consumer command without any pre-configured scope."
+        },
+        {
           "description": "Enables the plan_get command without any pre-configured scope.",
           "type": "string",
           "const": "allow-plan-get",
@@ -1801,6 +1807,12 @@
           "type": "string",
           "const": "deny-output-buffer-list",
           "markdownDescription": "Denies the output_buffer_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the output_capture_set_consumer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-output-capture-set-consumer",
+          "markdownDescription": "Denies the output_capture_set_consumer command without any pre-configured scope."
         },
         {
           "description": "Denies the plan_get command without any pre-configured scope.",
@@ -4771,24 +4783,6 @@
           "type": "string",
           "const": "shell:deny-stdin-write",
           "markdownDescription": "Denies the stdin_write command without any pre-configured scope."
-        },
-        {
-          "description": "Default permissions for the WebDriver plugin\n#### This default permission set includes:\n\n- `allow-resolve`",
-          "type": "string",
-          "const": "webdriver-automation:default",
-          "markdownDescription": "Default permissions for the WebDriver plugin\n#### This default permission set includes:\n\n- `allow-resolve`"
-        },
-        {
-          "description": "Enables the resolve command without any pre-configured scope.",
-          "type": "string",
-          "const": "webdriver-automation:allow-resolve",
-          "markdownDescription": "Enables the resolve command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the resolve command without any pre-configured scope.",
-          "type": "string",
-          "const": "webdriver-automation:deny-resolve",
-          "markdownDescription": "Denies the resolve command without any pre-configured scope."
         },
         {
           "description": "This permission set configures what kind of\noperations are available from the window state plugin.\n\n#### Granted Permissions\n\nAll operations are enabled by default.\n\n\n#### This default permission set includes:\n\n- `allow-filename`\n- `allow-restore-state`\n- `allow-save-window-state`",

@@ -24,6 +24,8 @@ use tauri::State;
 /// realtime audio callback never allocates per frame.
 const MAX_CAPTURE_SAMPLES: usize = 60 * 16_000;
 /// Below this peak amplitude the capture is treated as silence.
+/// Read only by the macOS capture arm; other targets compile that out.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SILENCE_PEAK: f32 = 0.005;
 
 /// A live voice capture session. `Send + Sync` even though the cpal stream is
@@ -35,8 +37,13 @@ pub struct VoiceRecording {
     /// Joined on stop so the final sample is in before we read the buffer.
     join: Option<std::thread::JoinHandle<()>>,
     /// f32 samples written by the realtime audio callback.
+    /// Read only by the macOS transcription arm (voice_record_stop); the
+    /// non-macOS stop path drains the session without reading samples.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     samples: Arc<parking_lot::Mutex<Vec<f32>>>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     sample_rate: u32,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     channels: u16,
 }
 

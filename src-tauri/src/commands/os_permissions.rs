@@ -10,9 +10,17 @@ use super::CommandError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionStatus {
+    /// Constructed only by the macOS TCC mappers; on other targets every row
+    /// reports NotApplicable. Part of the serialized frontend contract, so
+    /// the variants stay — the allow mirrors the NotApplicable rationale
+    /// (CI's Ubuntu runner compiles the mappers out).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Granted,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Denied,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     NotDetermined,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Unknown,
     /// Platform/feature has no such permission concept (non-macOS build or
     /// `voice` feature off). Constructed only under those cfgs; the variant
