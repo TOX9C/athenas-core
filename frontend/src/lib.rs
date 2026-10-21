@@ -39,6 +39,7 @@ use components::shared::icon::{
 use components::shared::illustration::CoreMark;
 use components::shared::link_chooser::LinkChooser;
 use components::shared::metrics_badge::MetricsBadge;
+use components::shared::resources_pill::ResourcesPill;
 use components::shared::modal::provide_modal_overlay_store;
 use components::shared::toast::{provide_toast_store, ToastContainer};
 use components::sidebar::Sidebar;
@@ -1052,6 +1053,7 @@ pub fn App() -> Element {
                 if metrics_enabled {
                     MetricsBadge {}
                 }
+                ResourcesPill {}
                 span {
                     style: "display: inline-flex; align-items: center; gap: 5px; color: var(--accent); font-weight: 600;",
                     span { style: "width: 5px; height: 5px; border-radius: 50%; background: var(--accent);" }
