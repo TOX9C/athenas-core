@@ -404,13 +404,18 @@ fn resource_stats_inner(renderer_footprint_bytes: Option<u64>) -> Result<FamilyS
     return macos::collect_family(renderer_footprint_bytes);
 
     #[cfg(not(target_os = "macos"))]
-    return platform::collect_family(None);
+    return platform::collect_family(renderer_footprint_bytes);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // The macOS numerics tests: on Linux, resource_stats_inner dispatches to
+    // the platform stub that deliberately returns Err, so these must not run
+    // there (they PANICKED in CI before the gate — the stub path was never
+    // exercised by them). Kept in lockstep with macos::collect_family.
+    #[cfg(target_os = "macos")]
     #[test]
     fn family_includes_self_and_shells() {
         // The unit test runs inside a spawned test binary child of the shell
@@ -420,6 +425,7 @@ mod tests {
         assert!(snap.total_rss_bytes > 0);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn totals_include_test_process_footprint() {
         let snap = resource_stats_inner(None).expect("stats");
@@ -431,9 +437,20 @@ mod tests {
         assert!(snap.total_rss_bytes > 0);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn fallback_identifies_process_family_without_panicking() {
         let snap = resource_stats_inner(Some(512 * 1024 * 1024)).expect("stats");
         assert!(snap.total_footprint_bytes > 0);
+    }
+
+    // The non-macOS contract: the command is registered and callable, but
+    // collect_family reports unimplemented instead of panicking — CI's
+    // Ubuntu runner exercises exactly this path.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_stub_reports_unimplemented_without_panicking() {
+        let err = resource_stats_inner(None).expect_err("stub must Err on non-macOS");
+        assert!(err.contains("only implemented on macOS"), "unexpected error: {err}");
     }
 }

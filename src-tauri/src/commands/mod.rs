@@ -30,7 +30,6 @@ pub(crate) mod plugin_callbacks;
 mod provider_config;
 mod pty;
 mod resources;
-mod resources;
 #[cfg(feature = "relay")]
 pub(crate) mod relay;
 mod resume;
