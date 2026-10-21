@@ -39,7 +39,8 @@ pub(crate) fn register_live_terminal(mount_id: &str, term_val: &JsValue) {
         set.borrow_mut().remove(mount_id);
     });
     LIVE_TERMINALS.with(|live| {
-        live.borrow_mut().insert(mount_id.to_string(), term_val.clone());
+        live.borrow_mut()
+            .insert(mount_id.to_string(), term_val.clone());
     });
 }
 
@@ -105,7 +106,8 @@ pub(crate) fn focus_live_terminal(mount_id: &str) -> bool {
     let term = LIVE_TERMINALS.with(|live| live.borrow().get(mount_id).cloned());
     let Some(term) = term else {
         web_sys::console::warn_1(
-            &format!("[XtermMount] focus_live_terminal: no live terminal for pane {mount_id}").into(),
+            &format!("[XtermMount] focus_live_terminal: no live terminal for pane {mount_id}")
+                .into(),
         );
         return false;
     };
@@ -133,6 +135,38 @@ pub(crate) const FOLLOW_BOTTOM_WINDOW_MS: f64 = 3200.0;
 /// bottom-following when a fit captures its intent. Redraw bursts can leave
 /// `viewportY < baseY` for a frame or two; those panes must still follow.
 pub(crate) const RECENT_BOTTOM_WINDOW_MS: f64 = 1500.0;
+/// Guard window during which `scroll` events are programmatic (ours), not
+/// user gestures. `scrollToBottom`/`scrollToLine` fire a native `scroll` event
+/// on the viewport synchronously inside the call; the mount's scroll-cancel
+/// listener would zero follow intent for the reflow the app itself caused —
+/// stranding a bottom-following pane mid-buffer after a resize (the
+/// layout-scroll resize regression).
+///
+/// Expiry direction: if WKWebView ever dispatches our scroll event LATER
+/// than this window, the guard misses and the listener classifies it as a
+/// user gesture — follow intent is cancelled and the pane strands off-bottom
+/// after a resize (the exact symptom: layout-scroll-regression "keeps panes
+/// pinned across an app-window resize" fails on atBottom=false). That flake,
+/// and ONLY that flake, is the signal to bump this constant — never shrink it
+/// hoping to catch user gestures faster; a slightly-late user gesture is
+/// harmless here (it just keeps follow armed for another 120 ms).
+pub(crate) const PROGRAMMATIC_SCROLL_GRACE_MS: f64 = 120.0;
+
+thread_local! {
+    static LAST_PROGRAMMATIC_SCROLL_AT: Cell<f64> = const { Cell::new(f64::MIN) };
+}
+
+/// Mark the current instant as programmatic scrolling. Call immediately
+/// before invoking xterm scroll APIs that mutate viewport scrollTop.
+pub(crate) fn arm_programmatic_scroll() {
+    LAST_PROGRAMMATIC_SCROLL_AT.with(|t| t.set(js_sys::Date::now()));
+}
+
+/// True when a recent `scroll` event is attributable to our own
+/// `scrollToBottom`/`scrollToLine` (inside the grace window).
+pub(crate) fn is_programmatic_scroll() -> bool {
+    js_sys::Date::now() - LAST_PROGRAMMATIC_SCROLL_AT.with(Cell::get) < PROGRAMMATIC_SCROLL_GRACE_MS
+}
 
 /// Classic scrollbar width for the selected pane's terminal, in CSS pixels.
 /// Mirrors `.pane-content.is-active .xterm-viewport::-webkit-scrollbar { width }`
@@ -180,6 +214,7 @@ pub(crate) fn pin_scrollbar_width(term_val: &JsValue) {
 /// Scroll the terminal viewport to the bottom of the active buffer.
 /// No-op when the method is unavailable or the pane is already pinned.
 pub(crate) fn scroll_to_bottom(term_val: &JsValue) {
+    arm_programmatic_scroll();
     let Ok(method_val) = js_sys::Reflect::get(term_val, &JsValue::from_str("scrollToBottom"))
     else {
         return;
@@ -309,7 +344,10 @@ pub(crate) fn try_activate_canvas_addon(
     let ctor: js_sys::Function = ctor_val.dyn_into().ok()?;
     let instance = js_sys::Reflect::construct(&ctor, &js_sys::Array::new()).ok()?;
     let activate_fn: js_sys::Function =
-        js_sys::Reflect::get(&instance, &JsValue::from_str("activate")).ok()?.dyn_into().ok()?;
+        js_sys::Reflect::get(&instance, &JsValue::from_str("activate"))
+            .ok()?
+            .dyn_into()
+            .ok()?;
     let _ = activate_fn.call1(&instance, term_val);
     Some(instance)
 }
@@ -331,15 +369,14 @@ pub(crate) fn wire_canvas_context_loss_logging(
         web_sys::console::warn_1(
             &"[XtermMount] Canvas 2D context lost; disposing CanvasAddon, continuing with DOM renderer".into(),
         );
-        if let Ok(dispose_fn) =
-            js_sys::Reflect::get(&addon_for_loss, &JsValue::from_str("dispose"))
-                .and_then(|v| v.dyn_into::<js_sys::Function>())
+        if let Ok(dispose_fn) = js_sys::Reflect::get(&addon_for_loss, &JsValue::from_str("dispose"))
+            .and_then(|v| v.dyn_into::<js_sys::Function>())
         {
             let _ = dispose_fn.call0(&addon_for_loss);
         }
     }) as Box<dyn FnMut(JsValue)>);
-    let _ = canvas
-        .add_event_listener_with_callback("contextlost", closure.as_ref().unchecked_ref());
+    let _ =
+        canvas.add_event_listener_with_callback("contextlost", closure.as_ref().unchecked_ref());
     Some(closure)
 }
 
@@ -433,9 +470,8 @@ pub(crate) fn wire_webgl_context_recovery(
     let window_for_loss = window.clone();
     let pane_for_loss = pane_id.to_string();
     let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: JsValue| {
-        if let Ok(dispose_fn) =
-            js_sys::Reflect::get(&addon_for_loss, &JsValue::from_str("dispose"))
-                .and_then(|v| v.dyn_into::<js_sys::Function>())
+        if let Ok(dispose_fn) = js_sys::Reflect::get(&addon_for_loss, &JsValue::from_str("dispose"))
+            .and_then(|v| v.dyn_into::<js_sys::Function>())
         {
             web_sys::console::warn_1(
                 &format!(
@@ -452,10 +488,9 @@ pub(crate) fn wire_webgl_context_recovery(
         // Middle tier: canvas renderer keeps a single-canvas paint (no DOM
         // span staleness) while WebGL is gone; if it fails too, xterm's DOM
         // fallback continues.
-        let canvas_holder: std::rc::Rc<std::cell::RefCell<Option<JsValue>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(
-                try_activate_canvas_addon(&window_for_loss, &term_for_loss),
-            ));
+        let canvas_holder: std::rc::Rc<std::cell::RefCell<Option<JsValue>>> = std::rc::Rc::new(
+            std::cell::RefCell::new(try_activate_canvas_addon(&window_for_loss, &term_for_loss)),
+        );
         if let Some(c) = canvas_holder.borrow().as_ref() {
             if let Some(cl) = wire_canvas_context_loss_logging(c) {
                 cl.forget();
@@ -490,9 +525,8 @@ pub(crate) fn wire_webgl_context_recovery(
         let restored = wasm_bindgen::closure::Closure::once(move |_: JsValue| {
             // Drop the interim canvas renderer before re-attaching WebGL.
             if let Some(c) = canvas_holder.borrow_mut().take() {
-                if let Ok(dispose_fn) =
-                    js_sys::Reflect::get(&c, &JsValue::from_str("dispose"))
-                        .and_then(|v| v.dyn_into::<js_sys::Function>())
+                if let Ok(dispose_fn) = js_sys::Reflect::get(&c, &JsValue::from_str("dispose"))
+                    .and_then(|v| v.dyn_into::<js_sys::Function>())
                 {
                     let _ = dispose_fn.call0(&c);
                 }
@@ -545,8 +579,7 @@ pub(crate) fn wire_webgl_context_recovery(
             &opts,
         );
         restored.forget();
-    })
-        as Box<dyn FnMut(JsValue)>);
+    }) as Box<dyn FnMut(JsValue)>);
     let _ = on_loss_fn.call1(webgl_addon, closure.as_ref().unchecked_ref());
     Some(closure)
 }
@@ -566,9 +599,7 @@ pub(crate) fn watch_dpr_change(on_change: Rc<dyn Fn()>, active: Rc<RefCell<bool>
             return;
         };
         let dpr = window.device_pixel_ratio();
-        let Ok(Some(media)) =
-            window.match_media(&format!("(resolution: {}dppx)", dpr))
-        else {
+        let Ok(Some(media)) = window.match_media(&format!("(resolution: {}dppx)", dpr)) else {
             return;
         };
         let rearm = on_change.clone();
@@ -736,11 +767,8 @@ pub(crate) fn attach_kitty_graphics(term_val: &JsValue, respond_js: &JsValue) ->
         .filter(|v| !v.is_null() && !v.is_undefined());
     if let Some(addon) = attached {
         if let Ok(feed_fn) = js_sys::Reflect::get(&addon, &JsValue::from_str("feed")) {
-            let _ = js_sys::Reflect::set(
-                term_val,
-                &JsValue::from_str("__athenaKittyFeed"),
-                &feed_fn,
-            );
+            let _ =
+                js_sys::Reflect::set(term_val, &JsValue::from_str("__athenaKittyFeed"), &feed_fn);
         }
         return js_sys::Reflect::set(term_val, &JsValue::from_str("__athenaKitty"), &addon)
             .ok()
@@ -756,10 +784,7 @@ pub(crate) fn attach_kitty_graphics(term_val: &JsValue, respond_js: &JsValue) ->
 /// overlays to the exact image block through scroll and reflow. Last-resort
 /// path used when the JS feed filter is not attached.
 pub(crate) fn strip_kitty_placeholder_bytes(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
-    if bytes
-        .windows(4)
-        .all(|w| w != [0xf4, 0x8e, 0xbb, 0xae])
-    {
+    if bytes.windows(4).all(|w| w != [0xf4, 0x8e, 0xbb, 0xae]) {
         return std::borrow::Cow::Borrowed(bytes);
     }
     let mut out = Vec::with_capacity(bytes.len() / 4);
@@ -1028,6 +1053,7 @@ pub(crate) fn capture_viewport(term_val: &JsValue) -> ViewportState {
 
 /// Restore the visible position after xterm has applied a new geometry.
 pub(crate) fn restore_viewport(term_val: &JsValue, state: ViewportState) {
+    arm_programmatic_scroll();
     let method = if state.at_bottom {
         "scrollToBottom"
     } else {
@@ -1310,9 +1336,7 @@ pub(crate) fn schedule_fit(
                 *viewport_for_refresh_fallback.borrow_mut() = None;
             }
             *pending_for_refresh_fallback.borrow_mut() = false;
-            if dirty_for_refresh_fallback.replace(false)
-                && *active_for_refresh_fallback.borrow()
-            {
+            if dirty_for_refresh_fallback.replace(false) && *active_for_refresh_fallback.borrow() {
                 // The follow-up pair reveals at its own tail; don't unfreeze
                 // here or the blank/reflow window becomes visible again.
                 schedule_fit(
@@ -1553,7 +1577,10 @@ pub(crate) fn reset_glyph_atlas(term_val: &JsValue) {
     if !siblings.is_empty() {
         crate::tauri_bridge::log_to_backend(
             "info",
-            &format!("[xterm] atlas reset; repairing {} sibling pane(s)", siblings.len()),
+            &format!(
+                "[xterm] atlas reset; repairing {} sibling pane(s)",
+                siblings.len()
+            ),
         );
         for sibling in siblings {
             let _ = call0(&sibling, "clearTextureAtlas");
@@ -1568,15 +1595,11 @@ pub(crate) fn reset_glyph_atlas(term_val: &JsValue) {
 /// synchronous sibling repair repaint (O(panes × viewport)) on every
 /// "Add Shell". Only a first mount (or config change) needs the full reset
 /// for font settle.
-pub(crate) fn reset_glyph_atlas_for_mount(
-    term_val: &JsValue,
-    font_family: &str,
-    font_size: f64,
-) {
+pub(crate) fn reset_glyph_atlas_for_mount(term_val: &JsValue, font_family: &str, font_size: f64) {
     let sibling_with_same_config = LIVE_TERMINALS.with(|live| {
-        live.borrow()
-            .iter()
-            .any(|(_, t)| !js_sys::Object::is(t, term_val) && same_font_config(t, font_family, font_size))
+        live.borrow().iter().any(|(_, t)| {
+            !js_sys::Object::is(t, term_val) && same_font_config(t, font_family, font_size)
+        })
     });
     if sibling_with_same_config {
         return; // atlas already settled by the sibling; plain fit() suffices
@@ -1721,8 +1744,9 @@ pub(crate) async fn wait_for_container_size(container: &web_sys::Element) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_container_sized, is_valid_terminal_dimensions, poll_container_size, strip_kitty_placeholder_bytes, strip_kitty_placeholders,
-        ContainerSizePoll, CONTAINER_SIZE_RETRIES, SCROLLBAR_WIDTH,
+        is_container_sized, is_valid_terminal_dimensions, poll_container_size,
+        strip_kitty_placeholder_bytes, strip_kitty_placeholders, ContainerSizePoll,
+        CONTAINER_SIZE_RETRIES, SCROLLBAR_WIDTH,
     };
 
     #[test]
@@ -1771,7 +1795,10 @@ mod tests {
         // Dangling diacritic lead at chunk end is dropped, not leaked.
         let mut dangling = b"x".to_vec();
         dangling.extend_from_slice(&[0xf4, 0x8e, 0xbb, 0xae, 0xcc]);
-        assert_eq!(strip_kitty_placeholder_bytes(&dangling).as_ref(), b"x\xc2\xa0");
+        assert_eq!(
+            strip_kitty_placeholder_bytes(&dangling).as_ref(),
+            b"x\xc2\xa0"
+        );
         // No placeholders → borrowed unchanged.
         assert!(matches!(
             strip_kitty_placeholder_bytes(b"plain"),

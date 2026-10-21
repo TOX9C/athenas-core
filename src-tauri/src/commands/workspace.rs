@@ -88,6 +88,18 @@ pub async fn workspace_add_trusted_root(
     if roots.iter().any(|r| r == &canonical) {
         return Ok(());
     }
+    // Descendant of an already-trusted root (the app's own project root or a
+    // user-trusted parent): no dialog. No-op instead of prompting: the
+    // exact-match check above only covers equality, so launching a Space
+    // in a project subfolder used to prompt for a folder the sandbox
+    // already accepts — and in e2e (wdio cannot click native dialogs)
+    // the blocking_show hung Launch Space forever, no panes ever spawned.
+    if super::is_within_any_root(
+        &canonical,
+        &super::effective_roots_from(&state.store, super::get_workspace_root()).unwrap_or_default(),
+    ) {
+        return Ok(());
+    }
 
     // Backend-enforced user gesture: the exact canonical directory the
     // renderer (or relay) asked to bless is shown in a native dialog, and the
@@ -175,4 +187,26 @@ pub fn workspace_list_trusted_roots(state: State<'_, AppState>) -> Vec<String> {
         .into_iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::is_within_any_root;
+
+    #[test]
+    fn descendant_of_project_root_is_within_effective_roots() {
+        // A Space dir inside the repo (e.g. .e2e-sandbox/...) must count as
+        // already-trusted so `workspace_add_trusted_root` no-ops before its
+        // blocking dialog instead of hanging headless launches.
+        let roots = vec![std::path::PathBuf::from("/Users/x/proj")];
+        let sub = std::path::Path::new("/Users/x/proj/.e2e-sandbox/spec");
+        assert!(is_within_any_root(sub, &roots));
+    }
+
+    #[test]
+    fn sibling_outside_roots_still_needs_dialog() {
+        let roots = vec![std::path::PathBuf::from("/Users/x/proj")];
+        let sibling = std::path::Path::new("/Users/x/other");
+        assert!(!is_within_any_root(sibling, &roots));
+    }
 }

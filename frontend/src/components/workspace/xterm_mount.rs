@@ -2,9 +2,8 @@ use crate::stores::terminal::{use_terminal_registry, use_terminal_store};
 use crate::stores::ui::use_ui_store;
 use crate::stores::workspace::{use_workspace_store, AgentType};
 use crate::tauri_bridge::{
-    pty_attach_listener, pty_default_shell_cached, pty_detach_listener,
-    pty_has_session, pty_listen_raw, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent,
-    read_clipboard_text,
+    pty_attach_listener, pty_default_shell_cached, pty_detach_listener, pty_has_session,
+    pty_listen_raw, pty_resize, pty_set_xterm, pty_spawn, pty_spawn_agent, read_clipboard_text,
 };
 use crate::utils::agent_commands::get_agent_command;
 use crate::utils::open_link::request_link_open;
@@ -19,21 +18,17 @@ use wasm_bindgen::JsCast;
 #[path = "xterm_helpers.rs"]
 pub(crate) mod xterm_helpers;
 use xterm_helpers::{
-    attach_kitty_graphics, call_fit, capture_screen_canvas, filter_graphics_for_term,
-    capture_viewport, force_redraw, freeze_screen, is_valid_terminal_dimensions, read_css_var,
-    register_live_terminal, render_dirty_rows_sync, render_visible_rows_sync,
-    reset_glyph_atlas, reset_glyph_atlas_by_id,
-    reset_glyph_atlas_for_mount,
-    evict_stale_live_terminal, pane_was_evicted,
-    restore_term_from_session, restore_viewport, unfreeze_screen_now, unregister_live_terminal,
-    schedule_fit, scroll_to_bottom, serialize_buffer,
-    try_activate_addon, try_activate_canvas_addon, try_activate_web_links_addon,
-    try_activate_webgl_addon,
-    watch_dpr_change, wire_canvas_context_loss_logging,
-    wire_webgl_context_recovery,
-    strip_kitty_placeholders, wait_for_container_size, wait_for_font_ready, write_bytes_to_term,
+    attach_kitty_graphics, call_fit, capture_screen_canvas, capture_viewport,
+    evict_stale_live_terminal, filter_graphics_for_term, force_redraw, freeze_screen,
+    is_programmatic_scroll, is_valid_terminal_dimensions, pane_was_evicted, pin_scrollbar_width,
+    read_css_var, register_live_terminal, render_dirty_rows_sync, render_visible_rows_sync,
+    reset_glyph_atlas, reset_glyph_atlas_by_id, reset_glyph_atlas_for_mount,
+    restore_term_from_session, restore_viewport, schedule_fit, scroll_to_bottom, serialize_buffer,
+    strip_kitty_placeholders, try_activate_addon, try_activate_canvas_addon,
+    try_activate_web_links_addon, try_activate_webgl_addon, unfreeze_screen_now,
+    unregister_live_terminal, wait_for_container_size, wait_for_font_ready, watch_dpr_change,
+    wire_canvas_context_loss_logging, wire_webgl_context_recovery, write_bytes_to_term,
     write_str_to_term, ViewportState,
-    pin_scrollbar_width,
 };
 
 // Last painted frame per pane, captured in `use_drop` before `dispose()`.
@@ -734,12 +729,17 @@ pub fn XtermMount(
     // drop time — a teardown read cannot distinguish "user scrolled up" from
     // "container is being torn down". The next mount replays this after its
     // snapshot write so a remount lands at the saved scroll position.
-    let live_viewport: Rc<RefCell<ViewportState>> =
-        use_hook(|| Rc::new(RefCell::new(ViewportState { at_bottom: true, distance_from_bottom: 0 })));
+    let live_viewport: Rc<RefCell<ViewportState>> = use_hook(|| {
+        Rc::new(RefCell::new(ViewportState {
+            at_bottom: true,
+            distance_from_bottom: 0,
+        }))
+    });
     // Transient handoff: the replay path stashes the persisted position here
     // and the write-callback consumes it after the snapshot parses. Fresh per
     // mount (use_hook), so a remount never inherits a stale restore.
-    let replay_restore: Rc<RefCell<Option<ViewportState>>> = use_hook(|| Rc::new(RefCell::new(None)));
+    let replay_restore: Rc<RefCell<Option<ViewportState>>> =
+        use_hook(|| Rc::new(RefCell::new(None)));
     // Raw bytes may arrive as soon as the native listener is installed, but
     // xterm must not paint them until its initial fit and matching PTY resize
     // have completed. This closes the startup/remount paint-order race.
@@ -1086,8 +1086,9 @@ pub fn XtermMount(
             // promise. A missing loader (older shell html, plain-browser
             // dev) falls through — the eager <script defer> era is gone but
             // the check costs one Reflect read.
-            let loader_val = js_sys::Reflect::get(&window, &JsValue::from_str("__xtermAddonsReady"))
-                .unwrap_or(JsValue::UNDEFINED);
+            let loader_val =
+                js_sys::Reflect::get(&window, &JsValue::from_str("__xtermAddonsReady"))
+                    .unwrap_or(JsValue::UNDEFINED);
             if let Ok(loader) = loader_val.dyn_into::<js_sys::Function>() {
                 if let Ok(ready_promise) = loader.call0(&window) {
                     if let Ok(promise) = ready_promise.dyn_into::<js_sys::Promise>() {
@@ -1377,19 +1378,29 @@ pub fn XtermMount(
             // the user took over the viewport — cancel follow-bottom so we do
             // not pin back to the bottom mid-gesture. Passive so scrolling
             // stays on the compositor thread.
-            let scroll_cancel_make = |follow_cell: Rc<Cell<f64>>,
-                                      live_viewport_cell: Rc<RefCell<ViewportState>>,
-                                      term_for_scroll: JsValue| {
-                Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                    follow_cell.set(0.0);
-                    // Gesture time is the only moment the pane is demonstrably
-                    // user-driven; record where the viewport sits so a later
-                    // unmount restores the scrolled position instead of
-                    // snapping to the bottom. Mirrors flush_chunks' capture.
-                    *live_viewport_cell.borrow_mut() = capture_viewport(&term_for_scroll);
-                }) as Box<dyn FnMut(web_sys::Event)>)
-                .into_js_value()
-            };
+            let scroll_cancel_make =
+                |follow_cell: Rc<Cell<f64>>,
+                 live_viewport_cell: Rc<RefCell<ViewportState>>,
+                 term_for_scroll: JsValue| {
+                    Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                        // Programmatic reflow (our own scrollToBottom/scrollToLine
+                        // from the fit/repin path) fires this same `scroll` event.
+                        // It must NOT cancel follow intent — zeroing here during a
+                        // resize is exactly what strands a bottom-following pane
+                        // mid-buffer after the SIGWINCH reprint (the resize-case
+                        // layout-scroll regression). Still refresh live_viewport:
+                        // the position IS where the pane currently sits.
+                        if !is_programmatic_scroll() {
+                            follow_cell.set(0.0);
+                        }
+                        // Gesture time is the only moment the pane is demonstrably
+                        // user-driven; record where the viewport sits so a later
+                        // unmount restores the scrolled position instead of
+                        // snapping to the bottom. Mirrors flush_chunks' capture.
+                        *live_viewport_cell.borrow_mut() = capture_viewport(&term_for_scroll);
+                    }) as Box<dyn FnMut(web_sys::Event)>)
+                    .into_js_value()
+                };
             let scroll_wheel_js = scroll_cancel_make(
                 follow_until_for_task.clone(),
                 live_viewport_for_task.clone(),
@@ -1821,10 +1832,14 @@ pub fn XtermMount(
                     // scrollToLine/scrollToBottom can land correctly.
                     let saved_viewport = registry
                         .peek_field(&mount_id, |s| {
-                            match (s.serialized_viewport_at_bottom, s.serialized_viewport_distance) {
-                                (Some(at_bottom), Some(distance)) => {
-                                    Some(ViewportState { at_bottom, distance_from_bottom: distance })
-                                }
+                            match (
+                                s.serialized_viewport_at_bottom,
+                                s.serialized_viewport_distance,
+                            ) {
+                                (Some(at_bottom), Some(distance)) => Some(ViewportState {
+                                    at_bottom,
+                                    distance_from_bottom: distance,
+                                }),
                                 _ => None,
                             }
                         })
@@ -1937,7 +1952,8 @@ pub fn XtermMount(
                         if let Some(text) = data.as_string() {
                             enqueue_pty_input(&input_router_for_kitty, &pane_id_for_kitty, text);
                         }
-                    }) as Box<dyn FnMut(JsValue)>);
+                    })
+                        as Box<dyn FnMut(JsValue)>);
                 let respond_js = respond_closure.into_js_value();
                 if attach_kitty_graphics(&term_val, &respond_js).is_some() {
                     // Filter installed before any flush could need it.
@@ -1970,8 +1986,7 @@ pub fn XtermMount(
                             if !*active_for_retry.borrow() {
                                 return;
                             }
-                            if attach_kitty_graphics(&term_for_retry, &respond_for_retry)
-                                .is_some()
+                            if attach_kitty_graphics(&term_for_retry, &respond_for_retry).is_some()
                             {
                                 *kitty_ready_for_retry.borrow_mut() = true;
                                 schedule_raw_flush(
@@ -2352,8 +2367,7 @@ pub fn XtermMount(
                 // Baseline for the discrete-jump freeze gate in the RO callback:
                 // None until the first observed rect, so the initial layout tick
                 // never freezes.
-                let frozen_geometry_for_ro =
-                    Rc::new(RefCell::new(None::<(f64, f64)>));
+                let frozen_geometry_for_ro = Rc::new(RefCell::new(None::<(f64, f64)>));
                 let ro_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
                     if let Some(w) = web_sys::window() {
                         if let Some(id) = ro_timer_for_cb.borrow_mut().take() {
@@ -2526,7 +2540,8 @@ pub fn XtermMount(
                                 .ok()
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
-                        let became_visible = is_intersecting && !was_visible.replace(is_intersecting);
+                        let became_visible =
+                            is_intersecting && !was_visible.replace(is_intersecting);
                         if became_visible {
                             // Rebuild the glyph atlas BEFORE refit/repaint.
                             // WKWebView can discard or corrupt the occluded
@@ -2812,8 +2827,7 @@ pub fn XtermMount(
         // Read the term's CURRENT options here, not after the push below:
         // after the push `same_font_config` would trivially match itself and
         // genuine font changes would never rebuild the atlas.
-        let current_options =
-            js_sys::Reflect::get(&term, &JsValue::from_str("options")).ok();
+        let current_options = js_sys::Reflect::get(&term, &JsValue::from_str("options")).ok();
         let term_family = current_options
             .as_ref()
             .and_then(|o| js_sys::Reflect::get(o, &JsValue::from_str("fontFamily")).ok())
@@ -3006,9 +3020,7 @@ pub fn XtermMount(
         // pane (remount race), the stale teardown must leave its channel
         // alone — otherwise kitty probe answers and keystrokes are dropped.
         let cleanup_taken = cleanup.take();
-        let input_generation = cleanup_taken
-            .as_ref()
-            .map(|c| c.input_router_generation);
+        let input_generation = cleanup_taken.as_ref().map(|c| c.input_router_generation);
         registry_for_drop
             .input_router()
             .deactivate(&mount_id_for_drop, input_generation);
