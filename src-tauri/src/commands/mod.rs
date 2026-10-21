@@ -29,6 +29,7 @@ mod plugin;
 pub(crate) mod plugin_callbacks;
 mod provider_config;
 mod pty;
+mod resources;
 #[cfg(feature = "relay")]
 pub(crate) mod relay;
 mod resume;
@@ -95,6 +96,7 @@ pub use plugin::{
     plugin_set_config, plugin_set_error, plugin_unregister,
 };
 pub use provider_config::llm_list_models;
+pub use resources::resource_stats;
 pub use pty::{
     agent_activity_acknowledge, pty_agent_info, pty_attach_listener, pty_default_shell,
     pty_detach_listener, pty_foreground_process, pty_get_cwd, pty_get_history, pty_has_session,

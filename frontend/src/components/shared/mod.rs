@@ -5,6 +5,7 @@ pub mod icon;
 pub mod illustration;
 pub mod link_chooser;
 pub mod metrics_badge;
+pub mod resources_pill;
 pub mod modal;
 pub mod toast;
 pub mod update_banner;
