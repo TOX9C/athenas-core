@@ -185,6 +185,15 @@ pub async fn fs_show_image_dialog() -> TauriResult<String> {
     invoke("fs_show_image_dialog", "{}").await
 }
 
+/// Pre-warm the native open-panel service handshake (macOS). Fire-and-forget
+/// from modal-open: the first NSOpenPanel init in a process blocks the main
+/// thread ~4.6 s on macOS 27 while launchd spawns the panel-service XPC host;
+/// warming at New Space modal open moves that block off the Browse click.
+/// Returns an error on non-macOS builds (command is cfg'd out there).
+pub async fn fs_warm_open_panel() -> TauriResult<JsValue> {
+    invoke("fs_warm_open_panel", "{}").await
+}
+
 /// Git operations (backed by the `athena-git` crate; types live in
 /// `stores::git` and mirror the Rust serde output).
 pub async fn git_discover(path: &str) -> TauriResult<Option<String>> {

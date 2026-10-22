@@ -108,6 +108,14 @@ pub fn MobileApp() -> Element {
             status.set("Pair this phone with an Athena desktop first".to_string());
             return;
         }
+        // Pre-warm the native panel service for this process (see
+        // new_space_modal.rs for the full rationale): the mobile view never
+        // opens the desktop New Space modal, so warm at bootstrap instead.
+        // The desktop app is the same process — whichever path runs first
+        // warms for both. Errors dropped: worst case is the click-time cost.
+        spawn(async move {
+            let _ = tauri_bridge::fs_warm_open_panel().await;
+        });
         // Load the chat session binding once (localStorage → existing session,
         // else a fresh "Athena Mobile" session row on the desktop backend).
         spawn(async move {

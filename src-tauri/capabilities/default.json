@@ -35,6 +35,7 @@
     "allow-fs-show-open-dialog",
     "allow-fs-show-image-dialog",
     "allow-fs-search-files",
+    "allow-fs-warm-open-panel",
     "allow-git-discover",
     "allow-git-status",
     "allow-git-diff",

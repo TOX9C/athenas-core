@@ -2,6 +2,12 @@
 
 All notable changes to Athena's Core. Format: grouped conventional-commit entries per release window; newest first. Release windows are seeded from git history; a release lands as a new `## [vX.Y.Z] — <date>` heading.
 
+## [Unreleased]
+
+### fix
+- fix(dialog): pre-warm the NSOpenPanel panel-service handshake at New Space modal open — first Browse no longer freezes the app ~5 s (macOS 27; see .plans/2026-10-22-browse-dialog-main-thread-freeze.md)
+- fix(resources): resource_stats off the main thread (async + spawn_blocking) — sync commands run inline on the main thread under wry IPC
+
 ## [v3.5.1] — 2026-10-21
 
 ### fix

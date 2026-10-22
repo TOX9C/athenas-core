@@ -102,6 +102,8 @@ fn main() {
             fs_read_file_as_base64,
             fs_show_open_dialog,
             fs_show_image_dialog,
+            #[cfg(all(target_os = "macos", feature = "panel-warm"))]
+            fs_warm_open_panel,
             fs_search_files,
             // Git
             git_discover,

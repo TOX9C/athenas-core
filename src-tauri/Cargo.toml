@@ -99,11 +99,12 @@ objc2-foundation = { version = "0.3", features = ["NSBundle", "NSError", "NSStri
 objc2-speech = { version = "0.3", optional = true }
 objc2-av-foundation = { version = "0.3", optional = true, default-features = false, features = ["AVCaptureDevice", "AVMediaFormat"] }
 objc2-user-notifications = { version = "0.3", optional = true, default-features = false, features = ["UNUserNotificationCenter", "UNNotificationSettings", "block2"] }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"] }
 
 [features]
 # Both feature groups are on by default so release behavior is unchanged;
 # they exist so minimal builds can drop the relay/mic dependency trees.
-default = ["voice", "relay"]
+default = ["voice", "relay", "panel-warm"]
 voice = [
     "dep:cpal",
     "dep:hound",
@@ -114,6 +115,10 @@ voice = [
     "dep:objc2-av-foundation",
     "dep:objc2-user-notifications",
 ]
+# Pre-warm the native open-panel service handshake at modal-open instead of
+# at the Browse click (see filesystem.rs `fs_warm_open_panel` for numbers).
+# On by default; minimal builds drop it and merely keep the old click-time cost.
+panel-warm = ["dep:objc2-app-kit"]
 relay = [
     "dep:axum",
     "dep:tower-http",

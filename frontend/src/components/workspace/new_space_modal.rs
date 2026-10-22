@@ -63,6 +63,18 @@ pub fn NewSpaceModal(props: NewSpaceModalProps) -> Element {
         }
     });
 
+    // Pre-warm the native open-panel service (macOS): the first NSOpenPanel
+    // init in this process blocks the main thread ~4.6 s (launchd spawns the
+    // panel-service XPC host on first use). Warming at modal-open pays that
+    // while the user reads the mode cards instead of at the Browse click,
+    // where it read as a 5 s whole-app freeze. Idempotent; harmless no-op
+    // elsewhere. Errors are dropped: worst case is the old click-time cost.
+    use_effect(move || {
+        spawn(async move {
+            let _ = crate::tauri_bridge::fs_warm_open_panel().await;
+        });
+    });
+
     // Swarm mode: agent slots
     let mut slots: Signal<Vec<AgentSlot>> = use_signal(|| {
         vec![

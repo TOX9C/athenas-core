@@ -460,6 +460,7 @@ dependencies = [
  "log",
  "mdns-sd",
  "objc2",
+ "objc2-app-kit",
  "objc2-av-foundation",
  "objc2-foundation",
  "objc2-speech",
