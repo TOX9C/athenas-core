@@ -4,6 +4,11 @@ All notable changes to Athena's Core. Format: grouped conventional-commit entrie
 
 ## [Unreleased]
 
+## [v3.5.3] — 2026-10-24
+
+### fix
+- fix(deps): npm audit — body-parser 2.3.0 (GHSA-27r3-jxmh-p828, high), fast-uri (GHSA-w74x-v6f9-j3xg + 3, moderate), ip-address (GHSA-rxp7-6hxx-x8q5, moderate); zod ^3.24.0 → ^4.6.7 in packages/mcp-server (GHSA-mrhx-c7xc-m3w5, high — z.object surface unchanged, 150 MCP tests green)
+
 ## [v3.5.2] — 2026-10-24
 
 ### feat
