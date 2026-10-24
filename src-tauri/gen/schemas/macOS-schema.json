@@ -609,6 +609,12 @@
           "markdownDescription": "Enables the fs_show_open_dialog command without any pre-configured scope."
         },
         {
+          "description": "Enables the fs_warm_open_panel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fs-warm-open-panel",
+          "markdownDescription": "Enables the fs_warm_open_panel command without any pre-configured scope."
+        },
+        {
           "description": "Enables the fs_write_file command without any pre-configured scope.",
           "type": "string",
           "const": "allow-fs-write-file",
@@ -1107,6 +1113,12 @@
           "markdownDescription": "Enables the relay_stop command without any pre-configured scope."
         },
         {
+          "description": "Enables the resource_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-resource-stats",
+          "markdownDescription": "Enables the resource_stats command without any pre-configured scope."
+        },
+        {
           "description": "Enables the routines_delete command without any pre-configured scope.",
           "type": "string",
           "const": "allow-routines-delete",
@@ -1585,6 +1597,12 @@
           "type": "string",
           "const": "deny-fs-show-open-dialog",
           "markdownDescription": "Denies the fs_show_open_dialog command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fs_warm_open_panel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fs-warm-open-panel",
+          "markdownDescription": "Denies the fs_warm_open_panel command without any pre-configured scope."
         },
         {
           "description": "Denies the fs_write_file command without any pre-configured scope.",
@@ -2083,6 +2101,12 @@
           "type": "string",
           "const": "deny-relay-stop",
           "markdownDescription": "Denies the relay_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the resource_stats command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-resource-stats",
+          "markdownDescription": "Denies the resource_stats command without any pre-configured scope."
         },
         {
           "description": "Denies the routines_delete command without any pre-configured scope.",

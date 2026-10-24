@@ -280,6 +280,10 @@ pub async fn fs_read_file_as_base64(
 }
 
 /// Show a native file/folder open dialog and return the selected path(s).
+///
+/// The first panel in a process pays the openAndSavePanelService handshake
+/// (~4.6 s, main thread) — callers with a UI lead-in should fire
+/// [`fs_warm_open_panel`] first (the New Space modal does on open).
 #[tauri::command]
 pub async fn fs_show_open_dialog(
     app_handle: AppHandle,
@@ -327,6 +331,38 @@ pub async fn fs_show_open_dialog(
     .map_err(|e| format!("Dialog task failed: {e}"))?;
 
     Ok(result)
+}
+
+/// Pre-warm the once-per-process `NSOpenPanel` ↔ panel-service handshake.
+///
+/// The first `NSOpenPanel` construction in a process blocks the main thread
+/// for seconds while `-[NSSavePanel _initBridgeAndStuff]` waits on
+/// `HIRunLoopSemaphore` for launchd to spawn and configure
+/// `com.apple.appkit.xpc.openAndSavePanelService` (the out-of-process panel
+/// UI host, one instance per client app). Measured on macOS 27.0 (26A428):
+/// cold 4.6 s / warm 0.15 s, paid inside `fs_show_open_dialog` at the Browse
+/// click — every webview IPC and repaint is dead for the duration.
+///
+/// Constructing one panel here, at a moment the user is not waiting for a
+/// panel (the New Space modal opening), moves that block out of the click
+/// path. Warming is process-wide: one init makes every later open/save
+/// panel (Browse, image picker) instant. Idempotent — a re-warm costs
+/// ~0.15 s. Dropping the panel does not de-warm the service.
+///
+/// See .plans/2026-10-22-browse-dialog-main-thread-freeze.md for the
+/// measured timeline and verification.
+#[cfg(all(target_os = "macos", feature = "panel-warm"))]
+#[tauri::command]
+pub async fn fs_warm_open_panel(app_handle: AppHandle) -> Result<(), String> {
+    app_handle
+        .run_on_main_thread(|| {
+            if let Some(mtm) = objc2::MainThreadMarker::new() {
+                // Handshake must run on the main thread (AppKit panel init);
+                // the brief hitch lands at modal-open instead of the click.
+                let _panel = objc2_app_kit::NSOpenPanel::openPanel(mtm);
+            }
+        })
+        .map_err(|e| format!("panel warm-up dispatch failed: {e}"))
 }
 
 /// Show a native file dialog filtered to image types (png, jpg, jpeg, gif, svg, webp).

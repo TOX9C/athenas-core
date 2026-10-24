@@ -393,9 +393,17 @@ mod platform {
 /// `invoke::<String>` + `serde_json::from_str` convention (see
 /// `pty_agent_info`): Tauri v2 hands the frontend a string payload for
 /// struct-typed results, so serializing here keeps the JS side a plain parse.
+///
+/// Async + `spawn_blocking`: sync commands execute inline on the main
+/// thread under wry's IPC delivery (see filesystem.rs `fs_exists`), and the
+/// ResourcesPill polls this every 2 s — the `proc_listallpids` +
+/// per-PID `proc_pidpath` walk (~3–5 ms today) must never land on the
+/// thread that also drives the webview and native dialogs.
 #[tauri::command]
-pub fn resource_stats(renderer_footprint_bytes: Option<u64>) -> Result<String, String> {
-    let snapshot = resource_stats_inner(renderer_footprint_bytes)?;
+pub async fn resource_stats(renderer_footprint_bytes: Option<u64>) -> Result<String, String> {
+    let snapshot = tokio::task::spawn_blocking(move || resource_stats_inner(renderer_footprint_bytes))
+        .await
+        .map_err(|e| format!("resource stats task failed: {e}"))??;
     serde_json::to_string(&snapshot).map_err(|e| format!("serialize resource_stats: {e}"))
 }
 

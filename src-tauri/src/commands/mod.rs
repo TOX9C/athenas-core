@@ -69,6 +69,8 @@ pub use filesystem::{
     fs_exists, fs_list_dir, fs_read_file, fs_read_file_as_base64, fs_search_files,
     fs_show_image_dialog, fs_show_open_dialog, fs_write_file,
 };
+#[cfg(all(target_os = "macos", feature = "panel-warm"))]
+pub use filesystem::fs_warm_open_panel;
 pub use git::{
     git_apply_file, git_apply_hunk, git_checkpoint_create, git_checkpoint_list,
     git_checkpoint_restore, git_diff, git_diff_file, git_discover, git_status, git_worktree_add,

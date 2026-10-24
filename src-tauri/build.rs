@@ -37,6 +37,7 @@ const COMMANDS: &[&str] = &[
     "fs_show_open_dialog",
     "fs_show_image_dialog",
     "fs_search_files",
+    "fs_warm_open_panel",
     "git_discover",
     "git_status",
     "git_diff",
