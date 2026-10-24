@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "athena-frontend"
-version = "3.5.1"
+version = "3.5.2"
 dependencies = [
  "athena-resume-scanner",
  "base64 0.22.1",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "athenas-core"
-version = "3.5.1"
+version = "3.5.2"
 dependencies = [
  "athena-browser",
  "athena-core",

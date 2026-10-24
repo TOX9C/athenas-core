@@ -4,9 +4,15 @@ All notable changes to Athena's Core. Format: grouped conventional-commit entrie
 
 ## [Unreleased]
 
+## [v3.5.2] — 2026-10-24
+
+### feat
+- feat(resources): status-bar ResourcesPill — live per-app RAM + CPU readout (main + WebKit renderer + PTY shells) with hover per-process breakdown; renderer attributed via launch-time proximity under WebKit's XPC reparenting (ac4a8f2, 906c65b)
+
 ### fix
 - fix(dialog): pre-warm the NSOpenPanel panel-service handshake at New Space modal open — first Browse no longer freezes the app ~5 s (macOS 27; see .plans/2026-10-22-browse-dialog-main-thread-freeze.md)
 - fix(resources): resource_stats off the main thread (async + spawn_blocking) — sync commands run inline on the main thread under wry IPC
+- test(commands): pin the first-run trust ordering contract (2026-10-19 plan §1) (cf345fa)
 
 ## [v3.5.1] — 2026-10-21
 
