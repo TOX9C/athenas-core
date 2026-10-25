@@ -433,6 +433,61 @@
       images = [];
     }
 
+    // Delete placements per kitty's `d` scope. `d` absent or "a"/"A" clears
+    // every placement (visible AND scrollback-anchored — Athena's records
+    // cannot express kitty's visible-only filter; OMP's d=A destructive
+    // reset replays the full stream right after, so this is safe). "i"/"I"
+    // clears the image with id `params.i` (optionally only placement
+    // `params.p`). Capital forms also free the transmitted data once no
+    // placement of the image remains — kitty: "The uppercase variants will
+    // delete the image data as well". "p"/"P" and the other scopes clear
+    // nothing: Athena has no cell-indexed placements, and a wrong guess
+    // here would destroy unrelated overlays.
+    function deleteImages(params) {
+      var scope = params.d || "a";
+      var id = params.i;
+      var pid = params.p;
+      if (scope === "a" || scope === "A") {
+        clearImages();
+        if (scope === "A") transmitted = {};
+        return;
+      }
+      if (scope === "i" || scope === "I") {
+        // `d=i` without `i=` names no image: deleting everything would be
+        // the exact over-deletion this fixes. Delete nothing instead.
+        if (id === undefined) return;
+        var keep = [];
+        for (var di = 0; di < images.length; di++) {
+          var img = images[di];
+          var parts = (img.pkey || "").split(":");
+          var matchId = parts[0] === String(id);
+          // `p=` narrows the delete to ONE placement of that image; without
+          // it every placement of the image goes (kitty's rule). An EMPTY
+          // p= value means absent — same truthiness as displayFrom's own
+          // `if (params.p)` gate — never a literal "" placement id.
+          var matchPid = !pid || parts[1] === String(pid);
+          if (matchId && matchPid) {
+            if (img.url) URL.revokeObjectURL(img.url);
+            if (img.el) img.el.remove();
+          } else {
+            keep.push(img);
+          }
+        }
+        images = keep;
+        // Capital I frees the stored data once no placements remain:
+        // without this, a later a=p resurrects a freed image (kitty answers
+        // ENOENT) and the decoded bytes leak for the pane's lifetime.
+        if (scope === "I") {
+          var remains = false;
+          for (var ki = 0; ki < keep.length; ki++) {
+            if ((keep[ki].pkey || "").split(":")[0] === String(id)) { remains = true; break; }
+          }
+          if (!remains) delete transmitted[String(id)];
+        }
+        return;
+      }
+    }
+
     function displayFrom(params, bytes) {
       var f = params.f || "32";
       try {
@@ -589,9 +644,13 @@
         return;
       }
       if (a === "d") {
-        // ponytail: any delete clears all overlays; OMP only uses fine-grained
-        // deletes for animations it does not emit.
-        clearImages();
+        // Kitty's `d` key selects the scope. OMP emits fine-grained deletes
+        // (a=d,d=I,i=<id> on demotion purge; its public API also defines
+        // a=d,d=i,i=<id>,p=<pid> for a single placement), so treating every
+        // delete as "delete all" wipes every overlay in the pane when one
+        // image is purged.
+        building = null; // kitty: any delete aborts a partial chunked upload
+        deleteImages(params);
         if (quiet < 1) respond("\x1b_G" + idFlag + ";OK\x1b\\");
         return;
       }
