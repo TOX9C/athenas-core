@@ -568,11 +568,14 @@ describe('xterm glyph coherence', function () {
     const paneId = paneIds[0]
 
     // Wait for this pane's kitty feed filter (attached on mount; retries
-    // until the defer-loaded addon script evaluates).
+    // until the defer-loaded addon script evaluates). The id must be baked
+    // into the string: this wdio version does not pass arguments to a
+    // waitUntil predicate, so a parameterized predicate never resolves and
+    // times out even when the filter is attached.
     await browser.waitUntil(
-      (id) =>
+      () =>
         browser.execute(
-          `return typeof ((window.__athenaTermMap || {})[${JSON.stringify(id)}] || {}).__athenaKittyFeed === 'function'`,
+          `return typeof ((window.__athenaTermMap || {})[${JSON.stringify(paneId)}] || {}).__athenaKittyFeed === 'function'`,
         ),
       { timeout: 30000, interval: 250, timeoutMsg: 'kitty feed filter never attached' },
     )
@@ -635,5 +638,68 @@ describe('xterm glyph coherence', function () {
     expect(inspect.markLine).toBe('\u00a0\u00a0\u00a0\u00a0MARK')
     // (b) the image painted into the overlay layer.
     expect(inspect.overlayChildren).toBe(1)
+  })
+
+  // Regression for the orphan-overlay bug: OMP re-places an image with the
+  // SAME p= on every TUI redraw, and the previous placement's <img> may
+  // still be decoding when its record is dropped. The addon must never
+  // append an element for a dropped record — an unpositioned element
+  // renders at natural size over the live pane (the reported overpaint).
+  it('does not leave an orphan kitty overlay when a placement is replaced', async function () {
+    this.timeout(120000)
+
+    await ensureSpaceWithShell()
+    const paneIds = await browser.execute(
+      `return (${PANE_WRAP_JS}).map((p) => p.getAttribute('data-pane-id'))`,
+    )
+    expect(paneIds.length).toBeGreaterThan(0)
+    const paneId = paneIds[0]
+    // The id must be baked into the string (see the waitUntil note above:
+    // predicates receive no arguments in this wdio version).
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          `return typeof ((window.__athenaTermMap || {})[${JSON.stringify(paneId)}] || {}).__athenaKittyFeed === 'function'`,
+        ),
+      { timeout: 30000, interval: 250, timeoutMsg: 'kitty feed filter never attached' },
+    )
+
+    const inspect = await browser.execute(
+      (id) => {
+        const term = (window.__athenaTermMap || {})[id]
+        if (!term) return { ok: false, reason: 'no term' }
+        const enc = new TextEncoder()
+        const png =
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+        const apc = enc.encode('\x1b_Ga=T,f=100,q=2,C=1,i=77,p=5,c=4,r=1;' + png + '\x1b\\')
+        const cell = enc.encode('\u{10EEEE}\u0305')
+        const payload = []
+        payload.push(...apc, ...enc.encode('\r\n'))
+        for (let n = 0; n < 4; n++) payload.push(...cell)
+        // Re-place the SAME p= while the image is still decoding.
+        payload.push(...enc.encode('\r\n'))
+        payload.push(...apc, ...enc.encode('\r\n'))
+        for (let n = 0; n < 4; n++) payload.push(...cell)
+        const filtered = term.__athenaKittyFeed(new Uint8Array(payload))
+        if (filtered) term.write(filtered)
+        const layer = term.element && term.element.querySelector('.athena-kitty-layer')
+        const kids = layer
+          ? Array.from(layer.children).map((el) => ({
+              positioned:
+                !!el.style.left && !!el.style.top && !!el.style.width && !!el.style.height,
+              display: getComputedStyle(el).display,
+            }))
+          : []
+        return { ok: true, kids }
+      },
+      paneId,
+    )
+    expect(inspect.ok).toBe(true)
+    // Every layer child must be either positioned or hidden: an element
+    // that is VISIBLE yet unpositioned is an orphan painting at natural
+    // size over the pane.
+    for (const k of inspect.kids) {
+      expect(k.positioned || k.display === 'none').toBe(true)
+    }
   })
 })
