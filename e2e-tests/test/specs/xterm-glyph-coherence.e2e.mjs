@@ -589,7 +589,7 @@ describe('xterm glyph coherence', function () {
         const ESC = String.fromCharCode(27)
         const apc = `${ESC}_Ga=T,f=100,q=2,C=1,c=4,r=2;${PNG_B64}${ESC}\\`
         const enc = new TextEncoder()
-        const cell = enc.encode('\u{10EEEE}\u0302') // one placeholder cell
+        const cell = enc.encode('\u{10EEEE}\u0305') // one placeholder cell (U+0305 = kitty canonical index 0)
         const payload = []
         payload.push(...enc.encode(apc), ...enc.encode('\r\n'))
         for (let n = 0; n < 4; n++) payload.push(...cell)
