@@ -456,7 +456,18 @@
         record.rows = params.r ? parseInt(params.r, 10) : Math.max(1, Math.ceil(naturalH / cell.h));
         record.el = el;
         record.url = url;
-        el.style.cssText = "position:absolute;object-fit:fill;";
+        el.style.cssText = "position:absolute;object-fit:fill;display:none;";
+        // A re-place with the same pkey (OMP re-emits a placement on every
+        // redraw), an a=d delete, or dispose() drops this record while its
+        // image may still be decoding. Appending the element now would leave
+        // an orphan that refresh() never positions: a full-size image painted
+        // over the pane.
+        if (images.indexOf(record) < 0) {
+          // The canvas path (f=32/24) calls finish(el, w, h) with NO url —
+          // only the f=100 path passes one. Guard the revoke.
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
         ensureLayer().appendChild(el);
         logPlace("arm", "pkey=" + pkey + " c=" + record.cols + " r=" + record.rows +
           " buf=" + armBuf + " cur=" + armCursor);
