@@ -664,7 +664,7 @@ describe('xterm glyph coherence', function () {
       { timeout: 30000, interval: 250, timeoutMsg: 'kitty feed filter never attached' },
     )
 
-    const inspect = await browser.execute(
+    const result = await browser.execute(
       (id) => {
         const term = (window.__athenaTermMap || {})[id]
         if (!term) return { ok: false, reason: 'no term' }
@@ -682,6 +682,20 @@ describe('xterm glyph coherence', function () {
         for (let n = 0; n < 4; n++) payload.push(...cell)
         const filtered = term.__athenaKittyFeed(new Uint8Array(payload))
         if (filtered) term.write(filtered)
+        return { ok: true, written: true }
+      },
+      paneId,
+    )
+    expect(result.ok).toBe(true)
+    // The layer read MUST happen after Image#onload settles: reading in the
+    // same execute as the write sees ZERO children even on the unfixed
+    // addon (verified), making the orphan assertion vacuous.
+    await browser.pause(800)
+
+    const inspect = await browser.execute(
+      (id) => {
+        const term = (window.__athenaTermMap || {})[id]
+        if (!term) return { ok: false, reason: 'no term' }
         const layer = term.element && term.element.querySelector('.athena-kitty-layer')
         const kids = layer
           ? Array.from(layer.children).map((el) => ({
@@ -695,6 +709,10 @@ describe('xterm glyph coherence', function () {
       paneId,
     )
     expect(inspect.ok).toBe(true)
+    // Non-vacuity gate: the decode+settle window must have produced at
+    // least one overlay element to inspect (headless-verified: 2 on the
+    // unfixed addon, 1 on the fixed one).
+    expect(inspect.kids.length).toBeGreaterThanOrEqual(1)
     // Every layer child must be either positioned or hidden: an element
     // that is VISIBLE yet unpositioned is an orphan painting at natural
     // size over the pane.
