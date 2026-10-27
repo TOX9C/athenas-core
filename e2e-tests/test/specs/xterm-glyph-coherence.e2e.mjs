@@ -127,6 +127,17 @@ async function measureInk(paneId, topFrac, bottomFrac) {
       const src =
         canvases.filter(isGL).sort((a, b) => b.width * b.height - a.width * a.height)[0] || null
       if (!src || !src.width || !src.height) return { paneId, ok: false }
+      // GL canvases with preserveDrawingBuffer:false read back BLACK unless
+      // the frame being read is still current: force a synchronous repaint
+      // in THIS task before drawImage, so the probe measures what the
+      // renderer paints, not compositor timing (verified in-session: the
+      // cross-task readback returned 0 ink while text was on screen).
+      try {
+        const term = (window.__athenaTermMap || {})[paneId]
+        const svc = term && term._core && term._core._renderService
+        if (svc && svc._renderRows) svc._renderRows(0, term.rows - 1)
+        else if (svc && svc.renderRows) svc.renderRows(0, term.rows - 1)
+      } catch {}
       const work = document.createElement('canvas')
       work.width = src.width
       work.height = src.height
@@ -182,6 +193,93 @@ async function measureInk(paneId, topFrac, bottomFrac) {
     paneId,
     topFrac,
     bottomFrac,
+  )
+}
+
+/// Ink pixels in terminal-ROW range [topRow, bottomRow) of a pane's
+/// renderer canvas — cursor-relative, so the ghost assertion holds at any
+/// pane height. Same forced-repaint-before-readback contract as measureInk
+/// (GL canvases read back black unless the frame being read is current).
+async function measureInkRows(paneId, topRow, bottomRow) {
+  return browser.execute(
+    (paneId, topRow, bottomRow) => {
+      const pane = document.querySelector(`.pane-wrap[data-pane-id="${paneId}"]`)
+      const canvases = Array.from(pane?.querySelectorAll('.xterm-mount canvas') || [])
+      const isGL = (c) => {
+        try {
+          return c.getContext('2d') === null
+        } catch {
+          return true
+        }
+      }
+      const src =
+        canvases.filter(isGL).sort((a, b) => b.width * b.height - a.width * a.height)[0] || null
+      if (!src || !src.width || !src.height) return { paneId, ok: false }
+      try {
+        const term = (window.__athenaTermMap || {})[paneId]
+        const svc = term && term._core && term._core._renderService
+        if (svc && svc._renderRows) svc._renderRows(0, term.rows - 1)
+        else if (svc && svc.renderRows) svc.renderRows(0, term.rows - 1)
+      } catch {}
+      const work = document.createElement('canvas')
+      work.width = src.width
+      work.height = src.height
+      const ctx = work.getContext('2d', { willReadFrequently: true })
+      if (!ctx) return { paneId, ok: false }
+      ctx.drawImage(src, 0, 0)
+      let data
+      try {
+        data = ctx.getImageData(0, 0, work.width, work.height).data
+      } catch (e) {
+        return { paneId, ok: false, err: String(e) }
+      }
+      const W = work.width
+      const H = work.height
+      const term = (window.__athenaTermMap || {})[paneId]
+      const rows = term ? term.rows : 24
+      const perRow = H / rows
+      let bg = [0, 0, 0]
+      {
+        let n = 0
+        for (let y = 0; y < Math.min(8, H); y++) {
+          for (let x = 0; x < Math.min(8, W); x++) {
+            const i = (y * W + x) * 4
+            bg[0] += data[i]
+            bg[1] += data[i + 1]
+            bg[2] += data[i + 2]
+            n++
+          }
+        }
+        bg = bg.map((v) => v / n)
+      }
+      const inkOf = (fromY, toY) => {
+        let ink = 0
+        for (let y = Math.max(0, Math.floor(fromY)); y < Math.min(H, Math.floor(toY)); y++) {
+          for (let x = 0; x < W; x += 2) {
+            const i = (y * W + x) * 4
+            const d =
+              Math.abs(data[i] - bg[0]) +
+              Math.abs(data[i + 1] - bg[1]) +
+              Math.abs(data[i + 2] - bg[2])
+            if (d > 30) ink++
+          }
+        }
+        return ink
+      }
+      return {
+        paneId,
+        ok: true,
+        w: W,
+        h: H,
+        rows,
+        bg: bg.map((v) => Math.round(v)),
+        bandInk: bottomRow > topRow ? inkOf(topRow * perRow, bottomRow * perRow) : 0,
+        totalInk: inkOf(0, H),
+      }
+    },
+    paneId,
+    topRow,
+    bottomRow,
   )
 }
 
@@ -265,6 +363,25 @@ describe('xterm glyph coherence', function () {
     const probeInstalled = await installTerminalProbe()
     expect(probeInstalled).toBe(true)
 
+    // Snapshot the pre-mount atlas reset counter AND the sibling state the
+    // mount policy branches on (see reset_glyph_atlas_for_mount, fa416cc):
+    // a new pane joining same-config siblings KEEPS the shared settled atlas
+    // (no clearTextureAtlas); only a first mount / config change resets it.
+    const pre = await browser.execute((n) => {
+      return {
+        atlasResets: window.__athenaAtlasResets ?? 0,
+        // A same-config sibling exists iff some OTHER pane already mounts a
+        // live terminal with the same font family/size the new pane will use.
+        siblingConfigs: Array.from(Object.values(window.__athenaTermMap || {}))
+          .filter((t) => t && t.options)
+          .map((t) => t.options.fontFamily + '/' + t.options.fontSize)
+          .filter((c, i, a) => a.indexOf(c) === i),
+        paneCount: document.querySelectorAll('.pane-wrap').length,
+      }
+    }, null)
+    dump.pre = pre
+    console.log('[glyph] pre-mount:', JSON.stringify(pre))
+
     const before = await browser.execute(`return (${PANE_WRAP_JS}).length`)
     await browser.execute(() => {
       Array.from(document.querySelectorAll('button'))
@@ -275,8 +392,8 @@ describe('xterm glyph coherence', function () {
       () => browser.execute(`return (${PANE_WRAP_JS}).length === ${before + 1}`),
       { timeout: 20000, interval: 250, timeoutMsg: 'Add Shell did not add a pane' },
     )
-    // Give the mount handshake (layout commit -> font settle -> atlas reset ->
-    // fit -> PTY resize -> release) room to complete on a cold pane.
+    // Give the mount handshake (layout commit -> font settle -> atlas policy
+    // -> fit -> PTY resize -> release) room to complete on a cold pane.
     await browser.pause(4000)
 
     const paneIds = await browser.execute(
@@ -286,7 +403,10 @@ describe('xterm glyph coherence', function () {
     dump.paneId = paneId
     dump.paneCount = paneIds.length
 
-    // ── 1. Ordering invariant: atlas reset precedes the first content write ──
+    // ── 1. Atlas policy (fa416cc): first mount resets before the first
+    // content write; a new pane joining same-config siblings instead JOINS
+    // the shared settled atlas (zero resets for this instance) — clearing it
+    // would force the sibling-repair repaint storm on every Add Shell.
     const ordering = await browser.execute((paneId) => {
       const probe = window.__athenaGlyphProbe
       if (!probe) return { ok: false, reason: 'probe missing' }
@@ -310,7 +430,14 @@ describe('xterm glyph coherence', function () {
     console.log('[glyph] ordering:', JSON.stringify(ordering))
     expect(ordering.ok).toBe(true)
     expect(ordering.firstWrite).not.toBe(null)
-    expect(ordering.resetBeforeFirstWrite).toBe(true)
+    // Exactly one of the two policies must hold, matching the branch the
+    // mount actually took: sibling-join (skips the reset) or first-mount
+    // (reset precedes the first write). Anything else — e.g. a reset AFTER
+    // the first write — is the original scrambled-glyph bug.
+    const joinedSharedAtlas = pre.siblingConfigs.length > 0 && ordering.resets === 0
+    const firstMountReset = pre.siblingConfigs.length === 0 && ordering.resetBeforeFirstWrite
+    dump.atlasPolicy = { joinedSharedAtlas, firstMountReset }
+    expect(joinedSharedAtlas || firstMountReset).toBe(true)
 
     // ── 2. The drawing buffer must not be preserved ─────────────────────────
     const gl = await readGLAttributes(paneId)
@@ -338,16 +465,26 @@ describe('xterm glyph coherence', function () {
       (id) =>
         window.__TAURI__.core.invoke('pty_write', {
           id,
-          data: "clear; printf '\\n\\n\\n\\n\\n\\n'\n",
+          data: "clear; printf '\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n'\n",
         }),
       paneId,
     )
     await browser.pause(2500)
-    const cleared = await measureInk(paneId, 0.02, 0.15)
+    // The cleared band must be CURSOR-RELATIVE, not a fixed canvas fraction:
+    // a 65-row pane puts the fresh prompt 10 rows down, inside any fixed
+    // 2%-15% band (that overlap — not a stale ghost — is what made this
+    // assertion fail at tall pane sizes). Measure strictly above the cursor.
+    const cursorPos = await browser.execute((id) => {
+      const term = (window.__athenaTermMap || {})[id]
+      const buf = term.buffer.active
+      return { rows: term.rows, cursorY: buf.cursorY, viewportY: buf.viewportY }
+    }, paneId)
+    dump.cursorPos = cursorPos
+    const cleared = await measureInkRows(paneId, 0, cursorPos.viewportY + cursorPos.cursorY - 2)
     dump.cleared = cleared
     console.log('[glyph] cleared:', JSON.stringify(cleared))
     expect(cleared.ok).toBe(true)
-    // Prompt is still on screen (probe alive) but the cleared band is empty.
+    // Prompt is still on screen (probe alive) but every row ABOVE it is blank.
     expect(cleared.totalInk).toBeGreaterThan(50)
     expect(cleared.bandInk).toBeLessThan(40)
 
