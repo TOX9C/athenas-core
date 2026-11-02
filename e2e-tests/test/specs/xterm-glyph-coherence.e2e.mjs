@@ -777,6 +777,98 @@ describe('xterm glyph coherence', function () {
     expect(inspect.overlayChildren).toBe(1)
   })
 
+  // Regression for the leaked-diacritic bug (the visible "unreadable glyphs"
+  // in image-bearing panes). A kitty image cell is U+10EEEE plus a row/column
+  // diacritic drawn from kitty's canonical 297-entry table. The addon replaces
+  // the placeholder with an NBSP sentinel and must CONSUME that diacritic: a
+  // hand-written RANGE table missed 16 of the 297 entries — table indices
+  // 121 and 145..155 and 280..290, i.e. hit by any image wider than ~120
+  // columns, which is every browser screenshot OMP shows — and each miss left
+  // the combining mark in the cell, where the renderer paints it as a visible
+  // glyph inside the image block. These 16 are exactly the entries the old
+  // table missed; the controls are entries it happened to cover.
+  it('consumes every kitty rowcolumn diacritic (no mark leaks into the grid)', async function () {
+    this.timeout(120000)
+
+    await ensureSpaceWithShell()
+    const paneIds = await browser.execute(
+      `return (${PANE_WRAP_JS}).map((p) => p.getAttribute('data-pane-id'))`,
+    )
+    expect(paneIds.length).toBeGreaterThan(0)
+    const paneId = paneIds[0]
+
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          `return typeof ((window.__athenaTermMap || {})[${JSON.stringify(paneId)}] || {}).__athenaKittyFeed === 'function'`,
+        ),
+      { timeout: 30000, interval: 250, timeoutMsg: 'kitty feed filter never attached' },
+    )
+
+    const CANDIDATES = [
+      // previously missed by the range table → leaked a visible mark
+      0x0827, 0x1b6b, 0x1b6d, 0x1b6e, 0x1b6f, 0x1b70, 0x1b71, 0x1b72, 0x1b73,
+      0xfe20, 0xfe21, 0xfe22, 0xfe23, 0xfe24, 0xfe25, 0xfe26,
+      // controls: real kitty entries the old table did cover
+      0x0305, 0x065a, 0x1a75,
+    ]
+
+    const fed = await browser.execute(
+      (id, cps) => {
+        const term = (window.__athenaTermMap || {})[id]
+        if (!term) return { ok: false, reason: 'no term' }
+        const ESC = String.fromCharCode(27)
+        const PNG_B64 =
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+        const enc = new TextEncoder()
+        const parts = []
+        parts.push(...enc.encode(`${ESC}_Ga=T,f=100,q=2,C=1,c=1,r=1;${PNG_B64}${ESC}\\`))
+        parts.push(...enc.encode('\r\n'))
+        // One placeholder cell per row, each carrying a different diacritic.
+        for (const cp of cps) {
+          parts.push(...enc.encode('\u{10EEEE}' + String.fromCodePoint(cp)))
+          parts.push(...enc.encode('\r\n'))
+        }
+        const filtered = term.__athenaKittyFeed(new Uint8Array(parts))
+        if (filtered) term.write(filtered)
+        return { ok: true, cells: cps.length }
+      },
+      paneId,
+      CANDIDATES,
+    )
+    expect(fed.ok).toBe(true)
+    await browser.pause(1000)
+
+    const scan = await browser.execute(
+      (id) => {
+        const term = (window.__athenaTermMap || {})[id]
+        if (!term) return { ok: false, reason: 'no term' }
+        const buf = term.buffer.active
+        const leaks = []
+        let nbsp = 0
+        for (let y = 0; y < buf.length; y++) {
+          const text = buf.getLine(y)?.translateToString(true) || ''
+          for (const ch of text) {
+            const cp = ch.codePointAt(0)
+            if (cp === 0xa0) nbsp++
+            else if (cp > 0x7e || cp < 0x20) {
+              if (leaks.length < 16) leaks.push({ y, cp: 'U+' + cp.toString(16).toUpperCase() })
+            }
+          }
+        }
+        return { ok: true, leaks, nbsp }
+      },
+      paneId,
+    )
+    console.log('[kitty] diacritic sweep:', JSON.stringify(scan))
+    expect(scan.ok).toBe(true)
+    // Nothing but ASCII + NBSP may survive in the grid.
+    expect(scan.leaks).toEqual([])
+    // Every placeholder cell became exactly one NBSP sentinel cell (that is
+    // what refresh()'s block scan looks for).
+    expect(scan.nbsp).toBeGreaterThanOrEqual(CANDIDATES.length)
+  })
+
   // Regression for the orphan-overlay bug: OMP re-places an image with the
   // SAME p= on every TUI redraw, and the previous placement's <img> may
   // still be decoding when its record is dropped. The addon must never

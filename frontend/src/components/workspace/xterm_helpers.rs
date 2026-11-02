@@ -1846,6 +1846,25 @@ mod tests {
             strip_kitty_placeholder_bytes(&bytes).as_ref(),
             b"ab\xc2\xa0\xc2\xa0cd"
         );
+        // Every table entry must be consumed at BYTE level, not just
+        // recognised by is_kitty_diacritic: the range-based predecessor
+        // missed the late entries (index >= 123, wide images), so those
+        // cells kept their mark and painted a visible glyph in the block.
+        // U+1B73 = E1 AD B3, U+FE20 = EF B8 A0, U+0827 = E0 A0 A7.
+        for cell_bytes in [
+            &[0xf4u8, 0x8e, 0xbb, 0xae, 0xe1, 0xad, 0xb3][..],
+            &[0xf4, 0x8e, 0xbb, 0xae, 0xef, 0xb8, 0xa0],
+            &[0xf4, 0x8e, 0xbb, 0xae, 0xe0, 0xa0, 0xa7],
+        ] {
+            let mut one = b"z".to_vec();
+            one.extend_from_slice(cell_bytes);
+            one.extend_from_slice(b"z");
+            assert_eq!(
+                strip_kitty_placeholder_bytes(&one).as_ref(),
+                b"z\xc2\xa0z",
+                "cell {cell_bytes:02x?} leaked its diacritic into the grid"
+            );
+        }
         // Dangling diacritic lead at chunk end is dropped, not leaked.
         let mut dangling = b"x".to_vec();
         dangling.extend_from_slice(&[0xf4, 0x8e, 0xbb, 0xae, 0xcc]);
