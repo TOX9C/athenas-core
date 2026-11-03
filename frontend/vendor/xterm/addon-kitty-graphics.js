@@ -22,32 +22,52 @@
   // marker the cursor happened to be near at placement time.
   var SENTINEL = new Uint8Array([0xc2, 0xa0]); // U+00A0 no-break space
 
-  // Kitty rowcolumn-diacritics codepoint ranges (UC6 NSM set, 297 entries).
-  // A row/column index maps into this table with no plain-ASCII gaps, so
-  // testing the decoded codepoint against these ranges is both exact and
-  // cheaper than a 297-entry lookup.
-  var DIA_RANGES = [
-    [0x305, 0x336], [0x337, 0x33a], [0x33b, 0x33c], [0x33d, 0x370],
-    [0x483, 0x489], [0x590, 0x5c7], [0x610, 0x61a], [0x64b, 0x665],
-    [0x670, 0x670], [0x6d6, 0x6ee], [0x730, 0x74a], [0x7eb, 0x7f3],
-    [0x7fd, 0x7fd], [0x816, 0x826], [0x829, 0x82d], [0x951, 0x954],
-    [0x957, 0x957], [0x9e2, 0x9e3], [0x9fe, 0x9fe], [0xa3b, 0xa3e],
-    [0xa66f, 0xa672], [0xa674, 0xa67d], [0xa69e, 0xa69f], [0xa6f0, 0xa6f1],
-    [0xa8e0, 0xa8f1], [0xaab0, 0xaac1], [0xaaf6, 0xaaf6], [0xaab7, 0xaab8],
-    [0xaabe, 0xaabf], [0xabec, 0xabed], [0xf82, 0xf87], [0x135d, 0x135f],
-    [0x17b2, 0x17b3], [0x17b4, 0x17b6], [0x17b7, 0x17bd], [0x17dd, 0x17dd],
-    [0x180b, 0x180e], [0x18a9, 0x18a9], [0x1939, 0x193b], [0x1a17, 0x1a18],
-    [0x1a1b, 0x1a1b], [0x1a56, 0x1a56], [0x1a58, 0x1a5e], [0x1a60, 0x1a60],
-    [0x1a62, 0x1a62], [0x1a65, 0x1a6c], [0x1a73, 0x1a7c], [0x1ab0, 0x1acd],
-    [0x1cd0, 0x1cf9], [0x1dc0, 0x1dff], [0x1de6, 0x1dfe], [0x20d0, 0x20f0],
-    [0x2cef, 0x2cf1], [0x2de0, 0x2dff], [0x302a, 0x302d], [0x3099, 0x309a],
-    [0xa823, 0xa827], [0xa82c, 0xa82c], [0x10a0f, 0x10a38], [0x1d185, 0x1d244]
+  // Kitty rowcolumn-diacritics table (UC6 NSM set, 297 entries), verbatim
+  // from kitty's gen/rowcolumn-diacritics.txt. The list is EXACT: an
+  // approximation silently leaks combining marks into the text grid for
+  // wide images (column index >= 123 uses codepoints a hand-written range
+  // table tends to miss), and a leaked mark paints a visible glyph inside
+  // the image block. Sorted + binary search: O(log n) per lookup.
+  var DIA_TABLE = [
+    0x0305, 0x030d, 0x030e, 0x0310, 0x0312, 0x033d, 0x033e, 0x033f, 0x0346, 0x034a,
+    0x034b, 0x034c, 0x0350, 0x0351, 0x0352, 0x0357, 0x035b, 0x0363, 0x0364, 0x0365,
+    0x0366, 0x0367, 0x0368, 0x0369, 0x036a, 0x036b, 0x036c, 0x036d, 0x036e, 0x036f,
+    0x0483, 0x0484, 0x0485, 0x0486, 0x0487, 0x0592, 0x0593, 0x0594, 0x0595, 0x0597,
+    0x0598, 0x0599, 0x059c, 0x059d, 0x059e, 0x059f, 0x05a0, 0x05a1, 0x05a8, 0x05a9,
+    0x05ab, 0x05ac, 0x05af, 0x05c4, 0x0610, 0x0611, 0x0612, 0x0613, 0x0614, 0x0615,
+    0x0616, 0x0617, 0x0657, 0x0658, 0x0659, 0x065a, 0x065b, 0x065d, 0x065e, 0x06d6,
+    0x06d7, 0x06d8, 0x06d9, 0x06da, 0x06db, 0x06dc, 0x06df, 0x06e0, 0x06e1, 0x06e2,
+    0x06e4, 0x06e7, 0x06e8, 0x06eb, 0x06ec, 0x0730, 0x0732, 0x0733, 0x0735, 0x0736,
+    0x073a, 0x073d, 0x073f, 0x0740, 0x0741, 0x0743, 0x0745, 0x0747, 0x0749, 0x074a,
+    0x07eb, 0x07ec, 0x07ed, 0x07ee, 0x07ef, 0x07f0, 0x07f1, 0x07f3, 0x0816, 0x0817,
+    0x0818, 0x0819, 0x081b, 0x081c, 0x081d, 0x081e, 0x081f, 0x0820, 0x0821, 0x0822,
+    0x0823, 0x0825, 0x0826, 0x0827, 0x0829, 0x082a, 0x082b, 0x082c, 0x082d, 0x0951,
+    0x0953, 0x0954, 0x0f82, 0x0f83, 0x0f86, 0x0f87, 0x135d, 0x135e, 0x135f, 0x17dd,
+    0x193a, 0x1a17, 0x1a75, 0x1a76, 0x1a77, 0x1a78, 0x1a79, 0x1a7a, 0x1a7b, 0x1a7c,
+    0x1b6b, 0x1b6d, 0x1b6e, 0x1b6f, 0x1b70, 0x1b71, 0x1b72, 0x1b73, 0x1cd0, 0x1cd1,
+    0x1cd2, 0x1cda, 0x1cdb, 0x1ce0, 0x1dc0, 0x1dc1, 0x1dc3, 0x1dc4, 0x1dc5, 0x1dc6,
+    0x1dc7, 0x1dc8, 0x1dc9, 0x1dcb, 0x1dcc, 0x1dd1, 0x1dd2, 0x1dd3, 0x1dd4, 0x1dd5,
+    0x1dd6, 0x1dd7, 0x1dd8, 0x1dd9, 0x1dda, 0x1ddb, 0x1ddc, 0x1ddd, 0x1dde, 0x1ddf,
+    0x1de0, 0x1de1, 0x1de2, 0x1de3, 0x1de4, 0x1de5, 0x1de6, 0x1dfe, 0x20d0, 0x20d1,
+    0x20d4, 0x20d5, 0x20d6, 0x20d7, 0x20db, 0x20dc, 0x20e1, 0x20e7, 0x20e9, 0x20f0,
+    0x2cef, 0x2cf0, 0x2cf1, 0x2de0, 0x2de1, 0x2de2, 0x2de3, 0x2de4, 0x2de5, 0x2de6,
+    0x2de7, 0x2de8, 0x2de9, 0x2dea, 0x2deb, 0x2dec, 0x2ded, 0x2dee, 0x2def, 0x2df0,
+    0x2df1, 0x2df2, 0x2df3, 0x2df4, 0x2df5, 0x2df6, 0x2df7, 0x2df8, 0x2df9, 0x2dfa,
+    0x2dfb, 0x2dfc, 0x2dfd, 0x2dfe, 0x2dff, 0xa66f, 0xa67c, 0xa67d, 0xa6f0, 0xa6f1,
+    0xa8e0, 0xa8e1, 0xa8e2, 0xa8e3, 0xa8e4, 0xa8e5, 0xa8e6, 0xa8e7, 0xa8e8, 0xa8e9,
+    0xa8ea, 0xa8eb, 0xa8ec, 0xa8ed, 0xa8ee, 0xa8ef, 0xa8f0, 0xa8f1, 0xaab0, 0xaab2,
+    0xaab3, 0xaab7, 0xaab8, 0xaabe, 0xaabf, 0xaac1, 0xfe20, 0xfe21, 0xfe22, 0xfe23,
+    0xfe24, 0xfe25, 0xfe26, 0x10a0f, 0x10a38, 0x1d185, 0x1d186, 0x1d187, 0x1d188, 0x1d189,
+    0x1d1aa, 0x1d1ab, 0x1d1ac, 0x1d1ad, 0x1d242, 0x1d243, 0x1d244,
   ];
 
   function isKittyDiacritic(cp) {
-    if (cp < 0x300) return false;
-    for (var r = 0; r < DIA_RANGES.length; r++) {
-      if (cp >= DIA_RANGES[r][0] && cp <= DIA_RANGES[r][1]) return true;
+    var lo = 0, hi = DIA_TABLE.length - 1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      var v = DIA_TABLE[mid];
+      if (v === cp) return true;
+      if (v < cp) lo = mid + 1; else hi = mid - 1;
     }
     return false;
   }
@@ -413,6 +433,61 @@
       images = [];
     }
 
+    // Delete placements per kitty's `d` scope. `d` absent or "a"/"A" clears
+    // every placement (visible AND scrollback-anchored — Athena's records
+    // cannot express kitty's visible-only filter; OMP's d=A destructive
+    // reset replays the full stream right after, so this is safe). "i"/"I"
+    // clears the image with id `params.i` (optionally only placement
+    // `params.p`). Capital forms also free the transmitted data once no
+    // placement of the image remains — kitty: "The uppercase variants will
+    // delete the image data as well". "p"/"P" and the other scopes clear
+    // nothing: Athena has no cell-indexed placements, and a wrong guess
+    // here would destroy unrelated overlays.
+    function deleteImages(params) {
+      var scope = params.d || "a";
+      var id = params.i;
+      var pid = params.p;
+      if (scope === "a" || scope === "A") {
+        clearImages();
+        if (scope === "A") transmitted = {};
+        return;
+      }
+      if (scope === "i" || scope === "I") {
+        // `d=i` without `i=` names no image: deleting everything would be
+        // the exact over-deletion this fixes. Delete nothing instead.
+        if (id === undefined) return;
+        var keep = [];
+        for (var di = 0; di < images.length; di++) {
+          var img = images[di];
+          var parts = (img.pkey || "").split(":");
+          var matchId = parts[0] === String(id);
+          // `p=` narrows the delete to ONE placement of that image; without
+          // it every placement of the image goes (kitty's rule). An EMPTY
+          // p= value means absent — same truthiness as displayFrom's own
+          // `if (params.p)` gate — never a literal "" placement id.
+          var matchPid = !pid || parts[1] === String(pid);
+          if (matchId && matchPid) {
+            if (img.url) URL.revokeObjectURL(img.url);
+            if (img.el) img.el.remove();
+          } else {
+            keep.push(img);
+          }
+        }
+        images = keep;
+        // Capital I frees the stored data once no placements remain:
+        // without this, a later a=p resurrects a freed image (kitty answers
+        // ENOENT) and the decoded bytes leak for the pane's lifetime.
+        if (scope === "I") {
+          var remains = false;
+          for (var ki = 0; ki < keep.length; ki++) {
+            if ((keep[ki].pkey || "").split(":")[0] === String(id)) { remains = true; break; }
+          }
+          if (!remains) delete transmitted[String(id)];
+        }
+        return;
+      }
+    }
+
     function displayFrom(params, bytes) {
       var f = params.f || "32";
       try {
@@ -456,7 +531,18 @@
         record.rows = params.r ? parseInt(params.r, 10) : Math.max(1, Math.ceil(naturalH / cell.h));
         record.el = el;
         record.url = url;
-        el.style.cssText = "position:absolute;object-fit:fill;";
+        el.style.cssText = "position:absolute;object-fit:fill;display:none;";
+        // A re-place with the same pkey (OMP re-emits a placement on every
+        // redraw), an a=d delete, or dispose() drops this record while its
+        // image may still be decoding. Appending the element now would leave
+        // an orphan that refresh() never positions: a full-size image painted
+        // over the pane.
+        if (images.indexOf(record) < 0) {
+          // The canvas path (f=32/24) calls finish(el, w, h) with NO url —
+          // only the f=100 path passes one. Guard the revoke.
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
         ensureLayer().appendChild(el);
         logPlace("arm", "pkey=" + pkey + " c=" + record.cols + " r=" + record.rows +
           " buf=" + armBuf + " cur=" + armCursor);
@@ -558,9 +644,13 @@
         return;
       }
       if (a === "d") {
-        // ponytail: any delete clears all overlays; OMP only uses fine-grained
-        // deletes for animations it does not emit.
-        clearImages();
+        // Kitty's `d` key selects the scope. OMP emits fine-grained deletes
+        // (a=d,d=I,i=<id> on demotion purge; its public API also defines
+        // a=d,d=i,i=<id>,p=<pid> for a single placement), so treating every
+        // delete as "delete all" wipes every overlay in the pane when one
+        // image is purged.
+        building = null; // kitty: any delete aborts a partial chunked upload
+        deleteImages(params);
         if (quiet < 1) respond("\x1b_G" + idFlag + ";OK\x1b\\");
         return;
       }
