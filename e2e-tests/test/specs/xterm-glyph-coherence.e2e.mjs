@@ -17,7 +17,7 @@
 
 import { writeFileSync } from 'node:fs'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const DUMP = '/tmp/xterm-glyph-coherence.json'
 
@@ -288,7 +288,6 @@ async function ensureSpaceWithShell() {
   // A permitted dir (the backend rejects /tmp); seeded so the add is a no-op
   // that skips the blocking confirmation dialog.
   const trustDir = e2eTrustRoot('xterm-glyph-coherence')
-  await seedTrustedRoots(browser, [trustDir])
   await trustViaProjectRoot(browser)
   await browser.pause(1500)
   const state = await browser.execute(`return ${APP_STATE_JS}`)

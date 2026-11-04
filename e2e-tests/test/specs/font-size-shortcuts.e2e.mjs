@@ -1,7 +1,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
@@ -90,7 +90,6 @@ describe('Shared font-size shortcuts', () => {
     // Seeding the persisted root list makes the add below a no-op that skips
     // the backend's blocking native confirmation dialog.
     const trustDir = e2eTrustRoot('font-size-shortcuts')
-    await seedTrustedRoots(browser, [trustDir])
     await setE2E()
     await trustViaProjectRoot(browser)
     const trusted = await browser

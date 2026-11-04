@@ -25,7 +25,7 @@
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs';
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs';
 
 const KEYRING_SERVICE = 'athena';
 const KEYRING_ACCOUNT = 'api_key';
@@ -169,7 +169,6 @@ describe('Athena chat against a stubbed OpenAI provider', () => {
     // A permitted dir (the backend rejects /tmp); seeded so the add is a
     // no-op that skips the blocking confirmation dialog.
     const trustDir = e2eTrustRoot('athena-chat-stub');
-    await seedTrustedRoots(browser, [trustDir]);
     await trustViaProjectRoot(browser);
     const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));
     if (!(await hasPill())) {

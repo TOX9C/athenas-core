@@ -13,7 +13,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -178,7 +178,6 @@ describe('Layout change viewport regression', () => {
     // skips the backend's native confirmation dialog — a root that is not
     // already persisted hits `blocking_show()` with no window to click, and
     // the invoke never returns (workspace.rs:79-100).
-    await seedTrustedRoots(browser, [repoRoot])
     await setE2E()
     await trustViaProjectRoot(browser)
     const trusted = await browser

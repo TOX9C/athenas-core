@@ -1,4 +1,4 @@
-import { e2eTrustRoot, seedTrustedRoots } from '../helpers/trust.mjs'
+import { e2eTrustRoot } from '../helpers/trust.mjs'
 
 async function clickButton(text, partial = false) {
   return browser.execute(({ text, partial }) => {
@@ -35,7 +35,6 @@ describe('Swarm lifecycle', () => {
     // `onPrepare`'s store clear removes, so it cannot be relied on. Seed a
     // permitted dir under the app root instead (see helpers/trust.mjs).
     const swarmDir = e2eTrustRoot('swarm-lifecycle')
-    await seedTrustedRoots(browser, [swarmDir])
 
 
     expect((await clickButton('New Workspace', true)).ok).toBe(true)

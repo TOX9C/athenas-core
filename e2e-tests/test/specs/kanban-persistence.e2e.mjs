@@ -29,7 +29,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs';
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs';
 
 const STORE_JSON = join(homedir(), 'Library', 'Application Support', 'athena-core', 'store.json');
 const TASK_TITLE = `KB_E2E_${Date.now()}`;
@@ -128,7 +128,6 @@ async function ensureWorkspace() {
   // A permitted dir (the backend rejects /tmp); seeded so the add is a no-op
   // that skips the blocking confirmation dialog.
   const trustDir = e2eTrustRoot('kanban-persistence');
-  await seedTrustedRoots(browser, [trustDir]);
   await trustViaProjectRoot(browser);
   const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));
   if (!(await hasPill())) {

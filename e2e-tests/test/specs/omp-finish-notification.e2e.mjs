@@ -1,6 +1,6 @@
 import { expect } from '@wdio/globals'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 async function clickButtonByText(text, { partial = false } = {}) {
   return browser.execute(
@@ -42,7 +42,6 @@ describe('OMP turn-finished notification', () => {
     // backend's blocking native dialog. It also has a `.catch`, so a rejection
     // settles instead of blocking the spec.
     const trustDir = e2eTrustRoot('omp-finish-notification')
-    await seedTrustedRoots(browser, [trustDir])
     await setE2E()
     await trustViaProjectRoot(browser)
     await browser.waitUntil(

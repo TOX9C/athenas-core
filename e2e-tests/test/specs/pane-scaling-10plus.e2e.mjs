@@ -1,7 +1,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -31,7 +31,6 @@ describe('Large workspace geometry regression', () => {
     // backend's blocking native dialog. It also has a `.catch`, so a rejection
     // settles instead of blocking the spec.
     const trustDir = e2eTrustRoot('pane-scaling-10plus')
-    await seedTrustedRoots(browser, [trustDir])
     await setE2E()
     await trustViaProjectRoot(browser)
     await browser.waitUntil(

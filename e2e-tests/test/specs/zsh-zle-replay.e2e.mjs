@@ -13,6 +13,8 @@
 // The assertion is renderer-agnostic: it reads term.buffer directly, so it
 // holds under both the DOM renderer and the WebGL renderer.
 
+import { e2eSandboxDir } from '../helpers/repo.mjs'
+
 const PANE_ID = 'e2e-zsh-zle-replay-pane'
 
 describe('zsh zle history-recall replay (ghosting regression)', () => {
@@ -53,20 +55,23 @@ describe('zsh zle history-recall replay (ghosting regression)', () => {
         })
     }, PANE_ID)
 
-    // Spawn a real interactive zsh in the repo root (sandbox-clean cwd), then
-    // have it base64-decode the fixture so the exact captured zle stream
-    // comes out of a real PTY through the production event pipeline.
-    await browser.execute((paneId) => {
+    // Spawn a real interactive zsh in the spec's sandbox dir (a trusted
+    // repo-root descendant), then have it base64-decode the fixture so the
+    // exact captured zle stream comes out of a real PTY through the production
+    // event pipeline. The dir is computed Node-side: `browser.execute` only
+    // serializes the callback, so outer-scope names are not visible in the page.
+    const cwd = e2eSandboxDir('zsh-zle-replay')
+    await browser.execute((paneId, cwd) => {
       return window.__TAURI__.core.invoke('pty_spawn', {
         id: paneId,
-        cwd: '/Users/apollo/Documents/athenas-core',
+        cwd,
         shell: '/bin/zsh',
         cols: 120,
         rows: 30,
         agent: null,
         command: '',
       })
-    }, PANE_ID)
+    }, PANE_ID, cwd)
     // Let zsh finish its startup prompt before the replay begins.
     await browser.pause(1500)
     await browser.execute((paneId) => {

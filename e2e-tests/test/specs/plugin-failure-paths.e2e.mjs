@@ -31,7 +31,7 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, trustViaProjectRoot } from '../helpers/trust.mjs';
+import { e2eTrustRoot, setE2E, trustViaProjectRoot } from '../helpers/trust.mjs';
 
 // `browser.execute` is a synchronous WebDriver script — a pending Promise
 // serializes as `{}` — so promises are settled on `window.__e2eBridge` inside
@@ -108,7 +108,6 @@ describe('Plugin failure paths (stub harness)', () => {
     // confirmation dialog (workspace.rs:79-100), which no window can service
     // here, so the add would hang the spec forever. Seeded, the add below is
     // an early-returning no-op that skips the dialog.
-    await seedTrustedRoots(browser, [pluginDir]);
     await trustViaProjectRoot(browser);
     addedRoot = pluginDir;
   });

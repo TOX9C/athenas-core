@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -234,7 +234,6 @@ const APP_STATE_JS = `(() => {
 // no active space at all.
 async function ensureSpaceWithShells(count) {
   await setE2E()
-  await seedTrustedRoots(browser, [trustDir])
   await trustViaProjectRoot(browser)
   await browser.pause(1500)
   let state = await browser.execute(`return ${APP_STATE_JS}`)

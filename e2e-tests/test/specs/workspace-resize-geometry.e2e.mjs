@@ -4,7 +4,7 @@
 // grid stretches to the viewport (>= 80% width) and every pane child has
 // non-zero area; xterm surfaces are mounted inside the grid.
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
 
 describe('workspace resize geometry', () => {
   it('stretches the pane grid to the viewport with non-zero-area panes', async () => {
@@ -17,7 +17,6 @@ describe('workspace resize geometry', () => {
     // Permitted launch dir: the modal's blank-dir fallback is "/tmp", which
     // pty_spawn rejects as a forbidden root.
     const trustDir = e2eTrustRoot('workspace-resize-geometry')
-    await seedTrustedRoots(browser, [trustDir])
 
     // Open the workspace modal.
     const opened = await browser.execute(() => {
