@@ -137,6 +137,17 @@ describe('Shared font-size shortcuts', () => {
       await browser.pause(250)
       await fillSpaceDir(browser, trustDir)
       expect(await clickButtonByText('Next >', false)).toBe(true)
+      // "Launch Space" is disabled while the space has 0 agents
+      // (`launch_disabled = total_panes == 0`, new_space_modal.rs:161), so
+      // the promote click is a no-op and no pane ever mounts — which is what
+      // used to make this spec die at "terminal pane did not mount". The
+      // reference flow it mirrors (layout-scroll-regression.e2e.mjs:241-248)
+      // increments the Shell row first; so does this one.
+      await browser.waitUntil(
+        () => browser.execute(() => !!document.getElementById('add-shell')),
+        { timeout: 10000, interval: 250, timeoutMsg: 'Shell row did not appear' },
+      )
+      await browser.execute(() => document.getElementById('add-shell').click())
       expect(await clickButtonByText('Launch Space')).toBe(true)
     }
     await browser.waitUntil(
