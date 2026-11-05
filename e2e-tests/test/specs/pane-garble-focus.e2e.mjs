@@ -101,7 +101,7 @@ function pixelProbe() {
     const paneId = pane.getAttribute('data-pane-id')
     const canvases = Array.from(pane.querySelectorAll('.xterm-mount canvas'))
     if (!canvases.length) {
-      out.push({ paneId, ok: false })
+      out.push({ paneId, ok: false, err: 'no-canvas' })
       continue
     }
     // Pick the WebGL canvas: a canvas that already has a GL context returns
@@ -121,17 +121,31 @@ function pixelProbe() {
     // frame being read is still current: force a synchronous repaint in THIS
     // task before drawImage (same contract as xterm-glyph-coherence's
     // measureInk). Cross-task readback measured 0 ink while text was on screen.
+    const term = (window.__athenaTermMap || {})[paneId]
     try {
-      const term = (window.__athenaTermMap || {})[paneId]
       const svc = term && term._core && term._core._renderService
       if (svc && svc._renderRows) svc._renderRows(0, term.rows - 1)
       else if (svc && svc.renderRows) svc.renderRows(0, term.rows - 1)
+    } catch {}
+    // Model-side ink: buffer lines holding text. This is what the canvas must
+    // be showing; an empty buffer legitimately renders blank (a pane the
+    // trigger just added is still spawning its shell), so the phase assertion
+    // keys on this rather than on raw pixels alone.
+    let modelInkRows = null
+    try {
+      const b = term?.buffer?.active
+      if (b) {
+        modelInkRows = 0
+        for (let i = 0; i < b.length; i++) {
+          if ((b.getLine(i)?.translateToString() || '').trim()) modelInkRows++
+        }
+      }
     } catch {}
     work.width = src.width
     work.height = src.height
     const ctx = work.getContext('2d', { willReadFrequently: true })
     if (!ctx) {
-      out.push({ paneId, ok: false })
+      out.push({ paneId, ok: false, err: 'no-2d-context' })
       continue
     }
     ctx.drawImage(src, 0, 0)
@@ -205,6 +219,7 @@ function pixelProbe() {
       w: W,
       h: H,
       bg: bg.map((v) => Math.round(v)),
+      modelInkRows,
       totalInkPx,
       inkRuns: runs,
       maxGapSamples: maxGapRows,
@@ -214,6 +229,37 @@ function pixelProbe() {
     })
   }
   return out
+}
+
+// Every trigger phase must assert rendering, for every pane — not once,
+// before the trigger (the defect this spec was named for: a regression that
+// blanked all panes after the Add Shell reflow used to pass green).
+//
+// A pane is asserted when the probe got pixels (ok) AND the terminal model
+// holds text (modelInkRows > 0). A blank canvas over an empty buffer is
+// correct — the pane the trigger just added is still spawning its shell — so
+// excluding it is precision, not relaxation. A blank canvas over a pane with
+// content is exactly the garble this spec exists to catch.
+function assertAllPanesRendered(label, pixel) {
+  const measured = pixel.filter((p) => p.ok)
+  const errs = pixel.filter((p) => !p.ok)
+  const content = measured.filter((p) => p.modelInkRows > 0)
+  const blank = content.filter((p) => p.blank)
+  console.log(
+    `[garble:${label}] ink ${content.length - blank.length}/${content.length} content panes non-blank; ` +
+      `probe ok=${measured.length} err=${errs.length} ` +
+      JSON.stringify(pixel.map((p) => [p.paneId, p.ok ? p.totalInkPx : `err:${p.err}`, p.ok ? p.modelInkRows : null])),
+  )
+  if (!content.length) {
+    // Distinct from a blank pane: nothing was renderable at all. Report the
+    // ok/err split so a DOM-renderer fallback (no canvas → getImageData never
+    // runs) is not misreported as "every pane is blank".
+    throw new Error(
+      `[${label}] no pane with renderable content was measured — probe ok=${measured.length} err=${errs.length} ` +
+        `errReasons=${JSON.stringify(errs.map((p) => `${p.paneId}:${p.err ?? 'unknown'}`))}`,
+    )
+  }
+  expect(blank.map((p) => `${p.paneId}:${p.totalInkPx}px over ${p.modelInkRows} content rows`)).toEqual([])
 }
 
 // Snapshot per-pane mount nodes so remounts are detectable later.
@@ -375,40 +421,63 @@ describe('Pane garble after add-shell reflow repro', function () {
     await ensureSpaceWithShells(4)
     await snapshotMountRefs()
 
-    // Wait for shells to emit prompts, then give each pane real content
-    // through the proven paste() -> onData -> pty_write path.
+    // Give every pane real content — a reflow of idle prompts proves nothing
+    // about reflow garble. Route: window.__TAURI__.core.invoke('pty_write'),
+    // the one proven to work for SHELL panes (xterm-glyph-coherence.e2e.mjs
+    // :447-449, arrival asserted at :460). term.paste() is proven only for OMP
+    // panes (omp-typing.e2e.mjs:187-198); used on shell panes here it wrote
+    // nothing (5/5 runs: baseY 0, length = term.rows, no `seq` output).
     const paneIds = await browser.execute(
       `return (${PANE_WRAP_JS}).map((p) => p.getAttribute('data-pane-id'))`,
     )
     for (const id of paneIds) {
-      await browser.execute((paneId) => {
-        window.__athenaTermMap?.[paneId]?.focus()
-        window.__athenaTermMap?.[paneId]?.paste('seq 1 120 | nl -ba\n')
-      }, id)
+      await browser.execute(
+        (paneId) =>
+          window.__TAURI__.core.invoke('pty_write', { id: paneId, data: 'seq 1 120 | nl -ba\n' }),
+        id,
+      )
       await browser.pause(400)
-    }
-    // Extra newline to force execution in case bracketed paste kept the
-    // trailing newline in the edit buffer.
-    for (const id of paneIds) {
-      await browser.execute((paneId) => {
-        window.__athenaTermMap?.[paneId]?.paste('\n')
-      }, id)
     }
     await browser.pause(2500)
 
+    // The content must actually be in the panes before any garble phase runs.
+    // `nl -ba` right-justifies the number and separates it with a TAB, which
+    // xterm stores as spaces, so the tail line reads "   120        120".
+    const contentArrival = await browser.execute(() =>
+      Object.entries(window.__athenaTermMap || {}).map(([paneId, term]) => {
+        const b = term.buffer.active
+        const lines = []
+        for (let i = 0; i < b.length; i++) lines.push(b.getLine(i)?.translateToString() || '')
+        return {
+          paneId,
+          baseY: b.baseY,
+          length: b.length,
+          rows: term.rows,
+          numbered: lines.filter((t) => /^\s*\d+\s+\d+\s*$/.test(t)).length,
+          sawSeqTail: lines.some((t) => /^\s*120\s+120\s*$/.test(t)),
+        }
+      }),
+    )
+    dump.contentArrival = contentArrival
+    console.log('[garble] content arrival:', JSON.stringify(contentArrival))
+    const arrived = contentArrival.filter((p) => p.baseY > 0 && p.sawSeqTail)
+    console.log(`[garble] content arrived: ${arrived.length}/${contentArrival.length} panes`)
+    expect(arrived.length).toBe(contentArrival.length)
+
     const paneCountBefore = paneIds.length
     dump.meta.paneCountBefore = paneCountBefore
-    const baselinePixel = await browser.execute(pixelProbe)
-    record(`baseline-${paneCountBefore}-panes`, await browser.execute(probePanes), baselinePixel)
 
-    // A pane showing a shell prompt has ink. If this fails, the probe is
-    // measuring nothing and every garble claim below is vacuous.
-    const panesWithInk = baselinePixel.filter((p) => p.ok && !p.blank)
-    console.log(
-      `[garble] baseline ink: ${panesWithInk.length}/${baselinePixel.length} panes non-blank ` +
-        JSON.stringify(baselinePixel.map((p) => [p.paneId, p.totalInkPx])),
-    )
-    expect(panesWithInk.length).toBeGreaterThan(0)
+    // Record + assert one phase. Every phase the spec is named for goes
+    // through this, so no post-trigger phase can go unasserted.
+    const capturePhase = async (label, extra = {}) => {
+      const dom = await browser.execute(probePanes)
+      const pixel = await browser.execute(pixelProbe)
+      record(label, dom, pixel, extra)
+      assertAllPanesRendered(label, pixel)
+      return pixel
+    }
+
+    await capturePhase(`baseline-${paneCountBefore}-panes`)
 
     // Trigger: the real in-app add-shell path (toolbar "Add Shell" button →
     // add_pane_to_space → grid reflow + remounts).
@@ -433,7 +502,7 @@ describe('Pane garble after add-shell reflow repro', function () {
     for (const delay of [100, 400, 1000]) {
       await browser.pause(delay)
       const label = `post-addshell-t${[100, 500, 1500][[100, 400, 1000].indexOf(delay)]}`
-      record(label, await browser.execute(probePanes), await browser.execute(pixelProbe))
+      await capturePhase(label)
       await browser.saveScreenshot(join(screenshotDir, `pane-garble-${label}.png`))
     }
 
@@ -458,100 +527,20 @@ describe('Pane garble after add-shell reflow repro', function () {
     for (const delay of [100, 400, 1000]) {
       await browser.pause(delay)
       const label = `post-focus-t${[100, 500, 1500][[100, 400, 1000].indexOf(delay)]}`
-      record(label, await browser.execute(probePanes), await browser.execute(pixelProbe))
+      await capturePhase(label)
       await browser.saveScreenshot(join(screenshotDir, `pane-garble-${label}.png`))
     }
 
-    // ── Blank-state diagnostics (ReflowGarble's discriminators) ──────────
-    // For any pane whose GL canvas reads blank while its buffer has ink:
-    // (a) log renderer identity + cell dims + canvasCount;
-    // (b) term.refresh(0, rows-1) WITHOUT scrolling — if ink returns, the
-    //     clear-without-repaint lost its dirty range (RenderDebouncer marks
-    //     not honored); if ink stays 0, GL state (atlas/program) is poisoned;
-    // (c) cross-check renderModel cell count vs canvas ink, then scroll-heal.
-    const lastSample = dump.samples[dump.samples.length - 1]
-    const lastPixel = Object.fromEntries(lastSample.pixel.map((p) => [p.paneId, p]))
-    const lastDom = Object.fromEntries(lastSample.dom.map((p) => [p.paneId, p]))
-    const bufferInk = await browser.execute(() => {
-      const out = {}
-      for (const [paneId, term] of Object.entries(window.__athenaTermMap || {})) {
-        const b = term.buffer.active
-        let n = 0
-        for (let i = 0; i < b.length; i++) if ((b.getLine(i)?.translateToString() || '').trim()) n++
-        out[paneId] = n
-      }
-      return out
-    })
-    dump.blankStateCandidates = []
-    for (const [paneId, px] of Object.entries(lastPixel)) {
-      const hasModelInk = (bufferInk[paneId] || 0) > 0
-      const canvasBlank = px.ok && (px.blank || px.totalInkPx < 5)
-      if (!canvasBlank || !hasModelInk) continue
-      const diag = await browser.execute((paneId) => {
-        const term = window.__athenaTermMap?.[paneId]
-        if (!term) return { paneId, err: 'no term' }
-        const rs = term._core?._renderService
-        const renderer = rs?._renderer
-        const atlas = renderer?._glyphRenderer?._atlas || renderer?._atlas || null
-        return {
-          paneId,
-          renderer: renderer?.constructor?.name || null,
-          rendererCell: renderer?.dimensions?.css?.cell
-            ? { w: renderer.dimensions.css.cell.width, h: renderer.dimensions.css.cell.height }
-            : null,
-          canvasCount: document
-            .querySelector('.pane-wrap[data-pane-id="' + paneId + '"]')
-            ?.querySelectorAll('canvas').length ?? null,
-          renderModelCells: renderer?._renderModel?.cells?.length ?? null,
-          hasAtlas: !!atlas,
-          atlasDims: atlas?.canvas ? { w: atlas.canvas.width, h: atlas.canvas.height } : null,
-          atlasPages: atlas?.pages?.length ?? null,
-          coreIsDisposed: term._core?._isDisposed ?? null,
-          rendererIsDisposed: renderer?._isDisposed ?? null,
-        }
-      }, paneId)
-      const refreshProbe = await browser.execute((paneId) => {
-        const term = window.__athenaTermMap?.[paneId]
-        if (!term) return null
-        term.refresh(0, term.rows - 1)
-        return true
-      }, paneId)
-      await browser.pause(400)
-      const afterRefresh = (await browser.execute(pixelProbe)).find((p) => p.paneId === paneId)
-      const healAttempted = await browser.execute((paneId) => {
-        const term = window.__athenaTermMap?.[paneId]
-        if (!term) return null
-        term.scrollLines(1)
-        term.scrollLines(-1)
-        return true
-      }, paneId)
-      await browser.pause(400)
-      const afterScroll = (await browser.execute(pixelProbe)).find((p) => p.paneId === paneId)
-      dump.blankStateCandidates.push({
-        paneId,
-        domAtBlank: lastDom[paneId],
-        pixelAtBlank: px,
-        bufferInkRows: bufferInk[paneId],
-        diagnostics: diag,
-        refreshAttempted: refreshProbe,
-        pixelAfterRefresh: afterRefresh,
-        scrollHealAttempted: healAttempted,
-        pixelAfterScrollHeal: afterScroll,
-        verdict:
-          afterRefresh && afterRefresh.ok && !afterRefresh.blank && afterRefresh.totalInkPx >= 5
-            ? 'refresh-restored-ink (lost-dirty-range repaint)'
-            : afterScroll && afterScroll.ok && !afterScroll.blank && afterScroll.totalInkPx >= 5
-              ? 'refresh-did-NOT-restore; scroll-restore-only (GL-state suspect)'
-              : 'neither-refresh-nor-scroll-restored (deep GL poison)',
-      })
-      console.log(
-        '[garble:blank-diag]',
-        JSON.stringify(dump.blankStateCandidates[dump.blankStateCandidates.length - 1]),
-      )
-    }
-    if (!dump.blankStateCandidates.length) {
-      console.log('[garble:blank-diag] no blank-canvas-pane in final state this run')
-    }
+    // The blank-state diagnostic that used to sit here (`term.refresh(0,
+    // rows-1)` on a blank-reading pane, re-probe, and a
+    // 'refresh-restored-ink (lost-dirty-range repaint)' verdict) is deleted:
+    // pixelProbe already forces a repaint of the frame it reads, which is the
+    // fix this file exists for — so the "lost a repaint" readback the
+    // comparison was keyed on is not a valid signal at all, and its verdict
+    // branches could never fire. A blank pane is now caught directly, per
+    // phase, by assertAllPanesRendered above. The per-phase, per-pane ink the
+    // dump carries is the diagnostic.
+
     // Scroll-fix probe: scroll every pane down 1 line and back up, re-probe.
     const scrollResult = await browser.execute(() =>
       Object.entries(window.__athenaTermMap || {}).map(([paneId, term]) => {
@@ -591,27 +580,10 @@ describe('Pane garble after add-shell reflow repro', function () {
       }
     })
     await browser.pause(300)
-    record(
-      'post-wheelscroll',
-      await browser.execute(probePanes),
-      await browser.execute(pixelProbe),
-    )
+    await capturePhase('post-wheelscroll')
     await browser.pause(500)
-    record(
-      'post-scroll',
-      await browser.execute(probePanes),
-      await browser.execute(pixelProbe),
-      { scrollResult },
-    )
+    await capturePhase('post-scroll', { scrollResult })
     await browser.saveScreenshot(join(screenshotDir, 'pane-garble-post-scroll.png'))
-
-    // Screenshot usability check (headless WKWebView may save blank frames).
-    const shotStats = await browser.execute(() => {
-      const c = document.createElement('canvas')
-      c.width = 64
-      c.height = 64
-      return null
-    }).catch(() => null)
 
     // Buffer-dump evidence for each pane: where is ink in the model?
     const bufferDump = await browser.execute(() =>
@@ -634,7 +606,6 @@ describe('Pane garble after add-shell reflow repro', function () {
       }),
     )
     dump.bufferDump = bufferDump
-    dump.shotStats = shotStats
 
     writeFileSync(PROBE_DUMP, JSON.stringify(dump, null, 2))
     console.log(`[garble] full probe dump written to ${PROBE_DUMP}`)
