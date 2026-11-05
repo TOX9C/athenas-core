@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
+import { resetAppState } from './test/helpers/ipc.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
 
@@ -70,21 +72,44 @@ export const config = {
     // Wait for Dioxus WASM to fully mount.
     // Checks for [data-dioxus-id] attribute (set by Dioxus on mount) or
     // any non-loader children in #main (fallback for different build modes).
-    await browser.waitUntil(
-      async () => {
-        const mounted = await browser.execute(() => {
-          const main = document.getElementById('main');
-          if (!main) return false;
-          if (main.querySelector('[data-dioxus-id]')) return true;
-          for (const child of main.children) {
-            if (child.id !== 'wasm-loading' && child.id !== 'console-log') return true;
+    //
+    // Runs twice per spec: once before the reset (the page must exist before
+    // anything can be invoked on it) and once after, because the reset's
+    // reload tears the page down. A poll that lands mid-navigation rejects
+    // with a destroyed execution context; treat that as "not mounted yet".
+    const waitForMount = async () => {
+      await browser.waitUntil(
+        async () => {
+          try {
+            return await browser.execute(() => {
+              const main = document.getElementById('main');
+              if (!main) return false;
+              if (main.querySelector('[data-dioxus-id]')) return true;
+              for (const child of main.children) {
+                if (child.id !== 'wasm-loading' && child.id !== 'console-log') return true;
+              }
+              return false;
+            });
+          } catch {
+            return false;
           }
-          return false;
-        });
-        return mounted;
-      },
-      { timeout: 25000, interval: 500, timeoutMsg: 'Dioxus WASM did not mount within 25s' },
-    );
+        },
+        { timeout: 25000, interval: 500, timeoutMsg: 'Dioxus WASM did not mount within 25s' },
+      );
+    };
+
+    await waitForMount();
+
+    // Per-spec clean state. The runner spawns one app process per spec file
+    // (measured — see README "Store reset protocol"), but that app reads the
+    // persisted store at launch, so without this a spec inherits whatever the
+    // previous spec left in `workspaces`/`workspace.trusted_roots` and
+    // results depend on spec order. Kills live panes, drops those keys,
+    // reloads so the current page re-reads the emptied store.
+    const reset = await resetAppState(browser);
+    console.log(`[wdio] resetAppState -> ${JSON.stringify(reset)}`);
+
+    await waitForMount();
   },
 
   // Restore the user's persisted store after the app has been shut down by

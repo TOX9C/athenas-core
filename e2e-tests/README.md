@@ -86,7 +86,10 @@ code in every run, so a failure there is environmental, not a regression.
 
 ## Store reset protocol
 
-`wdio.conf.mjs` resets the persisted store around every run:
+The suite resets state at two levels: once per run (the whole `store.json`) and
+once per spec (the keys a spec can dirty).
+
+**Per run.** `wdio.conf.mjs` wraps the run around the persisted store:
 
 - `onPrepare` runs `test/reset-store.mjs clear` **before the app launches**.
   `clear` refuses while any `athenas-core` process is alive — the app holds
@@ -95,6 +98,36 @@ code in every run, so a failure there is environmental, not a regression.
   is too late: the hook runs after launch).
 - `onComplete` runs `restore`, putting the newest backup back after teardown.
 
+**Per spec.** The runner spawns **one app process per spec file** — verified by
+sampling `pgrep -x athenas-core` across a two-spec run (two distinct PIDs,
+sequential, no overlap), and WDIO starts a fresh session per spec file. So
+in-memory state does *not* carry over: each spec gets a new app. What does carry
+over is `store.json`, because every new app reads it at launch. `wdio.conf.mjs`'s
+`before` hook therefore calls `resetAppState(browser)`
+(`test/helpers/ipc.mjs`) before every spec:
+
+1. `pty_kill` every id left in `window.__athenaTermMap` (errors from already-dead
+   ids are tolerated; the return value counts the ones that died);
+2. `store_delete` the two keys a spec can dirty — `workspaces`
+   (`frontend/src/stores/workspace.rs:21`) and `workspace.trusted_roots`
+   (`src-tauri/src/commands/mod.rs:266`);
+3. `location.reload()`, then wait until the reload has actually committed
+   (a token planted before the reload must be gone). The pre-reload document
+   keeps answering driver calls for a few ms, so a mount wait issued too early
+   is satisfied by the *old* page and the spec then races its own reload;
+4. the `before` hook repeats the WASM-mount wait, now against the new document.
+
+The hook logs its result per spec:
+`[wdio] resetAppState -> {"killedPtys":0,"deletedKeys":["workspaces","workspace.trusted_roots"],"reloaded":true}`.
+
+Why no seeding is needed: a spec's launch directory only has to be permitted,
+and `.e2e-sandbox/<label>` under the repo root always is, because the app's own
+project root is implicitly trusted (`effective_roots_from`,
+`src-tauri/src/commands/mod.rs:352`). `workspace_add_trusted_root` is never
+called — its only early return is membership in the persisted list, so its
+native dialog (which no spec can service) would otherwise block. `e2eTrustRoot`
+is an alias of `e2eSandboxDir`; neither writes the store.
+
 Two consequences for authors:
 
 - **Never use `clear` as a recovery step.** It *moves* the store aside (a
@@ -102,7 +135,8 @@ Two consequences for authors:
   snapshot; `restore` picks the newest backup — so take a `backup` before a
   session and run suites strictly sequentially, or `restore` returns the
   previous run's state rather than the user's original.
-- Specs must not depend on user-persisted state; start from the cleared store.
+- Specs must not depend on user-persisted state; start from the cleared store,
+  and rely on the per-spec reset rather than assuming a virgin app.
 
 ## Notes for authors
 
@@ -122,6 +156,11 @@ Two consequences for authors:
   seeding call is needed and `workspace_add_trusted_root` (with its blocking
   native dialog) is never invoked. `__athenaE2E` is a frontend-only bypass and
   never authorizes a spawn.
+- **No hardcoded checkout paths.** Derive every repo path at runtime —
+  `repoRoot()` / `e2eSandboxDir(label)` from `test/helpers/repo.mjs`. Absolute
+  owner-specific paths made the suite runnable from exactly one checkout. A
+  second spec-visible copy of the IPC bridge is not allowed either: `invokeSettled`
+  and `resetAppState` live only in `test/helpers/ipc.mjs`.
 - Screenshots land in `test/screenshots/`.
 
 If you add a new spec, prefer an existing spec's boot helpers (e.g.
