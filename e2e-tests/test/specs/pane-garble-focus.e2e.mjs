@@ -117,6 +117,16 @@ function pixelProbe() {
     const src =
       canvases.filter(glSignal).sort((a, b) => b.width * b.height - a.width * a.height)[0] ||
       canvases.reduce((a, b) => (b.width * b.height > a.width * a.height ? b : a))
+    // GL canvases with preserveDrawingBuffer:false read back BLACK unless the
+    // frame being read is still current: force a synchronous repaint in THIS
+    // task before drawImage (same contract as xterm-glyph-coherence's
+    // measureInk). Cross-task readback measured 0 ink while text was on screen.
+    try {
+      const term = (window.__athenaTermMap || {})[paneId]
+      const svc = term && term._core && term._core._renderService
+      if (svc && svc._renderRows) svc._renderRows(0, term.rows - 1)
+      else if (svc && svc.renderRows) svc.renderRows(0, term.rows - 1)
+    } catch {}
     work.width = src.width
     work.height = src.height
     const ctx = work.getContext('2d', { willReadFrequently: true })
@@ -134,23 +144,28 @@ function pixelProbe() {
     }
     const W = work.width
     const H = work.height
-    // Background reference: corner pixels (top-left 8x8 median-ish).
-    const bg = [0, 0, 0]
-    {
-      let n = 0
-      for (let y = 0; y < Math.min(8, H); y++) {
-        for (let x = 0; x < Math.min(8, W); x++) {
-          const i = (y * W + x) * 4
-          bg[0] += data[i]
-          bg[1] += data[i + 1]
-          bg[2] += data[i + 2]
-          n++
-        }
+    // Background reference: the most frequent color on a coarse grid. The
+    // terminal background dominates the canvas. A corner sample is NOT safe:
+    // content starts at row 0, so the top-left 8x8 read (84,84,84) against a
+    // true background of (11,11,12) and every sampled row then read as ink
+    // (measurement saturated at 3357/3360, identical for every pane).
+    const hist = new Map()
+    for (let y = 0; y < H; y += 3) {
+      for (let x = 0; x < W; x += 3) {
+        const i = (y * W + x) * 4
+        const k = `${data[i] >> 3}_${data[i + 1] >> 3}_${data[i + 2] >> 3}`
+        const e = hist.get(k) || [0, 0, 0, 0]
+        e[0]++
+        e[1] += data[i]
+        e[2] += data[i + 1]
+        e[3] += data[i + 2]
+        hist.set(k, e)
       }
-      bg[0] /= n
-      bg[1] /= n
-      bg[2] /= n
     }
+    const bg = [0, 0, 0]
+    let dominant = null
+    for (const e of hist.values()) if (!dominant || e[0] > dominant[0]) dominant = e
+    if (dominant) bg.splice(0, 3, dominant[1] / dominant[0], dominant[2] / dominant[0], dominant[3] / dominant[0])
     // Sample row luminance on a coarse grid (every 4th row, 32 x-samples).
     const rowInk = []
     let totalInkPx = 0
@@ -383,11 +398,17 @@ describe('Pane garble after add-shell reflow repro', function () {
 
     const paneCountBefore = paneIds.length
     dump.meta.paneCountBefore = paneCountBefore
-    record(
-      `baseline-${paneCountBefore}-panes`,
-      await browser.execute(probePanes),
-      await browser.execute(pixelProbe),
+    const baselinePixel = await browser.execute(pixelProbe)
+    record(`baseline-${paneCountBefore}-panes`, await browser.execute(probePanes), baselinePixel)
+
+    // A pane showing a shell prompt has ink. If this fails, the probe is
+    // measuring nothing and every garble claim below is vacuous.
+    const panesWithInk = baselinePixel.filter((p) => p.ok && !p.blank)
+    console.log(
+      `[garble] baseline ink: ${panesWithInk.length}/${baselinePixel.length} panes non-blank ` +
+        JSON.stringify(baselinePixel.map((p) => [p.paneId, p.totalInkPx])),
     )
+    expect(panesWithInk.length).toBeGreaterThan(0)
 
     // Trigger: the real in-app add-shell path (toolbar "Add Shell" button →
     // add_pane_to_space → grid reflow + remounts).
