@@ -10,13 +10,13 @@ name: Terminal Rendering E2E Gate
 # rowcolumn diacritics painting stray marks inside image blocks, orphaned image
 # overlays overpainted on the live pane, stale glyphs after a shared-atlas
 # reset, the new-terminal mount blackout) was in that class. release-macos.yml
-# runs the same six specs, but only at tag-push time — too late to stop a
+# runs the same five specs, but only at tag-push time — too late to stop a
 # regression from merging. This workflow pulls that gate forward to the PR.
 #
 # WHY THE SUITE IS CURATED
 # Two full local runs of all 34 specs score 19/34 and 21/34, with 13 specs
 # failing in both runs and again in isolation, plus 2 flaky. Gating the whole
-# suite would block PRs for unrelated reasons, so the six specs below (all in
+# suite would block PRs for unrelated reasons, so the five specs below (all in
 # the terminal rendering/geometry class, all green in both runs,
 # `xterm-glyph-coherence` after a scoped repair + re-verification) are the gate.
 # Keep this list identical to release-macos.yml's gate.
@@ -92,7 +92,7 @@ jobs:
   terminal-rendering-gate:
     name: Terminal rendering (WebDriver)
     runs-on: macos-15
-    # The six specs take ~2m00s locally on warm caches; the budget is for the
+    # The five specs take ~2m00s locally on warm caches; the budget is for the
     # cold path — the wasm frontend build (dx --release), the debug Tauri build
     # with the webdriver feature, `cargo install dioxus-cli`, and a cold
     # rust-cache restore. That sits well inside the 75 minutes release-macos.yml
@@ -158,7 +158,7 @@ jobs:
         timeout-minutes: 15
         run: |
           set -euo pipefail
-          # Fail loudly here rather than as six specs' worth of ECONNREFUSED: if
+          # Fail loudly here rather than as five specs' worth of ECONNREFUSED: if
           # the shim is missing, nothing below can work. (Its absence is exactly
           # how this gate failed on its first real run.)
           command -v tauri-wd >/dev/null || {
@@ -174,9 +174,17 @@ jobs:
             sleep 1
           done
           cd e2e-tests
+          # `new-terminal-no-blackout` is deliberately NOT in this list.
+          # It asserts no pane is canvas-less/zero-sized more than 400 ms after
+          # an Add Shell, and that budget is a machine-speed constant: on a
+          # 3-vCPU macOS runner a legitimately mounting pane measured blank at
+          # t=722 ms and t=1005 ms (clearing after), i.e. ~1 s, while the
+          # blackout bug it targets lasted ~2 s. The margin between "slow
+          # hardware" and "real regression" is too thin to gate on shared
+          # runners, and tuning the constant would erase what it detects. It
+          # stays in the suite for local and pre-release runs.
           npx wdio run wdio.conf.mjs \
             --spec test/specs/xterm-glyph-coherence.e2e.mjs \
-            --spec test/specs/new-terminal-no-blackout.e2e.mjs \
             --spec test/specs/pane-garble-focus.e2e.mjs \
             --spec test/specs/zsh-zle-replay.e2e.mjs \
             --spec test/specs/workspace-resize-geometry.e2e.mjs \

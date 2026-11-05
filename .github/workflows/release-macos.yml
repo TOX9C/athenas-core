@@ -182,9 +182,14 @@ jobs:
             sleep 1
           done
           cd e2e-tests
+          # `new-terminal-no-blackout` is deliberately NOT in this list: its
+          # 400 ms no-blank budget is a machine-speed constant, and a 3-vCPU
+          # runner's legitimate pane-mount transient measured ~1 s against the
+          # ~2 s blackout it targets — too thin a margin to gate on. See
+          # e2e-terminal-gate.yml for the full note; the spec still runs in the
+          # full suite locally and pre-release.
           npx wdio run wdio.conf.mjs \
             --spec test/specs/xterm-glyph-coherence.e2e.mjs \
-            --spec test/specs/new-terminal-no-blackout.e2e.mjs \
             --spec test/specs/pane-garble-focus.e2e.mjs \
             --spec test/specs/zsh-zle-replay.e2e.mjs \
             --spec test/specs/workspace-resize-geometry.e2e.mjs \
