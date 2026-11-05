@@ -2,10 +2,10 @@
 #
 # Purpose: determine why macOS jobs in this repo are cancelled ~1s after start
 # with no runner assigned (`runner_name: ""`), while ubuntu jobs on the same
-# PR run fine. Two labels in one run, so the result is unambiguous:
-#   - probe-14 succeeds + probe-15 succeeds -> not the label (something else)
-#   - probe-14 cancelled + probe-15 runs     -> the `macos-14` label is unusable
-#   - both cancelled                         -> macOS runners unavailable entirely
+# PR run fine. Three jobs in one run, so the result is unambiguous:
+#   - probe-14 and probe-15 both run, control runs -> not the label
+#   - probe-14 cancelled, probe-15 runs           -> the `macos-14` label is unusable
+#   - all three macos/control differ wholesale    -> macOS runners unavailable entirely
 name: zz-label-probe
 
 on:
@@ -18,18 +18,21 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 5
     steps:
-      - run: echo "probe-14 acquired a runner: $(uname -a)"
+      - name: echo
+        run: 'echo "probe-14 acquired a runner: $(uname -a)"'
 
   probe-15:
     name: probe macos-15
     runs-on: macos-15
     timeout-minutes: 5
     steps:
-      - run: echo "probe-15 acquired a runner: $(uname -a)"
+      - name: echo
+        run: 'echo "probe-15 acquired a runner: $(uname -a)"'
 
   probe-ubuntu-control:
     name: probe ubuntu control
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: echo "control acquired a runner: $(uname -a)"
+      - name: echo
+        run: 'echo "control acquired a runner: $(uname -a)"'
