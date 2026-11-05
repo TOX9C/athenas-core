@@ -137,5 +137,23 @@ export const config = {
     } catch (err) {
       console.warn(`[wdio] store restore skipped: ${err.message ?? err}`);
     }
+
+    // A `--features webdriver` build legitimately rewrites these TRACKED ACL
+    // schema files: the automation plugin's permission surface
+    // (`webdriver-automation:*`) shows up in them, while the committed set is
+    // the default-feature set. Restore just these paths so a local e2e run
+    // can't leak the diff into a commit. Deliberately scoped: a tree that is
+    // dirty for an unrelated reason keeps everything outside
+    // `src-tauri/gen/schemas` untouched. Best-effort like the sweeps above —
+    // a teardown that can turn a green run red is worse than the files it
+    // cleans up.
+    try {
+      execFileSync('git', ['checkout', '--', 'src-tauri/gen/schemas'], {
+        cwd: projectRoot,
+        stdio: 'inherit',
+      });
+    } catch (err) {
+      console.warn(`[wdio] schema restore skipped: ${err.message ?? err}`);
+    }
   },
 };
