@@ -45,20 +45,29 @@ describe('workspace modal gating', () => {
   before(async () => {
     // Wait for app + Dioxus mount.
     await browser.pause(5000)
-    // Skip modal validation (E2E flag honored by the app).
-    await browser.execute(() => {
-      window.__athenaE2E = true
-    })
-    // Open modal and pick the Terminal Workspace card (not "Launch Space").
-    // The card is rendered by the modal, so wait for it instead of probing
-    // the same tick as the click (the modal does not mount synchronously).
+    // NO `window.__athenaE2E` here on purpose. The app honors that flag by
+    // disabling the modal's validation (`next_disabled = !is_e2e && …`,
+    // new_space_modal.rs:141) — i.e. it turns off the exact gate this spec
+    // exists to defend. Specs that need to skip validation (they launch a
+    // space) set it; a spec that asserts the gate must not.
+    //
+    // Open modal and pick the Terminal Workspace card. The card is rendered
+    // by the modal, so wait for it instead of probing the same tick as the
+    // click (the modal does not mount synchronously).
+    //
+    // Match on the card's own title only. The old predicate also required
+    // `!text.includes('Launch')` to avoid stepping on the "Launch Space"
+    // footer button, but the card's subtitle ("Launch multiple terminal
+    // panes …") contains that word too, so the filter excluded the card it
+    // was looking for and the wait timed out. "Launch Space" never contains
+    // "Terminal Workspace", so no exclusion is needed.
     await openWorkspaceModal()
     const opened = await browser.waitUntil(
       () =>
         browser.execute(() => {
           for (const btn of document.querySelectorAll('button')) {
             const text = btn.textContent || ''
-            if (text.includes('Terminal Workspace') && !text.includes('Launch')) {
+            if (text.includes('Terminal Workspace')) {
               btn.click()
               return true
             }
@@ -71,31 +80,38 @@ describe('workspace modal gating', () => {
     await browser.pause(1200)
   })
 
+  // The app expresses "blocked" with the button's HTML `disabled` attribute
+  // (`disabled: next_disabled`, new_space_modal.rs:147) plus the shared
+  // `button:disabled` CSS rule. That replaced the old inline
+  // `opacity: 0.5`/`cursor: not-allowed` styles in 415c55b, so probing the
+  // inline `style` attribute can only ever report "not blocked". Every probe
+  // below therefore reads the `disabled` state instead.
   it('blocks Next while Working Directory is empty', async () => {
     const step1 = await browser.execute(() => {
       const nextBtn = [...document.querySelectorAll('button')].find(
         (b) => b.textContent.trim() === 'Next >',
       )
       if (!nextBtn) return { ok: false, reason: 'next_missing' }
-      const style = nextBtn.getAttribute('style') || ''
-      const onStep1 = () =>
-        !![...document.querySelectorAll('label')].find((l) =>
-          l.textContent.includes('Working Directory'),
-        )
+      const blocked = nextBtn.disabled || nextBtn.hasAttribute('disabled')
       nextBtn.click()
-      return {
-        ok: true,
-        blockedAffordance: style.includes('not-allowed') || style.includes('var(--bgTertiary)'),
-        stayedOnStep1: onStep1() && !document.getElementById('add-shell'),
-      }
+      return { ok: true, blockedAffordance: blocked }
     })
-    expect(step1.ok, 'Next > button missing on Step 1').toBe(true)
-    expect(step1.blockedAffordance, 'Next > lacks blocked affordance while empty').toBe(true)
-    expect(step1.stayedOnStep1, 'Next > advanced despite empty required field').toBe(true)
+    expect(step1.ok).toBe(true)
+    expect(step1.blockedAffordance).toBe(true)
+
+    // Give a would-be advance a full frame to land, then assert it did not.
+    await browser.pause(600)
+    const stayed = await browser.execute(() => ({
+      onStep1: !![...document.querySelectorAll('label')].find((l) =>
+        l.textContent.includes('Working Directory'),
+      ),
+      addShell: !!document.getElementById('add-shell'),
+    }))
+    expect(stayed.onStep1 && !stayed.addShell).toBe(true)
   })
 
   it('advances to pane selection after a valid Working Directory', async () => {
-    const step1 = await browser.execute(() => {
+    const filled = await browser.execute(() => {
       const dirInput = [...document.querySelectorAll('input')].find((i) =>
         (i.getAttribute('placeholder') || '').includes('/path/to/project'),
       )
@@ -106,18 +122,42 @@ describe('workspace modal gating', () => {
       dirInput.value = '/tmp'
       dirInput.dispatchEvent(new Event('input', { bubbles: true }))
       dirInput.dispatchEvent(new Event('change', { bubbles: true }))
-      const style = nextBtn.getAttribute('style') || ''
-      nextBtn.click()
-      return {
-        ok: true,
-        enabledAffordance: !style.includes('not-allowed'),
-        advancedToStep2: !!document.getElementById('add-shell'),
-      }
+      return { ok: true }
     })
-    expect(step1.ok, 'could not set Working Directory or find Next').toBe(true)
-    expect(step1.enabledAffordance, 'Next > stayed blocked after valid input').toBe(true)
-    expect(step1.advancedToStep2, 'Next > did not advance after valid input').toBe(true)
-    await browser.pause(800)
+    expect(filled.ok).toBe(true)
+
+    // The controlled input's signal write lands on the next render, so the
+    // unblock and the advance are each waited for rather than probed in the
+    // same tick as the write/click.
+    const enabled = await browser
+      .waitUntil(
+        () =>
+          browser.execute(() => {
+            const nextBtn = [...document.querySelectorAll('button')].find(
+              (b) => b.textContent.trim() === 'Next >',
+            )
+            return !!nextBtn && !nextBtn.disabled
+          }),
+        { timeout: 5000, interval: 100, timeoutMsg: 'Next > stayed blocked after valid input' },
+      )
+      .then(() => true)
+      .catch(() => false)
+    expect(enabled).toBe(true)
+
+    await browser.execute(() => {
+      const nextBtn = [...document.querySelectorAll('button')].find(
+        (b) => b.textContent.trim() === 'Next >',
+      )
+      nextBtn.click()
+    })
+    const advanced = await browser
+      .waitUntil(
+        () => browser.execute(() => !!document.getElementById('add-shell')),
+        { timeout: 5000, interval: 100, timeoutMsg: 'Next > did not advance after valid input' },
+      )
+      .then(() => true)
+      .catch(() => false)
+    expect(advanced).toBe(true)
   })
 
   it('blocks Launch Space at 0 agents', async () => {
@@ -126,40 +166,52 @@ describe('workspace modal gating', () => {
         (b) => b.textContent.trim() === 'Launch Space',
       )
       if (!launchBtn) return { ok: false, reason: 'launch_missing' }
-      const style = launchBtn.getAttribute('style') || ''
+      const blocked = launchBtn.disabled || launchBtn.hasAttribute('disabled')
       const hasZeroSummary = [...document.querySelectorAll('label, div, span')].some((el) =>
         (el.textContent || '').includes('Agents (0/16)'),
       )
       launchBtn.click()
-      return {
-        ok: true,
-        blockedAffordance: style.includes('not-allowed') || style.includes('var(--bgTertiary)'),
-        remainedOnStep2: !!document.getElementById('add-shell'),
-        hasZeroSummary,
-      }
+      return { ok: true, blockedAffordance: blocked, hasZeroSummary }
     })
-    expect(step2.ok, 'Launch Space button missing on Step 2').toBe(true)
-    expect(step2.blockedAffordance, 'Launch Space lacks blocked affordance at 0 agents').toBe(true)
-    expect(step2.remainedOnStep2, 'Launch Space launched despite 0 agents').toBe(true)
-    expect(step2.hasZeroSummary, 'expected Agents (0/16) summary').toBe(true)
+    expect(step2.ok).toBe(true)
+    expect(step2.blockedAffordance).toBe(true)
+    expect(step2.hasZeroSummary).toBe(true)
+
+    // The click must not have launched: still on Step 2 after a settle frame.
+    await browser.pause(600)
+    expect(await browser.execute(() => !!document.getElementById('add-shell'))).toBe(true)
   })
 
   it('enables Launch Space after adding one pane', async () => {
-    const step2 = await browser.execute(() => {
+    const clicked = await browser.execute(() => {
       const plusBtn = document.getElementById('add-shell')
-      const launchBtn = [...document.querySelectorAll('button')].find(
-        (b) => b.textContent.trim() === 'Launch Space',
-      )
-      if (!plusBtn || !launchBtn) return { ok: false, reason: 'missing_plus_or_launch' }
+      if (!plusBtn) return false
       plusBtn.click()
-      const style = launchBtn.getAttribute('style') || ''
-      const hasOneSummary = [...document.querySelectorAll('label, div, span')].some((el) =>
-        (el.textContent || '').includes('Agents (1/16)'),
-      )
-      return { ok: true, enabledAffordance: !style.includes('not-allowed'), hasOneSummary }
+      return true
     })
-    expect(step2.ok, 'could not increment agent or read launch button').toBe(true)
-    expect(step2.enabledAffordance, 'Launch Space stayed blocked after increment').toBe(true)
-    expect(step2.hasOneSummary, 'expected Agents (1/16) after increment').toBe(true)
+    expect(clicked).toBe(true)
+
+    // The increment re-renders on the next frame; wait for the unblock before
+    // reading the summary so the assertion observes settled state.
+    const enabled = await browser
+      .waitUntil(
+        () =>
+          browser.execute(() => {
+            const launchBtn = [...document.querySelectorAll('button')].find(
+              (b) => b.textContent.trim() === 'Launch Space',
+            )
+            return !!launchBtn && !launchBtn.disabled
+          }),
+        { timeout: 5000, interval: 100, timeoutMsg: 'Launch Space stayed blocked after increment' },
+      )
+      .then(() => true)
+      .catch(() => false)
+    expect(enabled).toBe(true)
+    const hasOneSummary = await browser.execute(() =>
+      [...document.querySelectorAll('label, div, span')].some((el) =>
+        (el.textContent || '').includes('Agents (1/16)'),
+      ),
+    )
+    expect(hasOneSummary).toBe(true)
   })
 })
