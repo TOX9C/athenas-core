@@ -173,11 +173,11 @@ describe('Layout change viewport regression', () => {
   it('keeps existing panes pinned to bottom when a third shell is added', async function () {
     this.timeout(180000)
 
-    // Authorize PTY spawn against the repo-root sandbox dir. Seeding the
-    // persisted trusted-root list first makes the add below a no-op that
-    // skips the backend's native confirmation dialog — a root that is not
-    // already persisted hits `blocking_show()` with no window to click, and
-    // the invoke never returns (workspace.rs:79-100).
+    // Authorize PTY spawn against the repo-root sandbox dir: the app's
+    // implicit project root already covers it, so no persisted entry is
+    // needed — and `workspace_add_trusted_root` is never called, sparing us
+    // its `blocking_show()` dialog that no window can click
+    // (workspace.rs:79-100).
     await setE2E()
     await trustViaProjectRoot(browser)
     const trusted = await browser

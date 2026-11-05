@@ -93,8 +93,8 @@ describe('Agent activity detection UI', () => {
     // rejected by the backend's `is_forbidden_root` (workspace.rs:31) and
     // `__athenaE2E` is a frontend-only bypass, so trust a dir under the repo
     // root instead: it is not a forbidden prefix and the app's own project
-    // root is implicitly trusted. Seeding the persisted root list makes the
-    // add a no-op that skips the backend's blocking confirmation dialog.
+    // root is implicitly trusted, which is the whole authorization — nothing
+    // is seeded and no native confirmation dialog is opened.
     // Fire-and-forget: it takes effect before the spawn below.
     const trustDir = e2eTrustRoot('agent-badges')
     await trustViaProjectRoot(browser)

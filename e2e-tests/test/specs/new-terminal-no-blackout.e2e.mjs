@@ -92,8 +92,8 @@ async function clickAddShell() {
 
 async function ensureSpaceWithShell() {
   await setE2E()
-  // A permitted dir (the backend rejects /tmp); seeded so the add is a no-op
-  // that skips the blocking confirmation dialog.
+  // A permitted dir: the backend rejects /tmp, while a repo-root sandbox dir
+  // is already covered by the app's implicit project root. Nothing is seeded.
   const trustDir = e2eTrustRoot('new-terminal-no-blackout')
   await trustViaProjectRoot(browser)
   await browser.pause(1500)

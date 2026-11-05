@@ -114,10 +114,14 @@ Two consequences for authors:
   specs; quarantine a flaky test by fixing it, not by disabling it (the release
   roadmap tracks e2e gaps).
 - **Trusted roots.** A permitted launch dir is required: the backend rejects
-  `/tmp` and `$TMPDIR` (`is_forbidden_root`). Use `e2eTrustRoot(label)` +
-  `seedTrustedRoots(browser, [dir])` from `test/helpers/trust.mjs`, then
+  `/tmp` and `$TMPDIR` (`is_forbidden_root`). Call `e2eTrustRoot(label)` from
+  `test/helpers/trust.mjs`, then `trustViaProjectRoot(browser)` and
   `fillSpaceDir(browser, dir)` — see `swarm-lifecycle.e2e.mjs` for the full
-  pattern. `__athenaE2E` is a frontend-only bypass and never authorizes a spawn.
+  pattern. `e2eTrustRoot` only creates `.e2e-sandbox/<label>`: sandbox dirs live
+  under the repo root, which the app's implicit project root authorizes, so no
+  seeding call is needed and `workspace_add_trusted_root` (with its blocking
+  native dialog) is never invoked. `__athenaE2E` is a frontend-only bypass and
+  never authorizes a spawn.
 - Screenshots land in `test/screenshots/`.
 
 If you add a new spec, prefer an existing spec's boot helpers (e.g.

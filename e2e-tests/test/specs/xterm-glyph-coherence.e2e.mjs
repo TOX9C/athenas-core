@@ -285,8 +285,8 @@ async function measureInkRows(paneId, topRow, bottomRow) {
 
 async function ensureSpaceWithShell() {
   await setE2E()
-  // A permitted dir (the backend rejects /tmp); seeded so the add is a no-op
-  // that skips the blocking confirmation dialog.
+  // A permitted dir: the backend rejects /tmp, while a sandbox dir under the
+  // repo root is covered by the app's implicit project root. No seeding call.
   const trustDir = e2eTrustRoot('xterm-glyph-coherence')
   await trustViaProjectRoot(browser)
   await browser.pause(1500)

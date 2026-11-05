@@ -74,9 +74,9 @@ async function makeSpaceWithShells(count) {
   await setE2E()
   // Trust a permitted root: the backend's `is_forbidden_root` rejects /tmp
   // (workspace.rs:31), and `__athenaE2E` is a FRONTEND-ONLY bypass — it skips
-  // the modal's empty-dir validation, not the backend trust gate. Seed the
-  // persisted root list first so the add below is a no-op that skips the
-  // backend's blocking native confirmation dialog.
+  // the modal's empty-dir validation, not the backend trust gate. This dir
+  // sits under the repo root, so the app's implicit project root authorizes it
+  // directly: no seeding, no blocking native confirmation dialog.
   const trustDir = e2eTrustRoot('font-scale-close')
   await trustViaProjectRoot(browser)
 

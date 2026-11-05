@@ -125,8 +125,8 @@ const waitForMount = () => browser.waitUntil(
 // to the active space (`get_active_workspace_id`).
 async function ensureWorkspace() {
   await setE2E();
-  // A permitted dir (the backend rejects /tmp); seeded so the add is a no-op
-  // that skips the blocking confirmation dialog.
+  // A permitted dir: the backend rejects /tmp, and a repo-root sandbox dir is
+  // already within the app's implicit project root. No seeding call is made.
   const trustDir = e2eTrustRoot('kanban-persistence');
   await trustViaProjectRoot(browser);
   const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));

@@ -26,10 +26,10 @@ describe('Large workspace geometry regression', () => {
   it('keeps twelve panes visible, non-overlapping, and responsive', async function () {
     this.timeout(150000)
 
-    // A permitted dir: the backend rejects /tmp (workspace.rs:31). Seed the
-    // persisted root list first so the add below is a no-op that skips the
-    // backend's blocking native dialog. It also has a `.catch`, so a rejection
-    // settles instead of blocking the spec.
+    // A permitted dir: the backend rejects /tmp (workspace.rs:31), while this
+    // sandbox dir sits under the repo root, which the app's implicit project
+    // root already authorizes. Nothing is seeded, so there is no blocking
+    // native dialog to skip.
     const trustDir = e2eTrustRoot('pane-scaling-10plus')
     await setE2E()
     await trustViaProjectRoot(browser)

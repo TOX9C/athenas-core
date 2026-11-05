@@ -32,10 +32,9 @@ describe('OMP terminal input regression', () => {
   it('mounts OMP through xterm and forwards keyboard input to the PTY', async function () {
     this.timeout(120000)
 
-    // A permitted dir: the backend rejects /tmp (workspace.rs:31). Seed the
-    // persisted root list first so the add below is a no-op that skips the
-    // backend's blocking native dialog. It also has a `.catch`, so a rejection
-    // settles instead of blocking the spec.
+    // A permitted dir: the backend rejects /tmp (workspace.rs:31), whereas
+    // this repo-root sandbox dir is inside the app's implicit project root.
+    // Nothing is seeded, so there is no blocking native dialog to skip.
     const trustDir = e2eTrustRoot('omp-typing')
     await setE2E()
     await trustViaProjectRoot(browser)

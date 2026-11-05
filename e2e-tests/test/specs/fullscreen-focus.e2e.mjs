@@ -59,14 +59,13 @@ describe('Fullscreen button focuses the terminal', () => {
     this.timeout(90000)
 
     // Trusted root: a dedicated dir under the repo root, which is not a
-    // forbidden prefix and is implicitly trusted by the app's own project
-    // root. `/tmp` is rejected by `is_forbidden_root` (workspace.rs:31) and
-    // `__athenaE2E` is a frontend-only bypass, so a /tmp root can never
-    // authorize a PTY spawn. The helper creates the dir (the tauri API has no
-    // dir-creation command the webview can invoke). Seeding the persisted
-    // root list first makes the add a no-op that skips the backend's blocking
-    // native confirmation dialog, and the `.catch` keeps a rejection from
-    // hanging the spec.
+    // forbidden prefix and needs no seeding — the app's own project root is
+    // implicitly trusted, so the sandbox dir is authorized as-is and no native
+    // confirmation dialog is involved. `/tmp` is rejected by
+    // `is_forbidden_root` (workspace.rs:31) and `__athenaE2E` is a
+    // frontend-only bypass, so a /tmp root can never authorize a PTY spawn.
+    // The helper creates the dir (the tauri API has no dir-creation command
+    // the webview can invoke).
     const trustDir = e2eTrustRoot('fullscreen-focus')
     await setE2E()
     await trustViaProjectRoot(browser)

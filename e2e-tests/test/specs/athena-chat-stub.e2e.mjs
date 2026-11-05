@@ -166,8 +166,9 @@ describe('Athena chat against a stubbed OpenAI provider', () => {
     // previous space may already exist — reuse it when possible, create one
     // otherwise (creation flow mirrors agent-athena-reference.e2e.mjs).
     await setE2E();
-    // A permitted dir (the backend rejects /tmp); seeded so the add is a
-    // no-op that skips the blocking confirmation dialog.
+    // A permitted dir: the backend rejects /tmp, while this repo-root sandbox
+    // dir is authorized by the app's implicit project root — no seeding, no
+    // blocking confirmation dialog.
     const trustDir = e2eTrustRoot('athena-chat-stub');
     await trustViaProjectRoot(browser);
     const hasPill = async () => browser.execute(() => !!document.querySelector('[data-agent-pill]'));

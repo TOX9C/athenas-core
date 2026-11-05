@@ -11,7 +11,9 @@ const PROBE_DUMP = '/tmp/garble-probes.json'
 
 // A permitted dir for every launch in this spec: the backend rejects /tmp
 // (workspace.rs:31) and the modal's blank-dir fallback is /tmp. Module scope
-// so both the seeding helper and the modal flow can reach it.
+// so both the trust helper and the modal flow can reach it. It needs no
+// seeding: a repo-root sandbox dir is authorized by the app's implicit project
+// root.
 const trustDir = e2eTrustRoot('pane-garble-focus')
 
 async function clickButtonByText(text, { partial = false } = {}) {

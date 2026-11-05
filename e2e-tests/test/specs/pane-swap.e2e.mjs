@@ -42,10 +42,10 @@ describe('Terminal pane drag/swap regression', () => {
   it('swaps two panes through the fullscreen pill drag overlay', async function () {
     this.timeout(90000)
 
-    // A permitted dir: the backend rejects /tmp (workspace.rs:31). Seed the
-    // persisted root list first so the add below is a no-op that skips the
-    // backend's blocking native dialog. It also has a `.catch`, so a rejection
-    // settles instead of blocking the spec.
+    // A permitted dir: the backend rejects /tmp (workspace.rs:31). This dir
+    // sits under the repo root, which the app's implicit project root
+    // authorizes, so nothing has to be seeded and no blocking native dialog
+    // is triggered.
     const trustDir = e2eTrustRoot('pane-swap')
     await setE2E()
     await trustViaProjectRoot(browser)

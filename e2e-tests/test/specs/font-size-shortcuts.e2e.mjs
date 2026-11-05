@@ -87,8 +87,8 @@ describe('Shared font-size shortcuts', () => {
     // Trust a dir under the repo root: not a forbidden prefix, and the app's
     // own project root is implicitly trusted so descendants pass the sandbox
     // check. /tmp itself is rejected by `is_forbidden_root` (workspace.rs:31).
-    // Seeding the persisted root list makes the add below a no-op that skips
-    // the backend's blocking native confirmation dialog.
+    // That implicit root is the only authorization needed — no seeding call,
+    // no backend confirmation dialog.
     const trustDir = e2eTrustRoot('font-size-shortcuts')
     await setE2E()
     await trustViaProjectRoot(browser)

@@ -13,7 +13,9 @@
 // The assertion is renderer-agnostic: it reads term.buffer directly, so it
 // holds under both the DOM renderer and the WebGL renderer.
 
-import { e2eSandboxDir } from '../helpers/repo.mjs'
+import { join } from 'node:path'
+
+import { e2eSandboxDir, repoRoot } from '../helpers/repo.mjs'
 
 const PANE_ID = 'e2e-zsh-zle-replay-pane'
 
@@ -55,12 +57,16 @@ describe('zsh zle history-recall replay (ghosting regression)', () => {
         })
     }, PANE_ID)
 
-    // Spawn a real interactive zsh in the spec's sandbox dir (a trusted
-    // repo-root descendant), then have it base64-decode the fixture so the
-    // exact captured zle stream comes out of a real PTY through the production
-    // event pipeline. The dir is computed Node-side: `browser.execute` only
-    // serializes the callback, so outer-scope names are not visible in the page.
+    // Spawn a real interactive zsh in the spec's sandbox dir (a repo-root
+    // descendant, so it is authorized by the app's implicit project root),
+    // then have it base64-decode the fixture so the exact captured zle stream
+    // comes out of a real PTY through the production event pipeline. Both
+    // paths are computed Node-side: `browser.execute` only serializes the
+    // callback, so outer-scope names are not visible in the page — and the
+    // fixture path must be ABSOLUTE, because zsh runs with cwd = the sandbox
+    // dir, where `e2e-tests/test/fixtures/...` does not resolve.
     const cwd = e2eSandboxDir('zsh-zle-replay')
+    const fixture = join(repoRoot(), 'e2e-tests', 'test', 'fixtures', 'zsh-zle-replay.b64')
     await browser.execute((paneId, cwd) => {
       return window.__TAURI__.core.invoke('pty_spawn', {
         id: paneId,
@@ -74,12 +80,15 @@ describe('zsh zle history-recall replay (ghosting regression)', () => {
     }, PANE_ID, cwd)
     // Let zsh finish its startup prompt before the replay begins.
     await browser.pause(1500)
-    await browser.execute((paneId) => {
+    await browser.execute((paneId, fixture) => {
       return window.__TAURI__.core.invoke('pty_write', {
         id: paneId,
-        data: 'base64 -D -i e2e-tests/test/fixtures/zsh-zle-replay.b64\r',
+        // Absolute, not bare `base64`: `-D -i` are BSD-only flags, and a shell
+        // whose PATH puts GNU coreutils first (as the owner's does) resolves
+        // `base64` to a build that rejects them.
+        data: `/usr/bin/base64 -D -i '${fixture}'\r`,
       })
-    }, PANE_ID)
+    }, PANE_ID, fixture)
     // Give the fixture output time to flush through the 8 ms coalescing tick.
     await browser.pause(1500)
 

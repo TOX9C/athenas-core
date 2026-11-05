@@ -32,8 +32,9 @@ describe('Swarm lifecycle', () => {
     // `swarm_read_state` gates through `validate_dir` -> `validate_path_exists`
     // -> `is_within_any_root` (mod.rs:400). `/tmp` passes only when
     // `/private/tmp` happens to sit in the persisted trusted_roots — which
-    // `onPrepare`'s store clear removes, so it cannot be relied on. Seed a
-    // permitted dir under the app root instead (see helpers/trust.mjs).
+    // `onPrepare`'s store clear removes, so it cannot be relied on. Use a
+    // sandbox dir under the app root instead (see helpers/trust.mjs): the app's
+    // implicit project root authorizes it with nothing seeded.
     const swarmDir = e2eTrustRoot('swarm-lifecycle')
 
 
