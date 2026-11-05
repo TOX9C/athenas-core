@@ -26,6 +26,28 @@ describe('zsh zle history-recall replay (ghosting regression)', () => {
       { timeout: 15000, timeoutMsg: 'Tauri IPC never became available' }
     )
 
+    // The app's xterm vendor bundle is loaded ON DEMAND, at first pane mount
+    // (index.html:421-470 — ~710KB kept off the cold-boot path), so at this
+    // point `window.Terminal` does not exist: this spec constructs its own
+    // Terminal without ever mounting an app pane, which is exactly how it
+    // died with `Can't find variable: Terminal`. Ask the app's own deferred
+    // hook — the same promise XtermMount awaits before constructing a
+    // Terminal (xterm_mount.rs:1090) — and wait for the constructor to
+    // appear. No pane is mounted by doing so.
+    await browser.execute(() => {
+      window.__zshReplayVendorReady = false
+      window.__xtermAddonsReady().then(() => {
+        window.__zshReplayVendorReady = true
+      })
+    })
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          () => window.__zshReplayVendorReady === true && typeof window.Terminal === 'function',
+        ),
+      { timeout: 20000, interval: 200, timeoutMsg: 'xterm vendor bundle never finished loading' },
+    )
+
     // Spec-owned xterm consuming the pane's raw stream — mirrors the
     // production write path (base64 event → bytes → term.write).
     await browser.execute((paneId) => {
