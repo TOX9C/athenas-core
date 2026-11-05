@@ -135,17 +135,17 @@ jobs:
       # stray marks inside image blocks, orphaned image overlays overpainted on
       # the live pane, stale glyphs after a shared-atlas reset, and the
       # new-terminal mount blackout. Every regression that produced an
-      # "unusable" build has been in that class, and neither cargo test nor any
-      # of the browserless checks above can see it.
+      # "unusable" build has been in that class, and nothing else here can see
+      # it: the suite is macOS-only and the Ubuntu `cargo test` job excludes
+      # `athena-terminal`.
       #
-      # Scoped to the specs that are deterministic today (verified green on
-      # repeated local runs). The other 30 specs share a single app instance
-      # and leak store/trust state into each other — including the two specs
-      # the README calls controls, `pty-broadcast` and `zsh-zle-replay`, which
-      # fail on trust-seeding order in a subset run ("Permission denied: Path
-      # is outside the workspace"). Gating on the whole suite today would block
-      # releases for unrelated reasons; widening this list is the follow-up
-      # once the suite is store-isolated.
+      # Curated, not whole-suite, on measured evidence: two full local runs of
+      # all 34 specs score 19/34 and 21/34, with 13 specs failing in both runs
+      # and again in isolation, plus 2 flaky. Gating the whole suite would
+      # block releases for unrelated reasons. Every spec below is in the
+      # terminal rendering/geometry class and passed in both runs
+      # (`xterm-glyph-coherence` was scoped-repaired and re-verified green
+      # after them).
       - name: Terminal-rendering e2e gate (WebDriver)
         timeout-minutes: 30
         run: |
@@ -169,7 +169,10 @@ jobs:
           npx wdio run wdio.conf.mjs \
             --spec test/specs/xterm-glyph-coherence.e2e.mjs \
             --spec test/specs/new-terminal-no-blackout.e2e.mjs \
-            --spec test/specs/pane-garble-focus.e2e.mjs
+            --spec test/specs/pane-garble-focus.e2e.mjs \
+            --spec test/specs/zsh-zle-replay.e2e.mjs \
+            --spec test/specs/workspace-resize-geometry.e2e.mjs \
+            --spec test/specs/pty-broadcast.e2e.mjs
 
       - name: Note ad-hoc signed release path
         if: ${{ env.APPLE_SIGNING_IDENTITY == '' }}
