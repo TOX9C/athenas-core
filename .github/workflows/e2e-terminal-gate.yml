@@ -21,14 +21,25 @@ name: Terminal Rendering E2E Gate
 # `xterm-glyph-coherence` after a scoped repair + re-verification) are the gate.
 # Keep this list identical to release-macos.yml's gate.
 #
+# WHY macos-15 AND NOT macos-14
+# Requesting `macos-14` yields a job that is CANCELLED about a second after it
+# starts, with no runner ever assigned (`runner_name: ""`) — on every event
+# type, on every ref. Measured on this branch with a throwaway A/B probe run:
+#   macos-14        -> cancelled, no runner
+#   macos-15        -> success, runner assigned
+#   ubuntu-latest   -> success, runner assigned  (control)
+# The repo was public and GitHub Status was green throughout, so this is the
+# retired-label class of failure, not minutes, billing, or a workflow defect.
+# If macOS jobs start being cancelled with no runner again, suspect the label
+# first and bump it — `release-macos.yml` carries the same label for the same
+# reason, and a wrong label there means the next tag cannot build a DMG.
+#
 # WHY THERE IS NO workflow_dispatch TRIGGER
-# A hand-dispatched macOS job cannot acquire a runner in this account: every
-# dispatch is cancelled ~1s in with `labels: ["macos-14"]` and a blank
-# `runner_name`, while an ubuntu-latest dispatch of this same public repo
-# completes fine (so it is not a minutes/billing limit). Do NOT re-add a
-# workflow_dispatch variant here hoping it will acquire a runner — a
-# pull_request on a macOS runner is the route that provably works, and it is
-# also how this file got its first run.
+# This job exists to gate pull requests; the tag-triggered release workflow
+# already gates the release itself. (A dispatch-based dry run of that release
+# workflow was attempted and abandoned — it was cancelled for the macos-14
+# reason above, which is fixed, but a dispatch there either publishes on the
+# push path or exercises nothing the tag does not.)
 
 on:
   pull_request:
@@ -60,7 +71,7 @@ env:
 jobs:
   terminal-rendering-gate:
     name: Terminal rendering (WebDriver)
-    runs-on: macos-14
+    runs-on: macos-15
     # The six specs take ~2m00s locally on warm caches; the budget is for the
     # cold path — the wasm frontend build (dx --release), the debug Tauri build
     # with the webdriver feature, `cargo install dioxus-cli`, and a cold

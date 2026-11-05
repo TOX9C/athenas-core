@@ -29,7 +29,7 @@ env:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-15
     # 60 -> 75 for the e2e gate's extra debug build (webdriver feature) + suite;
     # a 60-minute cap left no headroom on a cold cargo cache.
     timeout-minutes: 75

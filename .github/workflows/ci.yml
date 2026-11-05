@@ -189,8 +189,10 @@ jobs:
         # parallelism → cf717e5 isolate athena-terminal → 8150e82 skip PTY
         # fork tests on GH Linux → a7881cd full exclusion. The suite is
         # macOS-green and runs in full in the release workflow
-        # (release-macos.yml, runs-on: macos-14; v3.4.4 shipped through it
-        # 2026-10-15). Re-enable ONLY via a PR that drops --exclude, renames
+        # (release-macos.yml, runs-on: macos-15 — the macos-14 label stopped
+        # acquiring runners and was bumped 2026-11-05; v3.4.4 shipped through
+        # the macos-14 label on 2026-10-15). Re-enable ONLY via a PR that drops
+        # --exclude, renames
         # this job, and runs the full suite on ubuntu-latest first — the
         # trigger is not reproducible on macOS. State 2026-10-18: the local
         # wip/terminal-xterm-rewrite branch is stale (one commit, 2026-10-15;
