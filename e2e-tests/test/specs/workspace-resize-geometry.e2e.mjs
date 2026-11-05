@@ -31,16 +31,27 @@ describe('workspace resize geometry', () => {
     expect(opened).toBe(true)
     await browser.pause(1500)
 
-    // Pick Terminal Workspace card (avoid the Launch Space button).
-    const picked = await browser.execute(() => {
-      for (const btn of document.querySelectorAll('button')) {
-        if (btn.textContent.includes('Terminal Workspace') && !btn.textContent.includes('Launch')) {
-          btn.click()
-          return true
-        }
-      }
-      return false
-    })
+    // Pick the Terminal Workspace card. Match on the card's own title only:
+    // the old predicate also required `!text.includes('Launch')` to avoid
+    // stepping on the "Launch Space" footer button, but the card's subtitle
+    // ("Launch multiple terminal panes …") contains that word too, so the
+    // filter excluded the card it was looking for and the probe returned
+    // false. "Launch Space" never contains "Terminal Workspace", so no
+    // exclusion is needed. The modal does not mount synchronously, so wait
+    // for the card instead of probing once (same fix as e9e9eab).
+    const picked = await browser.waitUntil(
+      () =>
+        browser.execute(() => {
+          for (const btn of document.querySelectorAll('button')) {
+            if ((btn.textContent || '').includes('Terminal Workspace')) {
+              btn.click()
+              return true
+            }
+          }
+          return false
+        }),
+      { timeout: 15000, interval: 250, timeoutMsg: 'Terminal Workspace card never rendered' },
+    )
     expect(picked).toBe(true)
     await browser.pause(1500)
 
@@ -62,7 +73,13 @@ describe('workspace resize geometry', () => {
       btn.click()
       return true
     })
-    expect(paneAdded, '#add-shell button missing on pane step').toBe(true)
+    // `expect(value, message)` is not usable here: this suite's `expect` is
+    // jest's (v30 via expect-webdriverio/@wdio/runner), which throws
+    // "Expect takes at most one argument." on ANY second argument — even for
+    // a passing assertion — so the custom message is never rendered and the
+    // assertion dies with an unrelated error. Guard explicitly instead: same
+    // strength (`=== true` on a boolean), message preserved verbatim.
+    if (paneAdded !== true) throw new Error('#add-shell button missing on pane step')
     await browser.pause(800)
     const launched = await browser.execute(() => {
       for (const btn of document.querySelectorAll('button')) {
@@ -73,23 +90,23 @@ describe('workspace resize geometry', () => {
       }
       return false
     })
-    expect(launched, 'Launch Space button missing').toBe(true)
+    if (launched !== true) throw new Error('Launch Space button missing')
     // Allow grid + xterm mounts to render.
     await browser.pause(3000)
 
+    // The pane container is the flex column `.workspace-grid-root`
+    // (terminal_grid.rs:222). It is no longer — and is not — a CSS grid: rows
+    // and panes are laid out with `display: flex` (`row_styles` at
+    // terminal_grid.rs:243), so the old probe looking for inline
+    // `display: grid` + `grid-template-columns` matched nothing and always
+    // reported `found: false`. Panes are the `[data-pane-id]` wrappers
+    // emitted per pane (terminal_grid.rs:315).
     const geom = await browser.execute(() => {
-      let grid = null
-      for (const el of document.querySelectorAll('div')) {
-        const s = el.getAttribute('style') || ''
-        if (s.includes('display: grid') && s.includes('grid-template-columns')) {
-          grid = el
-          break
-        }
-      }
-      if (!grid) return { found: false, viewportW: window.innerWidth }
-      const gridRect = grid.getBoundingClientRect()
+      const container = document.querySelector('.workspace-grid-root')
+      if (!container) return { found: false, viewportW: window.innerWidth }
+      const gridRect = container.getBoundingClientRect()
       const panes = []
-      for (const child of grid.children) {
+      for (const child of container.querySelectorAll('[data-pane-id]')) {
         const r = child.getBoundingClientRect()
         panes.push({ w: Math.round(r.width), h: Math.round(r.height) })
       }
@@ -108,14 +125,15 @@ describe('workspace resize geometry', () => {
 
     expect(geom.found).toBe(true)
     const minW = Math.floor(geom.viewportW * 0.8)
-    expect(
-      geom.gridW,
-      `grid width ${geom.gridW} below 80% of viewport ${geom.viewportW}`,
-    ).toBeGreaterThanOrEqual(minW)
+    // Same reason as above: the 2-arg `expect` form throws, so each geometry
+    // check guards explicitly with its original diagnostic message.
+    if (!(geom.gridW >= minW)) {
+      throw new Error(`grid width ${geom.gridW} below 80% of viewport ${geom.viewportW}`)
+    }
     expect(geom.panes.length).toBeGreaterThan(0)
     for (const pane of geom.panes) {
-      expect(pane.w, `pane width 0: ${JSON.stringify(geom.panes)}`).toBeGreaterThan(0)
-      expect(pane.h, `pane height 0: ${JSON.stringify(geom.panes)}`).toBeGreaterThan(0)
+      if (!(pane.w > 0)) throw new Error(`pane width 0: ${JSON.stringify(geom.panes)}`)
+      if (!(pane.h > 0)) throw new Error(`pane height 0: ${JSON.stringify(geom.panes)}`)
     }
   })
 })
