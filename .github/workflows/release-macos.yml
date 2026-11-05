@@ -68,8 +68,18 @@ jobs:
       - name: Install Cargo audit
         run: cargo install cargo-audit --version 0.22.2 --locked
 
-      - name: Install tauri-driver (WebDriver shim for the e2e gate)
-        run: cargo install tauri-driver --locked
+      - name: Install the WebDriver shim and driver for the e2e gate
+        # `tauri-wd` — the binary the gate actually runs — does NOT come from
+        # the `tauri-driver` crate; it ships with `tauri-webdriver-automation`.
+        # Installing only `tauri-driver` leaves `tauri-wd: command not found`,
+        # and every gated spec then fails in ~2s with `ECONNREFUSED` on :4444
+        # (observed on the PR-time gate's first real run, 2026-11-05).
+        run: |
+          cargo install tauri-webdriver-automation --version 0.1.3 --locked
+          cargo install tauri-driver --locked
+          # Each step is a fresh shell, and `cargo install` targets
+          # $CARGO_HOME/bin — make it visible to the gate step below.
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: npm ci
@@ -156,6 +166,11 @@ jobs:
           bash frontend/build-dist.sh
           cargo build --manifest-path src-tauri/Cargo.toml --features webdriver
           (cd e2e-tests && npm ci)
+          # Fail loudly here rather than as every spec's worth of ECONNREFUSED:
+          # if the shim is missing, nothing below can work. Its absence is how
+          # the PR-time variant of this gate failed on its first real run.
+          command -v tauri-wd >/dev/null || {
+            echo "::error::tauri-wd is not on PATH — the WebDriver shim (crate tauri-webdriver-automation) did not install"; exit 1; }
           tauri-wd --port 4444 &
           DRIVER_PID=$!
           trap 'kill "$DRIVER_PID" 2>/dev/null || true' EXIT

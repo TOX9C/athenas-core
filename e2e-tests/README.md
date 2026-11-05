@@ -9,6 +9,11 @@ ships for Apple Silicon and the PTY harness is macOS-specific).
 1. **Install the WebDriver shim and driver (one time):**
 
    ```bash
+   # `tauri-wd` (the shim the specs connect to on :4444) ships with
+   # `tauri-webdriver-automation`, NOT with `tauri-driver`. Installing only the
+   # latter yields `tauri-wd: command not found` and every spec fails in ~2s
+   # with `ECONNREFUSED` — verified on the PR-time gate's first real run.
+   cargo install tauri-webdriver-automation --version 0.1.3 --locked
    cargo install tauri-driver --locked
    ```
 
