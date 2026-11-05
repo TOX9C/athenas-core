@@ -111,14 +111,33 @@ over is `store.json`, because every new app reads it at launch. `wdio.conf.mjs`'
 2. `store_delete` the two keys a spec can dirty — `workspaces`
    (`frontend/src/stores/workspace.rs:21`) and `workspace.trusted_roots`
    (`src-tauri/src/commands/mod.rs:266`);
-3. `location.reload()`, then wait until the reload has actually committed
-   (a token planted before the reload must be gone). The pre-reload document
-   keeps answering driver calls for a few ms, so a mount wait issued too early
-   is satisfied by the *old* page and the spec then races its own reload;
+3. it reloads **only if the page actually held state** (`pre.panes > 0`, or a
+   dirty key present); on a fresh app — every spec, since the runner spawns one
+   per spec file — there is nothing to drop, so no reload is issued and no
+   navigation-teardown window exists. When a reload does happen it is keyed to a
+   driver-visible signal: a token planted before `location.reload()` must be
+   gone, i.e. the *new* document is answering. (The shim cannot wait for the
+   navigation itself — `browser.refresh()` and `browser.url()` both return
+   before the new document exists — so no driver command may be issued until the
+   commit has passed: an eval delivered across the boundary runs in both
+   documents and resolves the same pending script id twice, which panics the
+   patched plugin and wedges the app. That bridge is driver-traffic-free.)
 4. the `before` hook repeats the WASM-mount wait, now against the new document.
 
-The hook logs its result per spec:
-`[wdio] resetAppState -> {"killedPtys":0,"deletedKeys":["workspaces","workspace.trusted_roots"],"reloaded":true}`.
+The hook logs its **measured** result per spec. `pre`/`post` are read with the
+real `store_has` command and the page's `__athenaTermMap`, never derived from
+what the reset did. `deletedKeys` is unconditional — `store_delete` returns `Ok`
+for an absent key (`src-tauri/src/commands/store.rs:267`) — so it is **not**
+evidence of deletion; `pre`/`post` are:
+
+```
+[wdio] resetAppState -> {"pre":{"panes":0,"hasWorkspaces":false,"hasTrustedRoots":false},"post":{"panes":0,"hasWorkspaces":false,"hasTrustedRoots":false},"killedPtys":0,"deletedKeys":["workspaces","workspace.trusted_roots"],"reloaded":false}
+```
+
+`test/specs/state-isolation.e2e.mjs` is the committed witness: it populates a
+space, asserts `pre.panes > 0` / `pre.hasWorkspaces`, then asserts the post-reset
+`panes`/`hasWorkspaces`/`hasTrustedRoots` are all clear — and goes red if the
+reset stops doing anything.
 
 Why no seeding is needed: a spec's launch directory only has to be permitted,
 and `.e2e-sandbox/<label>` under the repo root always is, because the app's own
@@ -158,9 +177,13 @@ Two consequences for authors:
   never authorizes a spawn.
 - **No hardcoded checkout paths.** Derive every repo path at runtime —
   `repoRoot()` / `e2eSandboxDir(label)` from `test/helpers/repo.mjs`. Absolute
-  owner-specific paths made the suite runnable from exactly one checkout. A
-  second spec-visible copy of the IPC bridge is not allowed either: `invokeSettled`
-  and `resetAppState` live only in `test/helpers/ipc.mjs`.
+  owner-specific paths made the suite runnable from exactly one checkout.
+- **One IPC bridge.** Write no new spec-visible copy of the invoke bridge —
+  import `invokeSettled` / `resetAppState` from `test/helpers/ipc.mjs`. Three
+  older specs still carry byte-equivalent private copies from before the helper
+  existed (`mobile-relay-pairing.e2e.mjs:35-72`,
+  `plugin-failure-paths.e2e.mjs:39-60`, `athena-chat-stub.e2e.mjs:43-64`); they
+  are grandfathered — do not add a fourth.
 - Screenshots land in `test/screenshots/`.
 
 If you add a new spec, prefer an existing spec's boot helpers (e.g.

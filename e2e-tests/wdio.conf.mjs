@@ -73,10 +73,11 @@ export const config = {
     // Checks for [data-dioxus-id] attribute (set by Dioxus on mount) or
     // any non-loader children in #main (fallback for different build modes).
     //
-    // Runs twice per spec: once before the reset (the page must exist before
-    // anything can be invoked on it) and once after, because the reset's
-    // reload tears the page down. A poll that lands mid-navigation rejects
-    // with a destroyed execution context; treat that as "not mounted yet".
+    // Called before the reset (the page must exist before anything can be
+    // invoked on it) and again after it whenever the reset reloaded the page
+    // (`reset.reloaded`), because the reload tears the page down. A poll that
+    // lands mid-navigation rejects with a destroyed execution context; treat
+    // that as "not mounted yet".
     const waitForMount = async () => {
       await browser.waitUntil(
         async () => {
@@ -104,8 +105,10 @@ export const config = {
     // (measured — see README "Store reset protocol"), but that app reads the
     // persisted store at launch, so without this a spec inherits whatever the
     // previous spec left in `workspaces`/`workspace.trusted_roots` and
-    // results depend on spec order. Kills live panes, drops those keys,
-    // reloads so the current page re-reads the emptied store.
+    // results depend on spec order. Kills live panes and drops those keys; it
+    // reloads only when the page actually held state, so a fresh app (the
+    // normal case here) pays no navigation-teardown window. The returned
+    // `pre`/`post`/`reloaded` are measured, not derived (see ipc.mjs).
     const reset = await resetAppState(browser);
     console.log(`[wdio] resetAppState -> ${JSON.stringify(reset)}`);
 
