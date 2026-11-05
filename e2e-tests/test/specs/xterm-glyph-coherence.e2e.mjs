@@ -839,9 +839,17 @@ describe('xterm glyph coherence', function () {
     await browser.pause(1000)
 
     const scan = await browser.execute(
-      (id) => {
+      (id, cps) => {
         const term = (window.__athenaTermMap || {})[id]
         if (!term) return { ok: false, reason: 'no term' }
+        // Only what this test FED can be a leak: the placeholder rune (if the
+        // addon failed to strip it) plus the diacritics under test (if the
+        // addon failed to consume them). Anything else non-ASCII in the pane
+        // is legitimate content — a shell prompt's own glyphs, for instance —
+        // and must not fail the assertion. Derived from the fed list so the
+        // two can never drift.
+        const watched = new Set(cps)
+        watched.add(0x10eeee)
         const buf = term.buffer.active
         const leaks = []
         let nbsp = 0
@@ -850,7 +858,7 @@ describe('xterm glyph coherence', function () {
           for (const ch of text) {
             const cp = ch.codePointAt(0)
             if (cp === 0xa0) nbsp++
-            else if (cp > 0x7e || cp < 0x20) {
+            else if (watched.has(cp)) {
               if (leaks.length < 16) leaks.push({ y, cp: 'U+' + cp.toString(16).toUpperCase() })
             }
           }
@@ -858,10 +866,11 @@ describe('xterm glyph coherence', function () {
         return { ok: true, leaks, nbsp }
       },
       paneId,
+      CANDIDATES,
     )
     console.log('[kitty] diacritic sweep:', JSON.stringify(scan))
     expect(scan.ok).toBe(true)
-    // Nothing but ASCII + NBSP may survive in the grid.
+    // Neither the placeholder rune nor any fed diacritic may survive in the grid.
     expect(scan.leaks).toEqual([])
     // Every placeholder cell became exactly one NBSP sentinel cell (that is
     // what refresh()'s block scan looks for).
