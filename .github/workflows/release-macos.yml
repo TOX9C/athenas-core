@@ -135,9 +135,10 @@ jobs:
       # stray marks inside image blocks, orphaned image overlays overpainted on
       # the live pane, stale glyphs after a shared-atlas reset, and the
       # new-terminal mount blackout. Every regression that produced an
-      # "unusable" build has been in that class, and nothing else here can see
-      # it: the suite is macOS-only and the Ubuntu `cargo test` job excludes
-      # `athena-terminal`.
+      # "unusable" build has been in that class. The `cargo test --workspace`
+      # above does run `athena-terminal`'s Rust tests, but no `cargo test` on
+      # any platform can see a webview rendering path — and this suite is
+      # macOS-only.
       #
       # Curated, not whole-suite, on measured evidence: two full local runs of
       # all 34 specs score 19/34 and 21/34, with 13 specs failing in both runs

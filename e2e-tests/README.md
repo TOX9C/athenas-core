@@ -77,9 +77,9 @@ they cost N app boots, and a hard app crash mid-suite refuses the next run's
 store clear on a live `pgrep` match, cascading failures.
 
 A **baseline comparison run is not possible** against a pre-harness commit:
-`reset-store.mjs` and `helpers/trust.mjs` are untracked additions, so an older
-checkout has no store reset at all. Copying them in makes it a current-harness
-run, not a baseline. Compare per-spec results against the untouched control
+`reset-store.mjs` and `helpers/trust.mjs` did not exist before the harness (both
+are tracked files now), so an older checkout has no store reset at all. Copying
+them in makes it a current-harness run, not a baseline. Compare per-spec results against the untouched control
 specs (`pty-broadcast`, `resume-*-capture`,
 `verify-confirm-and-palette`, `zsh-zle-replay`) instead: they exercise identical
 code in every run, so a failure there is environmental, not a regression.
@@ -97,6 +97,19 @@ once per spec (the keys a spec can dirty).
   change. So the app must be **fully quit** before a run (a `before`-hook reset
   is too late: the hook runs after launch).
 - `onComplete` runs `restore`, putting the newest backup back after teardown.
+
+**Schema restore (teardown).** A `--features webdriver` build also rewrites three
+TRACKED ACL schema files under `src-tauri/gen/schemas/` — the automation
+plugin's permission surface (`webdriver-automation:*`) shows up in them, while
+the committed set is the default-feature set. `onComplete` restores just that
+directory (`git checkout -- src-tauri/gen/schemas`) so a local run cannot leak
+the diff into a commit. It is deliberately path-scoped — a tree dirty for an
+unrelated reason keeps everything outside that directory — and best-effort: a
+failure only warns, because a teardown that can turn a green run red is worse
+than the diff it cleans up. Running on `onComplete`, it does not fire on
+SIGINT/SIGKILL. A warm cargo tree will not regenerate the schemas at all (the
+build script is cached), so `touch src-tauri/build.rs` before the run to
+reproduce the wart.
 
 **Per spec.** The runner spawns **one app process per spec file** — verified by
 sampling `pgrep -x athenas-core` across a two-spec run (two distinct PIDs,
@@ -127,7 +140,7 @@ over is `store.json`, because every new app reads it at launch. `wdio.conf.mjs`'
 The hook logs its **measured** result per spec. `pre`/`post` are read with the
 real `store_has` command and the page's `__athenaTermMap`, never derived from
 what the reset did. `deletedKeys` is unconditional — `store_delete` returns `Ok`
-for an absent key (`src-tauri/src/commands/store.rs:267`) — so it is **not**
+for an absent key (`crates/athena-store/src/store.rs:267`) — so it is **not**
 evidence of deletion; `pre`/`post` are:
 
 ```
