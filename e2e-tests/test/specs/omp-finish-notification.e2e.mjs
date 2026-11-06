@@ -1,6 +1,6 @@
 import { expect } from '@wdio/globals'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 async function clickButtonByText(text, { partial = false } = {}) {
   return browser.execute(
@@ -37,12 +37,10 @@ describe('OMP turn-finished notification', () => {
   it('notifies when an OMP turn ends after typing hello', async function () {
     this.timeout(180000)
 
-    // A permitted dir: the backend rejects /tmp (workspace.rs:31). Seed the
-    // persisted root list first so the add below is a no-op that skips the
-    // backend's blocking native dialog. It also has a `.catch`, so a rejection
-    // settles instead of blocking the spec.
+    // A permitted dir: the backend rejects /tmp (workspace.rs:31); a
+    // repo-root sandbox dir needs no persisted trust entry, since the app's
+    // implicit project root already includes it. No seeding, no dialog.
     const trustDir = e2eTrustRoot('omp-finish-notification')
-    await seedTrustedRoots(browser, [trustDir])
     await setE2E()
     await trustViaProjectRoot(browser)
     await browser.waitUntil(

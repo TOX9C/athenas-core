@@ -1,7 +1,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -74,11 +74,10 @@ async function makeSpaceWithShells(count) {
   await setE2E()
   // Trust a permitted root: the backend's `is_forbidden_root` rejects /tmp
   // (workspace.rs:31), and `__athenaE2E` is a FRONTEND-ONLY bypass — it skips
-  // the modal's empty-dir validation, not the backend trust gate. Seed the
-  // persisted root list first so the add below is a no-op that skips the
-  // backend's blocking native confirmation dialog.
+  // the modal's empty-dir validation, not the backend trust gate. This dir
+  // sits under the repo root, so the app's implicit project root authorizes it
+  // directly: no seeding, no blocking native confirmation dialog.
   const trustDir = e2eTrustRoot('font-scale-close')
-  await seedTrustedRoots(browser, [trustDir])
   await trustViaProjectRoot(browser)
 
   expect((await clickButtonByText('New Workspace', { partial: true })).ok).toBe(true)

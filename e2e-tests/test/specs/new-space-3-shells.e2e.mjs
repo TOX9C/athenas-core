@@ -1,7 +1,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -30,7 +30,6 @@ describe('New space terminal regression', () => {
     // Permitted launch dir: the modal's blank-dir fallback is "/tmp", which
     // pty_spawn rejects as a forbidden root.
     const trustDir = e2eTrustRoot('new-space-3-shells')
-    await seedTrustedRoots(browser, [trustDir])
 
     const openResult = await clickButtonByText('New Workspace', { partial: true })
     expect(openResult.ok).toBe(true)

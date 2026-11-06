@@ -31,7 +31,7 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, trustViaProjectRoot } from '../helpers/trust.mjs';
+import { e2eTrustRoot, setE2E, trustViaProjectRoot } from '../helpers/trust.mjs';
 
 // `browser.execute` is a synchronous WebDriver script — a pending Promise
 // serializes as `{}` — so promises are settled on `window.__e2eBridge` inside
@@ -73,7 +73,7 @@ const invoke = async function invokeCmd(cmd, args = {}) {
 
 describe('Plugin failure paths (stub harness)', () => {
   let pluginDir; // temp dir holding the stub manifests
-  let addedRoot; // trusted root we registered, to remove in after
+  let addedRoot; // dir handed to the best-effort trust removal in after
   const CRASHED_ID = `e2e-crashy-${Date.now()}`;
   const GOOD_ID = `e2e-good-${Date.now()}`;
 
@@ -84,7 +84,7 @@ describe('Plugin failure paths (stub harness)', () => {
     // valid manifest. Discovery scans *.json in the directory.
     //
     // It lives under the e2e sandbox (a repo-root subdir) rather than under
-    // the OS temp dir: `workspace_add_trusted_root` rejects the canonical
+    // the OS temp dir: the trust gate rejects the canonical
     // macOS temp path (`$TMPDIR` -> /private/var/folders/...) because both
     // `/private` and `/var` are forbidden prefixes (workspace.rs:31), so a
     // temp-dir manifest root could never be trusted for plugin discovery.
@@ -101,14 +101,11 @@ describe('Plugin failure paths (stub harness)', () => {
       }),
     );
 
-    // Discover requires the dir to live under a trusted root.
-    //
-    // Seed the persisted root list first: `workspace_add_trusted_root` for a
-    // dir that is not already persisted opens the backend's blocking native
-    // confirmation dialog (workspace.rs:79-100), which no window can service
-    // here, so the add would hang the spec forever. Seeded, the add below is
-    // an early-returning no-op that skips the dialog.
-    await seedTrustedRoots(browser, [pluginDir]);
+    // Discover requires the dir to live under a trusted root — satisfied by
+    // the app's implicit project root, since the plugin dir sits under the
+    // repo-root sandbox. Nothing is seeded and `workspace_add_trusted_root` is
+    // never called: that command opens a blocking native dialog
+    // (workspace.rs:79-100) which no window here can service.
     await trustViaProjectRoot(browser);
     addedRoot = pluginDir;
   });

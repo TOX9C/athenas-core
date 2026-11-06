@@ -9,6 +9,8 @@
 // on the session-scoped `pty:raw:<id>` channels receive payloads carrying
 // >= 3 DISTINCT sessionIds.
 
+import { e2eSandboxDir } from '../helpers/repo.mjs'
+
 const SESSION_IDS = ['e2e-alpha', 'e2e-beta', 'e2e-gamma']
 
 describe('pty:raw broadcast race regression', () => {
@@ -58,18 +60,19 @@ describe('pty:raw broadcast race regression', () => {
     // Spawn 3 PTY sessions in the repo dir (the cwd sandbox rejects paths
     // outside the workspace). Fire-and-forget with error routing: a
     // rejected invoke must not reject execute() and abort the spec.
+    const cwd = e2eSandboxDir('pty-broadcast')
     for (const id of SESSION_IDS) {
-      await browser.execute((sessionId) => {
+      await browser.execute((sessionId, cwd) => {
         window.__TAURI__.core
           .invoke('pty_spawn', {
             id: sessionId,
-            cwd: '/Users/apollo/Documents/athenas-core',
+            cwd,
             shell: '/bin/zsh',
             cols: 80,
             rows: 24,
           })
           .catch((e) => window.__ptyErrors.push(`spawn ${sessionId}: ${String(e)}`))
-      }, id)
+      }, id, cwd)
     }
 
     // Collect payloads for a window.

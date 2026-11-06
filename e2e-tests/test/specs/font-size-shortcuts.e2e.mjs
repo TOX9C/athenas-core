@@ -1,7 +1,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
@@ -87,10 +87,9 @@ describe('Shared font-size shortcuts', () => {
     // Trust a dir under the repo root: not a forbidden prefix, and the app's
     // own project root is implicitly trusted so descendants pass the sandbox
     // check. /tmp itself is rejected by `is_forbidden_root` (workspace.rs:31).
-    // Seeding the persisted root list makes the add below a no-op that skips
-    // the backend's blocking native confirmation dialog.
+    // That implicit root is the only authorization needed — no seeding call,
+    // no backend confirmation dialog.
     const trustDir = e2eTrustRoot('font-size-shortcuts')
-    await seedTrustedRoots(browser, [trustDir])
     await setE2E()
     await trustViaProjectRoot(browser)
     const trusted = await browser
@@ -138,6 +137,17 @@ describe('Shared font-size shortcuts', () => {
       await browser.pause(250)
       await fillSpaceDir(browser, trustDir)
       expect(await clickButtonByText('Next >', false)).toBe(true)
+      // "Launch Space" is disabled while the space has 0 agents
+      // (`launch_disabled = total_panes == 0`, new_space_modal.rs:161), so
+      // the promote click is a no-op and no pane ever mounts — which is what
+      // used to make this spec die at "terminal pane did not mount". The
+      // reference flow it mirrors (layout-scroll-regression.e2e.mjs:241-248)
+      // increments the Shell row first; so does this one.
+      await browser.waitUntil(
+        () => browser.execute(() => !!document.getElementById('add-shell')),
+        { timeout: 10000, interval: 250, timeoutMsg: 'Shell row did not appear' },
+      )
+      await browser.execute(() => document.getElementById('add-shell').click())
       expect(await clickButtonByText('Launch Space')).toBe(true)
     }
     await browser.waitUntil(

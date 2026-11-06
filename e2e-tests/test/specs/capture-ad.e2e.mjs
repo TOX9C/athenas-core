@@ -2,13 +2,14 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync, writeFileSync } from 'node:fs'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir } from '../helpers/trust.mjs'
+import { repoRoot } from '../helpers/repo.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const shotDir = join(__dirname, '..', 'screenshots', 'ad')
 mkdirSync(shotDir, { recursive: true })
 
-const REPO_DIR = '/Users/apollo/Documents/athenas-core'
+const REPO_DIR = repoRoot()
 
 async function clickButtonByText(text, { partial = false } = {}) {
   return browser.execute(
@@ -329,7 +330,6 @@ describe('Ad capture — richer real app state', () => {
     // Permitted launch dir: the modal's blank-dir fallback is "/tmp", which
     // pty_spawn rejects as a forbidden root.
     const trustDir = e2eTrustRoot('capture-ad')
-    await seedTrustedRoots(browser, [trustDir])
     await browser.pause(2500)
 
     // 01 — Welcome / empty state.

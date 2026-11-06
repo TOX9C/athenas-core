@@ -1,0 +1,191 @@
+name: Terminal Rendering E2E Gate
+
+# WHY THIS GATE EXISTS
+# Terminal rendering is exercised by nothing else in CI. The Ubuntu jobs in
+# ci.yml cannot see it: `rust-tests` runs `cargo test --workspace --exclude
+# athena-terminal` (the exclude is deliberate, see that job), and even the full
+# suite could not catch this class of bug — the render path is webview-side
+# (xterm.js painting through WKWebView), so no `cargo test` on any platform can
+# observe it. Every regression that produced an "unusable" build (leaked kitty
+# rowcolumn diacritics painting stray marks inside image blocks, orphaned image
+# overlays overpainted on the live pane, stale glyphs after a shared-atlas
+# reset, the new-terminal mount blackout) was in that class. release-macos.yml
+# runs the same five specs, but only at tag-push time — too late to stop a
+# regression from merging. This workflow pulls that gate forward to the PR.
+#
+# WHY THE SUITE IS CURATED
+# Two full local runs of all 34 specs score 19/34 and 21/34, with 13 specs
+# failing in both runs and again in isolation, plus 2 flaky. Gating the whole
+# suite would block PRs for unrelated reasons, so the five specs below (all in
+# the terminal rendering/geometry class, all green in both runs,
+# `xterm-glyph-coherence` after a scoped repair + re-verification) are the gate.
+# Keep this list identical to release-macos.yml's gate.
+#
+# WHY macos-15 AND NOT macos-14
+# Requesting `macos-14` yields a job that is CANCELLED about a second after it
+# starts, with no runner ever assigned (`runner_name: ""`) — on every event
+# type, on every ref. Measured on this branch with a throwaway A/B probe run:
+#   macos-14        -> cancelled, no runner
+#   macos-15        -> success, runner assigned
+#   ubuntu-latest   -> success, runner assigned  (control)
+# The repo was public and GitHub Status was green throughout, so this is the
+# retired-label class of failure, not minutes, billing, or a workflow defect.
+# If macOS jobs start being cancelled with no runner again, suspect the label
+# first and bump it — `release-macos.yml` carries the same label for the same
+# reason, and a wrong label there means the next tag cannot build a DMG.
+#
+# WHY THERE IS NO workflow_dispatch TRIGGER
+# This job exists to gate pull requests; the tag-triggered release workflow
+# already gates the release itself. (A dispatch-based dry run of that release
+# workflow was attempted and abandoned — it was cancelled for the macos-14
+# reason above, which is fixed, but a dispatch there either publishes on the
+# push path or exercises nothing the tag does not.)
+
+concurrency:
+  # Two pushes in quick succession would otherwise queue two ~45-minute macOS
+  # jobs. Cancel the superseded one: branch protection evaluates the newest
+  # commit, so the result the PR is waiting on is not lost.
+  group: e2e-terminal-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    # A macOS runner is the scarcest thing this repo uses, so only the PRs that
+    # can actually move this gate pay for one:
+    #   e2e-tests/**                        the specs, helpers and wdio config themselves
+    #   frontend/vendor/xterm/**            vendored xterm.js + the kitty-graphics addon the
+    #                                       glyph-coherence spec renders through
+    #   frontend/src/components/workspace/** the pane/terminal mount, resize and xterm glue
+    #                                       (terminal_grid, xterm_mount, terminal_resize, ...)
+    #   frontend/index.html                 the page that defines the tip-kitty token and
+    #                                       loads the deferred xterm bundle the specs await
+    #   src-tauri/src/commands/**           the PTY/broadcast commands the specs drive
+    #   src-tauri/src/main.rs               the TAURI_WEBVIEW_AUTOMATION branch that makes
+    #                                       the binary drivable by tauri-wd at all
+    #   src-tauri/build.rs                  the Tauri build script: ACL/capability and resource
+    #                                       wiring for the webdriver-feature binary
+    #   src-tauri/tauri.conf.json           window/webview config the specs measure
+    #   crates/athena-terminal/**           the PTY session layer behind every pane
+    #   patches/tauri-plugin-webdriver-automation/**  the automation plugin compiled in with
+    #                                       --features webdriver
+    #   .github/workflows/e2e-terminal-gate.yml  this workflow
+    paths:
+      - 'e2e-tests/**'
+      - 'frontend/vendor/xterm/**'
+      - 'frontend/src/components/workspace/**'
+      - 'frontend/index.html'
+      - 'src-tauri/src/commands/**'
+      - 'src-tauri/src/main.rs'
+      - 'src-tauri/build.rs'
+      - 'src-tauri/tauri.conf.json'
+      - 'crates/athena-terminal/**'
+      - 'patches/tauri-plugin-webdriver-automation/**'
+      - '.github/workflows/e2e-terminal-gate.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  terminal-rendering-gate:
+    name: Terminal rendering (WebDriver)
+    runs-on: macos-15
+    # The five specs take ~2m00s locally on warm caches; the budget is for the
+    # cold path — the wasm frontend build (dx --release), the debug Tauri build
+    # with the webdriver feature, `cargo install dioxus-cli`, and a cold
+    # rust-cache restore. That sits well inside the 75 minutes release-macos.yml
+    # gives the whole release (same debug build + suite), so 45 leaves headroom
+    # without queuing a wedged job for over an hour.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # dx strips the WASM bundle via rust-objcopy, which dynamically links
+          # libLLVM from the llvm-tools component — without it the frontend
+          # build below dies with "Library not loaded: @rpath/libLLVM.dylib".
+          components: llvm-tools
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          # Only the e2e runner's dependencies are installed below; cache that
+          # lockfile, not the repo root's.
+          cache-dependency-path: e2e-tests/package-lock.json
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Dioxus CLI
+        # frontend/build-dist.sh shells out to `dx` and fails without it.
+        run: cargo install dioxus-cli --version 0.7.9 --locked
+
+      - name: Install the WebDriver shim and driver for the e2e gate
+        # `tauri-wd` — the binary the gate actually runs — does NOT come from
+        # the `tauri-driver` crate; it ships with `tauri-webdriver-automation`.
+        # Installing only `tauri-driver` leaves `tauri-wd: command not found`,
+        # and every spec then fails in ~2s with `ECONNREFUSED` on :4444
+        # (observed on this workflow's first real run). Both crates are
+        # installed: tauri-driver provides the platform driver, the shim the
+        # macOS WebKit automation endpoint this repo's patched plugin pairs with.
+        run: |
+          cargo install tauri-webdriver-automation --version 0.1.3 --locked
+          cargo install tauri-driver --locked
+          # Each step is a fresh shell, and `cargo install` targets
+          # $CARGO_HOME/bin — make it visible to the gate step below.
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build frontend distribution
+        run: bash frontend/build-dist.sh
+
+      - name: Build app with WebDriver automation
+        # The specs launch target/debug/athenas-core through tauri-wd, so the
+        # binary must carry the automation plugin compiled in.
+        run: cargo build --manifest-path src-tauri/Cargo.toml --features webdriver
+
+      - name: Install e2e dependencies
+        run: npm ci
+        working-directory: e2e-tests
+
+      - name: Terminal-rendering e2e gate (WebDriver)
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # Fail loudly here rather than as five specs' worth of ECONNREFUSED: if
+          # the shim is missing, nothing below can work. (Its absence is exactly
+          # how this gate failed on its first real run.)
+          command -v tauri-wd >/dev/null || {
+            echo "::error::tauri-wd is not on PATH — the WebDriver shim (crate tauri-webdriver-automation) did not install"; exit 1; }
+          tauri-wd --port 4444 &
+          DRIVER_PID=$!
+          trap 'kill "$DRIVER_PID" 2>/dev/null || true' EXIT
+          # The driver binds fast, but a session races it — wait until the port
+          # accepts a connection before starting the runner. (curl exits 0 on
+          # any HTTP response, so this is a liveness probe, not a status check.)
+          for _ in $(seq 1 30); do
+            if curl -s -o /dev/null http://127.0.0.1:4444/status; then break; fi
+            sleep 1
+          done
+          cd e2e-tests
+          # `new-terminal-no-blackout` is deliberately NOT in this list.
+          # It asserts no pane is canvas-less/zero-sized more than 400 ms after
+          # an Add Shell, and that budget is a machine-speed constant: on a
+          # 3-vCPU macOS runner a legitimately mounting pane measured blank at
+          # t=722 ms and t=1005 ms (clearing after), i.e. ~1 s, while the
+          # blackout bug it targets lasted ~2 s. The margin between "slow
+          # hardware" and "real regression" is too thin to gate on shared
+          # runners, and tuning the constant would erase what it detects. It
+          # stays in the suite for local and pre-release runs.
+          npx wdio run wdio.conf.mjs \
+            --spec test/specs/xterm-glyph-coherence.e2e.mjs \
+            --spec test/specs/pane-garble-focus.e2e.mjs \
+            --spec test/specs/zsh-zle-replay.e2e.mjs \
+            --spec test/specs/workspace-resize-geometry.e2e.mjs \
+            --spec test/specs/pty-broadcast.e2e.mjs

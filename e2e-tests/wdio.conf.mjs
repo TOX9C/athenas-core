@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
+import { resetAppState } from './test/helpers/ipc.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
 
@@ -70,21 +72,47 @@ export const config = {
     // Wait for Dioxus WASM to fully mount.
     // Checks for [data-dioxus-id] attribute (set by Dioxus on mount) or
     // any non-loader children in #main (fallback for different build modes).
-    await browser.waitUntil(
-      async () => {
-        const mounted = await browser.execute(() => {
-          const main = document.getElementById('main');
-          if (!main) return false;
-          if (main.querySelector('[data-dioxus-id]')) return true;
-          for (const child of main.children) {
-            if (child.id !== 'wasm-loading' && child.id !== 'console-log') return true;
+    //
+    // Called before the reset (the page must exist before anything can be
+    // invoked on it) and again after it whenever the reset reloaded the page
+    // (`reset.reloaded`), because the reload tears the page down. A poll that
+    // lands mid-navigation rejects with a destroyed execution context; treat
+    // that as "not mounted yet".
+    const waitForMount = async () => {
+      await browser.waitUntil(
+        async () => {
+          try {
+            return await browser.execute(() => {
+              const main = document.getElementById('main');
+              if (!main) return false;
+              if (main.querySelector('[data-dioxus-id]')) return true;
+              for (const child of main.children) {
+                if (child.id !== 'wasm-loading' && child.id !== 'console-log') return true;
+              }
+              return false;
+            });
+          } catch {
+            return false;
           }
-          return false;
-        });
-        return mounted;
-      },
-      { timeout: 25000, interval: 500, timeoutMsg: 'Dioxus WASM did not mount within 25s' },
-    );
+        },
+        { timeout: 25000, interval: 500, timeoutMsg: 'Dioxus WASM did not mount within 25s' },
+      );
+    };
+
+    await waitForMount();
+
+    // Per-spec clean state. The runner spawns one app process per spec file
+    // (measured — see README "Store reset protocol"), but that app reads the
+    // persisted store at launch, so without this a spec inherits whatever the
+    // previous spec left in `workspaces`/`workspace.trusted_roots` and
+    // results depend on spec order. Kills live panes and drops those keys; it
+    // reloads only when the page actually held state, so a fresh app (the
+    // normal case here) pays no navigation-teardown window. The returned
+    // `pre`/`post`/`reloaded` are measured, not derived (see ipc.mjs).
+    const reset = await resetAppState(browser);
+    console.log(`[wdio] resetAppState -> ${JSON.stringify(reset)}`);
+
+    await waitForMount();
   },
 
   // Restore the user's persisted store after the app has been shut down by
@@ -108,6 +136,24 @@ export const config = {
       });
     } catch (err) {
       console.warn(`[wdio] store restore skipped: ${err.message ?? err}`);
+    }
+
+    // A `--features webdriver` build legitimately rewrites these TRACKED ACL
+    // schema files: the automation plugin's permission surface
+    // (`webdriver-automation:*`) shows up in them, while the committed set is
+    // the default-feature set. Restore just these paths so a local e2e run
+    // can't leak the diff into a commit. Deliberately scoped: a tree that is
+    // dirty for an unrelated reason keeps everything outside
+    // `src-tauri/gen/schemas` untouched. Best-effort like the sweeps above —
+    // a teardown that can turn a green run red is worse than the files it
+    // cleans up.
+    try {
+      execFileSync('git', ['checkout', '--', 'src-tauri/gen/schemas'], {
+        cwd: projectRoot,
+        stdio: 'inherit',
+      });
+    } catch (err) {
+      console.warn(`[wdio] schema restore skipped: ${err.message ?? err}`);
     }
   },
 };

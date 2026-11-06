@@ -29,7 +29,7 @@ env:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-15
     # 60 -> 75 for the e2e gate's extra debug build (webdriver feature) + suite;
     # a 60-minute cap left no headroom on a cold cargo cache.
     timeout-minutes: 75
@@ -68,8 +68,18 @@ jobs:
       - name: Install Cargo audit
         run: cargo install cargo-audit --version 0.22.2 --locked
 
-      - name: Install tauri-driver (WebDriver shim for the e2e gate)
-        run: cargo install tauri-driver --locked
+      - name: Install the WebDriver shim and driver for the e2e gate
+        # `tauri-wd` — the binary the gate actually runs — does NOT come from
+        # the `tauri-driver` crate; it ships with `tauri-webdriver-automation`.
+        # Installing only `tauri-driver` leaves `tauri-wd: command not found`,
+        # and every gated spec then fails in ~2s with `ECONNREFUSED` on :4444
+        # (observed on the PR-time gate's first real run, 2026-11-05).
+        run: |
+          cargo install tauri-webdriver-automation --version 0.1.3 --locked
+          cargo install tauri-driver --locked
+          # Each step is a fresh shell, and `cargo install` targets
+          # $CARGO_HOME/bin — make it visible to the gate step below.
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: npm ci
@@ -135,17 +145,18 @@ jobs:
       # stray marks inside image blocks, orphaned image overlays overpainted on
       # the live pane, stale glyphs after a shared-atlas reset, and the
       # new-terminal mount blackout. Every regression that produced an
-      # "unusable" build has been in that class, and neither cargo test nor any
-      # of the browserless checks above can see it.
+      # "unusable" build has been in that class. The `cargo test --workspace`
+      # above does run `athena-terminal`'s Rust tests, but no `cargo test` on
+      # any platform can see a webview rendering path — and this suite is
+      # macOS-only.
       #
-      # Scoped to the specs that are deterministic today (verified green on
-      # repeated local runs). The other 30 specs share a single app instance
-      # and leak store/trust state into each other — including the two specs
-      # the README calls controls, `pty-broadcast` and `zsh-zle-replay`, which
-      # fail on trust-seeding order in a subset run ("Permission denied: Path
-      # is outside the workspace"). Gating on the whole suite today would block
-      # releases for unrelated reasons; widening this list is the follow-up
-      # once the suite is store-isolated.
+      # Curated, not whole-suite, on measured evidence: two full local runs of
+      # all 34 specs score 19/34 and 21/34, with 13 specs failing in both runs
+      # and again in isolation, plus 2 flaky. Gating the whole suite would
+      # block releases for unrelated reasons. Every spec below is in the
+      # terminal rendering/geometry class and passed in both runs
+      # (`xterm-glyph-coherence` was scoped-repaired and re-verified green
+      # after them).
       - name: Terminal-rendering e2e gate (WebDriver)
         timeout-minutes: 30
         run: |
@@ -155,6 +166,11 @@ jobs:
           bash frontend/build-dist.sh
           cargo build --manifest-path src-tauri/Cargo.toml --features webdriver
           (cd e2e-tests && npm ci)
+          # Fail loudly here rather than as every spec's worth of ECONNREFUSED:
+          # if the shim is missing, nothing below can work. Its absence is how
+          # the PR-time variant of this gate failed on its first real run.
+          command -v tauri-wd >/dev/null || {
+            echo "::error::tauri-wd is not on PATH — the WebDriver shim (crate tauri-webdriver-automation) did not install"; exit 1; }
           tauri-wd --port 4444 &
           DRIVER_PID=$!
           trap 'kill "$DRIVER_PID" 2>/dev/null || true' EXIT
@@ -166,10 +182,18 @@ jobs:
             sleep 1
           done
           cd e2e-tests
+          # `new-terminal-no-blackout` is deliberately NOT in this list: its
+          # 400 ms no-blank budget is a machine-speed constant, and a 3-vCPU
+          # runner's legitimate pane-mount transient measured ~1 s against the
+          # ~2 s blackout it targets — too thin a margin to gate on. See
+          # e2e-terminal-gate.yml for the full note; the spec still runs in the
+          # full suite locally and pre-release.
           npx wdio run wdio.conf.mjs \
             --spec test/specs/xterm-glyph-coherence.e2e.mjs \
-            --spec test/specs/new-terminal-no-blackout.e2e.mjs \
-            --spec test/specs/pane-garble-focus.e2e.mjs
+            --spec test/specs/pane-garble-focus.e2e.mjs \
+            --spec test/specs/zsh-zle-replay.e2e.mjs \
+            --spec test/specs/workspace-resize-geometry.e2e.mjs \
+            --spec test/specs/pty-broadcast.e2e.mjs
 
       - name: Note ad-hoc signed release path
         if: ${{ env.APPLE_SIGNING_IDENTITY == '' }}

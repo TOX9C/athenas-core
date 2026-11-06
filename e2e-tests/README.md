@@ -9,6 +9,11 @@ ships for Apple Silicon and the PTY harness is macOS-specific).
 1. **Install the WebDriver shim and driver (one time):**
 
    ```bash
+   # `tauri-wd` (the shim the specs connect to on :4444) ships with
+   # `tauri-webdriver-automation`, NOT with `tauri-driver`. Installing only the
+   # latter yields `tauri-wd: command not found` and every spec fails in ~2s
+   # with `ECONNREFUSED` — verified on the PR-time gate's first real run.
+   cargo install tauri-webdriver-automation --version 0.1.3 --locked
    cargo install tauri-driver --locked
    ```
 
@@ -77,16 +82,19 @@ they cost N app boots, and a hard app crash mid-suite refuses the next run's
 store clear on a live `pgrep` match, cascading failures.
 
 A **baseline comparison run is not possible** against a pre-harness commit:
-`reset-store.mjs` and `helpers/trust.mjs` are untracked additions, so an older
-checkout has no store reset at all. Copying them in makes it a current-harness
-run, not a baseline. Compare per-spec results against the untouched control
+`reset-store.mjs` and `helpers/trust.mjs` did not exist before the harness (both
+are tracked files now), so an older checkout has no store reset at all. Copying
+them in makes it a current-harness run, not a baseline. Compare per-spec results against the untouched control
 specs (`pty-broadcast`, `resume-*-capture`,
 `verify-confirm-and-palette`, `zsh-zle-replay`) instead: they exercise identical
 code in every run, so a failure there is environmental, not a regression.
 
 ## Store reset protocol
 
-`wdio.conf.mjs` resets the persisted store around every run:
+The suite resets state at two levels: once per run (the whole `store.json`) and
+once per spec (the keys a spec can dirty).
+
+**Per run.** `wdio.conf.mjs` wraps the run around the persisted store:
 
 - `onPrepare` runs `test/reset-store.mjs clear` **before the app launches**.
   `clear` refuses while any `athenas-core` process is alive — the app holds
@@ -95,6 +103,68 @@ code in every run, so a failure there is environmental, not a regression.
   is too late: the hook runs after launch).
 - `onComplete` runs `restore`, putting the newest backup back after teardown.
 
+**Schema restore (teardown).** A `--features webdriver` build also rewrites three
+TRACKED ACL schema files under `src-tauri/gen/schemas/` — the automation
+plugin's permission surface (`webdriver-automation:*`) shows up in them, while
+the committed set is the default-feature set. `onComplete` restores just that
+directory (`git checkout -- src-tauri/gen/schemas`) so a local run cannot leak
+the diff into a commit. It is deliberately path-scoped — a tree dirty for an
+unrelated reason keeps everything outside that directory — and best-effort: a
+failure only warns, because a teardown that can turn a green run red is worse
+than the diff it cleans up. Running on `onComplete`, it does not fire on
+SIGINT/SIGKILL. A warm cargo tree will not regenerate the schemas at all (the
+build script is cached), so `touch src-tauri/build.rs` before the run to
+reproduce the wart.
+
+**Per spec.** The runner spawns **one app process per spec file** — verified by
+sampling `pgrep -x athenas-core` across a two-spec run (two distinct PIDs,
+sequential, no overlap), and WDIO starts a fresh session per spec file. So
+in-memory state does *not* carry over: each spec gets a new app. What does carry
+over is `store.json`, because every new app reads it at launch. `wdio.conf.mjs`'s
+`before` hook therefore calls `resetAppState(browser)`
+(`test/helpers/ipc.mjs`) before every spec:
+
+1. `pty_kill` every id left in `window.__athenaTermMap` (errors from already-dead
+   ids are tolerated; the return value counts the ones that died);
+2. `store_delete` the two keys a spec can dirty — `workspaces`
+   (`frontend/src/stores/workspace.rs:21`) and `workspace.trusted_roots`
+   (`src-tauri/src/commands/mod.rs:266`);
+3. it reloads **only if the page actually held state** (`pre.panes > 0`, or a
+   dirty key present); on a fresh app — every spec, since the runner spawns one
+   per spec file — there is nothing to drop, so no reload is issued and no
+   navigation-teardown window exists. When a reload does happen it is keyed to a
+   driver-visible signal: a token planted before `location.reload()` must be
+   gone, i.e. the *new* document is answering. (The shim cannot wait for the
+   navigation itself — `browser.refresh()` and `browser.url()` both return
+   before the new document exists — so no driver command may be issued until the
+   commit has passed: an eval delivered across the boundary runs in both
+   documents and resolves the same pending script id twice, which panics the
+   patched plugin and wedges the app. That bridge is driver-traffic-free.)
+4. the `before` hook repeats the WASM-mount wait, now against the new document.
+
+The hook logs its **measured** result per spec. `pre`/`post` are read with the
+real `store_has` command and the page's `__athenaTermMap`, never derived from
+what the reset did. `deletedKeys` is unconditional — `store_delete` returns `Ok`
+for an absent key (`crates/athena-store/src/store.rs:267`) — so it is **not**
+evidence of deletion; `pre`/`post` are:
+
+```
+[wdio] resetAppState -> {"pre":{"panes":0,"hasWorkspaces":false,"hasTrustedRoots":false},"post":{"panes":0,"hasWorkspaces":false,"hasTrustedRoots":false},"killedPtys":0,"deletedKeys":["workspaces","workspace.trusted_roots"],"reloaded":false}
+```
+
+`test/specs/state-isolation.e2e.mjs` is the committed witness: it populates a
+space, asserts `pre.panes > 0` / `pre.hasWorkspaces`, then asserts the post-reset
+`panes`/`hasWorkspaces`/`hasTrustedRoots` are all clear — and goes red if the
+reset stops doing anything.
+
+Why no seeding is needed: a spec's launch directory only has to be permitted,
+and `.e2e-sandbox/<label>` under the repo root always is, because the app's own
+project root is implicitly trusted (`effective_roots_from`,
+`src-tauri/src/commands/mod.rs:352`). `workspace_add_trusted_root` is never
+called — its only early return is membership in the persisted list, so its
+native dialog (which no spec can service) would otherwise block. `e2eTrustRoot`
+is an alias of `e2eSandboxDir`; neither writes the store.
+
 Two consequences for authors:
 
 - **Never use `clear` as a recovery step.** It *moves* the store aside (a
@@ -102,7 +172,8 @@ Two consequences for authors:
   snapshot; `restore` picks the newest backup — so take a `backup` before a
   session and run suites strictly sequentially, or `restore` returns the
   previous run's state rather than the user's original.
-- Specs must not depend on user-persisted state; start from the cleared store.
+- Specs must not depend on user-persisted state; start from the cleared store,
+  and rely on the per-spec reset rather than assuming a virgin app.
 
 ## Notes for authors
 
@@ -114,10 +185,23 @@ Two consequences for authors:
   specs; quarantine a flaky test by fixing it, not by disabling it (the release
   roadmap tracks e2e gaps).
 - **Trusted roots.** A permitted launch dir is required: the backend rejects
-  `/tmp` and `$TMPDIR` (`is_forbidden_root`). Use `e2eTrustRoot(label)` +
-  `seedTrustedRoots(browser, [dir])` from `test/helpers/trust.mjs`, then
+  `/tmp` and `$TMPDIR` (`is_forbidden_root`). Call `e2eTrustRoot(label)` from
+  `test/helpers/trust.mjs`, then `trustViaProjectRoot(browser)` and
   `fillSpaceDir(browser, dir)` — see `swarm-lifecycle.e2e.mjs` for the full
-  pattern. `__athenaE2E` is a frontend-only bypass and never authorizes a spawn.
+  pattern. `e2eTrustRoot` only creates `.e2e-sandbox/<label>`: sandbox dirs live
+  under the repo root, which the app's implicit project root authorizes, so no
+  seeding call is needed and `workspace_add_trusted_root` (with its blocking
+  native dialog) is never invoked. `__athenaE2E` is a frontend-only bypass and
+  never authorizes a spawn.
+- **No hardcoded checkout paths.** Derive every repo path at runtime —
+  `repoRoot()` / `e2eSandboxDir(label)` from `test/helpers/repo.mjs`. Absolute
+  owner-specific paths made the suite runnable from exactly one checkout.
+- **One IPC bridge.** Write no new spec-visible copy of the invoke bridge —
+  import `invokeSettled` / `resetAppState` from `test/helpers/ipc.mjs`. Three
+  older specs still carry byte-equivalent private copies from before the helper
+  existed (`mobile-relay-pairing.e2e.mjs:35-72`,
+  `plugin-failure-paths.e2e.mjs:39-60`, `athena-chat-stub.e2e.mjs:43-64`); they
+  are grandfathered — do not add a fourth.
 - Screenshots land in `test/screenshots/`.
 
 If you add a new spec, prefer an existing spec's boot helpers (e.g.

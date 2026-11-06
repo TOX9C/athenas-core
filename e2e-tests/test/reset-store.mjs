@@ -1,9 +1,12 @@
 /**
  * Deterministic store snapshot for e2e runs.
  *
- * The suite runs with maxInstances: 1, so every spec shares ONE app process
- * and the persisted store at ~/Library/Application Support/athena-core/
+ * The suite runs with maxInstances: 1, so one app process runs at a time — the
+ * runner starts a fresh one per spec file — and they all share the persisted
+ * store at ~/Library/Application Support/athena-core/
  * (crates/athena-store/src/store.rs:159 -> `dirs::data_dir()/athena-core`).
+ * Each new app reads that store at launch, so per-spec isolation is a `before`
+ * hook job (`resetAppState` in helpers/ipc.mjs); this module only spans a run.
  *
  * Workspaces persist across launches, so specs that assume an empty state
  * fail depending on what earlier specs left behind. To make a run

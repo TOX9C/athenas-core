@@ -1,7 +1,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { e2eTrustRoot, seedTrustedRoots, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
+import { e2eTrustRoot, setE2E, fillSpaceDir, trustViaProjectRoot } from '../helpers/trust.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const screenshotDir = join(__dirname, '..', 'screenshots')
@@ -52,11 +52,10 @@ describe('Athena agent references', () => {
     this.timeout(90000)
 
     await setE2E()
-    // A permitted dir (the backend rejects /tmp); seeded so the add is a
-    // no-op that skips the blocking confirmation dialog. `.catch` keeps a
-    // rejection from hanging the sync browser script.
+    // A permitted dir: the backend rejects /tmp, while a repo-root sandbox dir
+    // is authorized by the app's implicit project root. Nothing is seeded, and
+    // no trust call whose rejection could hang the sync browser script is made.
     const trustDir = e2eTrustRoot('agent-athena-reference')
-    await seedTrustedRoots(browser, [trustDir])
     await trustViaProjectRoot(browser)
 
     await openWorkspaceModal()

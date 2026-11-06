@@ -13,6 +13,10 @@
 // The assertion is renderer-agnostic: it reads term.buffer directly, so it
 // holds under both the DOM renderer and the WebGL renderer.
 
+import { join } from 'node:path'
+
+import { e2eSandboxDir, repoRoot } from '../helpers/repo.mjs'
+
 const PANE_ID = 'e2e-zsh-zle-replay-pane'
 
 describe('zsh zle history-recall replay (ghosting regression)', () => {
@@ -20,6 +24,28 @@ describe('zsh zle history-recall replay (ghosting regression)', () => {
     await browser.waitUntil(
       () => browser.execute(() => Boolean(window.__TAURI__)),
       { timeout: 15000, timeoutMsg: 'Tauri IPC never became available' }
+    )
+
+    // The app's xterm vendor bundle is loaded ON DEMAND, at first pane mount
+    // (index.html:421-470 — ~710KB kept off the cold-boot path), so at this
+    // point `window.Terminal` does not exist: this spec constructs its own
+    // Terminal without ever mounting an app pane, which is exactly how it
+    // died with `Can't find variable: Terminal`. Ask the app's own deferred
+    // hook — the same promise XtermMount awaits before constructing a
+    // Terminal (xterm_mount.rs:1090) — and wait for the constructor to
+    // appear. No pane is mounted by doing so.
+    await browser.execute(() => {
+      window.__zshReplayVendorReady = false
+      window.__xtermAddonsReady().then(() => {
+        window.__zshReplayVendorReady = true
+      })
+    })
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          () => window.__zshReplayVendorReady === true && typeof window.Terminal === 'function',
+        ),
+      { timeout: 20000, interval: 200, timeoutMsg: 'xterm vendor bundle never finished loading' },
     )
 
     // Spec-owned xterm consuming the pane's raw stream — mirrors the
@@ -53,28 +79,38 @@ describe('zsh zle history-recall replay (ghosting regression)', () => {
         })
     }, PANE_ID)
 
-    // Spawn a real interactive zsh in the repo root (sandbox-clean cwd), then
-    // have it base64-decode the fixture so the exact captured zle stream
-    // comes out of a real PTY through the production event pipeline.
-    await browser.execute((paneId) => {
+    // Spawn a real interactive zsh in the spec's sandbox dir (a repo-root
+    // descendant, so it is authorized by the app's implicit project root),
+    // then have it base64-decode the fixture so the exact captured zle stream
+    // comes out of a real PTY through the production event pipeline. Both
+    // paths are computed Node-side: `browser.execute` only serializes the
+    // callback, so outer-scope names are not visible in the page — and the
+    // fixture path must be ABSOLUTE, because zsh runs with cwd = the sandbox
+    // dir, where `e2e-tests/test/fixtures/...` does not resolve.
+    const cwd = e2eSandboxDir('zsh-zle-replay')
+    const fixture = join(repoRoot(), 'e2e-tests', 'test', 'fixtures', 'zsh-zle-replay.b64')
+    await browser.execute((paneId, cwd) => {
       return window.__TAURI__.core.invoke('pty_spawn', {
         id: paneId,
-        cwd: '/Users/apollo/Documents/athenas-core',
+        cwd,
         shell: '/bin/zsh',
         cols: 120,
         rows: 30,
         agent: null,
         command: '',
       })
-    }, PANE_ID)
+    }, PANE_ID, cwd)
     // Let zsh finish its startup prompt before the replay begins.
     await browser.pause(1500)
-    await browser.execute((paneId) => {
+    await browser.execute((paneId, fixture) => {
       return window.__TAURI__.core.invoke('pty_write', {
         id: paneId,
-        data: 'base64 -D -i e2e-tests/test/fixtures/zsh-zle-replay.b64\r',
+        // Absolute, not bare `base64`: `-D -i` are BSD-only flags, and a shell
+        // whose PATH puts GNU coreutils first (as the owner's does) resolves
+        // `base64` to a build that rejects them.
+        data: `/usr/bin/base64 -D -i '${fixture}'\r`,
       })
-    }, PANE_ID)
+    }, PANE_ID, fixture)
     // Give the fixture output time to flush through the 8 ms coalescing tick.
     await browser.pause(1500)
 
